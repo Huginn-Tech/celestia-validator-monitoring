@@ -1,0 +1,21 @@
+---
+# Derived values. The settings themselves (versions, ports) live in versions.yml
+# and the taut role defaults.
+taut_otelcol_version: "{{ taut_versions.otelcol_contrib }}"
+taut_otelcol_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
+taut_otelcol_tarball: "otelcol-contrib_{{ taut_otelcol_version }}_linux_{{ taut_otelcol_arch }}.tar.gz"
+taut_otelcol_url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ taut_otelcol_version }}"
+taut_otelcol_checksums: opentelemetry-collector-releases_otelcol-contrib_checksums.txt
+taut_otelcol_binary: "/usr/local/bin/otelcol-contrib-{{ taut_otelcol_version }}"
+
+# The service, user and config are named taut-otelcol so they never replace another
+# collector on the host (the official package uses otelcol-contrib).
+taut_otelcol_config: /etc/taut-otelcol/config.yaml
+
+# Fibre pushes metrics and traces here, on loopback only:
+# --otel-endpoint http://127.0.0.1:<taut_ports.otelcol_otlp> (default 4318).
+taut_otelcol_otlp_endpoint: "127.0.0.1:{{ taut_ports.otelcol_otlp }}"
+
+# Prometheus scrapes this host:port on the private address (IPv6 addresses go in brackets).
+taut_otelcol_prometheus_endpoint: >-
+  {{ '[' ~ taut_private_ip ~ ']' if ':' in taut_private_ip else taut_private_ip }}:{{ taut_ports.otelcol_prometheus }}

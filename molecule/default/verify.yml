@@ -1,0 +1,92 @@
+---
+- name: Verify the Taut install
+  hosts: all
+  gather_facts: true
+  vars_files:
+    - ../../ansible/roles/taut/defaults/main.yml
+  vars:
+    # systemd units of the services Taut installs on this all-in-one host.
+    taut_verify_units:
+      - node_exporter.service
+      - taut-otelcol.service
+      - prometheus.service
+      - alertmanager.service
+      - grafana-server.service
+    # Scrape jobs Prometheus must have, with the role label of this host's target.
+    taut_verify_jobs:
+      - job: celestia-app
+        role: validator
+      - job: node
+        role: validator
+      - job: otelcol
+        role: fibre
+  tasks:
+    - name: Collect the service states
+      ansible.builtin.service_facts:
+
+    - name: Check that every Taut service is running
+      ansible.builtin.assert:
+        that:
+          - item in ansible_facts.services
+          - ansible_facts.services[item].state == 'running'
+        fail_msg: "{{ item }} is not running"
+        quiet: true
+      loop: "{{ taut_verify_units }}"
+
+    - name: Check that every Taut port answers on the private address
+      ansible.builtin.wait_for:
+        host: "{{ taut_private_ip }}"
+        port: "{{ item }}"
+        timeout: 60
+      loop:
+        - "{{ taut_ports.node_exporter }}"
+        - "{{ taut_ports.otelcol_prometheus }}"
+        - "{{ taut_ports.prometheus }}"
+        - "{{ taut_ports.alertmanager }}"
+        - "{{ taut_ports.grafana }}"
+
+    - name: Check that the Alertmanager cluster port stays closed
+      ansible.builtin.wait_for:
+        host: "{{ taut_private_ip }}"
+        port: 9094
+        state: stopped
+        timeout: 5
+
+    - name: Read the Prometheus scrape targets
+      ansible.builtin.uri:
+        url: "http://{{ taut_private_ip }}:{{ taut_ports.prometheus }}/api/v1/targets?state=active"
+        return_content: true
+      register: taut_verify_targets
+
+    - name: Check that Prometheus has exactly the expected jobs
+      ansible.builtin.assert:
+        that:
+          - taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | sort == taut_verify_jobs | map(attribute='job') | sort
+        fail_msg: >-
+          Expected one target per job in {{ taut_verify_jobs | map(attribute='job') | join(', ') }}, got
+          {{ taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | join(', ') }}.
+        quiet: true
+
+    - name: Check the host and role labels of each job
+      ansible.builtin.assert:
+        that:
+          - >-
+            taut_verify_targets.json.data.activeTargets
+            | selectattr('labels.job', 'equalto', item.job)
+            | selectattr('labels.role', 'equalto', item.role)
+            | selectattr('labels.host', 'equalto', inventory_hostname)
+            | list | length == 1
+        fail_msg: "Job {{ item.job }} has no target labelled host={{ inventory_hostname }}, role={{ item.role }}."
+        quiet: true
+      loop: "{{ taut_verify_jobs }}"
+      loop_control:
+        label: "{{ item.job }}"
+
+    - name: Wait for the Watchdog alert to reach Alertmanager
+      ansible.builtin.uri:
+        url: "http://{{ taut_private_ip }}:{{ taut_ports.alertmanager }}/api/v2/alerts"
+        return_content: true
+      register: taut_verify_alerts
+      until: taut_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
+      retries: 18
+      delay: 10

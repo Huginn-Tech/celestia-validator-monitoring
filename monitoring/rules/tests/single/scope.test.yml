@@ -1,0 +1,60 @@
+# What the example-single switches leave out: with a local key there is no
+# RemoteSignerProblem, with Fibre off there is no FibreNotServing. Watchdog always fires.
+rule_files:
+  - taut.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Local key renders no RemoteSignerProblem, even if signer metrics showed up
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_latency_median_seconds{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '0.05x40'
+      - series: >-
+          cometbft_privval_signing_failures_total{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",message_type="proposal",reason="remote_error"}
+        values: '1+1x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: RemoteSignerProblem
+        exp_alerts: []
+
+  - name: Fibre off renders no FibreNotServing, even with an active Fibre unit and no metrics
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '1x200'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="fibre.service"}
+        values: '60x200'
+    alert_rule_test:
+      - eval_time: 200m
+        alertname: FibreNotServing
+        exp_alerts: []
+
+  - name: Watchdog is always firing
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "Taut heartbeat"
+              description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"
+      - eval_time: 10m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "Taut heartbeat"
+              description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"

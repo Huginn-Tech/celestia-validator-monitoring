@@ -1,0 +1,99 @@
+# NodeNotAtHead and ValidatorNotSigning on the example-single inventory (validator node-1).
+# The chain makes 10 blocks per minute; samples are one minute apart.
+rule_files:
+  - taut.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Healthy validator signs every block
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x40'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: NodeNotAtHead
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+
+  - name: Chain halted or node stuck; NodeNotAtHead pages, ValidatorNotSigning stays quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x10 1100x30'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x10 1099x30'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: NodeNotAtHead
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: NodeNotAtHead
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: page
+            exp_annotations:
+              summary: "Node on node-1 is not following new blocks"
+              description: "The consensus height has not changed for 5 minutes. Check status.celestia.org first: the whole chain may have halted."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#nodenotathead"
+      - eval_time: 30m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+
+  - name: Jailed validator; the last signed height freezes while the chain moves
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x30'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x5 1049x25'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: ValidatorNotSigning
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: page
+            exp_annotations:
+              summary: "Validator on node-1 is not signing"
+              description: "The chain moves but the validator has not signed for more than 50 blocks."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#validatornotsigning"
+
+  - name: Restart; the last signed height is absent until the first own signature, which comes in time
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x20'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x9 stale _ 1119+10x8'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ValidatorNotSigning
+        exp_alerts: []

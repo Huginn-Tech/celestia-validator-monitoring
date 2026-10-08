@@ -7,9 +7,12 @@
       - taut_units.appd | length > 0
       - (not taut_fibre_enabled) or (taut_units.fibre | length > 0)
       - (taut_signer == 'local') or (taut_units.tmkms | length > 0)
+      - groups.get('validator', []) | length == 1
+      - groups.get('monitor', []) | length == 1
     fail_msg: >-
       taut_signer must be local or remote, taut_fibre_enabled must be a boolean,
-      and taut_units must name the services in use.
+      taut_units must name the services in use, and the inventory needs exactly one
+      validator host and one monitor host (one validator per Taut install).
     quiet: true
 
 - name: Check this host's private address
@@ -22,3 +25,4 @@
       (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address).
       Taut never binds public addresses.
     quiet: true
+  when: taut_host_managed | bool

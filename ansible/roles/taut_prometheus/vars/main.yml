@@ -1,0 +1,17 @@
+---
+taut_prometheus_version: "{{ taut_versions.prometheus }}"
+taut_prometheus_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+taut_prometheus_release: "prometheus-{{ taut_prometheus_version }}.linux-{{ taut_prometheus_arch_map[ansible_facts.architecture] }}"
+taut_prometheus_download_url: "https://github.com/prometheus/prometheus/releases/download/v{{ taut_prometheus_version }}"
+
+# Installed as /usr/local/bin/<name>-<version> with a /usr/local/bin/<name> symlink.
+taut_prometheus_binaries:
+  - prometheus
+  - promtool
+
+taut_prometheus_config_dir: /etc/prometheus
+taut_prometheus_data_dir: /var/lib/prometheus
+taut_prometheus_listen_address: >-
+  {{ ('[' ~ taut_private_ip ~ ']') if ':' in taut_private_ip else taut_private_ip }}:{{ taut_ports.prometheus }}

@@ -1,3 +1,23 @@
 ---
 # Addresses Taut accepts as private: RFC 1918, CGNAT (Tailscale), loopback, IPv6 ULA.
 taut_private_address_regex: '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|127\.|::1$|f[cd][0-9a-fA-F]{2}:)'
+
+# Is this host one Taut installs anything on? A kms host only when taut_kms_scrape is set.
+taut_host_managed: >-
+  {{ inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('monitor', []))
+     or (inventory_hostname in groups.get('kms', []) and (taut_kms_scrape | default(false) | bool)) }}
+
+# Celestia services running on this host, by systemd unit name (without .service).
+taut_host_units: >-
+  {{ ([taut_units.appd] if inventory_hostname in groups.get('validator', []) else [])
+     + ([taut_units.fibre] if (taut_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
+     + ([taut_units.tmkms] if (taut_signer == 'remote' and inventory_hostname in groups.get('kms', [])) else []) }}
+
+# The role label this host's node_exporter target carries.
+taut_host_role: >-
+  {{ 'validator' if inventory_hostname in groups.get('validator', [])
+     else 'fibre' if inventory_hostname in groups.get('fibre', [])
+     else 'kms' if inventory_hostname in groups.get('kms', [])
+     else 'monitor' }}
+
+taut_monitor_host: "{{ groups['monitor'][0] }}"

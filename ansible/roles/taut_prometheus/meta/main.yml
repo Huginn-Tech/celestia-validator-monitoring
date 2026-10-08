@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: Huginn Tech
+  description: Prometheus with the Taut scrape jobs and alert rules on the monitor host
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies:
+  - role: taut

@@ -1,0 +1,364 @@
+# DiskLow on the example-split inventory: data mounts val-1 /var/lib/celestia,
+# kms-1 / and fibre-1 /; Fibre store fibre-1 /var/lib/fibre. Data mounts on the
+# validator and kms hosts page; on the Fibre host they only send messages.
+rule_files:
+  - taut.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Node data disk fills; a message under 10% for 10m, a page under 3%; unwatched mounts stay quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '2000000000000x30'
+      # 15% free at 0m, 0.5 points less every minute.
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '300000000000-10000000000x30'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '0x30'
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
+        values: '1000000000x30'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
+        values: '10000000x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: message
+            exp_annotations:
+              summary: "/var/lib/celestia on val-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+      - eval_time: 25m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: message
+            exp_annotations:
+              summary: "/var/lib/celestia on val-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on val-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 3% free space."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: kms-1 root disk (taut_kms_scrape) under 3% pages at once
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '100000000000x10'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '2000000000x10'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.2:9100
+              host: kms-1
+              role: kms
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: page
+            exp_annotations:
+              summary: "/ on kms-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 3% free space."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: fibre-1 root disk under 3% sends a message, never a page; read-only replaces the low-space message
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '100000000000x15'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '2000000000x15'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '0x11 1x3'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: message
+            exp_annotations:
+              summary: "/ on fibre-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+      - eval_time: 12m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: message
+            exp_annotations:
+              summary: "/ on fibre-1 is read-only"
+              description: "The filesystem is read-only."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Read-only filesystems; the node data disk pages at once, the Fibre store sends a message
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '2000000000000x15'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '1000000000000x15'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '0x4 1x10'
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x15'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '2000000000000x15'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x9 1x5'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1000000000000x15'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '500000000000x15'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on val-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 3% free space."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme1n1
+              fstype: ext4
+              mountpoint: /var/lib/fibre
+              severity: message
+            exp_annotations:
+              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
+              description: "Fibre cannot store new shards on a read-only filesystem."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Fibre store cannot hold the budget; a message after 30m, no percentage alert while a budget is set
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x40'
+      # 7.5% free, less than the 400 GB the budget still needs.
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '300000000000x40'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x40'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '600000000000x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              severity: message
+            exp_annotations:
+              summary: "Fibre store on fibre-1 cannot hold the storage budget"
+              description: "For 30 minutes the room the Fibre budget still needs has exceeded the free space on /var/lib/fibre."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Fibre store full up to its budget with room left; quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x40'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '150000000000x40'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x40'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '990000000000x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DiskLow
+        exp_alerts: []
+
+  - name: Fibre budget 0 (unlimited); the 10% rule applies to the Fibre store
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x20'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '300000000000x20'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x20'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '0x20'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '500000000000x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme1n1
+              fstype: ext4
+              mountpoint: /var/lib/fibre
+              severity: message
+            exp_annotations:
+              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Fibre budget 0 and the store turns read-only; the read-only message replaces the low-space message
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x15'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '300000000000x15'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x11 1x3'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '0x15'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '500000000000x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme1n1
+              fstype: ext4
+              mountpoint: /var/lib/fibre
+              severity: message
+            exp_annotations:
+              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+      - eval_time: 12m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme1n1
+              fstype: ext4
+              mountpoint: /var/lib/fibre
+              severity: message
+            exp_annotations:
+              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
+              description: "Fibre cannot store new shards on a read-only filesystem."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"

@@ -1,0 +1,10 @@
+---
+# The inventory takes taut_private_ip from facts, and site.yml's first play does not
+# gather them, so gather them here first.
+- name: Gather facts for the test inventory
+  hosts: all
+  gather_facts: true
+  tasks: []
+
+- name: Run the Taut playbook
+  ansible.builtin.import_playbook: ../../ansible/site.yml

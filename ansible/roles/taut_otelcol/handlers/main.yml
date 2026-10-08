@@ -1,0 +1,7 @@
+---
+- name: Restart taut-otelcol
+  ansible.builtin.systemd_service:
+    name: taut-otelcol
+    state: restarted
+    daemon_reload: true
+  when: taut_otelcol_installed.stat.exists or not ansible_check_mode

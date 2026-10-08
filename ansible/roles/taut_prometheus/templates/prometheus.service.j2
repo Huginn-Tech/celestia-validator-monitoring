@@ -1,0 +1,26 @@
+# Managed by Taut. Local changes are overwritten on the next playbook run.
+[Unit]
+Description=Prometheus (Taut)
+Documentation=https://prometheus.io/docs/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=prometheus
+Group=prometheus
+ExecStart=/usr/local/bin/prometheus \
+  --config.file={{ taut_prometheus_config_dir }}/prometheus.yml \
+  --storage.tsdb.path={{ taut_prometheus_data_dir }} \
+  --storage.tsdb.retention.time={{ taut_prometheus_retention }} \
+  --web.listen-address={{ taut_prometheus_listen_address }}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ taut_prometheus_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

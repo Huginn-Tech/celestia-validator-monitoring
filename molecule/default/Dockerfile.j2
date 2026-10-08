@@ -1,0 +1,13 @@
+# Test image for the Taut molecule scenario: Ubuntu with systemd as PID 1 and the
+# packages a stock Ubuntu server has (python3, sudo, iproute2 for ss, an inactive ufw).
+FROM {{ item.image }}
+
+ENV container=docker
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       ca-certificates curl gnupg iproute2 python3 python3-apt sudo systemd ufw \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]

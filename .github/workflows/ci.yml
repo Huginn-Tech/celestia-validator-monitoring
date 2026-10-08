@@ -55,3 +55,270 @@ jobs:
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  collectors:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    env:
+      ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
+      ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible/roles
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.18,<2.19"
+          ansible-galaxy collection install -r ansible/requirements.yml
+      - name: Write a one-host inventory and playbook
+        run: |
+          CI_DIR="$RUNNER_TEMP/collectors"
+          echo "CI_DIR=$CI_DIR" >> "$GITHUB_ENV"
+          mkdir -p "$CI_DIR"
+          cat > "$CI_DIR/hosts.yml" <<'EOF'
+          all:
+            hosts:
+              ci:
+                ansible_connection: local
+                ansible_python_interpreter: /usr/bin/python3
+                taut_private_ip: 127.0.0.1
+            children:
+              validator:
+                hosts:
+                  ci:
+              fibre:
+                hosts:
+                  ci:
+              monitor:
+                hosts:
+                  ci:
+            vars:
+              taut_signer: local
+              taut_fibre_enabled: true
+              taut_units:
+                appd: systemd-journald
+                fibre: systemd-logind
+                tmkms: tmkms
+          EOF
+          cat > "$CI_DIR/site.yml" <<'EOF'
+          - name: Collectors
+            hosts: all
+            become: true
+            tasks:
+              - name: Load the shared settings
+                ansible.builtin.include_role:
+                  name: taut
+                  public: true
+              - name: Install node_exporter
+                ansible.builtin.include_role:
+                  name: taut_node_exporter
+              - name: Install the OpenTelemetry collector
+                ansible.builtin.include_role:
+                  name: taut_otelcol
+          - name: Bind check
+            hosts: all
+            become: true
+            gather_facts: false
+            tasks:
+              - name: Run the bind check
+                ansible.builtin.include_role:
+                  name: taut
+                  tasks_from: bind_check
+          EOF
+      - name: Dry run on a fresh host
+        run: ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml --check --diff "$CI_DIR/site.yml"
+      - name: Install
+        run: ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml "$CI_DIR/site.yml"
+      - name: Second run changes nothing
+        run: |
+          ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml "$CI_DIR/site.yml" | tee "$CI_DIR/second.log"
+          grep -Eq '^ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0' "$CI_DIR/second.log"
+      - name: node_exporter lists only the configured units
+        run: |
+          sudo systemctl is-active node_exporter
+          node=$(curl -sf http://127.0.0.1:9100/metrics)
+          grep -q '^node_systemd_unit_state{name="systemd-journald.service",state="active"' <<<"$node"
+          grep -q '^node_systemd_unit_start_time_seconds{name="systemd-logind.service"}' <<<"$node"
+          grep -q '^node_systemd_service_restart_total{name="systemd-logind.service"}' <<<"$node"
+          units=$(grep '^node_systemd_unit_state{' <<<"$node" | grep -o 'name="[^"]*"' | sort -u | wc -l)
+          if [ "$units" -ne 2 ]; then echo "systemd collector lists $units units, expected 2"; exit 1; fi
+      - name: The collector sums Fibre's size attributes away and drops traces
+        run: |
+          sudo systemctl is-active taut-otelcol
+          for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:8889/metrics && break; sleep 1; done
+          now=$(date +%s%N)
+          start=$((now - 1000000000))
+          cat > "$CI_DIR/otlp.json" <<EOF
+          {"resourceMetrics": [{
+            "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "fibre"}}]},
+            "scopeMetrics": [{"scope": {"name": "ci"}, "metrics": [{
+              "name": "fibre.server.upload_shard.duration", "unit": "s",
+              "histogram": {"aggregationTemporality": 2, "dataPoints": [
+                {"attributes": [{"key": "success", "value": {"boolValue": true}}, {"key": "upload_size", "value": {"intValue": "1024"}}],
+                 "startTimeUnixNano": "$start", "timeUnixNano": "$now", "count": "1", "sum": 0.5, "bucketCounts": ["1", "0"], "explicitBounds": [1]},
+                {"attributes": [{"key": "success", "value": {"boolValue": true}}, {"key": "upload_size", "value": {"intValue": "2048"}}],
+                 "startTimeUnixNano": "$start", "timeUnixNano": "$now", "count": "1", "sum": 0.5, "bucketCounts": ["1", "0"], "explicitBounds": [1]}
+              ]}}]}]}]}
+          EOF
+          curl -sf -H 'Content-Type: application/json' --data @"$CI_DIR/otlp.json" http://127.0.0.1:4318/v1/metrics
+          curl -sf -H 'Content-Type: application/json' --data '{"resourceSpans":[]}' http://127.0.0.1:4318/v1/traces
+          sleep 1
+          otel=$(curl -sf http://127.0.0.1:8889/metrics)
+          printf '%s\n' "$otel"
+          grep -Eq '^fibre_server_upload_shard_duration_seconds_count\{[^}]*success="true"[^}]*\} 2$' <<<"$otel"
+          if grep -q upload_size <<<"$otel"; then echo "upload_size was not summed away"; exit 1; fi
+          if sudo ss -Htln | grep -Eq ':8888[[:space:]]'; then echo "the collector opened its own telemetry port"; exit 1; fi
+      - name: Show the collector logs
+        if: failure()
+        run: sudo journalctl -u node_exporter -u taut-otelcol --no-pager -n 200
+
+  rules:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.18,<2.19"
+          ansible-galaxy collection install -r ansible/requirements.yml
+      - name: Render both example inventories
+        run: |
+          for s in single split; do
+            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "taut_ci_scenario=$s"
+          done
+      - name: Install promtool and amtool at the pinned versions
+        run: |
+          set -euo pipefail
+          pin() { python -c 'import sys, yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"][sys.argv[1]])' "$1"; }
+          prom="$(pin prometheus)"
+          am="$(pin alertmanager)"
+          mkdir -p "$RUNNER_TEMP/taut-bin"
+          cd "$RUNNER_TEMP"
+          base="https://github.com/prometheus"
+          curl -fsSLO "$base/prometheus/releases/download/v$prom/prometheus-$prom.linux-amd64.tar.gz"
+          curl -fsSL -o prometheus.sha256 "$base/prometheus/releases/download/v$prom/sha256sums.txt"
+          grep " prometheus-$prom.linux-amd64.tar.gz\$" prometheus.sha256 | sha256sum -c -
+          curl -fsSLO "$base/alertmanager/releases/download/v$am/alertmanager-$am.linux-amd64.tar.gz"
+          curl -fsSL -o alertmanager.sha256 "$base/alertmanager/releases/download/v$am/sha256sums.txt"
+          grep " alertmanager-$am.linux-amd64.tar.gz\$" alertmanager.sha256 | sha256sum -c -
+          tar -xzf "prometheus-$prom.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "prometheus-$prom.linux-amd64/promtool"
+          tar -xzf "alertmanager-$am.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "alertmanager-$am.linux-amd64/amtool"
+          echo "$RUNNER_TEMP/taut-bin" >> "$GITHUB_PATH"
+      - name: promtool check rules
+        run: |
+          for s in single split; do
+            promtool check rules --lint=none "monitoring/rules/tests/$s/taut.rules.yml"
+          done
+      - name: promtool test rules
+        run: |
+          for s in single split; do
+            promtool test rules monitoring/rules/tests/"$s"/*.test.yml
+          done
+      - name: promtool check config
+        run: |
+          for s in single split; do
+            promtool check config --lint=none "build/$s/prometheus.yml"
+          done
+      - name: amtool check-config
+        run: |
+          for s in single split; do
+            amtool check-config "build/$s/alertmanager.yml"
+          done
+
+  dashboard:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Ansible
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.18,<2.19"
+          ansible-galaxy collection install -r ansible/requirements.yml
+      - name: Start a throwaway Prometheus at the version in versions.yml
+        run: |
+          version="$(python -c 'import yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"]["prometheus"])')"
+          docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$version"
+      - name: Render the dashboard settings for both example inventories
+        run: |
+          for s in single split; do
+            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "taut_ci_scenario=$s"
+          done
+      - name: Generate the dashboards
+        run: |
+          for s in single split; do
+            python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
+            python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.again.json"
+            cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
+            python -m json.tool "build/$s/dashboard.json" > /dev/null
+          done
+      - name: Panels match the switches
+        run: |
+          count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
+          test "$(count single)" = 5
+          test "$(count split)" = 10
+      - name: Wait for Prometheus
+        run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
+      - name: Every panel query parses in Prometheus
+        run: python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 build/single/dashboard.json build/split/dashboard.json
+
+  doctor:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Run doctor for each role
+        run: |
+          bash tools/doctor.sh --help >/dev/null
+          run() {
+            rc=0
+            "$@" 2>stderr.txt || rc=$?
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          for roles in validator fibre kms monitor validator,fibre; do
+            echo "::group::roles=$roles (root)"
+            run sudo bash tools/doctor.sh --config /dev/null --roles "$roles" --fibre-enabled true \
+              --signer remote --data-mounts / --fibre-mount / --head-wait 2
+            echo "::endgroup::"
+          done
+          echo "::group::no config, not root"
+          run bash tools/doctor.sh --data-mounts /,/does-not-exist
+          echo "::endgroup::"
+          echo "::group::every key in doctor.conf.j2"
+          sed -n 's/^\([a-z_]\{1,\}\)=.*/\1=/p' ansible/roles/taut/templates/doctor.conf.j2 >"$RUNNER_TEMP/doctor.conf"
+          echo 'roles=validator,fibre' >>"$RUNNER_TEMP/doctor.conf"
+          cat "$RUNNER_TEMP/doctor.conf"
+          run sudo bash tools/doctor.sh --config "$RUNNER_TEMP/doctor.conf" --head-wait 2
+          echo "::endgroup::"
+
+  molecule:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install molecule
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.18,<2.19" "molecule>=26.8,<27" "molecule-plugins[docker]>=26.7,<27"
+          ansible-galaxy collection install -r ansible/requirements.yml
+          ansible-galaxy collection install "community.docker:>=4.0.0,<6.0.0" "ansible.posix:>=1.6.0,<3.0.0"
+      - name: molecule test
+        run: molecule test
+        env:
+          PY_COLORS: "1"
+          ANSIBLE_FORCE_COLOR: "1"
