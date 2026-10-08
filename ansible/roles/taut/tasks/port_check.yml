@@ -29,9 +29,10 @@
       {{ taut_port_check_sockets.stdout_lines
          | reject('search', 'pid=' ~ (taut_port_check_status.status.MainPID | default('0')) ~ ',') | list }}
     # ss prints the owners as users:(("name",pid=N,fd=M),...), shown here as "name (N)".
+    # No backreferences: they reach regex_replace with an extra backslash and print literally.
     taut_port_check_owners: >-
-      {{ taut_port_check_others | join(' ') | regex_findall('"[^"]+",pid=[0-9]+')
-         | map('regex_replace', '^"([^"]+)",pid=([0-9]+)$', '\\1 (\\2)') | unique | join(', ') }}
+      {{ taut_port_check_others | join(' ') | regex_findall('"([^"]+)",pid=([0-9]+)')
+         | map('join', ' (') | map('regex_replace', '$', ')') | unique | join(', ') }}
     taut_port_check_key: >-
       {{ taut_ports | dict2items | selectattr('value', 'in', [taut_port_check_port | int, taut_port_check_port | string])
          | map(attribute='key') | first | default('<key>', true) }}
