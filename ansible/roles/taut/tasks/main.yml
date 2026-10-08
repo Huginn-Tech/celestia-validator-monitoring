@@ -1,0 +1,24 @@
+---
+- name: Check the shared settings
+  ansible.builtin.assert:
+    that:
+      - taut_signer in ['local', 'remote']
+      - taut_fibre_enabled | type_debug == 'bool'
+      - taut_units.appd | length > 0
+      - (not taut_fibre_enabled) or (taut_units.fibre | length > 0)
+      - (taut_signer == 'local') or (taut_units.tmkms | length > 0)
+    fail_msg: >-
+      taut_signer must be local or remote, taut_fibre_enabled must be a boolean,
+      and taut_units must name the services in use.
+    quiet: true
+
+- name: Check this host's private address
+  ansible.builtin.assert:
+    that:
+      - taut_private_ip is defined
+      - taut_private_ip is match(taut_private_address_regex)
+    fail_msg: >-
+      Set taut_private_ip for {{ inventory_hostname }} to a private address
+      (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address).
+      Taut never binds public addresses.
+    quiet: true

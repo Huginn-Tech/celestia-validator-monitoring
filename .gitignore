@@ -1,0 +1,11 @@
+# Owner-only material, never committed
+reference/
+CLAUDE.local.md
+
+# Build and test output
+build/
+monitoring/rules/tests/*/taut.rules.yml
+*.retry
+__pycache__/
+.venv/
+.cache/

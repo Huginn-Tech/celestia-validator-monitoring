@@ -1,0 +1,11 @@
+---
+profile: production
+offline: true
+project_dir: .
+exclude_paths:
+  - .cache/
+  - .github/
+  - build/
+  - monitoring/
+  - docs/
+  - versions.yml

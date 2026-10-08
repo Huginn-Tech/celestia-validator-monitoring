@@ -1,0 +1,6 @@
+---
+- name: Check the inventory
+  hosts: all
+  gather_facts: false
+  roles:
+    - role: taut

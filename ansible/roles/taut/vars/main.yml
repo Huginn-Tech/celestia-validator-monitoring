@@ -1,0 +1,3 @@
+---
+# Addresses Taut accepts as private: RFC 1918, CGNAT (Tailscale), loopback, IPv6 ULA.
+taut_private_address_regex: '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|127\.|::1$|f[cd][0-9a-fA-F]{2}:)'

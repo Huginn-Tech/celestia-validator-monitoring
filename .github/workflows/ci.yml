@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  ANSIBLE_CONFIG: ansible/ansible.cfg
+  ANSIBLE_ROLES_PATH: ansible/roles
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install linters
+        run: |
+          python -m pip install --upgrade pip
+          pip install "ansible-core>=2.18,<2.19" "ansible-lint>=25,<26" "yamllint>=1.35,<2"
+          ansible-galaxy collection install -r ansible/requirements.yml
+      - name: yamllint
+        run: yamllint --strict .
+      - name: ansible-lint
+        run: ansible-lint
+      - name: shellcheck
+        run: |
+          shopt -s nullglob
+          files=(tools/*.sh)
+          if [ ${#files[@]} -gt 0 ]; then shellcheck "${files[@]}"; fi
+
+  secrets:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Owner-only files are ignored and absent
+        run: |
+          for p in reference CLAUDE.local.md; do
+            git check-ignore -q "$p" || { echo "$p is not in .gitignore"; exit 1; }
+            if git ls-files --error-unmatch "$p" >/dev/null 2>&1 || [ -n "$(git ls-files "$p/")" ]; then
+              echo "$p is tracked"; exit 1
+            fi
+          done
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
