@@ -1,0 +1,201 @@
+---
+# Stop before changing anything when another collector already uses Taut's binary
+# path or ports. Every OpenTelemetry Collector listens on localhost:4318 by default.
+- name: Look at /usr/local/bin/otelcol-contrib
+  ansible.builtin.stat:
+    path: /usr/local/bin/otelcol-contrib
+    get_checksum: false
+  register: taut_otelcol_link
+
+- name: Read the main PID of taut-otelcol
+  ansible.builtin.systemd_service:
+    name: taut-otelcol
+  register: taut_otelcol_unit
+
+- name: Read the listeners on the collector's ports
+  ansible.builtin.command: ss -Htlnp '( sport = :{{ taut_ports.otelcol_prometheus }} or sport = :{{ taut_ports.otelcol_otlp }} )'
+  register: taut_otelcol_ports
+  changed_when: false
+  check_mode: false
+
+- name: Check that no other collector uses /usr/local/bin/otelcol-contrib
+  ansible.builtin.assert:
+    that:
+      - >-
+        not taut_otelcol_link.stat.exists
+        or (taut_otelcol_link.stat.islnk and taut_otelcol_link.stat.lnk_target is match('/usr/local/bin/otelcol-contrib-'))
+    fail_msg: >-
+      /usr/local/bin/otelcol-contrib belongs to another collector install. Move that collector's
+      binary elsewhere (the official package uses /usr/bin/otelcol-contrib) before running Taut.
+    quiet: true
+
+- name: Check that nothing else listens on the collector's ports
+  ansible.builtin.assert:
+    that:
+      - taut_otelcol_conflicts | length == 0
+    fail_msg: >-
+      Port {{ taut_ports.otelcol_prometheus }} or {{ taut_ports.otelcol_otlp }} is already in use:
+      {{ taut_otelcol_conflicts | join('; ') }}. Stop that service, or set taut_ports.otelcol_prometheus
+      and taut_ports.otelcol_otlp to free ports (Fibre's OTLP endpoint must then use the new OTLP port).
+    quiet: true
+  vars:
+    taut_otelcol_conflicts: >-
+      {{ taut_otelcol_ports.stdout_lines
+         | reject('search', 'pid=' ~ (taut_otelcol_unit.status.MainPID | default('0')) ~ ',') | list }}
+
+- name: Create the taut-otelcol user
+  ansible.builtin.user:
+    name: taut-otelcol
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Look for otelcol-contrib {{ taut_otelcol_version }}
+  ansible.builtin.stat:
+    path: "{{ taut_otelcol_binary }}"
+  register: taut_otelcol_installed
+
+# In check mode nothing is downloaded, so the tasks that need the binary or the
+# unit are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of otelcol-contrib {{ taut_otelcol_version }}
+  ansible.builtin.debug:
+    msg: Would install {{ taut_otelcol_binary }}, point /usr/local/bin/otelcol-contrib at it and restart taut-otelcol.
+  changed_when: true
+  when: ansible_check_mode and not taut_otelcol_installed.stat.exists
+
+- name: Install otelcol-contrib {{ taut_otelcol_version }}
+  when: not taut_otelcol_installed.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: "/var/cache/taut/otelcol-contrib-{{ taut_otelcol_version }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download otelcol-contrib and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ taut_otelcol_url }}/{{ taut_otelcol_tarball }}"
+        dest: "/var/cache/taut/{{ taut_otelcol_tarball }}"
+        checksum: "sha256:{{ taut_otelcol_url }}/{{ taut_otelcol_checksums }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack otelcol-contrib
+      ansible.builtin.unarchive:
+        src: "/var/cache/taut/{{ taut_otelcol_tarball }}"
+        dest: "/var/cache/taut/otelcol-contrib-{{ taut_otelcol_version }}"
+        include:
+          - otelcol-contrib
+        remote_src: true
+
+    - name: Install the otelcol-contrib binary
+      ansible.builtin.copy:
+        src: "/var/cache/taut/otelcol-contrib-{{ taut_otelcol_version }}/otelcol-contrib"
+        dest: "{{ taut_otelcol_binary }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Remove the downloaded files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/var/cache/taut/{{ taut_otelcol_tarball }}"
+        - "/var/cache/taut/otelcol-contrib-{{ taut_otelcol_version }}"
+
+# The service runs /usr/local/bin/otelcol-contrib so its process name stays
+# otelcol-contrib (taut-doctor looks for it).
+- name: Point /usr/local/bin/otelcol-contrib at version {{ taut_otelcol_version }}
+  ansible.builtin.file:
+    src: "{{ taut_otelcol_binary }}"
+    dest: /usr/local/bin/otelcol-contrib
+    state: link
+    owner: root
+    group: root
+  when: taut_otelcol_installed.stat.exists or not ansible_check_mode
+  notify: Restart taut-otelcol
+
+- name: Create the collector configuration directory
+  ansible.builtin.file:
+    path: "{{ taut_otelcol_config | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the collector configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ taut_otelcol_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/local/bin/otelcol-contrib validate --config=%s
+  notify: Restart taut-otelcol
+
+- name: Write the taut-otelcol service
+  ansible.builtin.template:
+    src: taut-otelcol.service.j2
+    dest: /etc/systemd/system/taut-otelcol.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart taut-otelcol
+
+- name: Enable and start taut-otelcol
+  ansible.builtin.systemd_service:
+    name: taut-otelcol
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: taut_otelcol_installed.stat.exists or not ansible_check_mode
+
+- name: Apply a pending taut-otelcol restart
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+- name: Wait for the collector's Prometheus endpoint on {{ taut_otelcol_prometheus_endpoint }}
+  ansible.builtin.wait_for:
+    host: "{{ taut_private_ip }}"
+    port: "{{ taut_ports.otelcol_prometheus }}"
+    timeout: 30
+    msg: taut-otelcol does not listen on {{ taut_otelcol_prometheus_endpoint }}. See journalctl -u taut-otelcol.
+  when: not ansible_check_mode
+
+- name: Wait for the collector's OTLP receiver on {{ taut_otelcol_otlp_endpoint }}
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ taut_ports.otelcol_otlp }}"
+    timeout: 30
+    msg: taut-otelcol does not listen on {{ taut_otelcol_otlp_endpoint }}. See journalctl -u taut-otelcol.
+  when: not ansible_check_mode
+
+- name: Find older otelcol-contrib binaries
+  ansible.builtin.find:
+    paths: /usr/local/bin
+    patterns: otelcol-contrib-*
+    excludes: otelcol-contrib-{{ taut_otelcol_version }}
+    file_type: file
+  register: taut_otelcol_old
+
+- name: Remove older otelcol-contrib binaries
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ taut_otelcol_old.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Let the monitor host reach the collector's Prometheus endpoint through ufw
+  ansible.builtin.include_role:
+    name: taut
+    tasks_from: firewall
+  vars:
+    taut_firewall_port: "{{ taut_ports.otelcol_prometheus }}"

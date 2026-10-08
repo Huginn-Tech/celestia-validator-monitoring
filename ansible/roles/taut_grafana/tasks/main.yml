@@ -1,0 +1,223 @@
+---
+- name: Check the Grafana admin password
+  ansible.builtin.assert:
+    that:
+      - taut_grafana_admin_password is defined
+      - taut_grafana_admin_password | length > 0
+      - taut_grafana_admin_password != 'REPLACE_ME'
+    fail_msg: >-
+      Set taut_grafana_admin_password in the inventory to a real password and keep it
+      in ansible-vault (Grafana reads it only on its first start).
+    quiet: true
+
+- name: Read the installed Grafana version
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - "--showformat=${db:Status-Status} ${Version}"
+      - grafana
+  register: taut_grafana_dpkg
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+# In check mode nothing is downloaded or installed, so tasks that need the package
+# (its grafana group, /etc/grafana, the unit) are skipped until Grafana is installed.
+- name: Note the installed Grafana version
+  ansible.builtin.set_fact:
+    taut_grafana_present: "{{ taut_grafana_dpkg.stdout.startswith('installed ') }}"
+    taut_grafana_current: "{{ taut_grafana_dpkg.stdout == ('installed ' ~ taut_versions.grafana) }}"
+
+# get_url fails in check mode when /var/cache/taut does not exist yet, so the
+# install is skipped in check mode and reported as a pending change instead.
+- name: Report the pending install of Grafana {{ taut_versions.grafana }}
+  ansible.builtin.debug:
+    msg: Would download {{ taut_grafana_deb }}, verify its checksum and install it.
+  changed_when: true
+  when: ansible_check_mode and not taut_grafana_current
+
+- name: Install Grafana {{ taut_versions.grafana }}
+  when: not taut_grafana_current and not ansible_check_mode
+  block:
+    - name: Create the download cache
+      ansible.builtin.file:
+        path: /var/cache/taut
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the Grafana package and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ taut_grafana_deb_url }}"
+        dest: "/var/cache/taut/{{ taut_grafana_deb }}"
+        checksum: "sha256:{{ taut_grafana_deb_url }}.sha256"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install the Grafana package
+      ansible.builtin.apt:
+        deb: "/var/cache/taut/{{ taut_grafana_deb }}"
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Remove the downloaded Grafana package
+      ansible.builtin.file:
+        path: "/var/cache/taut/{{ taut_grafana_deb }}"
+        state: absent
+
+# Grafana reads the admin password only when it creates the admin user on its
+# first start. Later changes to taut_grafana_admin_password have no effect;
+# change the password in the Grafana UI (Profile > Change password).
+- name: Write the Grafana admin password
+  ansible.builtin.copy:
+    content: "{{ taut_grafana_admin_password }}"
+    dest: /etc/grafana/taut-admin-password
+    owner: root
+    group: grafana
+    mode: "0640"
+  no_log: true
+  when: taut_grafana_present or not ansible_check_mode
+
+- name: Write the Grafana settings
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: root
+    group: grafana
+    mode: "0640"
+  when: taut_grafana_present or not ansible_check_mode
+  notify: Restart Grafana
+
+- name: Provision the Prometheus datasource
+  ansible.builtin.template:
+    src: datasource.yml.j2
+    dest: /etc/grafana/provisioning/datasources/taut.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  when: taut_grafana_present or not ansible_check_mode
+  notify: Restart Grafana
+
+- name: Provision the dashboard folder
+  ansible.builtin.template:
+    src: dashboards.yml.j2
+    dest: /etc/grafana/provisioning/dashboards/taut.yml
+    owner: root
+    group: grafana
+    mode: "0640"
+  when: taut_grafana_present or not ansible_check_mode
+  notify: Restart Grafana
+
+- name: Create the dashboard directory
+  ansible.builtin.file:
+    path: "{{ taut_grafana_dashboard_dir }}"
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+  when: taut_grafana_present or not ansible_check_mode
+
+# The dashboard is generated on the control node from the inventory, so groups
+# that do not apply are left out and threshold lines match the alerts. These
+# steps only write under build/ in the checkout, so they also run in check mode.
+- name: Create the dashboard build directory on the control node
+  ansible.builtin.file:
+    path: "{{ taut_grafana_build_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+- name: Write the dashboard settings on the control node
+  ansible.builtin.template:
+    src: dashboard-config.json.j2
+    dest: "{{ taut_grafana_build_dir }}/{{ taut_monitor_host }}.config.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+- name: Generate the dashboard on the control node
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ taut_grafana_repo_dir }}/monitoring/dashboards/gen_dashboard.py"
+      - --config
+      - "{{ taut_grafana_build_dir }}/{{ taut_monitor_host }}.config.json"
+      - --out
+      - "{{ taut_grafana_build_dir }}/{{ taut_monitor_host }}.json"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+# Grafana rereads provisioned dashboard files on its own; no restart needed.
+- name: Install the dashboard
+  ansible.builtin.copy:
+    src: "{{ taut_grafana_build_dir }}/{{ taut_monitor_host }}.json"
+    dest: "{{ taut_grafana_dashboard_dir }}/taut-validator.json"
+    owner: root
+    group: grafana
+    mode: "0640"
+  when: taut_grafana_present or not ansible_check_mode
+
+- name: Create the Grafana unit drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/grafana-server.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: taut_grafana_present or not ansible_check_mode
+
+# The package's unit retries after 100 ms, so a late private address would hit
+# systemd's start limit and leave Grafana stopped.
+- name: Make systemd keep retrying Grafana
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/grafana-server.service.d/taut.conf
+    content: |
+      # Managed by Taut. The private address can appear after boot (WireGuard, Tailscale): keep retrying.
+      [Service]
+      RestartSec=5s
+    owner: root
+    group: root
+    mode: "0644"
+  when: taut_grafana_present or not ansible_check_mode
+  notify: Restart Grafana
+
+- name: Allow the monitor to reach Grafana through an active ufw
+  ansible.builtin.include_role:
+    name: taut
+    tasks_from: firewall
+  vars:
+    taut_firewall_port: "{{ taut_ports.grafana }}"
+
+# A pending restart performs Grafana's first start, so its first-start database
+# migrations are not cut short by a restart right after.
+- name: Apply a pending Grafana restart
+  ansible.builtin.meta: flush_handlers
+
+- name: Enable and start Grafana
+  ansible.builtin.systemd_service:
+    name: grafana-server
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: taut_grafana_present or not ansible_check_mode
+
+# Grafana's first start runs its database migrations. Waiting here also lets
+# the bind check at the end of the playbook see Grafana's listening socket.
+- name: Wait for Grafana on its private address
+  ansible.builtin.wait_for:
+    host: "{{ taut_private_ip }}"
+    port: "{{ taut_ports.grafana }}"
+    timeout: 180

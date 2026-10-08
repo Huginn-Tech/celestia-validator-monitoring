@@ -1,0 +1,27 @@
+# Managed by Taut. Local changes are overwritten on the next playbook run.
+[Unit]
+Description=Alertmanager (Taut)
+Documentation=https://prometheus.io/docs/alerting/latest/alertmanager/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=alertmanager
+Group=alertmanager
+# An empty --cluster.listen-address disables HA gossip, so port 9094 stays closed.
+ExecStart=/usr/local/bin/alertmanager \
+  --config.file={{ taut_alertmanager_config_dir }}/alertmanager.yml \
+  --storage.path={{ taut_alertmanager_data_dir }} \
+  --web.listen-address={{ taut_alertmanager_listen_address }} \
+  --cluster.listen-address=
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ taut_alertmanager_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

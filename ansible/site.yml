@@ -2,5 +2,61 @@
 - name: Check the inventory
   hosts: all
   gather_facts: false
+  vars_files:
+    - ../versions.yml
   roles:
     - role: taut
+
+- name: Collectors on Celestia hosts
+  hosts: validator:fibre:kms
+  become: true
+  vars_files:
+    - ../versions.yml
+  tasks:
+    - name: Load the shared settings
+      ansible.builtin.include_role:
+        name: taut
+        public: true
+
+    - name: Skip hosts Taut does not manage
+      ansible.builtin.meta: end_host
+      when: not (taut_host_managed | bool)
+
+    - name: Install node_exporter
+      ansible.builtin.include_role:
+        name: taut_node_exporter
+
+    - name: Install the OpenTelemetry collector for Fibre
+      ansible.builtin.include_role:
+        name: taut_otelcol
+      when: taut_fibre_enabled and inventory_hostname in groups.get('fibre', [])
+
+    - name: Install doctor
+      ansible.builtin.include_role:
+        name: taut
+        tasks_from: doctor
+
+- name: Monitoring stack
+  hosts: monitor
+  become: true
+  vars_files:
+    - ../versions.yml
+  roles:
+    - role: taut_prometheus
+    - role: taut_alertmanager
+    - role: taut_grafana
+  tasks:
+    - name: Install doctor
+      ansible.builtin.include_role:
+        name: taut
+        tasks_from: doctor
+
+- name: Check that nothing Taut installed listens on a public address
+  hosts: all
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run the bind check
+      ansible.builtin.include_role:
+        name: taut
+        tasks_from: bind_check

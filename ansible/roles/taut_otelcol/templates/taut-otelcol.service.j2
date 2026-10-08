@@ -1,0 +1,20 @@
+# Managed by Taut (role taut_otelcol). Local changes are overwritten.
+[Unit]
+Description=OpenTelemetry Collector for Fibre metrics (Taut)
+Documentation=https://github.com/open-telemetry/opentelemetry-collector-releases
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=taut-otelcol
+ExecStart=/usr/local/bin/otelcol-contrib --config={{ taut_otelcol_config }}
+Restart=on-failure
+# The private address can appear after boot (WireGuard, Tailscale): keep retrying.
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

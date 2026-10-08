@@ -1,0 +1,172 @@
+---
+# Stop before changing anything when another node_exporter already uses Taut's binary
+# path or port (for example Ubuntu's prometheus-node-exporter on port 9100).
+- name: Look at /usr/local/bin/node_exporter
+  ansible.builtin.stat:
+    path: /usr/local/bin/node_exporter
+    get_checksum: false
+  register: taut_node_exporter_link
+
+- name: Read the main PID of node_exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter
+  register: taut_node_exporter_unit
+
+- name: Read the listeners on port {{ taut_ports.node_exporter }}
+  ansible.builtin.command: ss -Htlnp 'sport = :{{ taut_ports.node_exporter }}'
+  register: taut_node_exporter_port
+  changed_when: false
+  check_mode: false
+
+- name: Check that no other node_exporter uses /usr/local/bin/node_exporter
+  ansible.builtin.assert:
+    that:
+      - >-
+        not taut_node_exporter_link.stat.exists
+        or (taut_node_exporter_link.stat.islnk and taut_node_exporter_link.stat.lnk_target is match('/usr/local/bin/node_exporter-'))
+    fail_msg: >-
+      /usr/local/bin/node_exporter belongs to another node_exporter install. Stop and remove it
+      (binary and service) before running Taut, which installs its own node_exporter there.
+    quiet: true
+
+- name: Check that nothing else listens on port {{ taut_ports.node_exporter }}
+  ansible.builtin.assert:
+    that:
+      - taut_node_exporter_conflicts | length == 0
+    fail_msg: >-
+      Port {{ taut_ports.node_exporter }} is already in use: {{ taut_node_exporter_conflicts | join('; ') }}.
+      Stop that service, or set taut_ports.node_exporter to a free port.
+    quiet: true
+  vars:
+    taut_node_exporter_conflicts: >-
+      {{ taut_node_exporter_port.stdout_lines
+         | reject('search', 'pid=' ~ (taut_node_exporter_unit.status.MainPID | default('0')) ~ ',') | list }}
+
+- name: Create the node_exporter user
+  ansible.builtin.user:
+    name: node_exporter
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Look for node_exporter {{ taut_node_exporter_version }}
+  ansible.builtin.stat:
+    path: "{{ taut_node_exporter_binary }}"
+  register: taut_node_exporter_installed
+
+# In check mode nothing is downloaded, so the tasks that need the binary or the
+# unit are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of node_exporter {{ taut_node_exporter_version }}
+  ansible.builtin.debug:
+    msg: Would install {{ taut_node_exporter_binary }}, point /usr/local/bin/node_exporter at it and restart node_exporter.
+  changed_when: true
+  when: ansible_check_mode and not taut_node_exporter_installed.stat.exists
+
+- name: Install node_exporter {{ taut_node_exporter_version }}
+  when: not taut_node_exporter_installed.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: /var/cache/taut
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download node_exporter and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ taut_node_exporter_url }}/{{ taut_node_exporter_release }}.tar.gz"
+        dest: "/var/cache/taut/{{ taut_node_exporter_release }}.tar.gz"
+        checksum: "sha256:{{ taut_node_exporter_url }}/sha256sums.txt"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack node_exporter
+      ansible.builtin.unarchive:
+        src: "/var/cache/taut/{{ taut_node_exporter_release }}.tar.gz"
+        dest: /var/cache/taut
+        remote_src: true
+
+    - name: Install the node_exporter binary
+      ansible.builtin.copy:
+        src: "/var/cache/taut/{{ taut_node_exporter_release }}/node_exporter"
+        dest: "{{ taut_node_exporter_binary }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Remove the downloaded files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/var/cache/taut/{{ taut_node_exporter_release }}.tar.gz"
+        - "/var/cache/taut/{{ taut_node_exporter_release }}"
+
+# The service runs /usr/local/bin/node_exporter so its process name stays
+# node_exporter (taut-doctor looks for it).
+- name: Point /usr/local/bin/node_exporter at version {{ taut_node_exporter_version }}
+  ansible.builtin.file:
+    src: "{{ taut_node_exporter_binary }}"
+    dest: /usr/local/bin/node_exporter
+    state: link
+    owner: root
+    group: root
+  when: taut_node_exporter_installed.stat.exists or not ansible_check_mode
+  notify: Restart node_exporter
+
+- name: Write the node_exporter service
+  ansible.builtin.template:
+    src: node_exporter.service.j2
+    dest: /etc/systemd/system/node_exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart node_exporter
+
+- name: Enable and start node_exporter
+  ansible.builtin.systemd_service:
+    name: node_exporter
+    enabled: true
+    state: started
+    daemon_reload: true
+  when: taut_node_exporter_installed.stat.exists or not ansible_check_mode
+
+- name: Apply a pending node_exporter restart
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+- name: Wait for node_exporter on {{ taut_node_exporter_listen_address }}
+  ansible.builtin.wait_for:
+    host: "{{ taut_private_ip }}"
+    port: "{{ taut_ports.node_exporter }}"
+    timeout: 30
+    msg: node_exporter does not listen on {{ taut_node_exporter_listen_address }}. See journalctl -u node_exporter.
+  when: not ansible_check_mode
+
+- name: Find older node_exporter binaries
+  ansible.builtin.find:
+    paths: /usr/local/bin
+    patterns: node_exporter-*
+    excludes: node_exporter-{{ taut_node_exporter_version }}
+    file_type: file
+  register: taut_node_exporter_old
+
+- name: Remove older node_exporter binaries
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ taut_node_exporter_old.files }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Let the monitor host reach node_exporter through ufw
+  ansible.builtin.include_role:
+    name: taut
+    tasks_from: firewall
+  vars:
+    taut_firewall_port: "{{ taut_ports.node_exporter }}"

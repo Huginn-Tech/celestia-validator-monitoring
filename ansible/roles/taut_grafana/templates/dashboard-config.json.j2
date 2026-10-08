@@ -1,0 +1,27 @@
+{#- Settings for monitoring/dashboards/gen_dashboard.py, built from the inventory.
+    Uses only the shared taut_* settings, groups and hostvars, so tools/ci/render.yml
+    can render it too. Per-host values come from hostvars with defaults, because
+    role defaults are not part of other hosts' hostvars. -#}
+{%- set ns = namespace(fibre=[], data=[]) -%}
+{%- if taut_fibre_enabled | bool -%}
+{%-   for h in groups.get('fibre', []) -%}
+{%-     set ns.fibre = ns.fibre + [{'host': h, 'mount': hostvars[h].taut_fibre_mount | default('')}] -%}
+{%-   endfor -%}
+{%- endif -%}
+{#- Data mounts of the hosts node_exporter runs on: validator, fibre, and kms hosts with taut_kms_scrape. -#}
+{%- for h in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) | unique -%}
+{%-   if h in groups.get('validator', []) or h in groups.get('fibre', []) or hostvars[h].taut_kms_scrape | default(false) | bool -%}
+{%-     for m in hostvars[h].taut_data_mounts | default([]) -%}
+{%-       set ns.data = ns.data + [{'host': h, 'mount': m}] -%}
+{%-     endfor -%}
+{%-   endif -%}
+{%- endfor -%}
+{{ {
+  'datasource_uid': 'taut-prometheus',
+  'signer': taut_signer,
+  'fibre_enabled': taut_fibre_enabled | bool,
+  'units': taut_units,
+  'thresholds': taut_thresholds,
+  'fibre_mounts': ns.fibre,
+  'data_mounts': ns.data,
+} | to_nice_json }}

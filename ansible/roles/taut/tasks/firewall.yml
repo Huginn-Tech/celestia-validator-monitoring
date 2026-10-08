@@ -1,0 +1,23 @@
+---
+# Lets the monitor host reach one of Taut's ports through ufw, only when ufw is
+# already active on this host. Never enables, resets or reorders the firewall.
+#   taut_firewall_port     required, the TCP port to allow
+#   taut_firewall_sources  optional list of addresses (default: the monitor's taut_private_ip)
+- name: Read the ufw status
+  ansible.builtin.command: ufw status
+  environment:
+    LC_ALL: C
+  register: taut_firewall_ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Allow the monitor host through ufw to port {{ taut_firewall_port }}
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ item }}"
+    to_port: "{{ taut_firewall_port | string }}"
+    proto: tcp
+    comment: taut
+  loop: "{{ taut_firewall_sources | default([hostvars[taut_monitor_host].taut_private_ip]) }}"
+  when: "taut_firewall_ufw.stdout | default('') is match('Status: active')"

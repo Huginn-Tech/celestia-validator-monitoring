@@ -1,0 +1,49 @@
+# Managed by Taut (role taut_otelcol). Local changes are overwritten.
+# Fibre pushes metrics and traces over OTLP/HTTP to the loopback receiver; Prometheus
+# scrapes the metrics on the private address. Based on celestia-app
+# observability/docker/otel-collector/config.yml.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: "{{ taut_otelcol_otlp_endpoint }}"
+
+processors:
+  # Fibre's shard duration histograms also carry raw size attributes (upload_size,
+  # shard_size), one series per size. Sum them away and keep only success.
+  # Deleting the attributes instead would make the exporter keep one colliding
+  # cumulative point and the counts would jump.
+  metricstransform/fibre:
+    transforms:
+      - include: '^fibre\.server\.(upload|download)_shard\.duration$'
+        match_type: regexp
+        action: update
+        operations:
+          - action: aggregate_labels
+            label_set: [success]
+            aggregation_type: sum
+
+exporters:
+  prometheus:
+    endpoint: "{{ taut_otelcol_prometheus_endpoint }}"
+    resource_to_telemetry_conversion:
+      enabled: true
+    add_metric_suffixes: true
+    metric_expiration: 5m
+  # Fibre sends traces to the same endpoint; accept and drop them.
+  nop:
+
+service:
+  telemetry:
+    metrics:
+      # No internal metrics endpoint (it would open port 8888).
+      level: none
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [metricstransform/fibre]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      exporters: [nop]

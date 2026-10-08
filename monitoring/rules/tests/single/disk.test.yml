@@ -1,0 +1,108 @@
+# DiskLow on the example-single inventory: data mount node-1 /var/lib/celestia; Fibre off.
+rule_files:
+  - taut.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Node data disk fills; a message under 10% for 10m, a page under 3%
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '2000000000000x30'
+      # 15% free at 0m, 0.5 points less every minute.
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '300000000000-10000000000x30'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 25m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9100
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: message
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9100
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 3% free space."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Node data disk turns read-only; a page at once
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '2000000000000x10'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '1000000000000x10'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '0x4 1x5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9100
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 3% free space."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+
+  - name: Fibre off renders no Fibre store rules
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x40'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '100000000000x40'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '1x40'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.11:8889",host="node-1",role="validator"}
+        values: '1000000000000x40'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.11:8889",host="node-1",role="validator"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: DiskLow
+        exp_alerts: []

@@ -1,0 +1,47 @@
+---
+# Fails when a service Taut installs listens on a wildcard or public address.
+# Reads the real listening TCP sockets (IPv4 and IPv6) and checks those owned by the
+# main process of the units Taut installs on this host, so other software on the host
+# (another collector, an existing Grafana) is left alone.
+- name: Check the addresses Taut's services listen on
+  when: taut_host_managed | bool
+  vars:
+    # The units site.yml installs on this host: node_exporter on Celestia hosts, the
+    # collector on Fibre hosts, the stack on the monitor.
+    taut_bind_check_services: >-
+      {{ (['node_exporter'] if inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) else [])
+         + (['taut-otelcol'] if (taut_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
+         + (['prometheus', 'alertmanager', 'grafana-server'] if inventory_hostname in groups.get('monitor', []) else []) }}
+  block:
+    # With only a name the module just reads the unit; a missing unit has MainPID 0.
+    - name: Read the main PID of each Taut service
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: "{{ taut_bind_check_services }}"
+      register: taut_bind_check_units
+
+    - name: Read the listening TCP sockets
+      ansible.builtin.command: ss -Htlnp
+      register: taut_bind_check_sockets
+      changed_when: false
+      check_mode: false
+
+    - name: Check that each Taut service listens on a private address
+      ansible.builtin.assert:
+        that:
+          - "taut_bind_check_address not in ['0.0.0.0', '*', '::']"
+          - taut_bind_check_address is match(taut_private_address_regex)
+        fail_msg: >-
+          {{ item | regex_findall('[(]"([^"]+)",pid=') | unique | join(', ') }} listens on {{ item.split()[3] }},
+          a wildcard or public address. Taut's services must bind taut_private_ip only.
+        quiet: true
+      loop: "{{ taut_bind_check_sockets.stdout_lines | select('search', taut_bind_check_owner) | list }}"
+      loop_control:
+        label: "{{ item.split()[3] }}"
+      vars:
+        taut_bind_check_pids: "{{ taut_bind_check_units.results | map(attribute='status.MainPID', default='0') | reject('equalto', '0') | list }}"
+        # ss prints the owning processes as users:(("name",pid=...,fd=...),...).
+        taut_bind_check_owner: "pid=({{ taut_bind_check_pids | join('|') if taut_bind_check_pids else 'none' }}),"
+        # Local address without the port, IPv6 brackets or %interface suffix.
+        taut_bind_check_address: >-
+          {{ item.split()[3] | regex_replace(':[^:]*$', '') | replace('[', '') | replace(']', '') | regex_replace('%.*$', '') }}

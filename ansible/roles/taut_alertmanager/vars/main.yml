@@ -1,0 +1,17 @@
+---
+taut_alertmanager_version: "{{ taut_versions.alertmanager }}"
+taut_alertmanager_arch_map:
+  x86_64: amd64
+  aarch64: arm64
+taut_alertmanager_release: "alertmanager-{{ taut_alertmanager_version }}.linux-{{ taut_alertmanager_arch_map[ansible_facts.architecture] }}"
+taut_alertmanager_download_url: "https://github.com/prometheus/alertmanager/releases/download/v{{ taut_alertmanager_version }}"
+
+# Installed as /usr/local/bin/<name>-<version> with a /usr/local/bin/<name> symlink.
+taut_alertmanager_binaries:
+  - alertmanager
+  - amtool
+
+taut_alertmanager_config_dir: /etc/alertmanager
+taut_alertmanager_data_dir: /var/lib/alertmanager
+taut_alertmanager_listen_address: >-
+  {{ ('[' ~ taut_private_ip ~ ']') if ':' in taut_private_ip else taut_private_ip }}:{{ taut_ports.alertmanager }}

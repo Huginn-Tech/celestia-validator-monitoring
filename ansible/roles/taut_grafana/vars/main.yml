@@ -1,0 +1,11 @@
+---
+# Grafana OSS from the official .deb; the version is pinned in versions.yml.
+taut_grafana_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
+taut_grafana_deb: "grafana_{{ taut_versions.grafana }}_{{ taut_grafana_arch }}.deb"
+taut_grafana_deb_url: "https://dl.grafana.com/oss/release/{{ taut_grafana_deb }}"
+
+# The repository checkout on the control node (site.yml lives in ansible/).
+taut_grafana_repo_dir: "{{ playbook_dir }}/.."
+taut_grafana_build_dir: "{{ taut_grafana_repo_dir }}/build/dashboards"
+
+taut_grafana_dashboard_dir: /var/lib/grafana/dashboards/taut

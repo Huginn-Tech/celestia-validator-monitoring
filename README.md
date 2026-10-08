@@ -10,6 +10,12 @@ Taut installs the collectors and a Prometheus, Alertmanager and Grafana stack wi
 
 Taut never changes, restarts or upgrades celestia-appd, Fibre or tmkms, and never touches your firewall policy.
 
-Status: under construction. Quickstart and alert docs follow in `docs/`.
+## Documentation
+
+- [Quickstart](docs/quickstart.md): requirements, inventory, install, Grafana, dead-man service, `doctor`.
+- [Alerts](docs/alerts.md): what each alert means and what to check first.
+- [Panels](docs/panels.md): the question each dashboard panel answers and how to read it.
+
+Status: under construction.
 
 Licence: MIT.

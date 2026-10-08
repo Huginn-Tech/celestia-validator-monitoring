@@ -1,0 +1,15 @@
+---
+# Handlers run in the order listed here. Reload comes first so a SIGHUP never
+# reaches an Alertmanager that a restart has only just started.
+- name: Reload Alertmanager
+  ansible.builtin.systemd_service:
+    name: alertmanager
+    state: reloaded
+  when: taut_alertmanager_present or not ansible_check_mode
+
+- name: Restart Alertmanager
+  ansible.builtin.systemd_service:
+    name: alertmanager
+    state: restarted
+    daemon_reload: true
+  when: taut_alertmanager_present or not ansible_check_mode

@@ -1,0 +1,300 @@
+# ServiceDown on the example-split inventory (val-1, kms-1 scraped, fibre-1, mon-1;
+# remote signer, Fibre on). CI renders taut.rules.yml next to this file first.
+rule_files:
+  - taut.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Healthy split setup raises no ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1x60'
+      - series: >-
+          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+        values: '1x60'
+      - series: >-
+          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+        values: '1x60'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+        values: '1x60'
+      - series: >-
+          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1x60'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x60'
+      # One restart long ago; a constant counter is not a crash loop.
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service"}
+        values: '1x60'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+        values: '0x60'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: ServiceDown
+        exp_alerts: []
+
+  - name: celestia-appd stops; the unit pages after 2m, the metrics endpoint after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 0x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="inactive",type="simple"}
+        values: '0x4 1x10'
+      # A manual stop is not counted as a restart.
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service"}
+        values: '0x14'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              name: celestia-appd.service
+              state: active
+              type: simple
+              severity: page
+              unit: appd
+            exp_annotations:
+              summary: "celestia-appd.service is not active on val-1"
+              description: "systemd has not reported the unit as active for 2 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9100
+              host: val-1
+              role: validator
+              name: celestia-appd.service
+              state: active
+              type: simple
+              severity: page
+              unit: appd
+            exp_annotations:
+              summary: "celestia-appd.service is not active on val-1"
+              description: "systemd has not reported the unit as active for 2 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+          - exp_labels:
+              job: celestia-app
+              instance: 10.10.0.1:26660
+              host: val-1
+              role: validator
+              severity: page
+              unit: celestia_app
+            exp_annotations:
+              summary: "celestia-app metrics are unreachable on val-1"
+              description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: Fibre unit stops; a message after 2m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
+        values: '0x4 1x10'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x4 0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9100
+              host: fibre-1
+              role: fibre
+              name: fibre.service
+              state: active
+              type: simple
+              severity: message
+              unit: fibre
+            exp_annotations:
+              summary: "fibre.service is not active on fibre-1"
+              description: "systemd has not reported the unit as active for 2 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: tmkms crash loop pages; the flapping unit state never holds for 2m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+        values: '1x19'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+        values: '1x9 0 1 0 1 0 1 0 1 0 1'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+        values: '0x9 1+1x9'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.2:9100
+              host: kms-1
+              role: kms
+              name: tmkms.service
+              severity: page
+              unit: tmkms
+            exp_annotations:
+              summary: "tmkms.service is crash looping on kms-1"
+              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: Fibre unit stopped and disabled is unloaded; no series while node_exporter is up
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
+        values: '0x4 stale'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              name: fibre.service
+              severity: message
+              unit: fibre
+            exp_annotations:
+              summary: "fibre.service is not loaded on fibre-1"
+              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: Wrong appd unit name in the inventory; node_exporter is up but has no such unit
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              host: val-1
+              name: celestia-appd.service
+              severity: page
+              unit: appd
+            exp_annotations:
+              summary: "celestia-appd.service is not loaded on val-1"
+              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: node_exporter down on kms-1; one message and no unit-missing alert
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+        values: '1x4 0x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+        values: '0x4 stale'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.2:9100
+              host: kms-1
+              role: kms
+              severity: message
+              unit: node_exporter
+            exp_annotations:
+              summary: "node_exporter is unreachable on kms-1"
+              description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+
+  - name: OpenTelemetry collector down; a message after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: otelcol
+              instance: 10.10.0.3:8889
+              host: fibre-1
+              role: fibre
+              severity: message
+              unit: otelcol
+            exp_annotations:
+              summary: "otelcol is unreachable on fibre-1"
+              description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
+              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
