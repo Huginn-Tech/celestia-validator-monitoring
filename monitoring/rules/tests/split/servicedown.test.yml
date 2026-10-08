@@ -12,35 +12,35 @@ tests:
           up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
         values: '1x60'
       - series: >-
-          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
         values: '1x60'
       - series: >-
-          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
         values: '1x60'
       - series: >-
-          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
         values: '1x60'
       - series: >-
-          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          up{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1x60'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x60'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
         values: '1x60'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '1x60'
       # One restart long ago; a constant counter is not a crash loop.
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service"}
         values: '1x60'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service"}
         values: '0x60'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0x60'
     alert_rule_test:
       - eval_time: 10m
@@ -57,17 +57,17 @@ tests:
           up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
         values: '1x4 0x10'
       - series: >-
-          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
         values: '1x14'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x4 0x10'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service",state="inactive",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="inactive",type="simple"}
         values: '0x4 1x10'
       # A manual stop is not counted as a restart.
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",name="celestia-appd.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service"}
         values: '0x14'
     alert_rule_test:
       - eval_time: 6m
@@ -78,7 +78,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               name: celestia-appd.service
@@ -95,7 +95,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               name: celestia-appd.service
@@ -123,16 +123,16 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
         values: '1x14'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '1x4 0x10'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
         values: '0x4 1x10'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '60x4 0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -143,7 +143,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               name: fibre.service
@@ -160,13 +160,13 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
         values: '1x19'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
         values: '1x9 0 1 0 1 0 1 0 1 0 1'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service"}
         values: '0x9 1+1x9'
     alert_rule_test:
       - eval_time: 11m
@@ -177,7 +177,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.2:9100
+              instance: 10.10.0.2:9910
               host: kms-1
               role: kms
               name: tmkms.service
@@ -192,16 +192,16 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre"}
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
         values: '1x14'
       - series: >-
-          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          up{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1x14'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '1x4 stale'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
         values: '0x4 stale'
     alert_rule_test:
       - eval_time: 6m
@@ -224,7 +224,7 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.1:9100",host="val-1",role="validator"}
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
         values: '1x10'
     alert_rule_test:
       - eval_time: 1m
@@ -247,13 +247,13 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms"}
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
         values: '1x4 0x10'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service",state="active",type="simple"}
         values: '1x4 stale'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",name="tmkms.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",name="tmkms.service"}
         values: '0x4 stale'
     alert_rule_test:
       - eval_time: 7m
@@ -264,7 +264,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.2:9100
+              instance: 10.10.0.2:9910
               host: kms-1
               role: kms
               severity: message
@@ -278,7 +278,7 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          up{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1x4 0x10'
     alert_rule_test:
       - eval_time: 7m
@@ -289,7 +289,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: otelcol
-              instance: 10.10.0.3:8889
+              instance: 10.10.0.3:9911
               host: fibre-1
               role: fibre
               severity: message

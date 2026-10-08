@@ -38,7 +38,7 @@ declare -A C=(
   [fibre_mount]=""
   [fibre_public_endpoint]=""
   [fibre_port]=""
-  [fibre_otel_endpoint]="http://127.0.0.1:4318"
+  [fibre_otel_endpoint]="http://127.0.0.1:9915"
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
   [time_offset_max]="0.1"
@@ -71,7 +71,7 @@ from /etc/taut/doctor.conf (KEY=VALUE lines) and can be overridden with flags
   fibre_port             Fibre listen port (default: the unit's
                          --server-listen-address, else server_listen_address
                          in Fibre's config/server_config.toml, else 7980)
-  fibre_otel_endpoint    expected OTLP base URL (default http://127.0.0.1:4318)
+  fibre_otel_endpoint    expected OTLP base URL (default http://127.0.0.1:9915)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   time_offset_max        seconds (default 0.1)
@@ -571,7 +571,7 @@ check_fibre_otel() {
   fi
   port=$(url_port "$want")
   if [[ -z $(listeners "$port") ]]; then
-    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run the Taut playbook so the collector is installed and running, then read its logs"
+    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run the Taut playbook so the collector (taut-otelcol) is installed and running, then read \"journalctl -u taut-otelcol -n 100\""
     return
   fi
   report OK 7 "$name" "$src is $got"
@@ -591,25 +591,30 @@ firewall_state() {
   fi
 }
 
+# The systemd units Taut installs. Check 8 looks only at the sockets of their
+# main processes, so other software on the host (a node_exporter, Prometheus,
+# Grafana or collector of its own) is left alone.
+TAUT_UNITS=(taut-node-exporter taut-otelcol taut-prometheus taut-alertmanager taut-grafana)
+
 check_binds() {
-  local name="private binds" fw sockets proc addr
+  local name="private binds" fw unit pid addr
   local -a ok=() bad=()
+  local -A unit_of=()
   fw=$(firewall_state)
   if [[ $(id -u) -ne 0 ]]; then
     report SKIP 8 "$name" "run as root to see which process owns each socket; firewall: $fw"
     return
   fi
-  sockets=$(ss -Htlnp 2>/dev/null | awk 'match($0, /users:\(\("[^"]+"/) { print substr($0, RSTART + 9, RLENGTH - 10), $4 }')
-  while read -r proc addr; do
-    # Process names are cut to 15 characters, so a versioned binary such as
-    # node_exporter-1.9.1 shows up as node_exporter-1.
-    case $proc in
-      node_exporter | node_exporter-* | otelcol-contrib | prometheus | prometheus-[0-9]*) ;;
-      alertmanager | alertmanager-* | grafana | grafana-*) ;;
-      *) continue ;;
-    esac
-    if [[ $(addr_class "$addr") == private ]]; then ok+=("$proc $addr"); else bad+=("$proc $addr"); fi
-  done <<<"$sockets"
+  for unit in "${TAUT_UNITS[@]}"; do
+    pid=$(unit_prop "$unit" MainPID)
+    if [[ $pid =~ ^[1-9][0-9]*$ ]]; then unit_of[$pid]=$unit; fi
+  done
+  # ss prints the owners of each socket as users:(("name",pid=N,fd=M),...).
+  while read -r pid addr; do
+    [[ -n $pid && -n ${unit_of[$pid]+set} ]] || continue
+    unit=${unit_of[$pid]}
+    if [[ $(addr_class "$addr") == private ]]; then ok+=("$unit $addr"); else bad+=("$unit $addr"); fi
+  done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
   if ((${#bad[@]} > 0)); then
     report FAIL 8 "$name" "$(join "${bad[@]}") not on a private address; firewall: $fw. Fix: set taut_private_ip for this host to its private address and re-run the Taut playbook"
   elif ((${#ok[@]} > 0)); then

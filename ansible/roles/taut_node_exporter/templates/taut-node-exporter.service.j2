@@ -6,9 +6,9 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-User=node_exporter
+User=taut-node-exporter
 {# systemd unescapes backslashes and expands "$" in ExecStart, so both are doubled. #}
-ExecStart=/usr/local/bin/node_exporter \
+ExecStart={{ taut_node_exporter_binary }} \
 {% if taut_host_units | length > 0 %}
     --collector.systemd \
     --collector.systemd.enable-restarts-metrics \

@@ -9,9 +9,9 @@
     # The units site.yml installs on this host: node_exporter on Celestia hosts, the
     # collector on Fibre hosts, the stack on the monitor.
     taut_bind_check_services: >-
-      {{ (['node_exporter'] if inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) else [])
+      {{ (['taut-node-exporter'] if inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) else [])
          + (['taut-otelcol'] if (taut_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
-         + (['prometheus', 'alertmanager', 'grafana-server'] if inventory_hostname in groups.get('monitor', []) else []) }}
+         + (['taut-prometheus', 'taut-alertmanager', 'taut-grafana'] if inventory_hostname in groups.get('monitor', []) else []) }}
   block:
     # With only a name the module just reads the unit; a missing unit has MainPID 0.
     - name: Read the main PID of each Taut service

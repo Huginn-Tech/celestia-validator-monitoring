@@ -3,13 +3,13 @@
 # reaches a Prometheus that a restart has only just started.
 - name: Reload Prometheus
   ansible.builtin.systemd_service:
-    name: prometheus
+    name: taut-prometheus
     state: reloaded
   when: taut_prometheus_present or not ansible_check_mode
 
 - name: Restart Prometheus
   ansible.builtin.systemd_service:
-    name: prometheus
+    name: taut-prometheus
     state: restarted
     daemon_reload: true
   when: taut_prometheus_present or not ansible_check_mode

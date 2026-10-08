@@ -6,6 +6,8 @@ Taut has six alerts and a heartbeat. Each alert names the host it is about (the 
 - **message**: look during working hours;
 - **heartbeat**: the Watchdog, sent only to your dead-man service.
 
+`taut_receivers` sets where page and message alerts go. When one of the two lists is empty, its alerts go to the other list's receivers.
+
 | Alert | Severity | Catches |
 |---|---|---|
 | [ServiceDown](#servicedown) | page or message | celestia-appd, Fibre, tmkms or a collector down, not loaded or crash looping |
@@ -16,7 +18,7 @@ Taut has six alerts and a heartbeat. Each alert names the host it is about (the 
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
 | [Watchdog](#watchdog) | heartbeat | Monitoring itself down (through the dead-man service) |
 
-**One cause, one notification.** While NodeNotAtHead or a page-level ServiceDown fires, ValidatorNotSigning, RemoteSignerProblem and FibreNotServing are held back. While the Fibre unit is down, FibreNotServing is held back.
+**One cause, one notification.** While NodeNotAtHead or a page-level ServiceDown fires, ValidatorNotSigning, RemoteSignerProblem and FibreNotServing are held back. While the Fibre unit or its collector (taut-otelcol) is down, FibreNotServing is held back.
 
 **Thresholds** below are the defaults. Change them in `taut_thresholds` in your inventory (list every key) and run the playbook again; the dashboard's threshold lines follow.
 
@@ -30,7 +32,7 @@ Taut has six alerts and a heartbeat. Each alert names the host it is about (the 
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
 | `crashloop_restarts` | 2 | ServiceDown (crash loop) |
 
-To see what is firing now, open Prometheus (`http://<monitor private address>:9191/alerts`) or Alertmanager (`:9093`).
+To see what is firing now, open Prometheus (`http://<monitor private address>:9912/alerts`) or Alertmanager (`:9913`).
 
 ## ServiceDown
 
@@ -117,7 +119,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 
 **Check first.**
 
-1. For `no_telemetry`: `sudo taut-doctor` on the Fibre host (check 7) and `systemctl status taut-otelcol`. Fibre needs `--otel-endpoint http://127.0.0.1:4318` or `FIBRE_OTEL_ENDPOINT`.
+1. For `no_telemetry`: `sudo taut-doctor` on the Fibre host (check 7) and `systemctl status taut-otelcol`. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT`.
 2. Registration and reachability: `sudo taut-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) and [Valopers](https://testnet.celestia.valopers.com/fibre/providers) show your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
 3. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures in the "Signing failures by reason" panel).
 
@@ -157,7 +159,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 **Check first.**
 
 1. Is the monitor host up and reachable? If the monitor is also the validator host, the validator may be down too.
-2. On the monitor, `systemctl status prometheus alertmanager` and `journalctl -u alertmanager -n 100` (failed webhook calls to the dead-man URL show there).
+2. On the monitor, `systemctl status taut-prometheus taut-alertmanager` and `journalctl -u taut-alertmanager -n 100` (failed webhook calls to the dead-man URL show there).
 3. Outbound HTTPS from the monitor to the dead-man service, and the URL in `taut_deadman_webhook_url`.
 
 To test the chain end to end, stop Alertmanager on the monitor for longer than the dead-man period, then start it again (see the [quickstart](quickstart.md#6-set-up-the-dead-man-service)).

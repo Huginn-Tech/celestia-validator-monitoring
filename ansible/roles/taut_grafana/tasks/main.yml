@@ -10,63 +10,153 @@
       in ansible-vault (Grafana reads it only on its first start).
     quiet: true
 
-- name: Read the installed Grafana version
-  ansible.builtin.command:
-    argv:
-      - dpkg-query
-      - --show
-      - "--showformat=${db:Status-Status} ${Version}"
-      - grafana
-  register: taut_grafana_dpkg
-  changed_when: false
-  failed_when: false
-  check_mode: false
+# Stop before changing anything when another process already uses the port.
+- name: Check that nothing else listens on the Grafana port
+  ansible.builtin.include_role:
+    name: taut
+    tasks_from: port_check
+  vars:
+    taut_port_check_port: "{{ taut_ports.grafana }}"
+    taut_port_check_unit: taut-grafana
 
-# In check mode nothing is downloaded or installed, so tasks that need the package
-# (its grafana group, /etc/grafana, the unit) are skipped until Grafana is installed.
-- name: Note the installed Grafana version
-  ansible.builtin.set_fact:
-    taut_grafana_present: "{{ taut_grafana_dpkg.stdout.startswith('installed ') }}"
-    taut_grafana_current: "{{ taut_grafana_dpkg.stdout == ('installed ' ~ taut_versions.grafana) }}"
+- name: Create the taut-grafana group
+  ansible.builtin.group:
+    name: taut-grafana
+    system: true
 
-# get_url fails in check mode when /var/cache/taut does not exist yet, so the
-# install is skipped in check mode and reported as a pending change instead.
-- name: Report the pending install of Grafana {{ taut_versions.grafana }}
+- name: Create the taut-grafana user
+  ansible.builtin.user:
+    name: taut-grafana
+    group: taut-grafana
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ taut_grafana_data_dir }}"
+    create_home: false
+
+- name: Look for Grafana {{ taut_grafana_version }}
+  ansible.builtin.stat:
+    path: "{{ taut_grafana_home }}/bin/grafana"
+    get_checksum: false
+    get_mime: false
+  register: taut_grafana_installed
+
+# In check mode nothing is downloaded, so the tasks that need Grafana or its unit
+# are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of Grafana {{ taut_grafana_version }}
   ansible.builtin.debug:
-    msg: Would download {{ taut_grafana_deb }}, verify its checksum and install it.
+    msg: Would install Grafana {{ taut_grafana_version }} in {{ taut_grafana_home }} and restart taut-grafana.
   changed_when: true
-  when: ansible_check_mode and not taut_grafana_current
+  when: ansible_check_mode and not taut_grafana_installed.stat.exists
 
-- name: Install Grafana {{ taut_versions.grafana }}
-  when: not taut_grafana_current and not ansible_check_mode
+- name: Install Grafana {{ taut_grafana_version }}
+  when: not taut_grafana_installed.stat.exists and not ansible_check_mode
   block:
-    - name: Create the download cache
+    - name: Create the download and install directories
       ansible.builtin.file:
-        path: /var/cache/taut
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /var/cache/taut
+        - /opt/taut
+
+    - name: Download the Grafana release and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ taut_grafana_url }}"
+        dest: "/var/cache/taut/{{ taut_grafana_tarball }}"
+        checksum: "sha256:{{ taut_grafana_url }}.sha256"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Unpacked on the same filesystem as /opt/taut, so the move below is a rename.
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the Grafana staging directory
+      ansible.builtin.file:
+        path: /opt/taut/.staging
+        state: absent
+
+    - name: Create the Grafana staging directory
+      ansible.builtin.file:
+        path: /opt/taut/.staging
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create the directory to unpack Grafana into
+      ansible.builtin.file:
+        path: /opt/taut/.staging/grafana
         state: directory
         owner: root
         group: root
         mode: "0755"
 
-    - name: Download the Grafana package and verify its checksum
-      ansible.builtin.get_url:
-        url: "{{ taut_grafana_deb_url }}"
-        dest: "/var/cache/taut/{{ taut_grafana_deb }}"
-        checksum: "sha256:{{ taut_grafana_deb_url }}.sha256"
-        owner: root
-        group: root
-        mode: "0644"
+    - name: Unpack the Grafana release
+      ansible.builtin.unarchive:
+        src: "/var/cache/taut/{{ taut_grafana_tarball }}"
+        dest: /opt/taut/.staging/grafana
+        extra_opts:
+          - --strip-components=1
+        remote_src: true
 
-    - name: Install the Grafana package
-      ansible.builtin.apt:
-        deb: "/var/cache/taut/{{ taut_grafana_deb }}"
-        update_cache: true
-        cache_valid_time: 3600
+    # One rename, so an interrupted unpack never leaves a partial version under /opt/taut.
+    - name: Move the unpacked Grafana to {{ taut_grafana_home }}
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - /opt/taut/.staging/grafana
+          - "{{ taut_grafana_home }}"
+      changed_when: true
 
-    - name: Remove the downloaded Grafana package
+    - name: Remove the downloaded Grafana release and the staging directory
       ansible.builtin.file:
-        path: "/var/cache/taut/{{ taut_grafana_deb }}"
+        path: "{{ item }}"
         state: absent
+      loop:
+        - "/var/cache/taut/{{ taut_grafana_tarball }}"
+        - /opt/taut/.staging
+
+- name: Create the Taut configuration and state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/taut
+    - /var/lib/taut
+
+# Grafana logs an error at every start for a provisioning directory that does
+# not exist, so the ones Taut does not use are created empty.
+- name: Create the Grafana configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: taut-grafana
+    mode: "0750"
+  loop:
+    - "{{ taut_grafana_config_dir }}"
+    - "{{ taut_grafana_config_dir }}/provisioning"
+    - "{{ taut_grafana_config_dir }}/provisioning/alerting"
+    - "{{ taut_grafana_config_dir }}/provisioning/dashboards"
+    - "{{ taut_grafana_config_dir }}/provisioning/datasources"
+    - "{{ taut_grafana_config_dir }}/provisioning/plugins"
+    - "{{ taut_grafana_dashboard_dir }}"
+
+- name: Create the Grafana data directory
+  ansible.builtin.file:
+    path: "{{ taut_grafana_data_dir }}"
+    state: directory
+    owner: taut-grafana
+    group: taut-grafana
+    mode: "0750"
 
 # Grafana reads the admin password only when it creates the admin user on its
 # first start. Later changes to taut_grafana_admin_password have no effect;
@@ -74,51 +164,38 @@
 - name: Write the Grafana admin password
   ansible.builtin.copy:
     content: "{{ taut_grafana_admin_password }}"
-    dest: /etc/grafana/taut-admin-password
+    dest: "{{ taut_grafana_admin_password_file }}"
     owner: root
-    group: grafana
+    group: taut-grafana
     mode: "0640"
   no_log: true
-  when: taut_grafana_present or not ansible_check_mode
 
 - name: Write the Grafana settings
   ansible.builtin.template:
     src: grafana.ini.j2
-    dest: /etc/grafana/grafana.ini
+    dest: "{{ taut_grafana_config_dir }}/grafana.ini"
     owner: root
-    group: grafana
+    group: taut-grafana
     mode: "0640"
-  when: taut_grafana_present or not ansible_check_mode
-  notify: Restart Grafana
+  notify: Restart taut-grafana
 
 - name: Provision the Prometheus datasource
   ansible.builtin.template:
     src: datasource.yml.j2
-    dest: /etc/grafana/provisioning/datasources/taut.yml
+    dest: "{{ taut_grafana_config_dir }}/provisioning/datasources/taut.yml"
     owner: root
-    group: grafana
+    group: taut-grafana
     mode: "0640"
-  when: taut_grafana_present or not ansible_check_mode
-  notify: Restart Grafana
+  notify: Restart taut-grafana
 
 - name: Provision the dashboard folder
   ansible.builtin.template:
     src: dashboards.yml.j2
-    dest: /etc/grafana/provisioning/dashboards/taut.yml
+    dest: "{{ taut_grafana_config_dir }}/provisioning/dashboards/taut.yml"
     owner: root
-    group: grafana
+    group: taut-grafana
     mode: "0640"
-  when: taut_grafana_present or not ansible_check_mode
-  notify: Restart Grafana
-
-- name: Create the dashboard directory
-  ansible.builtin.file:
-    path: "{{ taut_grafana_dashboard_dir }}"
-    state: directory
-    owner: root
-    group: grafana
-    mode: "0750"
-  when: taut_grafana_present or not ansible_check_mode
+  notify: Restart taut-grafana
 
 # The dashboard is generated on the control node from the inventory, so groups
 # that do not apply are left out and threshold lines match the alerts. These
@@ -166,53 +243,33 @@
     src: "{{ taut_grafana_build_dir }}/{{ taut_monitor_host }}.json"
     dest: "{{ taut_grafana_dashboard_dir }}/taut-validator.json"
     owner: root
-    group: grafana
+    group: taut-grafana
     mode: "0640"
-  when: taut_grafana_present or not ansible_check_mode
 
-- name: Create the Grafana unit drop-in directory
-  ansible.builtin.file:
-    path: /etc/systemd/system/grafana-server.service.d
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  when: taut_grafana_present or not ansible_check_mode
-
-# The package's unit retries after 100 ms, so a late private address would hit
-# systemd's start limit and leave Grafana stopped.
-- name: Make systemd keep retrying Grafana
-  ansible.builtin.copy:
-    dest: /etc/systemd/system/grafana-server.service.d/taut.conf
-    content: |
-      # Managed by Taut. The private address can appear after boot (WireGuard, Tailscale): keep retrying.
-      [Service]
-      RestartSec=5s
+- name: Write the taut-grafana service
+  ansible.builtin.template:
+    src: taut-grafana.service.j2
+    dest: /etc/systemd/system/taut-grafana.service
     owner: root
     group: root
     mode: "0644"
-  when: taut_grafana_present or not ansible_check_mode
-  notify: Restart Grafana
-
-- name: Allow the monitor to reach Grafana through an active ufw
-  ansible.builtin.include_role:
-    name: taut
-    tasks_from: firewall
-  vars:
-    taut_firewall_port: "{{ taut_ports.grafana }}"
+  register: taut_grafana_unit_file
+  notify: Restart taut-grafana
 
 # A pending restart performs Grafana's first start, so its first-start database
 # migrations are not cut short by a restart right after.
-- name: Apply a pending Grafana restart
+- name: Apply a pending taut-grafana restart
   ansible.builtin.meta: flush_handlers
 
-- name: Enable and start Grafana
+# Reload systemd only when Taut's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Enable and start taut-grafana
   ansible.builtin.systemd_service:
-    name: grafana-server
+    name: taut-grafana
     enabled: true
     state: started
-    daemon_reload: true
-  when: taut_grafana_present or not ansible_check_mode
+    daemon_reload: "{{ taut_grafana_unit_file is changed }}"
+  when: taut_grafana_installed.stat.exists or not ansible_check_mode
 
 # Grafana's first start runs its database migrations. Waiting here also lets
 # the bind check at the end of the playbook see Grafana's listening socket.
@@ -221,3 +278,21 @@
     host: "{{ taut_private_ip }}"
     port: "{{ taut_ports.grafana }}"
     timeout: 180
+    msg: taut-grafana does not listen on port {{ taut_ports.grafana }} of {{ taut_private_ip }}. See journalctl -u taut-grafana.
+
+- name: Find older Grafana versions
+  ansible.builtin.find:
+    paths: /opt/taut
+    patterns: grafana-*
+    excludes: grafana-{{ taut_grafana_version }}
+    file_type: directory
+  register: taut_grafana_old
+  when: taut_grafana_installed.stat.exists or not ansible_check_mode
+
+- name: Remove older Grafana versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ taut_grafana_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"

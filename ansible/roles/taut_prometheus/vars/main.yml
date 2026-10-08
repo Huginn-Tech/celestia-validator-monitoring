@@ -6,12 +6,14 @@ taut_prometheus_arch_map:
 taut_prometheus_release: "prometheus-{{ taut_prometheus_version }}.linux-{{ taut_prometheus_arch_map[ansible_facts.architecture] }}"
 taut_prometheus_download_url: "https://github.com/prometheus/prometheus/releases/download/v{{ taut_prometheus_version }}"
 
-# Installed as /usr/local/bin/<name>-<version> with a /usr/local/bin/<name> symlink.
+# The binaries go to /opt/taut/prometheus-<version>/ and the unit runs them from there,
+# so nothing else on the host is replaced. An upgrade is a new directory plus a restart.
+taut_prometheus_home: "/opt/taut/prometheus-{{ taut_prometheus_version }}"
 taut_prometheus_binaries:
   - prometheus
   - promtool
 
-taut_prometheus_config_dir: /etc/prometheus
-taut_prometheus_data_dir: /var/lib/prometheus
+taut_prometheus_config_dir: /etc/taut/prometheus
+taut_prometheus_data_dir: /var/lib/taut/prometheus
 taut_prometheus_listen_address: >-
   {{ ('[' ~ taut_private_ip ~ ']') if ':' in taut_private_ip else taut_private_ip }}:{{ taut_ports.prometheus }}

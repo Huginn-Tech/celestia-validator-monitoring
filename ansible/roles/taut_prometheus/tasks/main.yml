@@ -1,43 +1,23 @@
 ---
-# Taut writes these two files. If one exists without Taut's marker, another
-# Prometheus (a distro package or a hand-made setup) lives here: stop instead
-# of overwriting its configuration. grep prints file names only.
-- name: Look for Prometheus files that Taut did not write
-  ansible.builtin.command:
-    argv:
-      - grep
-      - --files-without-match
-      - --no-messages
-      - --fixed-strings
-      - "# Managed by Taut"
-      - "{{ taut_prometheus_config_dir }}/prometheus.yml"
-      - /etc/systemd/system/prometheus.service
-  register: taut_prometheus_foreign
-  changed_when: false
-  failed_when: false
-  check_mode: false
-  when: not (taut_prometheus_replace_existing | bool)
+# Taut's Prometheus has its own unit, user, paths and port (taut-prometheus), so it
+# installs next to any other Prometheus on the host and leaves it alone.
+- name: Check that taut-prometheus can use port {{ taut_ports.prometheus }}
+  ansible.builtin.include_role:
+    name: taut
+    tasks_from: port_check
+  vars:
+    taut_port_check_port: "{{ taut_ports.prometheus }}"
+    taut_port_check_unit: taut-prometheus
 
-- name: Check that no other Prometheus is installed here
-  ansible.builtin.assert:
-    that:
-      - taut_prometheus_foreign.stdout_lines | length == 0
-    fail_msg: >-
-      {{ taut_prometheus_foreign.stdout_lines | join(', ') }} was not written by Taut, so another Prometheus
-      seems to be installed on this host. Use another monitor host, or set taut_prometheus_replace_existing: true
-      to let Taut overwrite these files.
-    quiet: true
-  when: not (taut_prometheus_replace_existing | bool)
-
-- name: Create the prometheus group
+- name: Create the taut-prometheus group
   ansible.builtin.group:
-    name: prometheus
+    name: taut-prometheus
     system: true
 
-- name: Create the prometheus user
+- name: Create the taut-prometheus user
   ansible.builtin.user:
-    name: prometheus
-    group: prometheus
+    name: taut-prometheus
+    group: taut-prometheus
     system: true
     shell: /usr/sbin/nologin
     home: "{{ taut_prometheus_data_dir }}"
@@ -45,7 +25,7 @@
 
 - name: Look for the pinned Prometheus binaries
   ansible.builtin.stat:
-    path: /usr/local/bin/{{ item }}-{{ taut_prometheus_version }}
+    path: "{{ taut_prometheus_home }}/{{ item }}"
   loop: "{{ taut_prometheus_binaries }}"
   register: taut_prometheus_found
 
@@ -57,9 +37,33 @@
 
 - name: Report the pending install of Prometheus {{ taut_prometheus_version }}
   ansible.builtin.debug:
-    msg: Would install {{ taut_prometheus_binaries | join(' and ') }} {{ taut_prometheus_version }} in /usr/local/bin and restart Prometheus.
+    msg: Would install {{ taut_prometheus_binaries | join(' and ') }} {{ taut_prometheus_version }} in {{ taut_prometheus_home }} and restart taut-prometheus.
   changed_when: true
   when: ansible_check_mode and not taut_prometheus_present
+
+# The shared parents first, so a service directory below never creates them with its own owner.
+- name: Create the Prometheus directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/taut
+    - /etc/taut
+    - /var/lib/taut
+    - "{{ taut_prometheus_home }}"
+    - "{{ taut_prometheus_config_dir }}"
+    - "{{ taut_prometheus_rules_dir }}"
+
+- name: Create the Prometheus data directory
+  ansible.builtin.file:
+    path: "{{ taut_prometheus_data_dir }}"
+    state: directory
+    owner: taut-prometheus
+    group: taut-prometheus
+    mode: "0750"
 
 - name: Install Prometheus {{ taut_prometheus_version }}
   when: not taut_prometheus_present and not ansible_check_mode
@@ -90,7 +94,7 @@
     - name: Install the Prometheus binaries
       ansible.builtin.copy:
         src: /var/cache/taut/{{ taut_prometheus_release }}/{{ item }}
-        dest: /usr/local/bin/{{ item }}-{{ taut_prometheus_version }}
+        dest: "{{ taut_prometheus_home }}/{{ item }}"
         remote_src: true
         owner: root
         group: root
@@ -105,36 +109,6 @@
         - /var/cache/taut/{{ taut_prometheus_release }}.tar.gz
         - /var/cache/taut/{{ taut_prometheus_release }}
 
-- name: Point the Prometheus binaries at the pinned version
-  ansible.builtin.file:
-    src: /usr/local/bin/{{ item }}-{{ taut_prometheus_version }}
-    dest: /usr/local/bin/{{ item }}
-    state: link
-    owner: root
-    group: root
-  loop: "{{ taut_prometheus_binaries }}"
-  when: taut_prometheus_present or not ansible_check_mode
-  notify: Restart Prometheus
-
-- name: Create the Prometheus configuration directories
-  ansible.builtin.file:
-    path: "{{ item }}"
-    state: directory
-    owner: root
-    group: root
-    mode: "0755"
-  loop:
-    - "{{ taut_prometheus_config_dir }}"
-    - "{{ taut_prometheus_rules_dir }}"
-
-- name: Create the Prometheus data directory
-  ansible.builtin.file:
-    path: "{{ taut_prometheus_data_dir }}"
-    state: directory
-    owner: prometheus
-    group: prometheus
-    mode: "0750"
-
 - name: Render the Taut alert rules
   ansible.builtin.template:
     src: "{{ playbook_dir }}/../monitoring/rules/taut.rules.yml.j2"
@@ -142,7 +116,7 @@
     owner: root
     group: root
     mode: "0644"
-    validate: /usr/local/bin/promtool check rules %s
+    validate: "{{ taut_prometheus_home }}/promtool check rules %s"
   notify: Reload Prometheus
 
 - name: Render the Prometheus configuration
@@ -152,34 +126,58 @@
     owner: root
     group: root
     mode: "0644"
-    validate: /usr/local/bin/promtool check config %s
+    validate: "{{ taut_prometheus_home }}/promtool check config %s"
   notify: Reload Prometheus
 
-- name: Install the Prometheus systemd unit
+# The unit names the versioned binary, so a new version changes it and restarts the service.
+- name: Install the taut-prometheus systemd unit
   ansible.builtin.template:
-    src: prometheus.service.j2
-    dest: /etc/systemd/system/prometheus.service
+    src: taut-prometheus.service.j2
+    dest: /etc/systemd/system/taut-prometheus.service
     owner: root
     group: root
     mode: "0644"
+  register: taut_prometheus_unit_file
   notify: Restart Prometheus
 
-- name: Allow the monitor to reach Prometheus through an active ufw
-  ansible.builtin.include_role:
-    name: taut
-    tasks_from: firewall
-  vars:
-    taut_firewall_port: "{{ taut_ports.prometheus }}"
-
-- name: Start Prometheus and enable it at boot
+# Reload systemd only when Taut's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Start taut-prometheus and enable it at boot
   ansible.builtin.systemd_service:
-    name: prometheus
+    name: taut-prometheus
     enabled: true
     state: started
-    daemon_reload: true
+    daemon_reload: "{{ taut_prometheus_unit_file is changed }}"
   when: taut_prometheus_present or not ansible_check_mode
 
 # Apply pending reloads and restarts now, so a failure later in the play
 # (Alertmanager or Grafana) cannot drop them.
 - name: Apply pending Prometheus changes
   ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+# Waiting here also lets the bind check at the end of the playbook see the socket.
+- name: Wait for Prometheus on {{ taut_prometheus_listen_address }}
+  ansible.builtin.wait_for:
+    host: "{{ taut_private_ip }}"
+    port: "{{ taut_ports.prometheus }}"
+    timeout: 60
+    msg: taut-prometheus does not listen on {{ taut_prometheus_listen_address }}. See journalctl -u taut-prometheus.
+  when: not ansible_check_mode
+
+- name: Find older Prometheus versions
+  ansible.builtin.find:
+    paths: /opt/taut
+    patterns: prometheus-*
+    excludes: prometheus-{{ taut_prometheus_version }}
+    file_type: directory
+  register: taut_prometheus_old
+  when: taut_prometheus_present or not ansible_check_mode
+
+- name: Remove older Prometheus versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ taut_prometheus_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"

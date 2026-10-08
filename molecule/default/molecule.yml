@@ -31,16 +31,15 @@ provisioner:
         taut_signer: remote
         taut_fibre_enabled: true
         # Dummy receivers on a closed local port: nothing leaves the CI runner.
+        # page is empty, so page alerts use the message receivers.
         taut_receivers:
-          page:
-            - type: webhook
-              url: http://127.0.0.1:9/page
-            - type: slack
-              api_url: http://127.0.0.1:9/slack
-              channel: "#taut-test"
+          page: []
           message:
             - type: webhook
               url: http://127.0.0.1:9/message
+            - type: slack
+              api_url: http://127.0.0.1:9/slack
+              channel: "#taut-test"
         taut_deadman_webhook_url: http://127.0.0.1:9/deadman
         taut_grafana_admin_password: molecule-test-only
     host_vars:
@@ -50,6 +49,7 @@ provisioner:
           - /
         taut_fibre_mount: /
         taut_fibre_public_endpoint: fibre.example.invalid:7980
+        taut_link_mbps: 1000
 verifier:
   name: ansible
 # Adds a check-mode run (--check) on the fresh container before the real run, so a

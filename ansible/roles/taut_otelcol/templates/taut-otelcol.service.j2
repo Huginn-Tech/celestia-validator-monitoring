@@ -7,7 +7,7 @@ After=network-online.target
 
 [Service]
 User=taut-otelcol
-ExecStart=/usr/local/bin/otelcol-contrib --config={{ taut_otelcol_config }}
+ExecStart={{ taut_otelcol_binary }} --config={{ taut_otelcol_config }}
 Restart=on-failure
 # The private address can appear after boot (WireGuard, Tailscale): keep retrying.
 RestartSec=5s

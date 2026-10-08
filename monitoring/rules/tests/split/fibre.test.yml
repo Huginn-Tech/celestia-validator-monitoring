@@ -11,22 +11,22 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x140'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x140'
       - series: >-
-          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_x2 120+60x58 3600x80'
       - series: >-
-          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre",success="true"}
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
         values: '_x2 30+30x58 1770x80'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 1000000000000x140'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 400000000000x140'
     alert_rule_test:
       - eval_time: 60m
@@ -51,20 +51,20 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x179'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x98 6000x81'
       # The last-success gauge lives in Fibre's memory: gone after the restart at 100m.
       - series: >-
-          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_x2 120+60x97 stale'
       - series: >-
-          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre",success="true"}
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
         values: '_x2 30+30x97 stale'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 1000000000000x179'
     alert_rule_test:
       - eval_time: 160m
@@ -89,19 +89,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x179'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x98 6000x81'
       - series: >-
-          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_x2 120+60x97 stale _x4 6300+60x75'
       - series: >-
-          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre",success="true"}
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
         values: '_x2 30+30x97 stale _x4 30+30x75'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 1000000000000x179'
     alert_rule_test:
       - eval_time: 180m
@@ -112,19 +112,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x59 0x100'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x59 0x100'
       - series: >-
-          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_x2 120+60x58 stale'
       - series: >-
-          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre",success="true"}
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
         values: '_x2 30+30x58 stale'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 1000000000000x59 stale'
     alert_rule_test:
       - eval_time: 160m
@@ -135,7 +135,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               name: fibre.service
@@ -152,16 +152,16 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x200'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x200'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 1000000000000x200'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '_ 0x200'
     alert_rule_test:
       - eval_time: 200m
@@ -172,10 +172,10 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
         values: '0 1x40'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '0 60x40'
     alert_rule_test:
       - eval_time: 30m

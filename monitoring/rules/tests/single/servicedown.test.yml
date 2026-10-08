@@ -12,13 +12,13 @@ tests:
           up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
         values: '1x60'
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x60'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x60'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service"}
         values: '1x60'
     alert_rule_test:
       - eval_time: 10m
@@ -32,19 +32,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x20'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x20'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
         values: '0x20'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="tmkms.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="tmkms.service",state="active",type="simple"}
         values: '0x20'
       - series: >-
-          up{job="otelcol",instance="10.10.0.11:8889",host="node-1",role="validator"}
+          up{job="otelcol",instance="10.10.0.11:9911",host="node-1",role="validator"}
         values: '0x20'
     alert_rule_test:
       - eval_time: 20m
@@ -58,10 +58,10 @@ tests:
           up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
         values: '1x4 0x10'
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x14'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x4 0x10'
     alert_rule_test:
       - eval_time: 6m
@@ -72,7 +72,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.11:9100
+              instance: 10.10.0.11:9910
               host: node-1
               role: validator
               name: celestia-appd.service
@@ -100,13 +100,13 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x19'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x9 0 1 0 1 0 1 0 1 0 1'
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service"}
         values: '0x9 1+1x9'
     alert_rule_test:
       - eval_time: 11m
@@ -117,7 +117,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.11:9100
+              instance: 10.10.0.11:9910
               host: node-1
               role: validator
               name: celestia-appd.service
@@ -132,15 +132,15 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x40'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x40'
       # Restarts at 15m and 16m on a counter that was already 5. increase() extrapolates
       # to the window edges and reads them as 2.05 (at 20m) and 2.07 (at 40m).
       - series: >-
-          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service"}
+          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service"}
         values: '5x14 6 7x24'
     alert_rule_test:
       - eval_time: 20m
@@ -154,10 +154,10 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x14'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x4 stale'
     alert_rule_test:
       - eval_time: 6m
@@ -180,10 +180,10 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          up{job="node",instance="10.10.0.11:9100",host="node-1",role="validator"}
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
         values: '1x4 0x10'
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
         values: '1x4 stale'
     alert_rule_test:
       - eval_time: 7m
@@ -194,7 +194,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.11:9100
+              instance: 10.10.0.11:9910
               host: node-1
               role: validator
               severity: message
