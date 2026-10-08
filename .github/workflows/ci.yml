@@ -17,8 +17,8 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Install linters
@@ -38,18 +38,20 @@ jobs:
 
   secrets:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       - name: Owner-only files are ignored and absent
         run: |
-          for p in reference CLAUDE.local.md; do
-            git check-ignore -q "$p" || { echo "$p is not in .gitignore"; exit 1; }
-            if git ls-files --error-unmatch "$p" >/dev/null 2>&1 || [ -n "$(git ls-files "$p/")" ]; then
-              echo "$p is tracked"; exit 1
-            fi
-          done
+          git check-ignore -q --no-index reference/any-file || { echo "reference/ is not in .gitignore"; exit 1; }
+          git check-ignore -q --no-index CLAUDE.local.md || { echo "CLAUDE.local.md is not in .gitignore"; exit 1; }
+          if [ -n "$(git ls-files reference CLAUDE.local.md)" ]; then
+            echo "owner-only files are tracked"; exit 1
+          fi
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
