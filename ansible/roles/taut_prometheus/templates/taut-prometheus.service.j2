@@ -6,9 +6,9 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-User=prometheus
-Group=prometheus
-ExecStart=/usr/local/bin/prometheus \
+User=taut-prometheus
+Group=taut-prometheus
+ExecStart={{ taut_prometheus_home }}/prometheus \
   --config.file={{ taut_prometheus_config_dir }}/prometheus.yml \
   --storage.tsdb.path={{ taut_prometheus_data_dir }} \
   --storage.tsdb.retention.time={{ taut_prometheus_retention }} \

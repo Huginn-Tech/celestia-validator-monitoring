@@ -1,5 +1,0 @@
----
-# Taut stops when /etc/alertmanager/alertmanager.yml or /etc/systemd/system/alertmanager.service
-# exists and was not written by Taut (another Alertmanager is installed). Set this to true
-# to let Taut overwrite both files. The old configuration is lost.
-taut_alertmanager_replace_existing: false

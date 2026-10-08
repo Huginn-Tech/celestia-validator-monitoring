@@ -2,8 +2,10 @@
   Alertmanager configuration for Taut. Rendered by the taut_alertmanager role (with no_log,
   because receivers carry tokens) and by CI with dummy receivers.
   Inputs: taut_receivers.page, taut_receivers.message (lists of {type: telegram|pagerduty|slack|webhook, ...})
-  and taut_deadman_webhook_url.
+  and taut_deadman_webhook_url. An empty list uses the other list's receivers, so no alert is dropped.
 #}
+{% set page = taut_receivers.page | default([], true) %}
+{% set message = taut_receivers.message | default([], true) %}
 {% macro receiver_configs(entries) %}
 {% for type in ['telegram', 'pagerduty', 'slack', 'webhook'] %}
 {%   set items = entries | selectattr('type', 'equalto', type) | list %}
@@ -65,18 +67,19 @@ inhibit_rules:
       - 'severity="page"'
     target_matchers:
       - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing"'
-  # Fibre being down explains FibreNotServing.
+  # Fibre or its collector being down explains FibreNotServing.
   - source_matchers:
       - 'alertname="ServiceDown"'
-      - 'unit="fibre"'
+      - 'unit=~"fibre|otelcol"'
     target_matchers:
       - 'alertname="FibreNotServing"'
 
 receivers:
+  # With no page receivers, page alerts go to the message receivers (and the other way round).
   - name: page
-{{ receiver_configs(taut_receivers.page) }}
+{{ receiver_configs(page or message) }}
   - name: message
-{{ receiver_configs(taut_receivers.message) }}
+{{ receiver_configs(message or page) }}
   # Without a dead-man URL the heartbeat goes to this receiver and is dropped.
   - name: deadman
 {% if taut_deadman_webhook_url | string | length > 0 %}

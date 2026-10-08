@@ -1,7 +1,7 @@
 ---
-- name: Restart Grafana
+- name: Restart taut-grafana
   ansible.builtin.systemd_service:
-    name: grafana-server
+    name: taut-grafana
     state: restarted
     daemon_reload: true
-  when: taut_grafana_present or not ansible_check_mode
+  when: taut_grafana_installed.stat.exists or not ansible_check_mode

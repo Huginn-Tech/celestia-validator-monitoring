@@ -18,17 +18,20 @@ taut_units:
 taut_node_metrics_port: 26660
 taut_node_rpc_port: 26657
 
-# Ports of the services Taut installs. All of them listen on taut_private_ip only,
-# except otelcol_otlp: the collector's OTLP/HTTP receiver on 127.0.0.1, where Fibre
-# pushes its metrics (--otel-endpoint http://127.0.0.1:<otelcol_otlp>).
+# Ports of the services Taut installs: one block that common tools do not use, so
+# Taut runs next to an existing node_exporter, Prometheus, Grafana or collector.
+# All of them listen on taut_private_ip only, except otelcol_otlp: the collector's
+# OTLP/HTTP receiver on 127.0.0.1, where Fibre pushes its metrics
+# (--otel-endpoint http://127.0.0.1:9915 with the default below).
+# The playbook stops if another process already listens on one of them.
 # Overriding taut_ports replaces the whole map, so list every key.
 taut_ports:
-  node_exporter: 9100
-  otelcol_prometheus: 8889
-  otelcol_otlp: 4318
-  prometheus: 9191
-  alertmanager: 9093
-  grafana: 3000
+  node_exporter: 9910
+  otelcol_prometheus: 9911
+  prometheus: 9912
+  alertmanager: 9913
+  grafana: 9914
+  otelcol_otlp: 9915
 
 # Alert thresholds (see docs/alerts.md).
 taut_thresholds:
@@ -45,6 +48,7 @@ taut_thresholds:
 #   {type: pagerduty, routing_key: ...}
 #   {type: slack, api_url: ..., channel: ...}
 #   {type: webhook, url: ...}
+# One list may be empty: its alerts then go to the other list's receivers.
 # Keep secrets in ansible-vault.
 taut_receivers:
   page: []
@@ -62,6 +66,10 @@ taut_prometheus_retention: 30d
 #   taut_fibre_mount           Fibre store mount point (fibre hosts)
 #   taut_fibre_public_endpoint host:port registered with valaddr set-host (fibre hosts)
 #   taut_kms_scrape            install node_exporter on a kms host (default false)
+#   taut_link_mbps             optional, the link speed you pay for in Mbit/s, for the Link load
+#                              panel (every node_exporter host). Set it when the host reports
+#                              no NIC speed (virtio), has more than one physical NIC, or buys
+#                              less than its port speed
 #   taut_node_home             celestia-appd home for taut-doctor (validator host). Default: the
 #                              unit's --home, CELESTIA_APP_HOME, DAEMON_HOME, or ~/.celestia-app
 #                              of the unit's User

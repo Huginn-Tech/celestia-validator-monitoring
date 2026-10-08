@@ -13,20 +13,22 @@ This guide takes you from an empty inventory to a running dashboard, working ale
   Use a separate host for `monitor` when you can. On a single-host setup it may be the same box; the dead-man service (step 6) tells you when that box dies.
 - **A private network between the hosts:** RFC 1918, Tailscale (100.64.0.0/10), WireGuard or IPv6 ULA addresses. Everything Taut installs listens on these addresses only, and the playbook fails if a Taut service listens on a public one.
 - **A control node:** any Linux or macOS machine with ansible-core 2.16 or later and Python 3 ([install guide](https://docs.ansible.com/ansible/latest/installation_guide/intro_installation.html)). It needs SSH with sudo to the hosts in the inventory.
-- **Outbound HTTPS** from the hosts to GitHub (release downloads), from the monitor also to dl.grafana.com and the Ubuntu package mirrors (Grafana), your alert receivers and the dead-man service.
+- **Outbound HTTPS** from the hosts to GitHub (release downloads), from the monitor also to dl.grafana.com (Grafana), your alert receivers and the dead-man service.
 - **One validator per install.** To watch a testnet and a mainnet validator, run two installs with two inventories.
 
 Default ports (all on the private address unless noted):
 
 | Service | Host | Port |
 |---|---|---|
-| node_exporter | validator, fibre, kms if opted in | 9100 |
-| OpenTelemetry collector | fibre | 8889 (metrics), 4318 on 127.0.0.1 (from Fibre) |
-| Prometheus | monitor | 9191 |
-| Alertmanager | monitor | 9093 |
-| Grafana | monitor | 3000 |
+| node_exporter | validator, fibre, kms if opted in | 9910 |
+| OpenTelemetry collector | fibre | 9911 (metrics), 9915 on 127.0.0.1 (from Fibre) |
+| Prometheus | monitor | 9912 |
+| Alertmanager | monitor | 9913 |
+| Grafana | monitor | 9914 |
 
 Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator.
+
+Taut runs next to a node_exporter, Prometheus, Alertmanager, Grafana or OpenTelemetry collector the host already has, and leaves it alone. Each Taut service has its own systemd unit and system user (`taut-node-exporter`, `taut-otelcol`, `taut-prometheus`, `taut-alertmanager`, `taut-grafana`), runs from `/opt/taut/<component>-<version>/`, keeps its settings under `/etc/taut/` and its data under `/var/lib/taut/`, and logs to the journal (for example `journalctl -u taut-grafana`). Taut puts nothing in `/usr/local/bin` except `taut-doctor`. The ports above are a block that common tools do not use; to move them, set `taut_ports` (step 3).
 
 ## 2. Prepare the validator
 
@@ -42,9 +44,9 @@ prometheus_listen_addr = "<validator private address>:26660"
 
 The default `prometheus = false` serves no metrics. The default `prometheus_listen_addr = ":26660"` listens on every address, so set the private address. The `namespace` can stay `cometbft` (the default) or be `celestia`; Taut handles both.
 
-**Fibre telemetry** (only if you run Fibre). Fibre has no scrape endpoint; it pushes metrics over OTLP. Point it at the collector Taut installs on the Fibre host: add `--otel-endpoint http://127.0.0.1:4318` to the `ExecStart` line of Fibre's systemd unit, or set `FIBRE_OTEL_ENDPOINT=http://127.0.0.1:4318` in its environment. Use the base URL, without `/v1/metrics`. Then run `systemctl daemon-reload` and restart Fibre. Until the playbook has installed the collector, Fibre logs export errors; they stop once the collector runs.
+**Fibre telemetry** (only if you run Fibre). Fibre has no scrape endpoint; it pushes metrics over OTLP. Point it at the collector Taut installs on the Fibre host: add `--otel-endpoint http://127.0.0.1:9915` to the `ExecStart` line of Fibre's systemd unit, or set `FIBRE_OTEL_ENDPOINT=http://127.0.0.1:9915` in its environment. Use the base URL, without `/v1/metrics`. Then run `systemctl daemon-reload` and restart Fibre. Until the playbook has installed the collector, Fibre logs export errors; they stop once the collector runs.
 
-**A firewall on the validator.** If one is active, allow the monitor's private address to port 26660 yourself. Taut adds ufw rules only for its own ports, and only when ufw is already active. It never enables, resets or reorders a firewall.
+**A firewall on the hosts.** When ufw is already active, the playbook allows the monitor's private address to the ports Prometheus scrapes on the other hosts: port 26660 on the validator and the node_exporter and OpenTelemetry collector ports (9910, 9911). With any other firewall, allow those yourself. Taut never enables, resets or reorders a firewall.
 
 **A remote signer** needs nothing extra: with `priv_validator_laddr` set and `prometheus = true`, the node exports the signer metrics.
 
@@ -70,6 +72,7 @@ In `hosts.yml`, put each host in its groups (`validator`, `fibre`, `kms`, `monit
 | `taut_fibre_public_endpoint` | fibre | The `host:port` you registered with `celestia-appd tx valaddr set-host`. `doctor` compares it with the on-chain registration. |
 | `taut_kms_scrape` | kms | `true` installs node_exporter on the KMS host, so tmkms and its disks are watched. Default `false`: Taut installs nothing there. |
 | `taut_node_home` | validator | celestia-appd home, for `doctor`. Default: found from the unit. |
+| `taut_link_mbps` | validator, fibre, kms | Optional. The link speed in Mbit/s for the Link load panel. Set it when the host reports no NIC speed (common on VMs), has more than one physical NIC, or its plan is below the port speed. Default: the NIC's port speed. |
 
 In `group_vars/all.yml`, set the shared settings:
 
@@ -77,7 +80,7 @@ In `group_vars/all.yml`, set the shared settings:
 |---|---|
 | `taut_signer` | `local` (key file on the node) or `remote` (tmkms). With `local`, the signer panels and RemoteSignerProblem are left out. |
 | `taut_fibre_enabled` | `true` installs and renders everything Fibre-related. Keep `false` until app v10 is active on your network: before that, Fibre does not run and `x/valaddr` does not exist. |
-| `taut_receivers` | Alert receivers for `page` and `message`, at least one each (below). |
+| `taut_receivers` | Alert receivers for `page` and `message` (below). One list may be empty: its alerts then go to the other list's receivers. |
 | `taut_deadman_webhook_url` | Heartbeat URL of your dead-man service (step 6). |
 | `taut_grafana_admin_password` | Grafana's admin password. |
 
@@ -132,16 +135,18 @@ The playbook:
 3. installs Prometheus, Alertmanager and Grafana on the monitor, with the alert rules and the dashboard built from your inventory;
 4. fails if any service Taut installed listens on a public address.
 
-Binary versions are pinned in `versions.yml` and checksums are verified on download. Run the playbook again after every inventory change; a run with nothing to change reports no changes. If a host already has another node_exporter, collector, Prometheus or Alertmanager in the paths or ports Taut uses, the playbook stops before replacing it and says what it found.
+Binary versions are pinned in `versions.yml` and checksums are verified on download. Run the playbook again after every inventory change; a run with nothing to change reports no changes. If another process already listens on one of Taut's ports, the playbook stops before it starts that service, names the process and its PID, and says which `taut_ports` key to set.
 
 ## 5. Open Grafana
 
-Grafana listens on the monitor's private address: `http://<monitor private address>:3000`. Log in as `admin` with `taut_grafana_admin_password`. Grafana reads that password only on its first start; change it later in Grafana (Profile, Change password).
+Grafana listens on the monitor's private address: `http://<monitor private address>:9914`. Log in as `admin` with `taut_grafana_admin_password`. Grafana reads that password only on its first start; change it later in Grafana (Profile, Change password).
 
-If you are not on the private network, use an SSH tunnel and open `http://localhost:3000`:
+With ufw active, allow your workstation's private address to port 9914 yourself (`ufw allow from <addr> to any port 9914 proto tcp`), or use the SSH tunnel below.
+
+If you are not on the private network, use an SSH tunnel and open `http://localhost:9914`:
 
 ```sh
-ssh -L 3000:<monitor private address>:3000 <user>@<monitor>
+ssh -L 9914:<monitor private address>:9914 <user>@<monitor>
 ```
 
 The dashboard is **Taut: Celestia validator** in the **Taut** folder. [panels.md](panels.md) explains each panel. The playbook generates the dashboard from your inventory, so groups that do not apply are left out and the threshold lines match the alerts. Do not edit it in Grafana; change the inventory and run the playbook again.
@@ -153,7 +158,7 @@ Taut's Watchdog alert is always firing. Alertmanager sends it every 1 to 2 minut
 1. Choose any dead-man (heartbeat) service that gives you a URL to ping and alerts you when pings stop. Alertmanager pings it with an HTTP POST.
 2. Set its period to **5 minutes or more**, so a ping that arrives two minutes apart never trips it.
 3. Put the URL in `taut_deadman_webhook_url` (encrypted with ansible-vault) and run the playbook again.
-4. Test it: on the monitor, run `sudo systemctl stop alertmanager`, wait until the dead-man service alerts you, then `sudo systemctl start alertmanager`.
+4. Test it: on the monitor, run `sudo systemctl stop taut-alertmanager`, wait until the dead-man service alerts you, then `sudo systemctl start taut-alertmanager`.
 
 Without a URL, the heartbeat is dropped and nothing tells you that monitoring itself is down.
 
@@ -180,7 +185,7 @@ It changes nothing. It reads `/etc/taut/doctor.conf`, which the playbook writes;
 | 5 | validator | With Fibre on: the Fibre host registered in `x/valaddr`, compared with `taut_fibre_public_endpoint`. |
 | 6 | fibre | The Fibre unit is active and its port (7980 by default) listens. |
 | 7 | fibre | Fibre's OTLP endpoint points at the local collector. |
-| 8 | all | Taut's services listen on private addresses only; reports whether a firewall is active. |
+| 8 | all | Taut's services (the `taut-*` units) listen on private addresses only; other software on the host is not checked. Reports whether a firewall is active. |
 | 9 | all | Time sync is active and the clock offset is small. |
 | 10 | all | Free space on the data mounts; the Fibre mount is not read-only. |
 
@@ -188,13 +193,14 @@ Run it again after every celestia-app or Fibre upgrade and every config change.
 
 ## 9. Check that alerts reach you
 
-On the monitor, send a test alert of each severity and check that it arrives where you expect:
+On the monitor, send a test alert of each severity and check that it arrives where you expect. Taut's `amtool` is in `/opt/taut/alertmanager-<version>/`, with the Alertmanager version from `versions.yml`:
 
 ```sh
-amtool alert add alertname=TautTest severity=page host=test --annotation=summary='Taut test' \
-  --alertmanager.url=http://<monitor private address>:9093
-amtool alert add alertname=TautTest severity=message host=test --annotation=summary='Taut test' \
-  --alertmanager.url=http://<monitor private address>:9093
+amtool=/opt/taut/alertmanager-<version>/amtool
+$amtool alert add alertname=TautTest severity=page host=test --annotation=summary='Taut test' \
+  --alertmanager.url=http://<monitor private address>:9913
+$amtool alert add alertname=TautTest severity=message host=test --annotation=summary='Taut test' \
+  --alertmanager.url=http://<monitor private address>:9913
 ```
 
 Each resolves by itself after 5 minutes. [alerts.md](alerts.md) describes every alert and what to check first.

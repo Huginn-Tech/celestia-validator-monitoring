@@ -1,0 +1,37 @@
+---
+# Stops the play before a Taut service starts on a port that another process
+# already uses. Read-only. Each role includes it before it starts its unit.
+#   taut_port_check_port  required, the TCP port the service listens on
+#   taut_port_check_unit  required, the Taut unit (without .service) that may own it
+
+# With only a name the module just reads the unit; a missing unit has MainPID 0.
+- name: Read the main PID of {{ taut_port_check_unit }}
+  ansible.builtin.systemd_service:
+    name: "{{ taut_port_check_unit }}"
+  register: taut_port_check_status
+
+- name: Read the listeners on port {{ taut_port_check_port }}
+  ansible.builtin.command: ss -Htlnp 'sport = :{{ taut_port_check_port }}'
+  register: taut_port_check_sockets
+  changed_when: false
+  check_mode: false
+
+- name: Check who listens on port {{ taut_port_check_port }}
+  ansible.builtin.assert:
+    that:
+      - taut_port_check_others | length == 0
+    fail_msg: >-
+      port {{ taut_port_check_port }} is used by {{ taut_port_check_owners or 'another process' }};
+      set taut_ports.{{ taut_port_check_key }} to a free port
+    quiet: true
+  vars:
+    taut_port_check_others: >-
+      {{ taut_port_check_sockets.stdout_lines
+         | reject('search', 'pid=' ~ (taut_port_check_status.status.MainPID | default('0')) ~ ',') | list }}
+    # ss prints the owners as users:(("name",pid=N,fd=M),...), shown here as "name (N)".
+    taut_port_check_owners: >-
+      {{ taut_port_check_others | join(' ') | regex_findall('"[^"]+",pid=[0-9]+')
+         | map('regex_replace', '^"([^"]+)",pid=([0-9]+)$', '\\1 (\\2)') | unique | join(', ') }}
+    taut_port_check_key: >-
+      {{ taut_ports | dict2items | selectattr('value', 'in', [taut_port_check_port | int, taut_port_check_port | string])
+         | map(attribute='key') | first | default('<key>', true) }}

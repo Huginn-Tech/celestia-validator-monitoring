@@ -1,9 +1,19 @@
 # Managed by Taut (Ansible role taut_grafana). Local changes are overwritten.
-# Settings not listed here keep Grafana's defaults.
+# Settings not listed here keep Grafana's defaults ({{ taut_grafana_home }}/conf/defaults.ini).
+
+[paths]
+data = {{ taut_grafana_data_dir }}
+logs = {{ taut_grafana_data_dir }}/log
+plugins = {{ taut_grafana_data_dir }}/plugins
+provisioning = {{ taut_grafana_config_dir }}/provisioning
 
 [server]
 http_addr = {{ taut_private_ip }}
 http_port = {{ taut_ports.grafana }}
+
+[log]
+# Logs go to the journal: journalctl -u taut-grafana
+mode = console
 
 [analytics]
 reporting_enabled = false
@@ -17,7 +27,7 @@ allow_sign_up = false
 admin_user = admin
 # Read only when Grafana creates the admin user on its first start.
 # Change the password later in the Grafana UI (Profile > Change password).
-admin_password = $__file{/etc/grafana/taut-admin-password}
+admin_password = $__file{{ '{' ~ taut_grafana_admin_password_file ~ '}' }}
 
 [plugins]
 # Otherwise Grafana downloads and auto-updates four app plugins from grafana.com on every start.

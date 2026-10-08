@@ -10,20 +10,20 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '2000000000000x30'
       # 15% free at 0m, 0.5 points less every minute.
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '300000000000-10000000000x30'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_readonly{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '0x30'
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
         values: '1000000000x30'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/boot"}
         values: '10000000x30'
     alert_rule_test:
       - eval_time: 20m
@@ -34,7 +34,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               device: /dev/nvme0n1p1
@@ -50,7 +50,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               device: /dev/nvme0n1p1
@@ -63,7 +63,7 @@ tests:
               runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               device: /dev/nvme0n1p1
@@ -79,13 +79,13 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '100000000000x10'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '2000000000x10'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.2:9100",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_readonly{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '0x10'
     alert_rule_test:
       - eval_time: 5m
@@ -93,7 +93,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.2:9100
+              instance: 10.10.0.2:9910
               host: kms-1
               role: kms
               device: /dev/sda1
@@ -109,13 +109,13 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '100000000000x15'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '2000000000x15'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/sda1",fstype="ext4",mountpoint="/"}
         values: '0x11 1x3'
     alert_rule_test:
       - eval_time: 9m
@@ -126,7 +126,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/sda1
@@ -142,7 +142,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/sda1
@@ -158,28 +158,28 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '2000000000000x15'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '1000000000000x15'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.1:9100",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+          node_filesystem_readonly{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
         values: '0x4 1x10'
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '4000000000000x15'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '2000000000000x15'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '0x9 1x5'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1000000000000x15'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '500000000000x15'
     alert_rule_test:
       - eval_time: 4m
@@ -190,7 +190,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.1:9100
+              instance: 10.10.0.1:9910
               host: val-1
               role: validator
               device: /dev/nvme0n1p1
@@ -203,7 +203,7 @@ tests:
               runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/nvme1n1
@@ -219,20 +219,20 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '4000000000000x40'
       # 7.5% free, less than the 400 GB the budget still needs.
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '300000000000x40'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '0x40'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1000000000000x40'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '600000000000x40'
     alert_rule_test:
       - eval_time: 29m
@@ -253,19 +253,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '4000000000000x40'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '150000000000x40'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '0x40'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '1000000000000x40'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '990000000000x40'
     alert_rule_test:
       - eval_time: 40m
@@ -276,19 +276,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '4000000000000x20'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '300000000000x20'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '0x20'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '0x20'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '500000000000x20'
     alert_rule_test:
       - eval_time: 9m
@@ -299,7 +299,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/nvme1n1
@@ -315,19 +315,19 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '4000000000000x15'
       - series: >-
-          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '300000000000x15'
       - series: >-
-          node_filesystem_readonly{job="node",instance="10.10.0.3:9100",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
         values: '0x11 1x3'
       - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '0x15'
       - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:8889",host="fibre-1",role="fibre"}
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
         values: '500000000000x15'
     alert_rule_test:
       - eval_time: 10m
@@ -335,7 +335,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/nvme1n1
@@ -351,7 +351,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: node
-              instance: 10.10.0.3:9100
+              instance: 10.10.0.3:9910
               host: fibre-1
               role: fibre
               device: /dev/nvme1n1

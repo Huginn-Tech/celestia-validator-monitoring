@@ -139,8 +139,8 @@ jobs:
           grep -Eq '^ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0' "$CI_DIR/second.log"
       - name: node_exporter lists only the configured units
         run: |
-          sudo systemctl is-active node_exporter
-          node=$(curl -sf http://127.0.0.1:9100/metrics)
+          sudo systemctl is-active taut-node-exporter
+          node=$(curl -sf http://127.0.0.1:9910/metrics)
           grep -q '^node_systemd_unit_state{name="systemd-journald.service",state="active"' <<<"$node"
           grep -q '^node_systemd_unit_start_time_seconds{name="systemd-logind.service"}' <<<"$node"
           grep -q '^node_systemd_service_restart_total{name="systemd-logind.service"}' <<<"$node"
@@ -149,7 +149,7 @@ jobs:
       - name: The collector sums Fibre's size attributes away and drops traces
         run: |
           sudo systemctl is-active taut-otelcol
-          for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:8889/metrics && break; sleep 1; done
+          for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9911/metrics && break; sleep 1; done
           now=$(date +%s%N)
           start=$((now - 1000000000))
           cat > "$CI_DIR/otlp.json" <<EOF
@@ -164,17 +164,40 @@ jobs:
                  "startTimeUnixNano": "$start", "timeUnixNano": "$now", "count": "1", "sum": 0.5, "bucketCounts": ["1", "0"], "explicitBounds": [1]}
               ]}}]}]}]}
           EOF
-          curl -sf -H 'Content-Type: application/json' --data @"$CI_DIR/otlp.json" http://127.0.0.1:4318/v1/metrics
-          curl -sf -H 'Content-Type: application/json' --data '{"resourceSpans":[]}' http://127.0.0.1:4318/v1/traces
+          curl -sf -H 'Content-Type: application/json' --data @"$CI_DIR/otlp.json" http://127.0.0.1:9915/v1/metrics
+          curl -sf -H 'Content-Type: application/json' --data '{"resourceSpans":[]}' http://127.0.0.1:9915/v1/traces
           sleep 1
-          otel=$(curl -sf http://127.0.0.1:8889/metrics)
+          otel=$(curl -sf http://127.0.0.1:9911/metrics)
           printf '%s\n' "$otel"
           grep -Eq '^fibre_server_upload_shard_duration_seconds_count\{[^}]*success="true"[^}]*\} 2$' <<<"$otel"
           if grep -q upload_size <<<"$otel"; then echo "upload_size was not summed away"; exit 1; fi
           if sudo ss -Htln | grep -Eq ':8888[[:space:]]'; then echo "the collector opened its own telemetry port"; exit 1; fi
+      - name: doctor finds Taut's units on private addresses
+        run: |
+          out=$(sudo bash tools/doctor.sh --config /dev/null --roles kms --data-mounts / --head-wait 2 || true)
+          printf '%s\n' "$out"
+          grep -Eq '^OK +8 +private binds +.*taut-node-exporter 127\.0\.0\.1:9910' <<<"$out"
+          grep -Eq '^OK +8 .*taut-otelcol 127\.0\.0\.1:9915' <<<"$out"
+      - name: The playbook stops when another process holds a Taut port
+        run: |
+          python3 -m http.server 9920 --bind 127.0.0.1 >/dev/null 2>&1 &
+          server=$!
+          for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9920/ && break; sleep 1; done
+          cat > "$CI_DIR/taken.json" <<'EOF'
+          {"taut_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
+                          "alertmanager": 9913, "grafana": 9914, "otelcol_otlp": 9915}}
+          EOF
+          if ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml -e @"$CI_DIR/taken.json" "$CI_DIR/site.yml" >"$CI_DIR/taken.log"; then
+            cat "$CI_DIR/taken.log"
+            echo "the playbook ran although another process listens on node_exporter's port"
+            exit 1
+          fi
+          kill "$server"
+          cat "$CI_DIR/taken.log"
+          grep -Eq 'port 9920 is used by python[0-9.]* \([0-9]+\); set taut_ports\.node_exporter to a free port' "$CI_DIR/taken.log"
       - name: Show the collector logs
         if: failure()
-        run: sudo journalctl -u node_exporter -u taut-otelcol --no-pager -n 200
+        run: sudo journalctl -u taut-node-exporter -u taut-otelcol --no-pager -n 200
 
   rules:
     runs-on: ubuntu-24.04
@@ -264,8 +287,8 @@ jobs:
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
-          test "$(count single)" = 5
-          test "$(count split)" = 10
+          test "$(count single)" = 7
+          test "$(count split)" = 13
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus

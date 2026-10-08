@@ -1,7 +1,7 @@
 ---
-- name: Restart node_exporter
+- name: Restart taut-node-exporter
   ansible.builtin.systemd_service:
-    name: node_exporter
+    name: taut-node-exporter
     state: restarted
     daemon_reload: true
   when: taut_node_exporter_installed.stat.exists or not ansible_check_mode

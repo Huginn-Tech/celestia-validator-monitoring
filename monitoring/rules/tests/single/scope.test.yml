@@ -23,10 +23,10 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
         values: '1x200'
       - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.11:9100",host="node-1",role="validator",name="fibre.service"}
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="fibre.service"}
         values: '60x200'
     alert_rule_test:
       - eval_time: 200m

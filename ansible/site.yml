@@ -10,6 +10,8 @@
 - name: Collectors on Celestia hosts
   hosts: validator:fibre:kms
   become: true
+  # Facts are gathered after the skip below, so a KMS host Taut does not manage is never contacted.
+  gather_facts: false
   vars_files:
     - ../versions.yml
   tasks:
@@ -21,6 +23,9 @@
     - name: Skip hosts Taut does not manage
       ansible.builtin.meta: end_host
       when: not (taut_host_managed | bool)
+
+    - name: Gather facts on the hosts Taut manages
+      ansible.builtin.setup:
 
     - name: Install node_exporter
       ansible.builtin.include_role:

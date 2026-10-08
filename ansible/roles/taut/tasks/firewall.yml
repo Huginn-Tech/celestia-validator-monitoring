@@ -1,6 +1,9 @@
 ---
-# Lets the monitor host reach one of Taut's ports through ufw, only when ufw is
-# already active on this host. Never enables, resets or reorders the firewall.
+# Lets the monitor host reach a port Prometheus scrapes (one of Taut's, or
+# celestia-appd's metrics port on the validator host) through ufw, only when ufw
+# is already active on this host. Never enables, resets or reorders the firewall.
+# A host reaching its own address goes through lo, which ufw already accepts, so
+# this host's own address is skipped (the monitor itself, or a single-host setup).
 #   taut_firewall_port     required, the TCP port to allow
 #   taut_firewall_sources  optional list of addresses (default: the monitor's taut_private_ip)
 - name: Read the ufw status
@@ -19,5 +22,5 @@
     to_port: "{{ taut_firewall_port | string }}"
     proto: tcp
     comment: taut
-  loop: "{{ taut_firewall_sources | default([hostvars[taut_monitor_host].taut_private_ip]) }}"
+  loop: "{{ taut_firewall_sources | default([hostvars[taut_monitor_host].taut_private_ip]) | reject('equalto', taut_private_ip) | list }}"
   when: "taut_firewall_ufw.stdout | default('') is match('Status: active')"
