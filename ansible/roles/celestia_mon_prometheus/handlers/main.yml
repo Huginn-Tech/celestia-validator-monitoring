@@ -1,0 +1,15 @@
+---
+# Handlers run in the order listed here. Reload comes first so a SIGHUP never
+# reaches a Prometheus that a restart has only just started.
+- name: Reload Prometheus
+  ansible.builtin.systemd_service:
+    name: celestia-mon-prometheus
+    state: reloaded
+  when: celestia_mon_prometheus_present or not ansible_check_mode
+
+- name: Restart Prometheus
+  ansible.builtin.systemd_service:
+    name: celestia-mon-prometheus
+    state: restarted
+    daemon_reload: true
+  when: celestia_mon_prometheus_present or not ansible_check_mode

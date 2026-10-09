@@ -1,0 +1,28 @@
+---
+- name: Check the shared settings
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_signer in ['local', 'remote']
+      - celestia_mon_fibre_enabled | type_debug == 'bool'
+      - celestia_mon_units.appd | length > 0
+      - (not celestia_mon_fibre_enabled) or (celestia_mon_units.fibre | length > 0)
+      - (celestia_mon_signer == 'local') or (celestia_mon_units.tmkms | length > 0)
+      - groups.get('validator', []) | length == 1
+      - groups.get('monitor', []) | length == 1
+    fail_msg: >-
+      celestia_mon_signer must be local or remote, celestia_mon_fibre_enabled must be a boolean,
+      celestia_mon_units must name the services in use, and the inventory needs exactly one
+      validator host and one monitor host (one validator per celestia-mon install).
+    quiet: true
+
+- name: Check this host's private address
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_private_ip is defined
+      - celestia_mon_private_ip is match(celestia_mon_private_address_regex)
+    fail_msg: >-
+      Set celestia_mon_private_ip for {{ inventory_hostname }} to a private address
+      (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address).
+      celestia-mon never binds public addresses.
+    quiet: true
+  when: celestia_mon_host_managed | bool

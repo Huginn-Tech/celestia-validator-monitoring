@@ -1,7 +1,7 @@
 ---
-# Single source of truth for every binary Taut installs or uses in CI.
+# Single source of truth for every binary celestia-mon installs or uses in CI.
 # Pin releases that are at least two weeks old. Checksums are verified at download time.
-taut_versions:
+celestia_mon_versions:
   node_exporter: "1.9.1"
   otelcol_contrib: "0.120.0"
   prometheus: "3.5.0"

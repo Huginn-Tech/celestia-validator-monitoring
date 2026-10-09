@@ -1,0 +1,75 @@
+---
+# Shared settings for every celestia-mon role. Override them in your inventory.
+
+# Signer in use on the validator: local (key file on the node) or remote (tmkms).
+celestia_mon_signer: local
+
+# Install and render everything Fibre-related. Keep false on networks where
+# Fibre is not active (mainnet runs app v9 as of 2026-10).
+celestia_mon_fibre_enabled: false
+
+# systemd service names, without the .service suffix.
+celestia_mon_units:
+  appd: celestia-appd
+  fibre: fibre
+  tmkms: tmkms
+
+# celestia-appd endpoints on the validator host.
+celestia_mon_node_metrics_port: 26660
+celestia_mon_node_rpc_port: 26657
+
+# Ports of the services celestia-mon installs: one block that common tools do not use, so
+# celestia-mon runs next to an existing node_exporter, Prometheus, Grafana or collector.
+# All of them listen on celestia_mon_private_ip only, except otelcol_otlp: the collector's
+# OTLP/HTTP receiver on 127.0.0.1, where Fibre pushes its metrics
+# (--otel-endpoint http://127.0.0.1:9915 with the default below).
+# The playbook stops if another process already listens on one of them.
+# Overriding celestia_mon_ports replaces the whole map, so list every key.
+celestia_mon_ports:
+  node_exporter: 9910
+  otelcol_prometheus: 9911
+  prometheus: 9912
+  alertmanager: 9913
+  grafana: 9914
+  otelcol_otlp: 9915
+
+# Alert thresholds (see docs/alerts.md).
+celestia_mon_thresholds:
+  not_signing_blocks: 50
+  signer_median_seconds: 0.010
+  fibre_stale_uploads: 10
+  fibre_stale_min_seconds: 3600
+  disk_page_free_ratio: 0.03
+  disk_message_free_ratio: 0.10
+  crashloop_restarts: 2
+
+# Alert receivers per severity. Each entry is one of:
+#   {type: telegram, bot_token: ..., chat_id: ...}
+#   {type: pagerduty, routing_key: ...}
+#   {type: slack, api_url: ..., channel: ...}
+#   {type: webhook, url: ...}
+# One list may be empty: its alerts then go to the other list's receivers.
+# Keep secrets in ansible-vault.
+celestia_mon_receivers:
+  page: []
+  message: []
+
+# Heartbeat URL of an external dead-man service. The Watchdog alert pings it
+# every 1-2 minutes; the service alerts you when the pings stop.
+celestia_mon_deadman_webhook_url: ""
+
+celestia_mon_prometheus_retention: 30d
+
+# Per-host settings (set them in host_vars or the inventory):
+#   celestia_mon_private_ip            required on every host celestia-mon touches
+#   celestia_mon_data_mounts           list of mount points to watch (node data, tmkms state)
+#   celestia_mon_fibre_mount           Fibre store mount point (fibre hosts)
+#   celestia_mon_fibre_public_endpoint host:port registered with valaddr set-host (fibre hosts)
+#   celestia_mon_kms_scrape            install node_exporter on a kms host (default false)
+#   celestia_mon_link_mbps             optional, the link speed you pay for in Mbit/s, for the Link load
+#                              panel (every node_exporter host). Set it when the host reports
+#                              no NIC speed (virtio), has more than one physical NIC, or buys
+#                              less than its port speed
+#   celestia_mon_node_home             celestia-appd home for celestia-mon-doctor (validator host). Default: the
+#                              unit's --home, CELESTIA_APP_HOME, DAEMON_HOME, or ~/.celestia-app
+#                              of the unit's User

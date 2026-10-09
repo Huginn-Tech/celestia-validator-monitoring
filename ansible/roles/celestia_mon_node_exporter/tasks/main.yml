@@ -1,0 +1,151 @@
+---
+# celestia-mon's node_exporter runs as its own unit, user and port, next to any other
+# node_exporter on the host. Stop before changing anything when the port is taken.
+- name: Check that nothing else listens on the node_exporter port
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.node_exporter }}"
+    celestia_mon_port_check_unit: celestia-mon-node-exporter
+
+- name: Create the celestia-mon-node-exporter user
+  ansible.builtin.user:
+    name: celestia-mon-node-exporter
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Look for node_exporter {{ celestia_mon_node_exporter_version }}
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_node_exporter_binary }}"
+  register: celestia_mon_node_exporter_installed
+
+# In check mode nothing is downloaded, so the tasks that need the binary or the
+# unit are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of node_exporter {{ celestia_mon_node_exporter_version }}
+  ansible.builtin.debug:
+    msg: Would install {{ celestia_mon_node_exporter_binary }} and restart celestia-mon-node-exporter.
+  changed_when: true
+  when: ansible_check_mode and not celestia_mon_node_exporter_installed.stat.exists
+
+- name: Install node_exporter {{ celestia_mon_node_exporter_version }}
+  when: not celestia_mon_node_exporter_installed.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: /var/cache/celestia-mon
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download node_exporter and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ celestia_mon_node_exporter_url }}/{{ celestia_mon_node_exporter_release }}.tar.gz"
+        dest: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
+        checksum: "sha256:{{ celestia_mon_node_exporter_url }}/sha256sums.txt"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack node_exporter
+      ansible.builtin.unarchive:
+        src: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
+        dest: /var/cache/celestia-mon
+        remote_src: true
+
+    - name: Create the install directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /opt/celestia-mon
+        - "{{ celestia_mon_node_exporter_dir }}"
+
+    - name: Install the node_exporter binary
+      ansible.builtin.copy:
+        src: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}/node_exporter"
+        dest: "{{ celestia_mon_node_exporter_binary }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Remove the downloaded files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
+        - "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}"
+
+- name: Write the celestia-mon-node-exporter service
+  ansible.builtin.template:
+    src: celestia-mon-node-exporter.service.j2
+    dest: /etc/systemd/system/celestia-mon-node-exporter.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: celestia_mon_node_exporter_unit_file
+  notify: Restart celestia-mon-node-exporter
+
+# Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Enable and start celestia-mon-node-exporter
+  ansible.builtin.systemd_service:
+    name: celestia-mon-node-exporter
+    enabled: true
+    state: started
+    daemon_reload: "{{ celestia_mon_node_exporter_unit_file is changed }}"
+  when: celestia_mon_node_exporter_installed.stat.exists or not ansible_check_mode
+
+- name: Apply a pending celestia-mon-node-exporter restart
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+- name: Wait for node_exporter on {{ celestia_mon_node_exporter_listen_address }}
+  ansible.builtin.wait_for:
+    host: "{{ celestia_mon_private_ip }}"
+    port: "{{ celestia_mon_ports.node_exporter }}"
+    timeout: 30
+    msg: celestia-mon-node-exporter does not listen on {{ celestia_mon_node_exporter_listen_address }}. See journalctl -u celestia-mon-node-exporter.
+  when: not ansible_check_mode
+
+- name: Find older node_exporter versions
+  ansible.builtin.find:
+    paths: /opt/celestia-mon
+    patterns: node_exporter-*
+    excludes: node_exporter-{{ celestia_mon_node_exporter_version }}
+    file_type: directory
+  register: celestia_mon_node_exporter_old
+  when: celestia_mon_node_exporter_installed.stat.exists or not ansible_check_mode
+
+- name: Remove older node_exporter versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ celestia_mon_node_exporter_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Let the monitor host reach node_exporter through ufw
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: firewall
+  vars:
+    celestia_mon_firewall_port: "{{ celestia_mon_ports.node_exporter }}"
+
+# Prometheus scrapes celestia-appd's own metrics port on the validator host too.
+- name: Let the monitor host reach celestia-appd's metrics through ufw
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: firewall
+  vars:
+    celestia_mon_firewall_port: "{{ celestia_mon_node_metrics_port }}"
+  when: inventory_hostname in groups.get('validator', [])

@@ -1,11 +1,11 @@
 {#
-  Alertmanager configuration for Taut. Rendered by the taut_alertmanager role (with no_log,
+  Alertmanager configuration for celestia-mon. Rendered by the celestia_mon_alertmanager role (with no_log,
   because receivers carry tokens) and by CI with dummy receivers.
-  Inputs: taut_receivers.page, taut_receivers.message (lists of {type: telegram|pagerduty|slack|webhook, ...})
-  and taut_deadman_webhook_url. An empty list uses the other list's receivers, so no alert is dropped.
+  Inputs: celestia_mon_receivers.page, celestia_mon_receivers.message (lists of {type: telegram|pagerduty|slack|webhook, ...})
+  and celestia_mon_deadman_webhook_url. An empty list uses the other list's receivers, so no alert is dropped.
 #}
-{% set page = taut_receivers.page | default([], true) %}
-{% set message = taut_receivers.message | default([], true) %}
+{% set page = celestia_mon_receivers.page | default([], true) %}
+{% set message = celestia_mon_receivers.message | default([], true) %}
 {% macro receiver_configs(entries) %}
 {% for type in ['telegram', 'pagerduty', 'slack', 'webhook'] %}
 {%   set items = entries | selectattr('type', 'equalto', type) | list %}
@@ -30,7 +30,7 @@
 {%   endif %}
 {% endfor %}
 {% endmacro %}
-# Managed by Taut. Local changes are overwritten on the next playbook run.
+# Managed by celestia-mon. Local changes are overwritten on the next playbook run.
 route:
   receiver: message
   group_by: [alertname, host]
@@ -82,8 +82,8 @@ receivers:
 {{ receiver_configs(message or page) }}
   # Without a dead-man URL the heartbeat goes to this receiver and is dropped.
   - name: deadman
-{% if taut_deadman_webhook_url | string | length > 0 %}
+{% if celestia_mon_deadman_webhook_url | string | length > 0 %}
     webhook_configs:
-      - url: {{ taut_deadman_webhook_url | string | to_json }}
+      - url: {{ celestia_mon_deadman_webhook_url | string | to_json }}
         send_resolved: false
 {% endif %}

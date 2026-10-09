@@ -1,24 +1,24 @@
 ---
-- name: Verify the Taut install
+- name: Verify the celestia-mon install
   hosts: all
   gather_facts: true
   vars:
-    # systemd units of the services Taut installs on this all-in-one host.
-    taut_verify_units:
-      - taut-node-exporter.service
-      - taut-otelcol.service
-      - taut-prometheus.service
-      - taut-alertmanager.service
-      - taut-grafana.service
-    # Unit names and binaries other installs on the host use; Taut must leave them alone.
-    taut_verify_foreign_units:
+    # systemd units of the services celestia-mon installs on this all-in-one host.
+    celestia_mon_verify_units:
+      - celestia-mon-node-exporter.service
+      - celestia-mon-otelcol.service
+      - celestia-mon-prometheus.service
+      - celestia-mon-alertmanager.service
+      - celestia-mon-grafana.service
+    # Unit names and binaries other installs on the host use; celestia-mon must leave them alone.
+    celestia_mon_verify_foreign_units:
       - node_exporter.service
       - prometheus-node-exporter.service
       - otelcol-contrib.service
       - prometheus.service
       - alertmanager.service
       - grafana-server.service
-    taut_verify_foreign_binaries:
+    celestia_mon_verify_foreign_binaries:
       - node_exporter
       - otelcol-contrib
       - prometheus
@@ -27,8 +27,8 @@
       - amtool
       - grafana
       - grafana-server
-    # Taut's default ports (taut_ports). All but the OTLP receiver listen on the private address.
-    taut_verify_ports:
+    # celestia-mon's default ports (celestia_mon_ports). All but the OTLP receiver listen on the private address.
+    celestia_mon_verify_ports:
       node_exporter: 9910
       otelcol_prometheus: 9911
       prometheus: 9912
@@ -36,7 +36,7 @@
       grafana: 9914
       otelcol_otlp: 9915
     # Scrape jobs Prometheus must have, with the role label of this host's target.
-    taut_verify_jobs:
+    celestia_mon_verify_jobs:
       - job: celestia-app
         role: validator
       - job: node
@@ -47,43 +47,43 @@
     - name: Collect the service states
       ansible.builtin.service_facts:
 
-    - name: Check that every Taut service is running
+    - name: Check that every celestia-mon service is running
       ansible.builtin.assert:
         that:
           - item in ansible_facts.services
           - ansible_facts.services[item].state == 'running'
         fail_msg: "{{ item }} is not running"
         quiet: true
-      loop: "{{ taut_verify_units }}"
+      loop: "{{ celestia_mon_verify_units }}"
 
-    - name: Check that Taut took none of the usual unit names
+    - name: Check that celestia-mon took none of the usual unit names
       ansible.builtin.assert:
         that:
           - item not in ansible_facts.services
-        fail_msg: "{{ item }} exists; Taut's units are named taut-*."
+        fail_msg: "{{ item }} exists; celestia-mon's units are named celestia-mon-*."
         quiet: true
-      loop: "{{ taut_verify_foreign_units }}"
+      loop: "{{ celestia_mon_verify_foreign_units }}"
 
     - name: Look for binaries in /usr/local/bin
       ansible.builtin.stat:
         path: /usr/local/bin/{{ item }}
         get_checksum: false
-      loop: "{{ taut_verify_foreign_binaries }}"
-      register: taut_verify_binaries
+      loop: "{{ celestia_mon_verify_foreign_binaries }}"
+      register: celestia_mon_verify_binaries
 
-    - name: Check that Taut put no binary in /usr/local/bin
+    - name: Check that celestia-mon put no binary in /usr/local/bin
       ansible.builtin.assert:
         that:
-          - taut_verify_binaries.results | selectattr('stat.exists') | list | length == 0
+          - celestia_mon_verify_binaries.results | selectattr('stat.exists') | list | length == 0
         fail_msg: >-
-          Found {{ taut_verify_binaries.results | selectattr('stat.exists') | map(attribute='item') | join(', ') }}
-          in /usr/local/bin; Taut installs its binaries under /opt/taut.
+          Found {{ celestia_mon_verify_binaries.results | selectattr('stat.exists') | map(attribute='item') | join(', ') }}
+          in /usr/local/bin; celestia-mon installs its binaries under /opt/celestia-mon.
         quiet: true
 
-    - name: Check that every Taut port answers on the private address
+    - name: Check that every celestia-mon port answers on the private address
       ansible.builtin.wait_for:
-        host: "{{ taut_private_ip }}"
-        port: "{{ taut_verify_ports[item] }}"
+        host: "{{ celestia_mon_private_ip }}"
+        port: "{{ celestia_mon_verify_ports[item] }}"
         timeout: 60
       loop:
         - node_exporter
@@ -95,71 +95,71 @@
     - name: Check that the collector's OTLP receiver answers on loopback
       ansible.builtin.wait_for:
         host: 127.0.0.1
-        port: "{{ taut_verify_ports.otelcol_otlp }}"
+        port: "{{ celestia_mon_verify_ports.otelcol_otlp }}"
         timeout: 60
 
     - name: Check that the Alertmanager cluster port stays closed
       ansible.builtin.wait_for:
-        host: "{{ taut_private_ip }}"
+        host: "{{ celestia_mon_private_ip }}"
         port: 9094
         state: stopped
         timeout: 5
 
     - name: Read the Prometheus scrape targets
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.prometheus }}/api/v1/targets?state=active"
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.prometheus }}/api/v1/targets?state=active"
         return_content: true
-      register: taut_verify_targets
+      register: celestia_mon_verify_targets
 
     - name: Check that Prometheus has exactly the expected jobs
       ansible.builtin.assert:
         that:
-          - taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | sort == taut_verify_jobs | map(attribute='job') | sort
+          - celestia_mon_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | sort == celestia_mon_verify_jobs | map(attribute='job') | sort
         fail_msg: >-
-          Expected one target per job in {{ taut_verify_jobs | map(attribute='job') | join(', ') }}, got
-          {{ taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | join(', ') }}.
+          Expected one target per job in {{ celestia_mon_verify_jobs | map(attribute='job') | join(', ') }}, got
+          {{ celestia_mon_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | join(', ') }}.
         quiet: true
 
     - name: Check the host and role labels of each job
       ansible.builtin.assert:
         that:
           - >-
-            taut_verify_targets.json.data.activeTargets
+            celestia_mon_verify_targets.json.data.activeTargets
             | selectattr('labels.job', 'equalto', item.job)
             | selectattr('labels.role', 'equalto', item.role)
             | selectattr('labels.host', 'equalto', inventory_hostname)
             | list | length == 1
         fail_msg: "Job {{ item.job }} has no target labelled host={{ inventory_hostname }}, role={{ item.role }}."
         quiet: true
-      loop: "{{ taut_verify_jobs }}"
+      loop: "{{ celestia_mon_verify_jobs }}"
       loop_control:
         label: "{{ item.job }}"
 
     - name: Read the loaded Alertmanager configuration
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.alertmanager }}/api/v2/status"
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.alertmanager }}/api/v2/status"
         return_content: true
-      register: taut_verify_am_status
+      register: celestia_mon_verify_am_status
 
-    # The scenario leaves taut_receivers.page empty, so the page receiver must carry
+    # The scenario leaves celestia_mon_receivers.page empty, so the page receiver must carry
     # the message receivers' configs.
     - name: Check that page alerts fall back to the message receivers
       ansible.builtin.assert:
         that:
           - >-
-            (taut_verify_am_status.json.config.original | from_yaml).receivers
+            (celestia_mon_verify_am_status.json.config.original | from_yaml).receivers
             | selectattr('name', 'equalto', 'page') | map(attribute='webhook_configs', default=[]) | first | length == 1
           - >-
-            (taut_verify_am_status.json.config.original | from_yaml).receivers
+            (celestia_mon_verify_am_status.json.config.original | from_yaml).receivers
             | selectattr('name', 'equalto', 'page') | map(attribute='slack_configs', default=[]) | first | length == 1
         fail_msg: The page receiver lacks the message receivers' webhook and Slack configs.
         quiet: true
 
     - name: Wait for the Watchdog alert to reach Alertmanager
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.alertmanager }}/api/v2/alerts"
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.alertmanager }}/api/v2/alerts"
         return_content: true
-      register: taut_verify_alerts
-      until: taut_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
+      register: celestia_mon_verify_alerts
+      until: celestia_mon_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
       retries: 18
       delay: 10

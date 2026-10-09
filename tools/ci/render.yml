@@ -2,9 +2,9 @@
 # Renders the alert rules, Alertmanager and Prometheus configs and the dashboard
 # settings for one example inventory, so CI can check them. It runs on the CI
 # machine only (connection local) and touches no host. Usage, from the repo root:
-#   ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e taut_ci_scenario=split
-# Output: monitoring/rules/tests/<scenario>/taut.rules.yml (next to the rule tests)
-# and build/<scenario>/{rules/taut.rules.yml,alertmanager.yml,prometheus.yml,dashboard-config.json}.
+#   ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split
+# Output: monitoring/rules/tests/<scenario>/celestia-mon.rules.yml (next to the rule tests)
+# and build/<scenario>/{rules/celestia-mon.rules.yml,alertmanager.yml,prometheus.yml,dashboard-config.json}.
 - name: Render the monitoring configuration of an example inventory
   hosts: monitor
   connection: local
@@ -13,26 +13,26 @@
     - ../../versions.yml
   vars:
     ansible_python_interpreter: "{{ ansible_playbook_python }}"
-    taut_ci_root: "{{ (playbook_dir ~ '/../..') | realpath }}"
-    taut_ci_build: "{{ taut_ci_root }}/build/{{ taut_ci_scenario }}"
-    taut_ci_tests: "{{ taut_ci_root }}/monitoring/rules/tests/{{ taut_ci_scenario }}"
+    celestia_mon_ci_root: "{{ (playbook_dir ~ '/../..') | realpath }}"
+    celestia_mon_ci_build: "{{ celestia_mon_ci_root }}/build/{{ celestia_mon_ci_scenario }}"
+    celestia_mon_ci_tests: "{{ celestia_mon_ci_root }}/monitoring/rules/tests/{{ celestia_mon_ci_scenario }}"
   pre_tasks:
     - name: Check the scenario
       ansible.builtin.assert:
         that:
-          - taut_ci_scenario is defined
-          - taut_ci_scenario in ['single', 'split']
-        fail_msg: Pass -e taut_ci_scenario=single or -e taut_ci_scenario=split, matching the inventory.
+          - celestia_mon_ci_scenario is defined
+          - celestia_mon_ci_scenario in ['single', 'split']
+        fail_msg: Pass -e celestia_mon_ci_scenario=single or -e celestia_mon_ci_scenario=split, matching the inventory.
         quiet: true
   roles:
-    - role: taut
+    - role: celestia_mon
     # Loaded for their defaults and vars only, so the templates see the same
     # variables as on a real monitor host; their tasks are skipped.
-    - role: taut_prometheus
+    - role: celestia_mon_prometheus
       when: false
-    - role: taut_alertmanager
+    - role: celestia_mon_alertmanager
       when: false
-    - role: taut_grafana
+    - role: celestia_mon_grafana
       when: false
   tasks:
     - name: Create the output directories
@@ -41,36 +41,36 @@
         state: directory
         mode: "0755"
       loop:
-        - "{{ taut_ci_tests }}"
-        - "{{ taut_ci_build }}/rules"
+        - "{{ celestia_mon_ci_tests }}"
+        - "{{ celestia_mon_ci_build }}/rules"
 
     - name: Render the alert rules
       ansible.builtin.template:
-        src: "{{ taut_ci_root }}/monitoring/rules/taut.rules.yml.j2"
-        dest: "{{ item }}/taut.rules.yml"
+        src: "{{ celestia_mon_ci_root }}/monitoring/rules/celestia-mon.rules.yml.j2"
+        dest: "{{ item }}/celestia-mon.rules.yml"
         mode: "0644"
       loop:
-        - "{{ taut_ci_tests }}"
-        - "{{ taut_ci_build }}/rules"
+        - "{{ celestia_mon_ci_tests }}"
+        - "{{ celestia_mon_ci_build }}/rules"
 
     - name: Render the Alertmanager config
       ansible.builtin.template:
-        src: "{{ taut_ci_root }}/monitoring/alertmanager.yml.j2"
-        dest: "{{ taut_ci_build }}/alertmanager.yml"
+        src: "{{ celestia_mon_ci_root }}/monitoring/alertmanager.yml.j2"
+        dest: "{{ celestia_mon_ci_build }}/alertmanager.yml"
         mode: "0644"
 
     # The rules dir under build/ holds only the rendered rules file, so a rule_files
     # glob in prometheus.yml does not pick up the rule tests.
     - name: Render the Prometheus config
       ansible.builtin.template:
-        src: "{{ taut_ci_root }}/ansible/roles/taut_prometheus/templates/prometheus.yml.j2"
-        dest: "{{ taut_ci_build }}/prometheus.yml"
+        src: "{{ celestia_mon_ci_root }}/ansible/roles/celestia_mon_prometheus/templates/prometheus.yml.j2"
+        dest: "{{ celestia_mon_ci_build }}/prometheus.yml"
         mode: "0644"
       vars:
-        taut_prometheus_rules_dir: "{{ taut_ci_build }}/rules"
+        celestia_mon_prometheus_rules_dir: "{{ celestia_mon_ci_build }}/rules"
 
     - name: Render the dashboard settings
       ansible.builtin.template:
-        src: "{{ taut_ci_root }}/ansible/roles/taut_grafana/templates/dashboard-config.json.j2"
-        dest: "{{ taut_ci_build }}/dashboard-config.json"
+        src: "{{ celestia_mon_ci_root }}/ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2"
+        dest: "{{ celestia_mon_ci_build }}/dashboard-config.json"
         mode: "0644"

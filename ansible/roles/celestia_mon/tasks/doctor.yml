@@ -1,0 +1,24 @@
+---
+- name: Create the celestia-mon settings directory
+  ansible.builtin.file:
+    path: /etc/celestia-mon
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install celestia-mon-doctor
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../tools/doctor.sh"
+    dest: /usr/local/bin/celestia-mon-doctor
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Write the celestia-mon-doctor settings
+  ansible.builtin.template:
+    src: doctor.conf.j2
+    dest: /etc/celestia-mon/doctor.conf
+    owner: root
+    group: root
+    mode: "0644"

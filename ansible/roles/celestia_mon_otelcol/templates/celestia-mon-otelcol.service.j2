@@ -1,0 +1,20 @@
+# Managed by celestia-mon (role celestia_mon_otelcol). Local changes are overwritten.
+[Unit]
+Description=OpenTelemetry Collector for Fibre metrics (celestia-mon)
+Documentation=https://github.com/open-telemetry/opentelemetry-collector-releases
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=celestia-mon-otelcol
+ExecStart={{ celestia_mon_otelcol_binary }} --config={{ celestia_mon_otelcol_config }}
+Restart=on-failure
+# The private address can appear after boot (WireGuard, Tailscale): keep retrying.
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

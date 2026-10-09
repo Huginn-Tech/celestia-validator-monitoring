@@ -1,0 +1,25 @@
+# Managed by celestia-mon (role celestia_mon_grafana). Local changes are overwritten.
+[Unit]
+Description=Grafana (celestia-mon)
+Documentation=https://grafana.com/docs/grafana/latest/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=celestia-mon-grafana
+Group=celestia-mon-grafana
+WorkingDirectory={{ celestia_mon_grafana_home }}
+ExecStart={{ celestia_mon_grafana_home }}/bin/grafana server \
+  --homepath {{ celestia_mon_grafana_home }} \
+  --config {{ celestia_mon_grafana_config_dir }}/grafana.ini
+Restart=on-failure
+# The private address can appear after boot (WireGuard, Tailscale): keep retrying.
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ celestia_mon_grafana_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

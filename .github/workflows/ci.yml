@@ -85,7 +85,7 @@ jobs:
               ci:
                 ansible_connection: local
                 ansible_python_interpreter: /usr/bin/python3
-                taut_private_ip: 127.0.0.1
+                celestia_mon_private_ip: 127.0.0.1
             children:
               validator:
                 hosts:
@@ -97,9 +97,9 @@ jobs:
                 hosts:
                   ci:
             vars:
-              taut_signer: local
-              taut_fibre_enabled: true
-              taut_units:
+              celestia_mon_signer: local
+              celestia_mon_fibre_enabled: true
+              celestia_mon_units:
                 appd: systemd-journald
                 fibre: systemd-logind
                 tmkms: tmkms
@@ -111,14 +111,14 @@ jobs:
             tasks:
               - name: Load the shared settings
                 ansible.builtin.include_role:
-                  name: taut
+                  name: celestia_mon
                   public: true
               - name: Install node_exporter
                 ansible.builtin.include_role:
-                  name: taut_node_exporter
+                  name: celestia_mon_node_exporter
               - name: Install the OpenTelemetry collector
                 ansible.builtin.include_role:
-                  name: taut_otelcol
+                  name: celestia_mon_otelcol
           - name: Bind check
             hosts: all
             become: true
@@ -126,7 +126,7 @@ jobs:
             tasks:
               - name: Run the bind check
                 ansible.builtin.include_role:
-                  name: taut
+                  name: celestia_mon
                   tasks_from: bind_check
           EOF
       - name: Dry run on a fresh host
@@ -139,7 +139,7 @@ jobs:
           grep -Eq '^ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0' "$CI_DIR/second.log"
       - name: node_exporter lists only the configured units
         run: |
-          sudo systemctl is-active taut-node-exporter
+          sudo systemctl is-active celestia-mon-node-exporter
           node=$(curl -sf http://127.0.0.1:9910/metrics)
           grep -q '^node_systemd_unit_state{name="systemd-journald.service",state="active"' <<<"$node"
           grep -q '^node_systemd_unit_start_time_seconds{name="systemd-logind.service"}' <<<"$node"
@@ -148,7 +148,7 @@ jobs:
           if [ "$units" -ne 2 ]; then echo "systemd collector lists $units units, expected 2"; exit 1; fi
       - name: The collector sums Fibre's size attributes away and drops traces
         run: |
-          sudo systemctl is-active taut-otelcol
+          sudo systemctl is-active celestia-mon-otelcol
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9911/metrics && break; sleep 1; done
           now=$(date +%s%N)
           start=$((now - 1000000000))
@@ -172,19 +172,19 @@ jobs:
           grep -Eq '^fibre_server_upload_shard_duration_seconds_count\{[^}]*success="true"[^}]*\} 2$' <<<"$otel"
           if grep -q upload_size <<<"$otel"; then echo "upload_size was not summed away"; exit 1; fi
           if sudo ss -Htln | grep -Eq ':8888[[:space:]]'; then echo "the collector opened its own telemetry port"; exit 1; fi
-      - name: doctor finds Taut's units on private addresses
+      - name: doctor finds celestia-mon's units on private addresses
         run: |
           out=$(sudo bash tools/doctor.sh --config /dev/null --roles kms --data-mounts / --head-wait 2 || true)
           printf '%s\n' "$out"
-          grep -Eq '^OK +8 +private binds +.*taut-node-exporter 127\.0\.0\.1:9910' <<<"$out"
-          grep -Eq '^OK +8 .*taut-otelcol 127\.0\.0\.1:9915' <<<"$out"
-      - name: The playbook stops when another process holds a Taut port
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-node-exporter 127\.0\.0\.1:9910' <<<"$out"
+          grep -Eq '^OK +8 .*celestia-mon-otelcol 127\.0\.0\.1:9915' <<<"$out"
+      - name: The playbook stops when another process holds a celestia-mon port
         run: |
           python3 -m http.server 9920 --bind 127.0.0.1 >/dev/null 2>&1 &
           server=$!
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9920/ && break; sleep 1; done
           cat > "$CI_DIR/taken.json" <<'EOF'
-          {"taut_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
+          {"celestia_mon_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
                           "alertmanager": 9913, "grafana": 9914, "otelcol_otlp": 9915}}
           EOF
           if ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml -e @"$CI_DIR/taken.json" "$CI_DIR/site.yml" >"$CI_DIR/taken.log"; then
@@ -194,10 +194,10 @@ jobs:
           fi
           kill "$server"
           cat "$CI_DIR/taken.log"
-          grep -Eq 'port 9920 is used by python[0-9.]* \([0-9]+\); set taut_ports\.node_exporter to a free port' "$CI_DIR/taken.log"
+          grep -Eq 'port 9920 is used by python[0-9.]* \([0-9]+\); set celestia_mon_ports\.node_exporter to a free port' "$CI_DIR/taken.log"
       - name: Show the collector logs
         if: failure()
-        run: sudo journalctl -u taut-node-exporter -u taut-otelcol --no-pager -n 200
+        run: sudo journalctl -u celestia-mon-node-exporter -u celestia-mon-otelcol --no-pager -n 200
 
   rules:
     runs-on: ubuntu-24.04
@@ -214,15 +214,15 @@ jobs:
       - name: Render both example inventories
         run: |
           for s in single split; do
-            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "taut_ci_scenario=$s"
+            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
-          pin() { python -c 'import sys, yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"][sys.argv[1]])' "$1"; }
+          pin() { python -c 'import sys, yaml; print(yaml.safe_load(open("versions.yml"))["celestia_mon_versions"][sys.argv[1]])' "$1"; }
           prom="$(pin prometheus)"
           am="$(pin alertmanager)"
-          mkdir -p "$RUNNER_TEMP/taut-bin"
+          mkdir -p "$RUNNER_TEMP/celestia-mon-bin"
           cd "$RUNNER_TEMP"
           base="https://github.com/prometheus"
           curl -fsSLO "$base/prometheus/releases/download/v$prom/prometheus-$prom.linux-amd64.tar.gz"
@@ -231,13 +231,13 @@ jobs:
           curl -fsSLO "$base/alertmanager/releases/download/v$am/alertmanager-$am.linux-amd64.tar.gz"
           curl -fsSL -o alertmanager.sha256 "$base/alertmanager/releases/download/v$am/sha256sums.txt"
           grep " alertmanager-$am.linux-amd64.tar.gz\$" alertmanager.sha256 | sha256sum -c -
-          tar -xzf "prometheus-$prom.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "prometheus-$prom.linux-amd64/promtool"
-          tar -xzf "alertmanager-$am.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "alertmanager-$am.linux-amd64/amtool"
-          echo "$RUNNER_TEMP/taut-bin" >> "$GITHUB_PATH"
+          tar -xzf "prometheus-$prom.linux-amd64.tar.gz" -C celestia-mon-bin --strip-components=1 "prometheus-$prom.linux-amd64/promtool"
+          tar -xzf "alertmanager-$am.linux-amd64.tar.gz" -C celestia-mon-bin --strip-components=1 "alertmanager-$am.linux-amd64/amtool"
+          echo "$RUNNER_TEMP/celestia-mon-bin" >> "$GITHUB_PATH"
       - name: promtool check rules
         run: |
           for s in single split; do
-            promtool check rules --lint=none "monitoring/rules/tests/$s/taut.rules.yml"
+            promtool check rules --lint=none "monitoring/rules/tests/$s/celestia-mon.rules.yml"
           done
       - name: promtool test rules
         run: |
@@ -269,12 +269,12 @@ jobs:
           ansible-galaxy collection install -r ansible/requirements.yml
       - name: Start a throwaway Prometheus at the version in versions.yml
         run: |
-          version="$(python -c 'import yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"]["prometheus"])')"
+          version="$(python -c 'import yaml; print(yaml.safe_load(open("versions.yml"))["celestia_mon_versions"]["prometheus"])')"
           docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$version"
       - name: Render the dashboard settings for both example inventories
         run: |
           for s in single split; do
-            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "taut_ci_scenario=$s"
+            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Generate the dashboards
         run: |
@@ -320,7 +320,7 @@ jobs:
           run bash tools/doctor.sh --data-mounts /,/does-not-exist
           echo "::endgroup::"
           echo "::group::every key in doctor.conf.j2"
-          sed -n 's/^\([a-z_]\{1,\}\)=.*/\1=/p' ansible/roles/taut/templates/doctor.conf.j2 >"$RUNNER_TEMP/doctor.conf"
+          sed -n 's/^\([a-z_]\{1,\}\)=.*/\1=/p' ansible/roles/celestia_mon/templates/doctor.conf.j2 >"$RUNNER_TEMP/doctor.conf"
           echo 'roles=validator,fibre' >>"$RUNNER_TEMP/doctor.conf"
           cat "$RUNNER_TEMP/doctor.conf"
           run sudo bash tools/doctor.sh --config "$RUNNER_TEMP/doctor.conf" --head-wait 2

@@ -1,6 +1,6 @@
 # Watchdog fires from the first evaluation on, whatever the other series say.
 rule_files:
-  - taut.rules.yml
+  - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
@@ -17,15 +17,15 @@ tests:
           - exp_labels:
               severity: heartbeat
             exp_annotations:
-              summary: "Taut heartbeat"
+              summary: "celestia-mon heartbeat"
               description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 60m
         alertname: Watchdog
         exp_alerts:
           - exp_labels:
               severity: heartbeat
             exp_annotations:
-              summary: "Taut heartbeat"
+              summary: "celestia-mon heartbeat"
               description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"

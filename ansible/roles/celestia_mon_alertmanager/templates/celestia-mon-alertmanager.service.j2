@@ -1,0 +1,27 @@
+# Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+[Unit]
+Description=Alertmanager (celestia-mon)
+Documentation=https://prometheus.io/docs/alerting/latest/alertmanager/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=celestia-mon-alertmanager
+Group=celestia-mon-alertmanager
+# An empty --cluster.listen-address disables HA gossip, so port 9094 stays closed.
+ExecStart={{ celestia_mon_alertmanager_home }}/alertmanager \
+  --config.file={{ celestia_mon_alertmanager_config_dir }}/alertmanager.yml \
+  --storage.path={{ celestia_mon_alertmanager_data_dir }} \
+  --web.listen-address={{ celestia_mon_alertmanager_listen_address }} \
+  --cluster.listen-address=
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ celestia_mon_alertmanager_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

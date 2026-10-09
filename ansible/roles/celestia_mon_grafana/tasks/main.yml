@@ -1,0 +1,298 @@
+---
+- name: Check the Grafana admin password
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_grafana_admin_password is defined
+      - celestia_mon_grafana_admin_password | length > 0
+      - celestia_mon_grafana_admin_password != 'REPLACE_ME'
+    fail_msg: >-
+      Set celestia_mon_grafana_admin_password in the inventory to a real password and keep it
+      in ansible-vault (Grafana reads it only on its first start).
+    quiet: true
+
+# Stop before changing anything when another process already uses the port.
+- name: Check that nothing else listens on the Grafana port
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.grafana }}"
+    celestia_mon_port_check_unit: celestia-mon-grafana
+
+- name: Create the celestia-mon-grafana group
+  ansible.builtin.group:
+    name: celestia-mon-grafana
+    system: true
+
+- name: Create the celestia-mon-grafana user
+  ansible.builtin.user:
+    name: celestia-mon-grafana
+    group: celestia-mon-grafana
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ celestia_mon_grafana_data_dir }}"
+    create_home: false
+
+- name: Look for Grafana {{ celestia_mon_grafana_version }}
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_grafana_home }}/bin/grafana"
+    get_checksum: false
+    get_mime: false
+  register: celestia_mon_grafana_installed
+
+# In check mode nothing is downloaded, so the tasks that need Grafana or its unit
+# are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of Grafana {{ celestia_mon_grafana_version }}
+  ansible.builtin.debug:
+    msg: Would install Grafana {{ celestia_mon_grafana_version }} in {{ celestia_mon_grafana_home }} and restart celestia-mon-grafana.
+  changed_when: true
+  when: ansible_check_mode and not celestia_mon_grafana_installed.stat.exists
+
+- name: Install Grafana {{ celestia_mon_grafana_version }}
+  when: not celestia_mon_grafana_installed.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the download and install directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /var/cache/celestia-mon
+        - /opt/celestia-mon
+
+    - name: Download the Grafana release and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ celestia_mon_grafana_url }}"
+        dest: "/var/cache/celestia-mon/{{ celestia_mon_grafana_tarball }}"
+        checksum: "sha256:{{ celestia_mon_grafana_url }}.sha256"
+        owner: root
+        group: root
+        mode: "0644"
+
+    # Unpacked on the same filesystem as /opt/celestia-mon, so the move below is a rename.
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the Grafana staging directory
+      ansible.builtin.file:
+        path: /opt/celestia-mon/.staging
+        state: absent
+
+    - name: Create the Grafana staging directory
+      ansible.builtin.file:
+        path: /opt/celestia-mon/.staging
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Create the directory to unpack Grafana into
+      ansible.builtin.file:
+        path: /opt/celestia-mon/.staging/grafana
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Unpack the Grafana release
+      ansible.builtin.unarchive:
+        src: "/var/cache/celestia-mon/{{ celestia_mon_grafana_tarball }}"
+        dest: /opt/celestia-mon/.staging/grafana
+        extra_opts:
+          - --strip-components=1
+        remote_src: true
+
+    # One rename, so an interrupted unpack never leaves a partial version under /opt/celestia-mon.
+    - name: Move the unpacked Grafana to {{ celestia_mon_grafana_home }}
+      ansible.builtin.command:
+        argv:
+          - mv
+          - --no-target-directory
+          - /opt/celestia-mon/.staging/grafana
+          - "{{ celestia_mon_grafana_home }}"
+      changed_when: true
+
+    - name: Remove the downloaded Grafana release and the staging directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/var/cache/celestia-mon/{{ celestia_mon_grafana_tarball }}"
+        - /opt/celestia-mon/.staging
+
+- name: Create the celestia-mon configuration and state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/celestia-mon
+    - /var/lib/celestia-mon
+
+# Grafana logs an error at every start for a provisioning directory that does
+# not exist, so the ones celestia-mon does not use are created empty.
+- name: Create the Grafana configuration directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0750"
+  loop:
+    - "{{ celestia_mon_grafana_config_dir }}"
+    - "{{ celestia_mon_grafana_config_dir }}/provisioning"
+    - "{{ celestia_mon_grafana_config_dir }}/provisioning/alerting"
+    - "{{ celestia_mon_grafana_config_dir }}/provisioning/dashboards"
+    - "{{ celestia_mon_grafana_config_dir }}/provisioning/datasources"
+    - "{{ celestia_mon_grafana_config_dir }}/provisioning/plugins"
+    - "{{ celestia_mon_grafana_dashboard_dir }}"
+
+- name: Create the Grafana data directory
+  ansible.builtin.file:
+    path: "{{ celestia_mon_grafana_data_dir }}"
+    state: directory
+    owner: celestia-mon-grafana
+    group: celestia-mon-grafana
+    mode: "0750"
+
+# Grafana reads the admin password only when it creates the admin user on its
+# first start. Later changes to celestia_mon_grafana_admin_password have no effect;
+# change the password in the Grafana UI (Profile > Change password).
+- name: Write the Grafana admin password
+  ansible.builtin.copy:
+    content: "{{ celestia_mon_grafana_admin_password }}"
+    dest: "{{ celestia_mon_grafana_admin_password_file }}"
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0640"
+  no_log: true
+
+- name: Write the Grafana settings
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: "{{ celestia_mon_grafana_config_dir }}/grafana.ini"
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0640"
+  notify: Restart celestia-mon-grafana
+
+- name: Provision the Prometheus datasource
+  ansible.builtin.template:
+    src: datasource.yml.j2
+    dest: "{{ celestia_mon_grafana_config_dir }}/provisioning/datasources/celestia-mon.yml"
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0640"
+  notify: Restart celestia-mon-grafana
+
+- name: Provision the dashboard folder
+  ansible.builtin.template:
+    src: dashboards.yml.j2
+    dest: "{{ celestia_mon_grafana_config_dir }}/provisioning/dashboards/celestia-mon.yml"
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0640"
+  notify: Restart celestia-mon-grafana
+
+# The dashboard is generated on the control node from the inventory, so groups
+# that do not apply are left out and threshold lines match the alerts. These
+# steps only write under build/ in the checkout, so they also run in check mode.
+- name: Create the dashboard build directory on the control node
+  ansible.builtin.file:
+    path: "{{ celestia_mon_grafana_build_dir }}"
+    state: directory
+    mode: "0755"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+- name: Write the dashboard settings on the control node
+  ansible.builtin.template:
+    src: dashboard-config.json.j2
+    dest: "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.config.json"
+    mode: "0644"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+- name: Generate the dashboard on the control node
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - "{{ celestia_mon_grafana_repo_dir }}/monitoring/dashboards/gen_dashboard.py"
+      - --config
+      - "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.config.json"
+      - --out
+      - "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.json"
+  delegate_to: localhost
+  run_once: true
+  become: false
+  check_mode: false
+  changed_when: false
+
+# Grafana rereads provisioned dashboard files on its own; no restart needed.
+- name: Install the dashboard
+  ansible.builtin.copy:
+    src: "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.json"
+    dest: "{{ celestia_mon_grafana_dashboard_dir }}/celestia-mon-validator.json"
+    owner: root
+    group: celestia-mon-grafana
+    mode: "0640"
+
+- name: Write the celestia-mon-grafana service
+  ansible.builtin.template:
+    src: celestia-mon-grafana.service.j2
+    dest: /etc/systemd/system/celestia-mon-grafana.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: celestia_mon_grafana_unit_file
+  notify: Restart celestia-mon-grafana
+
+# A pending restart performs Grafana's first start, so its first-start database
+# migrations are not cut short by a restart right after.
+- name: Apply a pending celestia-mon-grafana restart
+  ansible.builtin.meta: flush_handlers
+
+# Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Enable and start celestia-mon-grafana
+  ansible.builtin.systemd_service:
+    name: celestia-mon-grafana
+    enabled: true
+    state: started
+    daemon_reload: "{{ celestia_mon_grafana_unit_file is changed }}"
+  when: celestia_mon_grafana_installed.stat.exists or not ansible_check_mode
+
+# Grafana's first start runs its database migrations. Waiting here also lets
+# the bind check at the end of the playbook see Grafana's listening socket.
+- name: Wait for Grafana on its private address
+  ansible.builtin.wait_for:
+    host: "{{ celestia_mon_private_ip }}"
+    port: "{{ celestia_mon_ports.grafana }}"
+    timeout: 180
+    msg: celestia-mon-grafana does not listen on port {{ celestia_mon_ports.grafana }} of {{ celestia_mon_private_ip }}. See journalctl -u celestia-mon-grafana.
+
+- name: Find older Grafana versions
+  ansible.builtin.find:
+    paths: /opt/celestia-mon
+    patterns: grafana-*
+    excludes: grafana-{{ celestia_mon_grafana_version }}
+    file_type: directory
+  register: celestia_mon_grafana_old
+  when: celestia_mon_grafana_installed.stat.exists or not ansible_check_mode
+
+- name: Remove older Grafana versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ celestia_mon_grafana_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"

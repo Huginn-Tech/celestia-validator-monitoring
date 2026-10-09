@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# taut-doctor: read-only checks for the hosts of a Celestia validator.
+# celestia-mon-doctor: read-only checks for the hosts of a Celestia validator.
 #
 # It changes nothing on the host. Each check prints one line:
 #   OK    the check passed
@@ -8,11 +8,11 @@
 #   SKIP  the check does not apply on this host, or cannot run yet
 # Exit code: 0 when no check failed, 1 when one did, 2 on a usage error.
 #
-# Settings are read from /etc/taut/doctor.conf (key=value lines, written by the
-# Taut playbook) and can be given or overridden as flags: "--node-rpc-url URL"
+# Settings are read from /etc/celestia-mon/doctor.conf (key=value lines, written by the
+# celestia-mon playbook) and can be given or overridden as flags: "--node-rpc-url URL"
 # sets node_rpc_url. Without a config file the defaults below apply and the
 # host's roles are guessed from its systemd units. Run it as root
-# (sudo taut-doctor) so it can read the node's config and see which process
+# (sudo celestia-mon-doctor) so it can read the node's config and see which process
 # owns each listening socket.
 #
 # celestia-appd (checks 4 and 5) runs as the node's service user. A
@@ -48,10 +48,10 @@ declare -A C=(
 
 usage() {
   cat <<'EOF'
-Usage: taut-doctor [--config FILE] [--KEY VALUE ...]
+Usage: celestia-mon-doctor [--config FILE] [--KEY VALUE ...]
 
 Read-only checks for a Celestia validator, Fibre or KMS host. Settings come
-from /etc/taut/doctor.conf (KEY=VALUE lines) and can be overridden with flags
+from /etc/celestia-mon/doctor.conf (KEY=VALUE lines) and can be overridden with flags
 (--node-rpc-url URL sets node_rpc_url).
 
   roles                  comma-separated: validator, fibre, kms, monitor
@@ -82,7 +82,7 @@ EOF
 
 set_opt() {
   if [[ -z ${C[$1]+set} ]]; then
-    echo "taut-doctor: unknown setting: $1 (see --help)" >&2
+    echo "celestia-mon-doctor: unknown setting: $1 (see --help)" >&2
     exit 2
   fi
   C[$1]=$2
@@ -95,7 +95,7 @@ load_conf() {
     line=${line#"${line%%[![:space:]]*}"}
     [[ -z $line || $line == '#'* ]] && continue
     if [[ $line != *=* ]]; then
-      echo "taut-doctor: $1: not a KEY=VALUE line: $line" >&2
+      echo "celestia-mon-doctor: $1: not a KEY=VALUE line: $line" >&2
       exit 2
     fi
     key=${line%%=*}
@@ -108,7 +108,7 @@ load_conf() {
 
 need_value() {
   if (($# < 2)); then
-    echo "taut-doctor: $1 needs a value" >&2
+    echo "celestia-mon-doctor: $1 needs a value" >&2
     exit 2
   fi
 }
@@ -357,14 +357,14 @@ check_signer() {
   laddr=$(toml_get "$cfg" "" priv_validator_laddr)
   if [[ -z $laddr ]]; then
     if [[ $signer == remote ]]; then
-      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, but Taut is set to signer: remote. Fix: set taut_signer: local in the inventory and re-run the playbook (or finish the remote signer setup)"
+      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, but celestia-mon is set to signer: remote. Fix: set celestia_mon_signer: local in the inventory and re-run the playbook (or finish the remote signer setup)"
     else
       report SKIP 2 "$name" "local key (priv_validator_laddr is empty)"
     fi
     return
   fi
   if [[ $signer == local ]]; then
-    report FAIL 2 "$name" "priv_validator_laddr = $laddr, but Taut is set to signer: local. Fix: set taut_signer: remote in the inventory and re-run the playbook"
+    report FAIL 2 "$name" "priv_validator_laddr = $laddr, but celestia-mon is set to signer: local. Fix: set celestia_mon_signer: remote in the inventory and re-run the playbook"
     return
   fi
   if [[ -z $METRICS ]]; then
@@ -458,7 +458,7 @@ check_registration() {
   found=$(sed -n 's/.*"found":\([a-z]*\).*/\1/p' <<<"$flat")
   host=$(sed -n 's/.*"host":"\([^"]*\)".*/\1/p' <<<"$flat")
   if [[ -z $found ]]; then
-    report FAIL 5 "$name" "query failed: $(last_line "$out"). Fix: run \"celestia-appd query valaddr provider $VALCONS\" by hand; x/valaddr exists only from app v10, so keep taut_fibre_enabled: false until v10 is active on this network"
+    report FAIL 5 "$name" "query failed: $(last_line "$out"). Fix: run \"celestia-appd query valaddr provider $VALCONS\" by hand; x/valaddr exists only from app v10, so keep celestia_mon_fibre_enabled: false until v10 is active on this network"
     return
   fi
   if [[ $found != true || -z $host ]]; then
@@ -470,7 +470,7 @@ check_registration() {
   elif [[ $host == "$want" ]]; then
     report OK 5 "$name" "registered $host, as configured"
   else
-    report FAIL 5 "$name" "registered $host, but the configured endpoint is $want. Fix: celestia-appd tx valaddr set-host $want --from <validator-account-key> (or correct taut_fibre_public_endpoint if $host is right)"
+    report FAIL 5 "$name" "registered $host, but the configured endpoint is $want. Fix: celestia-appd tx valaddr set-host $want --from <validator-account-key> (or correct celestia_mon_fibre_public_endpoint if $host is right)"
   fi
 }
 
@@ -504,7 +504,7 @@ check_fibre_service() {
   local name="fibre service" unit=${C[fibre_unit]} state port=${C[fibre_port]} argv addr="" cfg note="" l
   if fibre_skip 6 "$name"; then return; fi
   if ! unit_loaded "$unit"; then
-    report FAIL 6 "$name" "$unit.service not found. Fix: set taut_units.fibre (or --fibre-unit) to the name of Fibre's systemd unit"
+    report FAIL 6 "$name" "$unit.service not found. Fix: set celestia_mon_units.fibre (or --fibre-unit) to the name of Fibre's systemd unit"
     return
   fi
   state=$(unit_prop "$unit" ActiveState)
@@ -571,7 +571,7 @@ check_fibre_otel() {
   fi
   port=$(url_port "$want")
   if [[ -z $(listeners "$port") ]]; then
-    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run the Taut playbook so the collector (taut-otelcol) is installed and running, then read \"journalctl -u taut-otelcol -n 100\""
+    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run the celestia-mon playbook so the collector (celestia-mon-otelcol) is installed and running, then read \"journalctl -u celestia-mon-otelcol -n 100\""
     return
   fi
   report OK 7 "$name" "$src is $got"
@@ -587,14 +587,14 @@ firewall_state() {
   elif systemctl is-active --quiet nftables 2>/dev/null; then
     echo "nftables active"
   else
-    echo "none active (Taut relies on the private bind and never enables a firewall)"
+    echo "none active (celestia-mon relies on the private bind and never enables a firewall)"
   fi
 }
 
-# The systemd units Taut installs. Check 8 looks only at the sockets of their
+# The systemd units celestia-mon installs. Check 8 looks only at the sockets of their
 # main processes, so other software on the host (a node_exporter, Prometheus,
 # Grafana or collector of its own) is left alone.
-TAUT_UNITS=(taut-node-exporter taut-otelcol taut-prometheus taut-alertmanager taut-grafana)
+CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-grafana)
 
 check_binds() {
   local name="private binds" fw unit pid addr
@@ -605,7 +605,7 @@ check_binds() {
     report SKIP 8 "$name" "run as root to see which process owns each socket; firewall: $fw"
     return
   fi
-  for unit in "${TAUT_UNITS[@]}"; do
+  for unit in "${CELESTIA_MON_UNITS[@]}"; do
     pid=$(unit_prop "$unit" MainPID)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then unit_of[$pid]=$unit; fi
   done
@@ -616,11 +616,11 @@ check_binds() {
     if [[ $(addr_class "$addr") == private ]]; then ok+=("$unit $addr"); else bad+=("$unit $addr"); fi
   done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
   if ((${#bad[@]} > 0)); then
-    report FAIL 8 "$name" "$(join "${bad[@]}") not on a private address; firewall: $fw. Fix: set taut_private_ip for this host to its private address and re-run the Taut playbook"
+    report FAIL 8 "$name" "$(join "${bad[@]}") not on a private address; firewall: $fw. Fix: set celestia_mon_private_ip for this host to its private address and re-run the celestia-mon playbook"
   elif ((${#ok[@]} > 0)); then
     report OK 8 "$name" "$(join "${ok[@]}"); firewall: $fw"
   else
-    report SKIP 8 "$name" "no Taut service listens on this host; firewall: $fw"
+    report SKIP 8 "$name" "no celestia-mon service listens on this host; firewall: $fw"
   fi
 }
 
@@ -693,7 +693,7 @@ check_disks() {
     if [[ $line == bad* ]]; then bad+=("Fibre ${line#bad }"); else ok+=("Fibre ${line#ok }"); fi
   fi
   if ((${#ok[@]} + ${#bad[@]} == 0)); then
-    report SKIP 10 "$name" "no data mounts configured (taut_data_mounts or --data-mounts)"
+    report SKIP 10 "$name" "no data mounts configured (celestia_mon_data_mounts or --data-mounts)"
   elif ((${#bad[@]} > 0)); then
     detail="$(join "${bad[@]}") (data mounts need $(awk -v r="$min" 'BEGIN { printf "%.0f", r * 100 }')% free)"
     if ((${#ok[@]} > 0)); then detail+="; ok: $(join "${ok[@]}")"; fi
@@ -705,7 +705,7 @@ check_disks() {
 
 # ------------------------------------------------------------------- main
 
-conf=/etc/taut/doctor.conf
+conf=/etc/celestia-mon/doctor.conf
 conf_given=false
 overrides=()
 while (($# > 0)); do
@@ -745,7 +745,7 @@ done
 if [[ -r $conf ]]; then
   load_conf "$conf"
 elif [[ $conf_given == true ]]; then
-  echo "taut-doctor: cannot read $conf" >&2
+  echo "celestia-mon-doctor: cannot read $conf" >&2
   exit 2
 fi
 for ((i = 0; i < ${#overrides[@]}; i += 2)); do
@@ -763,7 +763,7 @@ if [[ -z ${C[fibre_enabled]} ]]; then
   if unit_loaded "${C[fibre_unit]}"; then C[fibre_enabled]=true; else C[fibre_enabled]=false; fi
 fi
 
-printf 'taut-doctor on %s (roles: %s)\n' "${HOSTNAME:-$(uname -n)}" "${C[roles]:-none}"
+printf 'celestia-mon-doctor on %s (roles: %s)\n' "${HOSTNAME:-$(uname -n)}" "${C[roles]:-none}"
 if has_role validator; then find_node; fi
 
 check_metrics
@@ -778,7 +778,7 @@ check_time
 check_disks
 
 if ((failed)); then
-  echo "Some checks failed. taut-doctor changed nothing; apply the fixes above yourself."
+  echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."
   exit 1
 fi
 exit 0

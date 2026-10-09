@@ -1,0 +1,26 @@
+# Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+[Unit]
+Description=Prometheus (celestia-mon)
+Documentation=https://prometheus.io/docs/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=celestia-mon-prometheus
+Group=celestia-mon-prometheus
+ExecStart={{ celestia_mon_prometheus_home }}/prometheus \
+  --config.file={{ celestia_mon_prometheus_config_dir }}/prometheus.yml \
+  --storage.tsdb.path={{ celestia_mon_prometheus_data_dir }} \
+  --storage.tsdb.retention.time={{ celestia_mon_prometheus_retention }} \
+  --web.listen-address={{ celestia_mon_prometheus_listen_address }}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths={{ celestia_mon_prometheus_data_dir }}
+
+[Install]
+WantedBy=multi-user.target

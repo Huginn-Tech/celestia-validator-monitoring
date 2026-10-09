@@ -1,7 +1,7 @@
 # NodeNotAtHead and ValidatorNotSigning on the example-split inventory (validator val-1).
 # The chain makes 10 blocks per minute; samples are one minute apart.
 rule_files:
-  - taut.rules.yml
+  - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
@@ -54,7 +54,7 @@ tests:
             exp_annotations:
               summary: "Node on val-1 is not following new blocks"
               description: "The consensus height has not changed for 5 minutes. Check status.celestia.org first: the whole chain may have halted."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#nodenotathead"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotathead"
       - eval_time: 30m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -85,7 +85,7 @@ tests:
             exp_annotations:
               summary: "Validator on val-1 is not signing"
               description: "The chain moves but the validator has not signed for more than 50 blocks."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 13m
         alertname: NodeNotAtHead
         exp_alerts: []
@@ -136,4 +136,4 @@ tests:
             exp_annotations:
               summary: "Validator on val-1 is not signing"
               description: "The chain moves but the validator has not signed for more than 50 blocks."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"

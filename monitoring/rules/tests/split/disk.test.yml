@@ -2,7 +2,7 @@
 # kms-1 / and fibre-1 /; Fibre store fibre-1 /var/lib/fibre. Data mounts on the
 # validator and kms hosts page; on the Fibre host they only send messages.
 rule_files:
-  - taut.rules.yml
+  - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
@@ -44,7 +44,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on val-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 25m
         alertname: DiskLow
         exp_alerts:
@@ -60,7 +60,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on val-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
               instance: 10.10.0.1:9910
@@ -73,9 +73,9 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on val-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 3% free space."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
-  - name: kms-1 root disk (taut_kms_scrape) under 3% pages at once
+  - name: kms-1 root disk (celestia_mon_kms_scrape) under 3% pages at once
     interval: 1m
     input_series:
       - series: >-
@@ -103,7 +103,7 @@ tests:
             exp_annotations:
               summary: "/ on kms-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 3% free space."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: fibre-1 root disk under 3% sends a message, never a page; read-only replaces the low-space message
     interval: 1m
@@ -136,7 +136,7 @@ tests:
             exp_annotations:
               summary: "/ on fibre-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 12m
         alertname: DiskLow
         exp_alerts:
@@ -152,7 +152,7 @@ tests:
             exp_annotations:
               summary: "/ on fibre-1 is read-only"
               description: "The filesystem is read-only."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Read-only filesystems; the node data disk pages at once, the Fibre store sends a message
     interval: 1m
@@ -200,7 +200,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on val-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 3% free space."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
               instance: 10.10.0.3:9910
@@ -213,7 +213,7 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
               description: "Fibre cannot store new shards on a read-only filesystem."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store cannot hold the budget; a message after 30m, no percentage alert while a budget is set
     interval: 1m
@@ -247,7 +247,7 @@ tests:
             exp_annotations:
               summary: "Fibre store on fibre-1 cannot hold the storage budget"
               description: "For 30 minutes the room the Fibre budget still needs has exceeded the free space on /var/lib/fibre."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store full up to its budget with room left; quiet
     interval: 1m
@@ -309,7 +309,7 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
               description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre budget 0 and the store turns read-only; the read-only message replaces the low-space message
     interval: 1m
@@ -345,7 +345,7 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
               description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 12m
         alertname: DiskLow
         exp_alerts:
@@ -361,4 +361,4 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
               description: "Fibre cannot store new shards on a read-only filesystem."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"

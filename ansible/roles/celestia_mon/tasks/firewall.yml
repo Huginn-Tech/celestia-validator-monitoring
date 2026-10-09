@@ -1,0 +1,26 @@
+---
+# Lets the monitor host reach a port Prometheus scrapes (one of celestia-mon's, or
+# celestia-appd's metrics port on the validator host) through ufw, only when ufw
+# is already active on this host. Never enables, resets or reorders the firewall.
+# A host reaching its own address goes through lo, which ufw already accepts, so
+# this host's own address is skipped (the monitor itself, or a single-host setup).
+#   celestia_mon_firewall_port     required, the TCP port to allow
+#   celestia_mon_firewall_sources  optional list of addresses (default: the monitor's celestia_mon_private_ip)
+- name: Read the ufw status
+  ansible.builtin.command: ufw status
+  environment:
+    LC_ALL: C
+  register: celestia_mon_firewall_ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Allow the monitor host through ufw to port {{ celestia_mon_firewall_port }}
+  community.general.ufw:
+    rule: allow
+    from_ip: "{{ item }}"
+    to_port: "{{ celestia_mon_firewall_port | string }}"
+    proto: tcp
+    comment: celestia-mon
+  loop: "{{ celestia_mon_firewall_sources | default([hostvars[celestia_mon_monitor_host].celestia_mon_private_ip]) | reject('equalto', celestia_mon_private_ip) | list }}"
+  when: "celestia_mon_firewall_ufw.stdout | default('') is match('Status: active')"
