@@ -29,7 +29,8 @@
           - celestia_mon_bind_check_address is match(celestia_mon_private_address_regex)
         fail_msg: >-
           {{ item | regex_findall('[(]"([^"]+)",pid=') | unique | join(', ') }} listens on {{ item.split()[3] }},
-          a wildcard or public address. celestia-mon's services must bind celestia_mon_private_ip or 127.0.0.1 only.
+          a wildcard or public address. celestia-mon's services must bind celestia_mon_private_ip,
+          celestia_mon_grafana_listen (Grafana) or 127.0.0.1 only.
         quiet: true
       loop: "{{ celestia_mon_bind_check_sockets.stdout_lines | select('search', celestia_mon_bind_check_owner) | list }}"
       loop_control:

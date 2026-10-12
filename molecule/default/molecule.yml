@@ -30,17 +30,15 @@ provisioner:
       all:
         celestia_mon_signer: remote
         celestia_mon_fibre_enabled: true
-        # Dummy receivers on a closed local port: nothing leaves the CI runner.
-        # page is empty, so page alerts use the message receivers. Webhooks only:
-        # a failed Slack, Telegram or PagerDuty notification stops the Watchdog
+        # Dummy receivers on a closed local port: nothing leaves the CI runner. Page and
+        # message alerts both go to every receiver that is not PagerDuty. Webhooks only:
+        # a failed Slack, Telegram, Discord or PagerDuty notification stops the Watchdog
         # heartbeat by design, and the test alerts here can never be delivered.
         celestia_mon_receivers:
-          page: []
-          message:
-            - type: webhook
-              url: http://127.0.0.1:9/message
-            - type: webhook
-              url: http://127.0.0.1:9/chat
+          - type: webhook
+            url: http://127.0.0.1:9/message
+          - type: webhook
+            url: http://127.0.0.1:9/chat
         celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
         celestia_mon_grafana_admin_password: molecule-test-only
         # Small enough for the free disk of a CI runner; verify.yml checks Prometheus applies it.

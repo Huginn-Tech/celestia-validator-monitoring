@@ -120,7 +120,8 @@ def main():
         print("  ".join(str(cell).ljust(width) for cell, width in zip(row, widths)).rstrip())
     deps = pins.get("python_deps_before")
     if deps:
-        print(f"\npython_deps_before is {deps}: move it with the ansible_core pin and keep it at least {MIN_AGE_DAYS} days old.")
+        print(f"\npython_deps_before is {deps}: move it with the ansible_core pin and keep it at least {MIN_AGE_DAYS} days old;"
+              " after changing either, run the lock workflow (.github/workflows/lock.yml) and commit its requirements.lock.")
 
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:

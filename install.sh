@@ -2,18 +2,24 @@
 # install.sh: installs celestia-validator-monitoring on this host, or removes it.
 #
 #   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
-#   sudo ./install.sh --uninstall [--inventory FILE] --host NAME [--yes] [--check]
+#   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
 #
 # Run it on each host, from a copy of this repository, with the inventory all hosts share.
-# Nothing is installed with apt or pip: the uv binary pinned in versions.yml (its sha256
-# checked) builds a throwaway virtualenv with the pinned ansible-core from the host's own
-# python3, under /var/tmp/celestia-mon-install. That directory is removed when the script
-# ends, also when it fails.
+# Every install is pre-checked and reversible. Steps: preflight checks and a dry run of
+# ansible/site.yml for this host only, with a short plan; a confirmation (skipped with
+# --yes); the real run; celestia-mon-doctor; and the command that removes it again.
 #
-# Steps: preflight checks and a dry run of ansible/site.yml for this host only, with a
-# short plan; a confirmation (skipped with --yes); the real run; celestia-mon-doctor; and
-# how to remove it again. --uninstall does the same with ansible/uninstall.yml, which
-# reads no inventory settings: it needs neither the inventory nor the vault password.
+# Nothing is installed with apt or pip: the uv binary pinned in versions.yml (its sha256
+# checked) builds a throwaway virtualenv from the host's own python3, under
+# /var/tmp/celestia-mon-install, and installs ansible-core and every package it needs from
+# ansible/requirements.lock, each file checked against the sha256 there (--require-hashes).
+# That directory is removed when the script ends, also when it fails.
+#
+# --uninstall does the same with ansible/uninstall.yml, which reads no inventory settings:
+# it needs neither the inventory nor the vault password. It removes the services, their
+# binaries and the ufw rules the install added, and keeps the data, the settings and the
+# system users, so a reinstall picks up where it left off. --uninstall --purge deletes
+# those too, after a confirmation of its own that names them.
 
 set -euo pipefail
 export LC_ALL=C.UTF-8
@@ -27,10 +33,12 @@ usage() {
   cat <<'EOF'
 Usage:
   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
-  sudo ./install.sh --uninstall [--inventory FILE] --host NAME [--yes] [--check]
+  sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
 
 Installs celestia-validator-monitoring on this machine as inventory host NAME, or
-removes it with --uninstall. Run it on each host in turn.
+removes it with --uninstall. Run it on each host in turn. Every install is pre-checked
+and reversible: a dry run shows the plan before anything changes, and --uninstall
+removes it again.
 
   --inventory FILE   the inventory all hosts share (a hosts.yml, or its directory);
                      not needed with --uninstall
@@ -39,7 +47,11 @@ removes it with --uninstall. Run it on each host in turn.
                      files hold vault-encrypted values (not needed with --uninstall)
   --yes              apply the plan without asking
   --check            dry run only: show the plan and change nothing
-  --uninstall        remove celestia-mon from this host
+  --uninstall        remove celestia-mon's services, binaries and the ufw rules it
+                     added; keep its data, settings and users for a reinstall
+  --purge            with --uninstall: also delete the data (/var/lib/celestia-mon),
+                     the settings (/etc/celestia-mon) and the celestia-mon-* users
+                     and groups, after a second confirmation
 EOF
 }
 
@@ -107,6 +119,7 @@ changes() { # LOG
 inventory=""
 host=""
 mode=install
+purge=false
 ask_vault=false
 yes=false
 check=false
@@ -138,6 +151,10 @@ while (($# > 0)); do
       mode=uninstall
       shift
       ;;
+    --purge)
+      purge=true
+      shift
+      ;;
     -h | --help)
       usage
       exit 0
@@ -151,6 +168,9 @@ done
 if [[ -z $host || ($mode == install && -z $inventory) ]]; then
   usage >&2
   exit 2
+fi
+if $purge && [[ $mode != uninstall ]]; then
+  die "--purge works only with --uninstall"
 fi
 
 ((EUID == 0)) || die "run it as root: sudo ./install.sh ..."
@@ -172,7 +192,8 @@ case $arch in
   *) die "unsupported architecture $arch: celestia-mon runs on x86_64 and aarch64" ;;
 esac
 [[ -x $python ]] || die "$python is missing (Ubuntu 24.04 ships it)"
-"$python" -c 'import sys; sys.exit(sys.version_info < (3, 11))' || die "ansible-core needs Python 3.11 or later at $python"
+# ansible/requirements.lock is resolved for Python 3.12 and later (Ubuntu 24.04's python3).
+"$python" -c 'import sys; sys.exit(sys.version_info < (3, 12))' || die "the Ansible lock needs Python 3.12 or later at $python"
 
 # Ansible runs everything in the repository and the inventory as root, so no other user may
 # change them: each file must belong to root or to the user who runs sudo, and none may be
@@ -191,8 +212,15 @@ unsafe=$(find "${checked[@]}" -xdev ! -type l \( -perm -0002 -o \( ! -user 0 ! -
 uv_version=$(pin uv.version) || die "versions.yml has no uv.version"
 uv_sha256=$(pin "uv.sha256.$arch") || die "versions.yml has no uv.sha256.$arch"
 ansible_core=$(pin ansible_core) || die "versions.yml has no ansible_core"
-deps_before=$(pin python_deps_before) || die "versions.yml has no python_deps_before"
 [[ $uv_sha256 =~ ^[0-9a-f]{64}$ ]] || die "versions.yml: uv.sha256.$arch is not a sha256"
+[[ $ansible_core =~ ^[0-9]+(\.[0-9]+)+$ ]] || die "versions.yml: ansible_core is not a version"
+
+# ansible-core and every package it needs, each with the sha256 of its files on PyPI. The
+# lock workflow (.github/workflows/lock.yml) generates it from versions.yml.
+lock=$repo/ansible/requirements.lock
+[[ -f $lock ]] || die "ansible/requirements.lock is missing"
+grep -Eq "^ansible-core==${ansible_core//./[.]}( |;|\$)" "$lock" ||
+  die "ansible/requirements.lock is not for ansible-core $ansible_core (versions.yml): generate it with the lock workflow (GitHub Actions > lock) and commit it"
 
 # The password stays in this shell: it is written to a file under $work below, never exported.
 vault=()
@@ -232,11 +260,10 @@ tar -xzf "$work/$uv_tarball" -C "$work" --strip-components=1 --no-same-owner "uv
   die "could not unpack $uv_tarball"
 export UV_CACHE_DIR=$work/uv-cache UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1 UV_NO_PROGRESS=1
 "$work/uv" venv --quiet --python "$python" "$work/venv" || die "uv could not create a virtualenv from $python"
-# Wheels only: no package build code runs as root. ansible-core's dependencies come from
-# files uploaded before python_deps_before, so a release newer than the pins is never used.
-"$work/uv" pip install --quiet --python "$work/venv/bin/python" --only-binary :all: \
-  --exclude-newer "$deps_before" "ansible-core==$ansible_core" ||
-  die "could not install ansible-core $ansible_core from PyPI"
+# Only the versions in the lock, and only files whose sha256 the lock lists: uv refuses
+# anything else. Wheels only, so no package build code runs as root.
+"$work/uv" pip install --quiet --python "$work/venv/bin/python" --require-hashes --only-binary :all: -r "$lock" ||
+  die "could not install Ansible from ansible/requirements.lock: a download failed, or a file did not match its sha256 there (see above)"
 
 # Everything Ansible writes for itself stays under $work.
 mkdir -p -- "$work/ansible"
@@ -255,9 +282,14 @@ unset vault_pass
 
 book=site.yml
 [[ $mode == install ]] || book=uninstall.yml
+# uninstall.yml keeps the data, settings and users unless it is told to purge them.
+purge_args=()
+if $purge; then
+  purge_args=(-e celestia_mon_uninstall_purge=true)
+fi
 
 step "Checking $host and planning the changes (dry run: nothing is changed)"
-run_playbook "$work/plan.log" "$book" --check --diff -e "celestia_mon_plan_file=$work/plan.txt" ||
+run_playbook "$work/plan.log" "$book" --check --diff -e "celestia_mon_plan_file=$work/plan.txt" "${purge_args[@]}" ||
   die "the checks or the dry run failed, and nothing was changed. The reason is above."
 
 step "Plan for $host"
@@ -287,13 +319,35 @@ if ! $yes; then
       exit 0
       ;;
   esac
+  # --purge deletes what a plain --uninstall keeps, for good: it asks once more, naming it.
+  if $purge; then
+    cat <<'PURGE'
+
+--purge also deletes, and this cannot be undone:
+  /var/lib/celestia-mon   Prometheus's data and Grafana's database
+  /etc/celestia-mon       celestia-mon's settings
+  the celestia-mon-* system users and groups
+PURGE
+    read -r -p "Delete them on $host too? [y/N] " answer
+    case $answer in
+      [yY] | [yY][eE][sS]) ;;
+      *)
+        echo "Stopped: nothing was changed. Without --purge, --uninstall keeps them."
+        exit 0
+        ;;
+    esac
+  fi
 fi
 
 if [[ $mode == uninstall ]]; then
   step "Removing celestia-mon from $host"
-  run_playbook "$work/run.log" uninstall.yml ||
+  run_playbook "$work/run.log" uninstall.yml "${purge_args[@]}" ||
     die "the removal stopped with an error (above). Fix the cause and run install.sh --uninstall again."
   step "celestia-mon is removed from $host ($(changes "$work/run.log") change(s))."
+  if ! $purge; then
+    echo "Kept for a reinstall: /var/lib/celestia-mon (data), /etc/celestia-mon (settings) and the celestia-mon-* users."
+    printf 'To delete them too:\n  sudo %q --uninstall --purge --host %q\n' "$repo/install.sh" "$host"
+  fi
   exit 0
 fi
 
@@ -316,6 +370,8 @@ case $status in
   *) echo "doctor exited with status $status." ;;
 esac
 
-step "To remove celestia-mon from $host"
+step "To remove celestia-mon from $host again"
 # The removal needs no inventory and no vault password.
 printf '  sudo %q --uninstall --host %q\n' "$repo/install.sh" "$host"
+echo "  removes the services, their binaries and the ufw rules the install added, and keeps the data,"
+echo "  settings and users for a reinstall; add --purge to delete those too."

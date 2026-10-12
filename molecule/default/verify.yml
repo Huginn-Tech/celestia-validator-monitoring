@@ -4,23 +4,23 @@
   gather_facts: true
   vars:
     # systemd units of the services celestia-mon installs on this all-in-one host, with the
-    # memory caps of the shared defaults as systemd shows them, in bytes.
+    # memory targets and limits of the shared defaults as systemd shows them, in bytes.
     celestia_mon_verify_units:
       celestia-mon-node-exporter.service:
-        memory_high: 67108864 # 64M
-        memory_max: 134217728 # 128M
+        memory_high: 134217728 # 128M
+        memory_max: 268435456 # 256M
       celestia-mon-otelcol.service:
-        memory_high: 268435456 # 256M
-        memory_max: 536870912 # 512M
+        memory_high: 402653184 # 384M
+        memory_max: 1073741824 # 1G
       celestia-mon-prometheus.service:
-        memory_high: 1073741824 # 1G
-        memory_max: 2147483648 # 2G
+        memory_high: 2147483648 # 2G
+        memory_max: 4294967296 # 4G
       celestia-mon-alertmanager.service:
-        memory_high: 67108864 # 64M
-        memory_max: 134217728 # 128M
+        memory_high: 134217728 # 128M
+        memory_max: 268435456 # 256M
       celestia-mon-grafana.service:
-        memory_high: 268435456 # 256M
-        memory_max: 536870912 # 512M
+        memory_high: 536870912 # 512M
+        memory_max: 1073741824 # 1G
     # Unit names and binaries other installs on the host use; celestia-mon must leave them alone.
     celestia_mon_verify_foreign_units:
       - node_exporter.service
@@ -46,16 +46,18 @@
       alertmanager: 9913
       grafana: 9914
       otelcol_otlp: 9915
-    # Services the other hosts or the operator reach, on the private address.
+    # Services the monitor reaches on the private address.
     celestia_mon_verify_private_ports:
       - node_exporter
       - otelcol_prometheus
-      - grafana
-    # Services only this host uses, on loopback.
+    # Services on loopback: those only this host uses, and Grafana at its default
+    # celestia_mon_grafana_listen (the operator reaches it through an SSH tunnel).
     celestia_mon_verify_loopback_ports:
       - prometheus
       - alertmanager
       - otelcol_otlp
+      - grafana
+    celestia_mon_verify_grafana: "http://127.0.0.1:{{ celestia_mon_verify_ports.grafana }}"
     # Scrape jobs Prometheus must have, with the role label of this host's target.
     celestia_mon_verify_jobs:
       - job: prometheus
@@ -76,8 +78,8 @@
     # GOMEMLIMIT of Prometheus and Alertmanager: 90% of their default MemoryHigh, in bytes.
     celestia_mon_verify_gomemlimit_query: 'go_gc_gomemlimit_bytes{job=~"prometheus|alertmanager"}'
     celestia_mon_verify_gomemlimit:
-      prometheus: 966367641 # 0.9 * 1G
-      alertmanager: 60397977 # 0.9 * 64M
+      prometheus: 1932735283 # 0.9 * 2G
+      alertmanager: 120795955 # 0.9 * 128M
   tasks:
     - name: Collect the service states
       ansible.builtin.service_facts:
@@ -139,14 +141,14 @@
       loop_control:
         label: "{{ item.item }}"
 
-    - name: Check that node_exporter, the collector's metrics and Grafana answer on the private address
+    - name: Check that node_exporter and the collector's metrics answer on the private address
       ansible.builtin.wait_for:
         host: "{{ celestia_mon_private_ip }}"
         port: "{{ celestia_mon_verify_ports[item] }}"
         timeout: 60
       loop: "{{ celestia_mon_verify_private_ports }}"
 
-    - name: Check that Prometheus, Alertmanager and the OTLP receiver answer on loopback
+    - name: Check that Prometheus, Alertmanager, the OTLP receiver and Grafana answer on loopback
       ansible.builtin.wait_for:
         host: 127.0.0.1
         port: "{{ celestia_mon_verify_ports[item] }}"
@@ -154,7 +156,7 @@
       loop: "{{ celestia_mon_verify_loopback_ports }}"
 
     # 9094 is Alertmanager's default cluster port, which celestia-mon turns off.
-    - name: Check that Prometheus, Alertmanager and Alertmanager's cluster port are closed on the private address
+    - name: Check that Prometheus, Alertmanager, Grafana and Alertmanager's cluster port are closed on the private address
       ansible.builtin.wait_for:
         host: "{{ celestia_mon_private_ip }}"
         port: "{{ item }}"
@@ -163,6 +165,7 @@
       loop:
         - "{{ celestia_mon_verify_ports.prometheus }}"
         - "{{ celestia_mon_verify_ports.alertmanager }}"
+        - "{{ celestia_mon_verify_ports.grafana }}"
         - 9094
 
     - name: Wait until Prometheus has scraped itself and Alertmanager
@@ -247,15 +250,15 @@
         return_content: true
       register: celestia_mon_verify_am_status
 
-    # The scenario leaves celestia_mon_receivers.page empty, so the page receiver must carry
-    # the message receivers' configs.
-    - name: Check that page alerts fall back to the message receivers
+    # Page alerts go to every receiver that is not PagerDuty too, so the page receiver must
+    # carry the scenario's two webhooks.
+    - name: Check that page alerts reach every receiver
       ansible.builtin.assert:
         that:
           - >-
             (celestia_mon_verify_am_status.json.config.original | from_yaml).receivers
             | selectattr('name', 'equalto', 'page') | map(attribute='webhook_configs', default=[]) | first | length == 2
-        fail_msg: The page receiver lacks the message receivers' two webhook configs.
+        fail_msg: The page receiver lacks the two webhook configs of celestia_mon_receivers.
         quiet: true
 
     - name: Wait for the Watchdog alert to reach Alertmanager
@@ -267,10 +270,10 @@
       retries: 18
       delay: 10
 
-    # Grafana reaches Prometheus on 127.0.0.1; Grafana itself listens on the private address.
+    # Grafana reaches Prometheus on 127.0.0.1, and listens there itself (celestia_mon_grafana_listen).
     - name: Check that Grafana's Prometheus datasource answers
       ansible.builtin.uri:
-        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/datasources/uid/celestia-mon-prometheus/health"
+        url: "{{ celestia_mon_verify_grafana }}/api/datasources/uid/celestia-mon-prometheus/health"
         url_username: admin
         url_password: "{{ celestia_mon_grafana_admin_password }}"
         force_basic_auth: true
@@ -282,7 +285,7 @@
 
     - name: Read Grafana's snapshot sharing options
       ansible.builtin.uri:
-        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/snapshot/shared-options/"
+        url: "{{ celestia_mon_verify_grafana }}/api/snapshot/shared-options/"
         url_username: admin
         url_password: "{{ celestia_mon_grafana_admin_password }}"
         force_basic_auth: true
@@ -299,5 +302,5 @@
     # Anonymous access is off, so the dashboard needs a login.
     - name: Check that Grafana refuses the dashboard without a login
       ansible.builtin.uri:
-        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/dashboards/uid/celestia-mon-validator"
+        url: "{{ celestia_mon_verify_grafana }}/api/dashboards/uid/celestia-mon-validator"
         status_code: 401

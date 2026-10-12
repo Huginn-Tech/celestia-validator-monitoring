@@ -1,0 +1,111 @@
+# NotificationsFailing on the example-split inventory (monitor mon-1): a notification through
+# Telegram, Discord, Slack or PagerDuty failed in the last 15 minutes. It sends one message per
+# integration, so a broken one is reported through the others, and the Watchdog stops for an hour
+# (watchdog.test.yml). Failed webhook calls do not count: the dead-man webhook shares
+# integration="webhook". Alertmanager starts every failure counter at 0.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: A Discord notification fails at 10m; a message for 15 minutes, and the Watchdog stops
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="discord",reason="serverError"}
+        values: '0x9 1x80'
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+        values: '0x90'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: NotificationsFailing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: NotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              integration: discord
+              severity: message
+            exp_annotations:
+              summary: "Alertmanager on mon-1 cannot deliver discord notifications"
+              description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+      # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
+      # the 0 at 9m is the one at 23m.
+      - eval_time: 23m
+        alertname: NotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              integration: discord
+              severity: message
+            exp_annotations:
+              summary: "Alertmanager on mon-1 cannot deliver discord notifications"
+              description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+      - eval_time: 24m
+        alertname: NotificationsFailing
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: Watchdog
+        exp_alerts: []
+      - eval_time: 75m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "celestia-mon heartbeat"
+              description: >-
+                Fires while monitoring runs and no page or message notification failed in the last hour;
+                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
+
+  - name: PagerDuty and Telegram fail; one message per integration, whatever the failure reasons
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="pagerduty",reason="clientError"}
+        values: '0x4 1x20'
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+        values: '0x4 1x20'
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="other"}
+        values: '0x5 1x19'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              integration: pagerduty
+              severity: message
+            exp_annotations:
+              summary: "Alertmanager on mon-1 cannot deliver pagerduty notifications"
+              description: "A pagerduty notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+          - exp_labels:
+              host: mon-1
+              integration: telegram
+              severity: message
+            exp_annotations:
+              summary: "Alertmanager on mon-1 cannot deliver telegram notifications"
+              description: "A telegram notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+
+  - name: Failed webhook calls (dead-man or webhook receiver) raise no NotificationsFailing
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",reason="serverError"}
+        values: '0x4 1+1x25'
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="slack",reason="serverError"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: NotificationsFailing
+        exp_alerts: []

@@ -1,27 +1,7 @@
 ---
-# Checks the receiver list without printing it: entries carry tokens. An empty
-# page or message list uses the other list's receivers (monitoring/alertmanager.yml.j2).
+# Before anything is installed, so a wrong receiver list changes nothing.
 - name: Check the alert receivers
-  ansible.builtin.assert:
-    that:
-      - celestia_mon_alertmanager_receivers | length > 0
-      - celestia_mon_alertmanager_receivers | map(attribute='type', default='') | difference(['telegram', 'pagerduty', 'slack', 'webhook']) | length == 0
-      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('bot_token', 'defined') | list | length == 0
-      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('chat_id', 'defined') | list | length == 0
-      # Alertmanager needs a non-zero numeric chat_id; a name such as @channel would render as 0.
-      - >-
-        celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | map(attribute='chat_id') | map('string')
-        | reject('match', '^-?[1-9][0-9]*$') | list | length == 0
-      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'pagerduty') | rejectattr('routing_key', 'defined') | list | length == 0
-      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'slack') | rejectattr('api_url', 'defined') | list | length == 0
-      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'webhook') | rejectattr('url', 'defined') | list | length == 0
-    fail_msg: >-
-      Set at least one receiver in celestia_mon_receivers.page or celestia_mon_receivers.message (an empty list uses
-      the other list's receivers). Each receiver needs a type and its keys: telegram (bot_token, numeric chat_id),
-      pagerduty (routing_key), slack (api_url, optional channel) or webhook (url).
-    quiet: true
-  vars:
-    celestia_mon_alertmanager_receivers: "{{ (celestia_mon_receivers.page | default([], true)) + (celestia_mon_receivers.message | default([], true)) }}"
+  ansible.builtin.import_tasks: receivers.yml
 
 # celestia-mon's Alertmanager has its own unit, user, paths and port (celestia-mon-alertmanager), so it
 # installs next to any other Alertmanager on the host and leaves it alone.
@@ -116,6 +96,11 @@
         owner: root
         group: root
         mode: "0644"
+      # Release hosts sometimes reset a connection; retry before giving up.
+      register: celestia_mon_alertmanager_download
+      until: celestia_mon_alertmanager_download is succeeded
+      retries: 5
+      delay: 10
 
     - name: Unpack the Alertmanager release
       ansible.builtin.unarchive:

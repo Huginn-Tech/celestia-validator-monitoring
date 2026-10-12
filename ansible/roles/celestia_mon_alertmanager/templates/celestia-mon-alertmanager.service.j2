@@ -17,7 +17,8 @@ ExecStart={{ celestia_mon_alertmanager_home }}/alertmanager \
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
-# Lower CPU and disk priority than the Celestia services, and a memory ceiling.
+# Lower CPU and disk priority than the Celestia services when they compete (no CPU quota),
+# a soft memory target (MemoryHigh) and a hard limit well above it (MemoryMax).
 Nice={{ celestia_mon_nice }}
 CPUWeight={{ celestia_mon_cpu_weight }}
 IOWeight={{ celestia_mon_io_weight }}

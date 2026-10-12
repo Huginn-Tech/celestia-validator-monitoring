@@ -1,5 +1,5 @@
 # What the example-single switches leave out: with a local key there is no
-# RemoteSignerProblem, with Fibre off there is no FibreNotServing. Watchdog fires without
+# RemoteSignerProblem, with Fibre off there is no FibreDown or FibreNotServing. Watchdog fires without
 # Alertmanager metrics.
 rule_files:
   - celestia-mon.rules.yml
@@ -32,6 +32,20 @@ tests:
     alert_rule_test:
       - eval_time: 200m
         alertname: FibreNotServing
+        exp_alerts: []
+
+  - name: Fibre off renders no FibreDown, even with an inactive Fibre unit
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
         exp_alerts: []
 
   - name: Watchdog fires before any Alertmanager metrics arrive

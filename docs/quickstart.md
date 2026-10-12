@@ -1,6 +1,6 @@
 # Quickstart
 
-This guide takes you from an empty inventory to a running dashboard, working alerts and a clean `doctor` report. You run one command on each host, on the host itself: `install.sh` checks the host, shows what it would change, and changes it only after you confirm. celestia-validator-monitoring never changes, restarts or upgrades celestia-appd, Fibre or tmkms: where a setting must change, this guide and `doctor` tell you the line, and you apply it.
+This guide takes you from an empty inventory to a running dashboard, working alerts and a clean `doctor` report. You run one command on each host, on the host itself. Every install is pre-checked and reversible: `install.sh` checks the host, shows what it would change, changes it only after you confirm, and `install.sh --uninstall` removes it again (step 14). celestia-validator-monitoring never changes, restarts or upgrades celestia-appd, Fibre or tmkms: where a setting must change, this guide and `doctor` tell you the line, and you apply it.
 
 ## 1. Requirements
 
@@ -12,9 +12,10 @@ This guide takes you from an empty inventory to a running dashboard, working ale
 
   For mainnet, use a monitor host that is neither the validator nor the Fibre host ([security.md](security.md#where-to-run-the-monitor)). On a test setup the monitor may share a host; the dead-man service (step 8) tells you when that host dies.
 - **A private network between the hosts:** RFC 1918, Tailscale (100.64.0.0/10), WireGuard or IPv6 ULA addresses. Everything celestia-validator-monitoring installs listens on these addresses or on 127.0.0.1, and the install fails if one of its services listens on a public address.
-- **Root on each host** (`sudo`), with the `python3` and `curl` (or `wget`) that Ubuntu ships. Nothing is installed with apt or pip: `install.sh` downloads the [uv](https://github.com/astral-sh/uv) binary pinned in `versions.yml`, checks its sha256, and uses it to put the pinned ansible-core into a temporary directory under `/var/tmp/celestia-mon-install`, which it deletes when it ends, also on failure. `/var/tmp` must not be mounted `noexec` and needs 1 GiB free during the run.
+- **Root on each host** (`sudo`), with the `python3` and `curl` (or `wget`) that Ubuntu ships. Nothing is installed with apt or pip: `install.sh` downloads the [uv](https://github.com/astral-sh/uv) binary pinned in `versions.yml`, checks its sha256, and uses it to install the pinned ansible-core and every package it needs, from `ansible/requirements.lock` with the sha256 of each file, into a temporary directory under `/var/tmp/celestia-mon-install`, which it deletes when it ends, also on failure. `/var/tmp` must not be mounted `noexec` and needs 1 GiB free during the run.
 - **Outbound HTTPS** from every host to `github.com` and `release-assets.githubusercontent.com` (uv and the release downloads), `pypi.org` and `files.pythonhosted.org` (ansible-core); from the monitor also to `dl.grafana.com` (Grafana), your alert receivers and the dead-man service.
-- **Free disk** for the releases a host gets, while they are downloaded and unpacked: about 100 MiB on a validator or KMS host, 1.2 GiB on a Fibre host (the OpenTelemetry collector), 2.2 GiB on the monitor, plus room for Prometheus's data on the monitor (`celestia_mon_prometheus_retention_size`, 8 GB by default). The install checks it.
+- **Free disk** for the releases a host gets, while they are downloaded and unpacked: about 100 MiB on a validator or KMS host, 1.2 GiB on a Fibre host (the OpenTelemetry collector), 2.2 GiB on the monitor. The install checks it.
+- **Room for Prometheus's data on the monitor:** retention size x 1.5 + 2 GiB on the disk of `/var/lib/celestia-mon/prometheus`, 14 GiB with the default `celestia_mon_prometheus_retention_size` of 8 GB. The retention size bounds only Prometheus's finished blocks: its write-ahead log, its head chunks and the new blocks a compaction writes before it deletes the old ones come on top. The install stops with the numbers when the disk cannot hold it (what Prometheus keeps there already counts, so a re-run on a grown install passes), and `doctor` check 15 repeats the check later. Lower the retention size or give the data its own disk if it does not fit.
 - **One validator per install.** To watch a testnet and a mainnet validator, run two installs with two inventories.
 
 Default ports:
@@ -25,23 +26,23 @@ Default ports:
 | OpenTelemetry collector | fibre | 9911 on the private address (metrics), 9915 on 127.0.0.1 (from Fibre) |
 | Prometheus | monitor | 9912 on 127.0.0.1 |
 | Alertmanager | monitor | 9913 on 127.0.0.1 |
-| Grafana | monitor | 9914 on the private address |
+| Grafana | monitor | 9914 on 127.0.0.1 (or `celestia_mon_grafana_listen`) |
 
-Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator. Prometheus and Alertmanager have no login, so they listen on loopback only; Grafana reaches Prometheus there, and you reach both through an SSH tunnel (step 7).
+Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator. Prometheus and Alertmanager have no login, so they listen on loopback only; Grafana reaches Prometheus there. Grafana listens on loopback too by default, and you reach all three through an SSH tunnel (step 7).
 
 celestia-validator-monitoring runs next to a node_exporter, Prometheus, Alertmanager, Grafana or OpenTelemetry collector the host already has, and leaves it alone. Each of its services has its own systemd unit and system user (`celestia-mon-node-exporter`, `celestia-mon-otelcol`, `celestia-mon-prometheus`, `celestia-mon-alertmanager`, `celestia-mon-grafana`), runs from `/opt/celestia-mon/<component>-<version>/`, keeps its settings under `/etc/celestia-mon/` and its data under `/var/lib/celestia-mon/`, and logs to the journal (for example `journalctl -u celestia-mon-grafana`). Nothing goes to `/usr/local/bin` except `celestia-mon-doctor`. The ports above are a block that common tools do not use; to move them, set `celestia_mon_ports` (step 3).
 
-Every unit runs with `Nice=10`, `CPUWeight=20` and `IOWeight=20` (systemd's defaults are 0, 100 and 100) and a memory cap: above `MemoryHigh` the kernel slows the service down, at `MemoryMax` it stops it and systemd restarts it.
+Every unit runs with `Nice=10`, `CPUWeight=20` and `IOWeight=20` (systemd's defaults are 0, 100 and 100), with no CPU quota, and with a soft memory target and a hard limit well above it: above `MemoryHigh` the kernel reclaims the service's memory and slows it down; at `MemoryMax` the kernel ends the service and systemd restarts it. The defaults are sized from the measured memory of these services at this package's scale (a few thousand series), and CI fails when a service uses more than half its `MemoryHigh`. `sudo celestia-mon-doctor` (check 14) shows each unit's use and warns above 80% of `MemoryHigh`.
 
 | Service | MemoryHigh | MemoryMax |
 |---|---|---|
-| node_exporter | 64M | 128M |
-| OpenTelemetry collector | 256M | 512M |
-| Prometheus | 1G | 2G |
-| Alertmanager | 64M | 128M |
-| Grafana | 256M | 512M |
+| node_exporter | 128M | 256M |
+| OpenTelemetry collector | 384M | 1G |
+| Prometheus | 2G | 4G |
+| Alertmanager | 128M | 256M |
+| Grafana | 512M | 1G |
 
-These lower the services' priority when the host is busy; they do not reserve anything for celestia-appd, Fibre or tmkms. `IOWeight` takes effect only where the disk's I/O scheduler honours weights (BFQ, or the kernel's io.cost controller); with the `none` scheduler common on NVMe disks it changes nothing.
+**What the priorities do and do not do.** `Nice`, `CPUWeight` and `IOWeight` lower the services' share only while they compete with celestia-appd, Fibre or tmkms for CPU or disk; on an idle host they change nothing, and they reserve nothing. They lower the impact on the validator's disk; they do not guarantee there is none. `IOWeight` (the cgroup's `io.weight`) has no effect with the `none` I/O scheduler that NVMe disks commonly use, unless the kernel's io.cost controller is configured; check a disk's scheduler with `cat /sys/block/<disk>/queue/scheduler`. Where the monitor shares a disk with the validator or Fibre, measure the impact of Prometheus's compactions on the first deploy (step 9, check 16).
 
 ## 2. Prepare the validator
 
@@ -57,7 +58,7 @@ The default `prometheus = false` serves no metrics. The default `prometheus_list
 
 **A remote signer** needs nothing extra: with `priv_validator_laddr` set and `prometheus = true`, the node exports the signer metrics.
 
-**A firewall on the hosts.** When ufw is already active on a host, the install adds rules that let the monitor's private address reach the ports Prometheus scrapes there: 26660 on the validator, and the node_exporter and collector ports (9910, 9911). Each rule carries the comment `celestia-mon` and is listed in the plan before you confirm. With any other firewall, allow those ports yourself. On a Tailscale network, ufw does not see tailnet traffic; the tailnet policy is the filter ([security.md](security.md#tailnet-policy)).
+**A firewall on the hosts.** When ufw is already active on a host, the install adds rules that let the monitor's private address reach the ports Prometheus scrapes there: 26660 on the validator, and the node_exporter and collector ports (9910, 9911). Each rule carries the comment `celestia-mon`, is listed in the plan before you confirm, and is recorded in `/var/lib/celestia-mon/firewall-added.json`. A source that already has a rule for the port is left alone and not recorded, and the uninstall deletes only recorded rules. With any other firewall, allow those ports yourself. On a Tailscale network, ufw does not see tailnet traffic; the tailnet policy is the filter ([security.md](security.md#tailnet-policy)).
 
 `doctor` checks these settings and prints the exact line to change. You can run it before the install: copy `tools/doctor.sh` to the host and run `sudo bash doctor.sh`. Without a settings file it guesses the host's roles from its systemd units; `bash doctor.sh --help` lists the flags.
 
@@ -99,7 +100,8 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 | `celestia_mon_ports` | 9910 to 9915 | celestia-validator-monitoring's ports (table in step 1). |
 | `celestia_mon_thresholds` | see [alerts.md](alerts.md) | Alert thresholds. |
 | `celestia_mon_prometheus_retention` | `30d` | How long Prometheus keeps data. |
-| `celestia_mon_prometheus_retention_size` | `8GB` | How much data Prometheus keeps; the oldest goes first when either limit is reached. |
+| `celestia_mon_prometheus_retention_size` | `8GB` | How much data Prometheus keeps; the oldest goes first when either limit is reached. Its disk needs this x 1.5 + 2 GiB (step 1). |
+| `celestia_mon_grafana_listen` | `127.0.0.1` | The address Grafana listens on, on the monitor (step 7). Another value must be a private address of the monitor host. |
 | `celestia_mon_nice`, `celestia_mon_cpu_weight`, `celestia_mon_io_weight` | 10, 20, 20 | CPU and disk priority of every unit. |
 | `celestia_mon_memory` | table in step 1 | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`). |
 
@@ -109,20 +111,21 @@ Overriding a map (`celestia_mon_units`, `celestia_mon_ports`, `celestia_mon_thre
 
 | Variable | Meaning |
 |---|---|
-| `celestia_mon_receivers` | Alert receivers for `page` and `message` (below). One list may be empty: its alerts then go to the other list's receivers. |
+| `celestia_mon_receivers` | One list of alert receivers (below). |
 | `celestia_mon_deadman_webhook_url` | Heartbeat URL of your dead-man service (step 8). |
 | `celestia_mon_grafana_admin_password` | Grafana's admin password. |
 
-Each receiver is one of:
+Each receiver is one of the types below. List any number, several of one type if you like:
 
-| `type` | Keys |
-|---|---|
-| `telegram` | `bot_token`, `chat_id` (numeric, for example `-1000000000000`) |
-| `pagerduty` | `routing_key` |
-| `slack` | `api_url`, optional `channel` |
-| `webhook` | `url` |
+| `type` | Keys | Gets page alerts | Gets message alerts |
+|---|---|---|---|
+| `pagerduty` | `routing_key` (an Events API v2 integration key) | yes | no |
+| `telegram` | `bot_token`, `chat_id` (numeric, for example `-1000000000000`) | yes | yes |
+| `discord` | `webhook_url` | yes | yes |
+| `slack` | `api_url`, optional `channel` | yes | yes |
+| `webhook` | `url` | yes | yes |
 
-`page` alerts need someone now; `message` alerts can wait for working hours. They can go to the same receiver.
+`page` alerts need someone now; `message` alerts can wait for working hours. Page alerts go to every receiver, message alerts to every receiver except PagerDuty, so list at least one receiver that is not PagerDuty. Without PagerDuty, page alerts still reach your chat channels. The separate `page` and `message` lists of earlier versions are refused. [alerts.md](alerts.md#where-alerts-go) has an example.
 
 Replace the placeholders, then encrypt the file on your workstation with [ansible-vault](https://docs.ansible.com/ansible/latest/vault_guide/vault_encrypting_content.html), from any Ansible install, or without one through uv:
 
@@ -190,12 +193,14 @@ Go in this order: the validator host (and the KMS host, if `celestia_mon_kms_scr
 
 `install.sh`:
 
-1. **checks the host**, changing nothing: Ubuntu 24.04 with systemd, run as root, `celestia_mon_private_ip` is an address of this host, celestia-validator-monitoring's ports are free (or held by its own services), and there is enough free disk. A failed check stops it before any change and names the fix. It also reports the memory available now against the services' caps.
-2. **plans:** a dry run of the whole install for this host only, with a short summary: the services and their users, the addresses and ports they listen on, the directories, the disk and memory they need, and each ufw rule it would add (`ufw rule:  allow from <monitor address> to port <port>/tcp (comment celestia-mon)`). It ends with "The dry run finds nothing to change." or "The dry run reports N change(s)".
+1. **checks the host**, changing nothing: Ubuntu 24.04 with systemd, run as root, `celestia_mon_private_ip` (and on the monitor `celestia_mon_grafana_listen`) is an address of this host, celestia-validator-monitoring's ports are free (or held by its own services), and there is enough free disk, on the monitor including the room for Prometheus's data (step 1). A failed check stops it before any change and names the fix. It also reports the memory available now against the services' memory targets and limits.
+2. **plans:** a dry run of the whole install for this host only, with a short summary: the services and their users, the addresses and ports they listen on, the directories, the disk and memory they need, and each ufw rule it would add (`ufw rule:  allow from <monitor address> to port <port>/tcp (comment celestia-mon)`). On a Fibre host it also says whether the Fibre unit already sends its metrics to the collector, and if not, the exact change for you to make (step 6). It ends with "The dry run finds nothing to change." or "The dry run reports N change(s)".
 3. **asks** `Apply this to <host>? [y/N]`. Anything but `y` or `yes` stops it with nothing changed.
 4. **installs**, and reports the number of changes, or "No changes: <host> already matches the inventory."
 5. **runs `celestia-mon-doctor`** and prints its result (step 9). Before Fibre points at its collector, and before every host is installed, some checks fail; `install.sh` still ends successfully.
-6. **prints the command that removes it again** (step 13).
+6. **prints the command that removes it again** (step 14).
+
+`install.sh` installs ansible-core and every package it needs from `ansible/requirements.lock`, which pins each one with the sha256 of its files, and refuses to run when the lock does not match the `ansible_core` pin in `versions.yml`. The lock is made in GitHub Actions by the `lock` workflow (`.github/workflows/lock.yml`), never on a workstation.
 
 | Flag | Meaning |
 |---|---|
@@ -204,25 +209,40 @@ Go in this order: the validator host (and the KMS host, if `celestia_mon_kms_scr
 | `--ask-vault-pass` | Ask for the vault password, on the host whose `host_vars` hold the encrypted file. |
 | `--check` | Dry run only: the checks and the plan, nothing changed. |
 | `--yes` | Apply the plan without asking. |
-| `--uninstall` | Remove celestia-validator-monitoring from this host (step 13). |
+| `--uninstall` | Remove celestia-validator-monitoring's services, binaries and recorded ufw rules from this host, and keep its data, settings and users (step 14). |
+| `--purge` | With `--uninstall`: also delete the data, the settings and the users, after a second confirmation (step 14). |
 
 Run `install.sh` again on each host after every inventory change; a host with nothing to change says so. If the install stops with an error, fix the cause and run it again: it continues where it stopped.
 
 ## 6. Point Fibre at its collector
 
-Only if you run Fibre. Fibre has no scrape endpoint; it pushes metrics over OTLP to the collector installed on the Fibre host. Add `--otel-endpoint http://127.0.0.1:9915` to the `ExecStart` line of Fibre's systemd unit, or set `FIBRE_OTEL_ENDPOINT=http://127.0.0.1:9915` in its environment. Use the base URL, without `/v1/metrics`. Then run `systemctl daemon-reload` and restart Fibre at a moment you choose. `doctor` on the Fibre host (check 7) confirms the setting.
+Only if you run Fibre. Fibre has no scrape endpoint; it pushes metrics over OTLP to the collector installed on the Fibre host, which takes them on `127.0.0.1:9915` (`celestia_mon_ports.otelcol_otlp`). celestia-validator-monitoring never edits or restarts Fibre, so this step is yours:
+
+1. Read the `Fibre:` line of the install plan on the Fibre host. It reads Fibre's unit and says whether it already sends to the collector; if not, it names the exact change: `--otel-endpoint http://127.0.0.1:9915` in the unit's `ExecStart`, or `FIBRE_OTEL_ENDPOINT=http://127.0.0.1:9915` where the unit already sets that variable (an `EnvironmentFile=` or `Environment=`). Use the base URL, without `/v1/metrics`.
+2. Make the change in the unit (`sudo systemctl edit --full <fibre unit>`, or the environment file).
+3. At a moment you choose, apply it: `sudo systemctl daemon-reload && sudo systemctl restart <fibre unit>`.
+4. Check it: `sudo celestia-mon-doctor` on the Fibre host (check 7) confirms the endpoint, and on the monitor check 13 confirms that Fibre's metrics arrive, with a sample from each Fibre host under 3 minutes old.
 
 ## 7. Open Grafana
 
-Grafana listens on the monitor's private address: `http://<monitor private address>:9914`. Log in as `admin` with `celestia_mon_grafana_admin_password`. Grafana reads that password only on its first start; change it later in Grafana (Profile, Change password).
-
-With ufw active on the monitor, allow your workstation's private address to port 9914 yourself (`ufw allow from <addr> to any port 9914 proto tcp`), or use an SSH tunnel. The tunnel also reaches Prometheus and Alertmanager, which listen on the monitor's loopback only:
+Grafana listens on the monitor's loopback address, 127.0.0.1, by default, so no network reaches it. Open it through an SSH tunnel from your machine:
 
 ```sh
-ssh -L 9914:<monitor private address>:9914 -L 9912:127.0.0.1:9912 -L 9913:127.0.0.1:9913 <user>@<monitor>
+ssh -N -L 9914:127.0.0.1:9914 <user>@<monitor>
 ```
 
-Then open `http://localhost:9914` (Grafana), `http://localhost:9912/alerts` (Prometheus) or `http://localhost:9913` (Alertmanager).
+Then open `http://localhost:9914`. Log in as `admin` with `celestia_mon_grafana_admin_password`. Grafana reads that password only on its first start; change it later in Grafana (Profile, Change password). The same tunnel can carry Prometheus and Alertmanager, which listen on the monitor's loopback only:
+
+```sh
+ssh -N -L 9914:127.0.0.1:9914 -L 9912:127.0.0.1:9912 -L 9913:127.0.0.1:9913 <user>@<monitor>
+```
+
+Then also `http://localhost:9912/alerts` (Prometheus) and `http://localhost:9913` (Alertmanager).
+
+Two optional alternatives:
+
+- **A private address.** Set `celestia_mon_grafana_listen` to a private address of the monitor (a Tailscale, WireGuard or LAN address) and run `install.sh` on the monitor again; then open `http://<that address>:9914` from a machine on that network. The install stops when the address is not one of the monitor's, and Grafana never listens on `0.0.0.0`. With ufw active on the monitor, allow your workstation to port 9914 yourself (`sudo ufw allow from <addr> to any port 9914 proto tcp`). Tailscale is never required.
+- **A reverse proxy.** Keep `127.0.0.1` and run the proxy on the monitor itself, in front of `http://127.0.0.1:9914`, with its own TLS.
 
 The dashboard is **celestia-mon: Celestia validator** in the **Celestia validator** folder. [panels.md](panels.md) explains each panel. It is generated from your inventory, so groups that do not apply are left out and the threshold lines match the alerts. Do not edit it in Grafana; change the inventory and run `install.sh` on the monitor again.
 
@@ -232,7 +252,7 @@ The Watchdog alert is always firing. Alertmanager sends it every 1 to 2 minutes 
 
 1. Choose any dead-man (heartbeat) service that gives you a URL to ping and alerts you when pings stop. Alertmanager pings it with an HTTP POST.
 2. Set its period to **5 minutes or more**, so a ping that arrives two minutes apart never trips it.
-3. Have it notify you **by email and on a channel other than your alert chat**: when the alert chat is what broke, the dead-man service is the only one left to tell you.
+3. Connect it to **PagerDuty and to email or another channel than your alert chat**. A dead monitor host, or a whole data centre gone, then still rings your phone, and when the alert chat is what broke, the dead-man service is the only one left to tell you.
 4. Put the URL in `celestia_mon_deadman_webhook_url` in the vault file and run `install.sh` on the monitor again.
 5. Test it: on the monitor, run `sudo systemctl stop celestia-mon-alertmanager`, wait until the dead-man service alerts you, then `sudo systemctl start celestia-mon-alertmanager`.
 
@@ -246,28 +266,53 @@ On every host celestia-validator-monitoring is installed on, the monitor include
 sudo celestia-mon-doctor
 ```
 
-It changes nothing. It reads `/etc/celestia-mon/doctor.conf`, which the install writes; any setting can also be given as a flag (`celestia-mon-doctor --help`). Each check prints one line: `OK`, `FAIL` with the exact fix, `WARN`, or `SKIP` when the check does not apply on this host. The exit code is 1 when a check failed.
+It changes nothing. It reads `/etc/celestia-mon/doctor.conf`, which the install writes; any setting can also be given as a flag (`celestia-mon-doctor --help`). The settings include the install type: with `signer=local` doctor never expects the remote signer's metrics, and with `fibre_enabled=false` never Fibre's or the collector's. Each check prints one line (check 12 one line per group), starting with its status:
+
+| Status | Meaning |
+|---|---|
+| `OK` | The check passed. |
+| `NOT YET` | Metrics that appear only after an event; the line names the event. |
+| `FAIL` | The check failed; the line ends with the fix to apply. |
+| `WARN` | Worth fixing, but not counted as a failure. |
+| `INFO` | A measurement to read, never a failure. |
+| `SKIP` | The check does not apply on this host, or cannot run yet. |
+
+The exit code is 1 when a check failed.
 
 | # | Host | Check |
 |---|---|---|
-| 1 | validator | celestia-appd metrics are enabled and served; warns if the port listens on a public address. |
+| 1 | validator | celestia-appd metrics are enabled and served. Warns when they listen on every interface (`prometheus_listen_addr` with an empty host or `0.0.0.0`) or on a public address: whether they can be reached from outside then depends on the firewall, and binding them to the private address is the fix. |
 | 2 | validator | The signer setting matches `celestia_mon_signer`; with a remote signer, the median signing latency is at most 10 ms (skipped until 50 signatures after a start). |
-| 3 | validator | The node is at the chain head: height advancing, `catching_up=false`. |
+| 3 | validator | Node progress: the height advances and `catching_up=false`. This shows that the node advances, not that it is at the network's head. |
 | 4 | validator | The validator's consensus address, from the node's `/status`. |
 | 5 | validator | With Fibre on: the Fibre host registered in `x/valaddr`, compared with `celestia_mon_fibre_public_endpoint`. |
 | 6 | fibre | The Fibre unit is active and its port (7980 by default) listens. |
 | 7 | fibre | Fibre's OTLP endpoint points at the local collector. |
-| 8 | all | The `celestia-mon-*` services listen on private addresses only, Prometheus and Alertmanager on loopback only; other software on the host is not checked. Reports whether a firewall is active. |
+| 8 | all | The `celestia-mon-*` services listen on private addresses only (Grafana on 127.0.0.1 or `celestia_mon_grafana_listen`), Prometheus and Alertmanager on loopback only; other software on the host is not checked. Reports whether a firewall is active. |
 | 9 | all | Time sync is active and the clock offset is small. |
 | 10 | all | Free space on the data mounts; the Fibre mount is not read-only. |
-| 11 | monitor | Prometheus and Alertmanager answer on 127.0.0.1, and every scrape target is up; a down target is listed with its error. |
-| 12 | monitor | Every metric the alert rules read has series in Prometheus; the missing ones are listed with the rules that read them. |
+| 11 | monitor | Prometheus and Alertmanager answer on 127.0.0.1, and every scrape target is up. A down target means its collector or exporter is broken; it is listed with its error and the fix for that job. |
+| 12 | monitor | Every metric the alert rules read: `OK` when it has series, `NOT YET` with the event that makes it appear (a first signing failure, a first upload, the validator's first own signature), `WARN` when it is missing although its source is up (most likely a renamed metric), `FAIL` when its source is broken (a target down, or Fibre not pushing). `signer` and `fibre_enabled` decide which metrics are expected at all. |
+| 13 | monitor | Fibre pipeline, with Fibre on: Prometheus has fresh Fibre series from each Fibre host, a sample under 3 minutes old. The collector takes OTLP only on 127.0.0.1 at `celestia_mon_ports.otelcol_otlp`, so this shows that the unit's endpoint matches it end to end, not just that the port is open. |
+| 14 | all | Unit memory: each `celestia-mon-*` unit's use against its `MemoryHigh` and `MemoryMax`; warns above 80% of `MemoryHigh`. |
+| 15 | monitor | Monitor disk: what Prometheus holds plus the free space on its disk is at least the retention size x 1.5 + 2 GiB, the same rule as the install's check. |
+| 16 | monitor | Compaction I/O (`INFO`): write latency and busy time of each Celestia host's disks around Prometheus's last compaction, next to the hour before. |
 
-Right after an install, doctor on the monitor can take up to a minute while Prometheus starts and scrapes each target once. On the first deploy, check 12 is how the Fibre metric names get confirmed: a counter of failures can stay absent until the first failure, but any other name it lists needs a look. Run doctor again after every celestia-app or Fibre upgrade and every config change.
+Right after an install, doctor on the monitor can take up to a minute while Prometheus starts and scrapes each target once. On the first deploy, check 12 is how the Fibre metric names get confirmed: any metric it lists as `WARN` needs a look. Run doctor again after every celestia-app or Fibre upgrade and every config change.
+
+**Measure the impact of compactions on the first deploy.** Prometheus compacts its data about every 2 hours, the first time about 3 hours after it starts, and a compaction reads and writes on the disk of its data directory. Where the monitor shares a disk with the validator or Fibre, `Nice` and `IOWeight` lower that load's priority but do not guarantee it has no impact (step 1). Once Prometheus has run for a few hours, run `sudo celestia-mon-doctor` on the monitor and read check 16: the peak write latency and busy time of the worst disk per Celestia host in the 10 minutes around the last compaction, with the hour before in brackets. A clear rise on a validator or Fibre disk means Prometheus competes with it: put Prometheus's data (`/var/lib/celestia-mon/prometheus`) on another disk, or the monitor on another host. To look at it yourself, the "Disk latency and load" panel shows each disk over time, and these queries work in Grafana's Explore (T is the time of the last compaction):
+
+```promql
+max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])
+rate(node_disk_write_time_seconds_total{job="node"}[1m]) / rate(node_disk_writes_completed_total{job="node"}[1m])
+rate(node_disk_io_time_seconds_total{job="node"}[1m])
+```
+
+The first gives T, the second the average write latency per disk, the third the share of time each disk was busy.
 
 ## 10. Check that alerts reach you
 
-On the monitor, send a test alert of each severity and check that it arrives where you expect. Alertmanager's `amtool` is in `/opt/celestia-mon/alertmanager-<version>/`, with the Alertmanager version from `versions.yml`:
+On the monitor, send a test alert of each severity and check that it arrives where you expect: the page alert at every receiver, PagerDuty included, the message alert at every receiver except PagerDuty. Alertmanager's `amtool` is in `/opt/celestia-mon/alertmanager-<version>/`, with the Alertmanager version from `versions.yml`:
 
 ```sh
 amtool=/opt/celestia-mon/alertmanager-<version>/amtool
@@ -283,16 +328,34 @@ Each resolves by itself after 5 minutes. [alerts.md](alerts.md) describes every 
 
 Upgrades are the most common reason a node stops at a height or crash loops. Celestia announces upgrades and incidents per network on [status.celestia.org](https://status.celestia.org/). Subscribe there for the networks you run, or route its feed ([RSS](https://status.celestia.org/feed.rss), [Atom](https://status.celestia.org/feed.atom)) into the same channel as your alerts. See also Celestia's [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/) page.
 
-## 12. Monthly drill
+## 12. Before planned restarts and upgrades
+
+Before you restart or upgrade celestia-appd, Fibre, tmkms or a whole host, silence that host's alerts on the monitor, so the planned downtime pages nobody:
+
+```sh
+amtool=/opt/celestia-mon/alertmanager-<version>/amtool
+$amtool --alertmanager.url=http://127.0.0.1:9913 silence add host=<host> --duration=30m --comment="planned upgrade of <host>"
+```
+
+It prints the silence's ID. Every alert labelled `host=<host>` is held back until the silence ends; the Watchdog keeps running. When the work is done and the dashboard looks healthy again, end the silence rather than wait for it:
+
+```sh
+$amtool --alertmanager.url=http://127.0.0.1:9913 silence query host=<host>   # lists the silences for the host, with their IDs
+$amtool --alertmanager.url=http://127.0.0.1:9913 silence expire <ID>
+```
+
+Alerts that are still true after the silence ends are sent then. [alerts.md](alerts.md#before-planned-restarts-and-upgrades) has the same commands.
+
+## 13. Monthly drill
 
 Once a month, check that every path still works:
 
-1. **Dead-man:** stop Alertmanager on the monitor until the dead-man service alerts you by email and on its other channel, then start it again (step 8).
+1. **Dead-man:** stop Alertmanager on the monitor until the dead-man service alerts you through PagerDuty and its other channel, then start it again (step 8).
 2. **Alert channels:** send a test alert of each severity (step 10) and check that both arrive.
 3. **Hosts:** `sudo celestia-mon-doctor` on every host (step 9).
 4. **Drift:** `sudo ./install.sh --check --inventory ~/celestia-mon-inventory/hosts.yml --host <name>` on every host (add `--ask-vault-pass` on the monitor). "The dry run finds nothing to change." means the host still matches the inventory.
 
-## 13. Upgrade or remove
+## 14. Upgrade or remove
 
 **Upgrade.** Copy the new release to each host as in step 4 and run `install.sh` there. The dry run names each new version it would install ("Would install ..."); the service restarts on the new version, and the old version's directory is removed once the new one runs. Data and settings stay.
 
@@ -302,4 +365,12 @@ Once a month, check that every path still works:
 sudo ./install.sh --uninstall --host <name>
 ```
 
-It needs neither the inventory nor the vault password, and it shows its plan and asks first as well (`--check` shows the plan only, `--yes` skips the question). It stops, disables and removes every `celestia-mon-*` unit, removes the `celestia-mon-*` users and groups, `/opt/celestia-mon`, `/etc/celestia-mon`, `/var/lib/celestia-mon` (Prometheus's data and Grafana's database), `/var/cache/celestia-mon` and `/usr/local/bin/celestia-mon-doctor`, and deletes the ufw rules with the comment `celestia-mon`. Nothing else is touched: celestia-appd, Fibre, tmkms, other services and other firewall rules stay as they are. Two settings you made yourself stay too: celestia-appd's `[instrumentation]` section, and Fibre's `--otel-endpoint`; with the collector gone, Fibre logs export errors until you remove that flag and restart Fibre.
+It needs neither the inventory nor the vault password, and it shows its plan and asks first as well (`--check` shows the plan only, `--yes` skips the question). It stops, disables and removes every `celestia-mon-*` unit, removes `/opt/celestia-mon` (the binaries), `/var/cache/celestia-mon` and `/usr/local/bin/celestia-mon-doctor`, and deletes the ufw rules the install recorded in `/var/lib/celestia-mon/firewall-added.json`: each one only while ufw still lists it with the recorded source, port, protocol and the comment `celestia-mon`. A rule that was there before the install was never recorded and stays. It keeps Prometheus's data and Grafana's database (`/var/lib/celestia-mon`), the settings (`/etc/celestia-mon`) and the `celestia-mon-*` system users and groups, so a reinstall picks up where it left off. It prints the command that deletes those too:
+
+```sh
+sudo ./install.sh --uninstall --purge --host <name>
+```
+
+`--purge` asks a second time, naming the paths and the users it deletes for good (`--yes` skips both questions). Nothing else is touched: celestia-appd, Fibre, tmkms, other services and other firewall rules stay as they are. Two settings you made yourself stay too: celestia-appd's `[instrumentation]` section, and Fibre's `--otel-endpoint`; with the collector gone, Fibre logs export errors until you remove that setting and restart Fibre.
+
+An install made before celestia-validator-monitoring recorded its ufw rules has no `firewall-added.json`, so its uninstall keeps those rules. List them with `sudo ufw status | grep celestia-mon` and delete each one by hand: `sudo ufw delete allow from <address> to any port <port> proto tcp`.

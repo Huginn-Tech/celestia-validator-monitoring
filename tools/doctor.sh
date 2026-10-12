@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # celestia-mon-doctor: read-only checks for the hosts of a Celestia validator.
 #
-# It changes nothing on the host. Each check prints one line:
-#   OK    the check passed
-#   FAIL  the check failed; the line ends with the fix to apply
-#   WARN  worth fixing, but not counted as a failure
-#   SKIP  the check does not apply on this host, or cannot run yet
+# It changes nothing on the host. Each check prints a line (check 12 one per group):
+#   OK       the check passed
+#   NOT YET  metrics that appear only after an event; the line names the event
+#   FAIL     the check failed; the line ends with the fix to apply
+#   WARN     worth fixing, but not counted as a failure
+#   INFO     a measurement to read, never a failure
+#   SKIP     the check does not apply on this host, or cannot run yet
 # Exit code: 0 when no check failed, 1 when one did, 2 on a usage error.
 #
 # Settings are read from /etc/celestia-mon/doctor.conf (key=value lines, written by
@@ -19,8 +21,12 @@
 # multiplexer build of it unpacks any missing embedded binaries into
 # <node home>/bin, as the node itself does at every start.
 #
-# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 and 12
-# run on the monitor host and ask them there.
+# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15
+# and 16 run on the monitor host and ask them there.
+#
+# signer and fibre_enabled tell doctor the install type: with signer=local it
+# never expects the remote signer's metrics, with fibre_enabled=false never
+# Fibre's or the collector's.
 #
 # Needs only bash, coreutils, util-linux (runuser), curl, ss, systemctl, grep,
 # sed and awk.
@@ -42,8 +48,11 @@ declare -A C=(
   [fibre_public_endpoint]=""
   [fibre_port]=""
   [fibre_otel_endpoint]="http://127.0.0.1:9915"
+  [fibre_hosts]=""
   [prometheus_url]="http://127.0.0.1:9912"
   [alertmanager_url]="http://127.0.0.1:9913"
+  [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
+  [prometheus_retention_size]=""
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
   [time_offset_max]="0.1"
@@ -61,8 +70,11 @@ overridden with flags (--node-rpc-url URL sets node_rpc_url).
 
   roles                  comma-separated: validator, fibre, kms, monitor
                          (default: guessed from the units on this host)
-  signer                 local or remote (default: not compared)
-  fibre_enabled          true or false (default: true if the Fibre unit exists)
+  signer                 local or remote; with local, no remote signer metrics
+                         are expected (default: not set, not compared)
+  fibre_enabled          true or false; with false, no Fibre or collector
+                         metrics are expected (default: true if the Fibre
+                         unit exists)
   appd_unit, fibre_unit  systemd unit names (default: celestia-appd, fibre)
   node_rpc_url           default http://127.0.0.1:26657
   node_metrics_url       default http://127.0.0.1:26660/metrics
@@ -77,10 +89,15 @@ overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          --server-listen-address, else server_listen_address
                          in Fibre's config/server_config.toml, else 7980)
   fibre_otel_endpoint    expected OTLP base URL (default http://127.0.0.1:9915)
+  fibre_hosts            comma-separated inventory names of the Fibre hosts,
+                         on the monitor (default: the collector targets)
   prometheus_url         celestia-mon's Prometheus, on the monitor host
                          (default http://127.0.0.1:9912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
                          (default http://127.0.0.1:9913)
+  prometheus_data_dir    default /var/lib/celestia-mon/prometheus
+  prometheus_retention_size  Prometheus's retention size, such as 8GB
+                         (default: not compared)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   time_offset_max        seconds (default 0.1)
@@ -126,7 +143,7 @@ need_value() {
 
 failed=0
 report() { # status, check number, check name, detail
-  printf '%-4s %2s  %-14s  %s\n' "$1" "$2" "$3" "$4"
+  printf '%-7s %2s  %-14s  %s\n' "$1" "$2" "$3" "$4"
   if [[ $1 == FAIL ]]; then failed=1; fi
 }
 
@@ -143,16 +160,24 @@ last_line() {
   printf '%s' "${l:0:200}"
 }
 ms() { awk -v s="$1" 'BEGIN { printf "%.1f", s * 1000 }'; }
-http_get() { curl -fsS -g --max-time 5 "$1" 2>/dev/null; }
+# The API answers end without a newline; add one so `while read` loops see the last line.
+http_get() {
+  local rc=0
+  curl -fsS -g --max-time 5 "$1" 2>/dev/null || rc=$?
+  echo
+  return "$rc"
+}
 url_hostport() {
   local u=${1#*://}
   printf '%s' "${u%%/*}"
 }
-url_port() {
+url_port() { # URL -> its port, empty when it names none
   local hp
   hp=$(url_hostport "$1")
-  printf '%s' "${hp##*:}"
+  hp=${hp##*]}
+  if [[ $hp == *:* ]]; then printf '%s' "${hp##*:}"; fi
 }
+gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
 
 unit_prop() { systemctl show -p "$2" --value "$1" 2>/dev/null; }
 unit_loaded() { [[ $(unit_prop "$1" LoadState) == loaded ]]; }
@@ -330,7 +355,7 @@ home_ok() {
 
 METRICS=""
 check_metrics() {
-  local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a
+  local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind
   local -a bad=()
   if ! has_role validator; then report SKIP 1 "$name" "not a validator host"; return; fi
   cfg=$NODE_HOME/config/config.toml
@@ -356,11 +381,28 @@ check_metrics() {
     report FAIL 1 "$name" "$url has no cometbft_ or celestia_ metrics (namespace = ${ns:-unknown}). Fix: set namespace = \"cometbft\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
     return
   fi
+  # CometBFT's default prometheus_listen_addr is ":26660": an empty host, like
+  # 0.0.0.0, means every interface.
+  lhost=${laddr#*://}
+  lhost=${lhost%:*}
+  lhost=${lhost#\[}
+  lhost=${lhost%\]}
+  if [[ -n $laddr ]] && [[ -z $lhost || $lhost == 0.0.0.0 || $lhost == :: || $lhost == '*' ]]; then
+    wild="prometheus_listen_addr = \"$laddr\" in $cfg"
+  fi
   while read -r a; do
-    [[ -z $a || $(addr_class "$a") == private ]] || bad+=("$a")
+    [[ -n $a ]] || continue
+    case $(addr_class "$a") in
+      wildcard) [[ -n $wild ]] || wild="the port listens on $a" ;;
+      public) bad+=("$a") ;;
+    esac
   done <<<"$(listeners "$(url_port "$url")")"
-  if ((${#bad[@]} > 0)); then
-    report WARN 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address. Fix: set prometheus_listen_addr = \"$(url_hostport "$url")\" under [instrumentation] in $cfg (or block the port in a firewall), then restart celestia-appd at a moment you choose"
+  bind=$(url_hostport "$url")
+  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then bind="<private address>:$(url_port "$url")"; fi
+  if [[ -n $wild ]]; then
+    report WARN 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, and whether they can be reached from outside depends on the firewall (firewall: $(firewall_state)). Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose; celestia-mon-doctor never edits the config"
+  elif ((${#bad[@]} > 0)); then
+    report WARN 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address. Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or block the port in a firewall), then restart celestia-appd at a moment you choose"
   else
     report OK 1 "$name" "enabled at $url$note"
   fi
@@ -408,8 +450,10 @@ status_value() { # key -> value of "key":"value" or "key":value in the flattened
   sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p' <<<"$STATUS" | head -n 1
 }
 
+# Shows that the node advances, not that it is at the network's head: an
+# explorer or status.celestia.org shows that.
 check_head() {
-  local name="node at head" rpc=${C[node_rpc_url]%/} limit=${C[head_wait]} h0 h1 catching end
+  local name="node progress" rpc=${C[node_rpc_url]%/} limit=${C[head_wait]} h0 h1 catching end
   if ! has_role validator; then report SKIP 3 "$name" "not a validator host"; return; fi
   STATUS=$(http_get "$rpc/status" | tr -d ' \t\r\n')
   h0=$(status_value latest_block_height)
@@ -432,9 +476,9 @@ check_head() {
     [[ $h1 =~ ^[0-9]+$ ]] || h1=0
   done
   if ((h1 > h0)); then
-    report OK 3 "$name" "height $h0 -> $h1, catching_up=false"
+    report OK 3 "$name" "height $h0 -> $h1, catching_up=false (the node advances; an explorer shows the network's head)"
   else
-    report FAIL 3 "$name" "height stayed at $h0 for ${limit}s. Fix: check status.celestia.org and an explorer first; if the whole chain stopped, coordinate with other validators instead of fixing locally. Otherwise check peers and \"journalctl -u ${C[appd_unit]} -n 100\" (a node often stops at an upgrade height)"
+    report FAIL 3 "$name" "height stayed at $h0 for ${limit}s, as the NodeNotAdvancing alert reports. Fix: check status.celestia.org and an explorer first; if the whole chain stopped, coordinate with other validators instead of fixing locally. Otherwise check peers and \"journalctl -u ${C[appd_unit]} -n 100\" (a node often stops at an upgrade height)"
   fi
 }
 
@@ -562,7 +606,7 @@ check_fibre_service() {
 }
 
 check_fibre_otel() {
-  local name="fibre otlp" unit=${C[fibre_unit]} want=${C[fibre_otel_endpoint]%/} got src="" unread="" port
+  local name="fibre otlp" unit=${C[fibre_unit]} want=${C[fibre_otel_endpoint]%/} got src="" unread="" port gport detail
   if fibre_skip 7 "$name"; then return; fi
   if ! unit_loaded "$unit"; then report SKIP 7 "$name" "$unit.service not found (check 6)"; return; fi
   # Fibre reads FIBRE_OTEL_ENDPOINT and lets --otel-endpoint override it.
@@ -582,19 +626,25 @@ check_fibre_otel() {
   fi
   got=${got%/}
   if [[ -z $got ]]; then
-    report FAIL 7 "$name" "no OTLP endpoint set$unread, so Fibre sends no metrics. Fix: add \"--otel-endpoint $want\" to ExecStart in $unit.service (or Environment=FIBRE_OTEL_ENDPOINT=$want), run \"systemctl daemon-reload\", then restart Fibre at a moment you choose"
-    return
-  fi
-  if [[ $got != "$want" && $got != "${want/127.0.0.1/localhost}" && $got != "${want/localhost/127.0.0.1}" ]]; then
-    report FAIL 7 "$name" "$src is $got, not the local collector $want. Fix: set it to $want (the base URL, without /v1/metrics), run \"systemctl daemon-reload\", then restart Fibre at a moment you choose"
+    report FAIL 7 "$name" "no OTLP endpoint set$unread, so Fibre sends no metrics. Fix: add \"--otel-endpoint $want\" to ExecStart in $unit.service (or Environment=FIBRE_OTEL_ENDPOINT=$want), run \"systemctl daemon-reload\", then \"systemctl restart $unit\" at a moment you choose"
     return
   fi
   port=$(url_port "$want")
+  if [[ $got != "$want" && $got != "${want/127.0.0.1/localhost}" && $got != "${want/localhost/127.0.0.1}" ]]; then
+    gport=$(url_port "$got")
+    if [[ -n $port && $gport != "$port" ]]; then
+      detail="$src is $got: port ${gport:-not set}, but the collector takes OTLP on port $port (celestia_mon_ports.otelcol_otlp)"
+    else
+      detail="$src is $got, not the local collector $want"
+    fi
+    report FAIL 7 "$name" "$detail. Fix: set it to $want (the base URL, without /v1/metrics), run \"systemctl daemon-reload\", then \"systemctl restart $unit\" at a moment you choose"
+    return
+  fi
   if [[ -z $(listeners "$port") ]]; then
     report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run install.sh on this host so the collector (celestia-mon-otelcol) is installed and running, then read \"journalctl -u celestia-mon-otelcol -n 100\""
     return
   fi
-  report OK 7 "$name" "$src is $got"
+  report OK 7 "$name" "$src is $got, the collector's OTLP port (check 13 on the monitor shows that its metrics arrive)"
 }
 
 # ------------------------------------------------------ checks on every host
@@ -735,6 +785,48 @@ check_disks() {
   fi
 }
 
+# Memory of each celestia-mon unit against its MemoryHigh (above it the kernel
+# reclaims the service's memory and slows it down) and MemoryMax (at it the
+# service is killed and restarted). WARN above 80% of MemoryHigh.
+check_memory() {
+  local name="unit memory" unit cur line key
+  local -a ok=() hot=() keys=()
+  for unit in "${CELESTIA_MON_UNITS[@]}"; do
+    unit_loaded "$unit" || continue
+    cur=$(unit_prop "$unit" MemoryCurrent)
+    if [[ ! $cur =~ ^[0-9]+$ ]]; then
+      ok+=("$unit not running")
+      continue
+    fi
+    line=$(awk -v u="$unit" -v c="$cur" -v p="$(unit_prop "$unit" MemoryPeak)" -v h="$(unit_prop "$unit" MemoryHigh)" \
+      -v m="$(unit_prop "$unit" MemoryMax)" 'BEGIN {
+      t = sprintf("%s %.0f MiB", u, c / 1048576)
+      if (p ~ /^[0-9]+$/) t = t sprintf(" (peak %.0f MiB)", p / 1048576)
+      if (h ~ /^[0-9]+$/ && h > 0) t = t sprintf(", %.0f%% of MemoryHigh %.0f MiB", 100 * c / h, h / 1048576)
+      else t = t ", no MemoryHigh"
+      if (m ~ /^[0-9]+$/) t = t sprintf(", MemoryMax %.0f MiB", m / 1048576)
+      s = (h ~ /^[0-9]+$/ && c > 0.8 * h) ? "hot " : "ok "
+      print s t
+    }')
+    if [[ $line == hot* ]]; then
+      hot+=("${line#hot }")
+      key=${unit#celestia-mon-}
+      keys+=("celestia_mon_memory.${key//-/_}")
+    else
+      ok+=("${line#ok }")
+    fi
+  done
+  if ((${#ok[@]} + ${#hot[@]} == 0)); then
+    report SKIP 14 "$name" "no celestia-mon service on this host"
+  elif ((${#hot[@]} > 0)); then
+    line="$(join "${hot[@]}") above 80% of MemoryHigh"
+    if ((${#ok[@]} > 0)); then line+="; ok: $(join "${ok[@]}")"; fi
+    report WARN 14 "$name" "$line. Fix: raise high and max in $(join "${keys[@]}") in the inventory and re-run install.sh on this host; above MemoryHigh the kernel slows the service down, at MemoryMax it kills it"
+  else
+    report OK 14 "$name" "$(join "${ok[@]}")"
+  fi
+}
+
 # --------------------------------------------------------- monitor checks
 
 http_code() { curl -s -g -o /dev/null --max-time 5 -w '%{http_code}' "$1" 2>/dev/null; }
@@ -770,9 +862,21 @@ read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING and TARGETS_DOW
   done < <(http_get "$1/api/v1/targets?state=active" | sed 's/"scrapePool":/\n&/g')
 }
 
+target_fix() { # scrape job -> what to check when its target is down
+  case $1 in
+    celestia-app) printf '%s' "celestia-app: run celestia-mon-doctor on that validator host (check 1 shows the node's metrics setting)" ;;
+    node) printf '%s' "node: on that host read \"systemctl status celestia-mon-node-exporter\" and \"journalctl -u celestia-mon-node-exporter -n 100\"" ;;
+    otelcol) printf '%s' "otelcol: on that Fibre host read \"systemctl status celestia-mon-otelcol\" and \"journalctl -u celestia-mon-otelcol -n 100\"" ;;
+    prometheus | alertmanager) printf '%s' "$1: read \"journalctl -u celestia-mon-$1 -n 100\" on this host" ;;
+    *) printf '%s' "$1: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where)" ;;
+  esac
+}
+
 PROM_OK=0
 check_stack() {
-  local name="monitor stack" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} code end total
+  local name="monitor stack" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} code end total t
+  local -a fixes=()
+  local -A seen=()
   if ! has_role monitor; then report SKIP 11 "$name" "not the monitor host"; return; fi
   # Prometheus answers 503 until it has loaded its data, as it does right after
   # an install; the first scrape of each target follows within one interval.
@@ -803,7 +907,16 @@ check_stack() {
   if ((total == 0)); then
     report FAIL 11 "$name" "Prometheus at $prom has no scrape targets. Fix: re-run install.sh on this host, then read \"journalctl -u celestia-mon-prometheus -n 100\""
   elif ((${#TARGETS_DOWN[@]} > 0)); then
-    report FAIL 11 "$name" "${#TARGETS_DOWN[@]} of $total scrape targets down: $(join "${TARGETS_DOWN[@]}"). Fix: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where); \"curl -s <url> | head\" must answer from this host, so also check the private network and any firewall between the hosts"
+    # A down target means its collector or exporter is broken, so every metric it serves is missing.
+    for t in "${TARGETS_DOWN[@]}"; do
+      t=${t%% *}
+      if [[ -z ${seen[$t]+set} ]]; then
+        seen[$t]=1
+        fixes+=("$(target_fix "$t")")
+      fi
+    done
+    t=$(printf '%s; ' "${fixes[@]}")
+    report FAIL 11 "$name" "${#TARGETS_DOWN[@]} of $total scrape targets down: $(join "${TARGETS_DOWN[@]}"). Their collector or exporter is broken, so the metrics they serve are missing. Fix: $t\"curl -s <url> | head\" must answer from this host, so also check the private network and any firewall between the hosts"
   elif ((TARGETS_PENDING > 0)); then
     report WARN 11 "$name" "Prometheus and Alertmanager answer; $TARGETS_PENDING of $total scrape targets not scraped yet. Fix: run celestia-mon-doctor again in a minute"
   else
@@ -848,9 +961,66 @@ rule_metrics() {
     }'
 }
 
+prom_query() { # PromQL -> JSON reply of an instant query to Prometheus (newline-terminated), empty on error
+  local rc=0
+  curl -fsS -g --max-time 10 -G --data-urlencode "query=$1" "${C[prometheus_url]%/}/api/v1/query" 2>/dev/null || rc=$?
+  echo
+  return "$rc"
+}
+prom_vector() { # PromQL, label -> "<label value> <sample value>" for each series of the reply
+  prom_query "$1" | sed 's/{"metric":/\n&/g' | sed -n 's/.*"'"$2"'":"\([^"]*\)".*"value":\[[^],]*,"\([^"]*\)"].*/\1 \2/p'
+}
+prom_value() { # PromQL -> the sample value of a one-series reply, empty when there is none
+  prom_query "$1" | sed -n 's/.*"value":\[[^],]*,"\([^"]*\)"].*/\1/p' | head -n 1
+}
+
+# The scrape job a rule metric comes from: "fibre" for Fibre's own metrics, which
+# Fibre pushes to the collector (job otelcol); empty when unknown.
+metric_source() {
+  case $1 in
+    cometbft_*) echo celestia-app ;;
+    node_*) echo node ;;
+    fibre_*) echo fibre ;;
+    otelcol_*) echo otelcol ;;
+    prometheus_*) echo prometheus ;;
+    alertmanager_*) echo alertmanager ;;
+  esac
+}
+
+# The install type decides which metrics can exist at all.
+metric_expected() {
+  case $1 in
+    cometbft_privval_*) [[ ${C[signer]} != local ]] ;;
+    fibre_* | otelcol_*) fibre_on ;;
+    *) true ;;
+  esac
+}
+
+# The event after which a metric first appears, for the metrics that do not exist
+# until it happens (celestia-core privval/metrics.go, celestia-app
+# fibre/server_metrics.go, Alertmanager notify/metrics.go); empty for the others.
+metric_event() {
+  case $1 in
+    cometbft_privval_signing_failures_total) echo "the first failed signing request" ;;
+    cometbft_privval_signing_latency_median_seconds) echo "50 remote signatures since the node started" ;;
+    cometbft_privval_signing_latency_*) echo "the first remote signature" ;;
+    cometbft_consensus_validator_last_signed_height) echo "the validator's first own signature in a block; it must be bonded and in the active set" ;;
+    fibre_server_upload_shard_rejected_total) echo "the first upload the storage limiter rejects" ;;
+    fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
+    fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
+    fibre_server_download_shard_duration_seconds*) echo "the first download" ;;
+    alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
+  esac
+}
+
+# Sorts every metric the rules read: present (OK); not expected for this install
+# type; missing because its source is broken (FAIL: its scrape target is down, or
+# Fibre does not push); missing until an event (NOT YET); or missing although its
+# source is up (WARN: most likely a renamed metric). One line per group.
 check_rule_metrics() {
-  local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total
-  local -a missing=() rules=()
+  local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total nmiss=0 src why ev job state pushing=false line
+  local -a missing=() rules=() notyet=() broken=() notexp=()
+  local -A jobs=()
   if ! has_role monitor; then report SKIP 12 "$name" "not the monitor host"; return; fi
   if ((!PROM_OK)); then report SKIP 12 "$name" "Prometheus not answering (check 11)"; return; fi
   pairs=$(http_get "$prom/api/v1/rules?exclude_alerts=true" | rule_metrics | sort -u)
@@ -861,21 +1031,204 @@ check_rule_metrics() {
   names=$(cut -d ' ' -f 1 <<<"$pairs" | sort -u)
   total=$(grep -c . <<<"$names")
   # One query lists which of the names have series now.
-  present=$(curl -fsS -g --max-time 10 -G --data-urlencode "query=count by (__name__) ({__name__=~\"$(paste -sd '|' <<<"$names")\"})" "$prom/api/v1/query" 2>/dev/null)
+  present=$(prom_query "count by (__name__) ({__name__=~\"$(paste -sd '|' <<<"$names")\"})")
   if [[ $present != *'"status":"success"'* ]]; then
     report FAIL 12 "$name" "the series query to $prom/api/v1/query failed. Fix: read \"journalctl -u celestia-mon-prometheus -n 100\""
     return
   fi
   present=$(grep -oE '"__name__":"[^"]*"' <<<"$present" | cut -d '"' -f 4)
+  # A scrape job is healthy when one of its targets is up. Fibre's metrics also need
+  # Fibre to push them; it reports its storage budget from its first push on.
+  while read -r job state; do jobs[$job]=$state; done < <(prom_vector 'max by (job) (up)' job)
+  if [[ -n $(prom_value 'count(fibre_server_upload_shard_budget_bytes)') ]]; then pushing=true; fi
   while read -r m; do
-    mapfile -t rules < <(awk -v m="$m" '$1 == m { print $2 }' <<<"$pairs")
-    missing+=("$m ($(join "${rules[@]}"))")
+    nmiss=$((nmiss + 1))
+    if ! metric_expected "$m"; then
+      notexp+=("$m")
+      continue
+    fi
+    src=$(metric_source "$m")
+    why=""
+    if [[ $src == fibre && ${jobs[otelcol]:-} != 1 ]]; then
+      why="otelcol target not up: check 11"
+    elif [[ $src == fibre && $pushing != true ]]; then
+      why="Fibre is not pushing metrics: check 13"
+    elif [[ -n $src && $src != fibre && ${jobs[$src]:-} != 1 ]]; then
+      why="$src target not up: check 11"
+    fi
+    ev=$(metric_event "$m")
+    if [[ -n $why ]]; then
+      broken+=("$m ($why)")
+    elif [[ -n $ev ]]; then
+      notyet+=("$m (after $ev)")
+    else
+      mapfile -t rules < <(awk -v m="$m" '$1 == m { print $2 }' <<<"$pairs")
+      missing+=("$m ($(join "${rules[@]}"))")
+    fi
   done < <(grep -vxF -f <(printf '%s\n' "$present") <<<"$names")
-  if ((${#missing[@]} == 0)); then
+  if ((nmiss == 0)); then
     report OK 12 "$name" "all $total metrics the alert rules read have series"
-  else
-    report WARN 12 "$name" "${#missing[@]} of $total metrics the alert rules read have no series (the rules that read each are in brackets): $(join "${missing[@]}"). Fix: a counter of failures or the time of an event can stay absent until the first one happens; for any other name check that its target is up (check 11) and that the service exports it under this name (curl the target's /metrics)"
+    return
   fi
+  if ((total > nmiss || ${#notexp[@]} > 0)); then
+    line="$((total - nmiss)) of $total metrics the alert rules read have series"
+    if ((${#notexp[@]} > 0)); then
+      line+="; not expected with signer ${C[signer]:-unset} and fibre_enabled ${C[fibre_enabled]}, so not counted: $(join "${notexp[@]}")"
+    fi
+    report OK 12 "$name" "$line"
+  fi
+  if ((${#notyet[@]} > 0)); then
+    report "NOT YET" 12 "$name" "${#notyet[@]} of $total metrics appear only after an event, and their source is up: $(join "${notyet[@]}")"
+  fi
+  if ((${#missing[@]} > 0)); then
+    report WARN 12 "$name" "${#missing[@]} of $total metrics the alert rules read have no series although their source is up (the rules that read each are in brackets): $(join "${missing[@]}"). Fix: check that the service still exports each under this name (curl the target's /metrics); a renamed metric leaves its rules blind"
+  fi
+  if ((${#broken[@]} > 0)); then
+    report FAIL 12 "$name" "${#broken[@]} of $total metrics have no series because their source is broken: $(join "${broken[@]}"). Fix: apply the fix of the check named with each"
+  fi
+}
+
+# Fibre's metrics end to end, on the monitor: from each Fibre host, Prometheus must
+# have a sample under 3 minutes old of both storage gauges, which Fibre reports from
+# its first push on. The collector takes OTLP only on 127.0.0.1 at
+# celestia_mon_ports.otelcol_otlp, so fresh series with host=<Fibre host> show that
+# Fibre on that host sends to that port, not just that the port is open.
+check_fibre_pipeline() {
+  local name="fibre pipeline" ep=${C[fibre_otel_endpoint]%/} unit=${C[fibre_unit]} h v detail fix
+  local -a hosts=() ok=() bad=() nopush=()
+  local -A ups=() budget=() occupancy=()
+  if ! has_role monitor; then report SKIP 13 "$name" "not the monitor host"; return; fi
+  if ! fibre_on; then report SKIP 13 "$name" "Fibre is disabled"; return; fi
+  if ((!PROM_OK)); then report SKIP 13 "$name" "Prometheus not answering (check 11)"; return; fi
+  while read -r h v; do ups[$h]=$v; done < <(prom_vector 'up{job="otelcol"}' host)
+  while read -r h v; do budget[$h]=$v; done < <(prom_vector 'min by (host) (time() - timestamp(fibre_server_upload_shard_budget_bytes))' host)
+  while read -r h v; do occupancy[$h]=$v; done < <(prom_vector 'min by (host) (time() - timestamp(fibre_server_upload_shard_occupancy_bytes))' host)
+  IFS=', ' read -r -a hosts <<<"${C[fibre_hosts]}"
+  if ((${#hosts[@]} == 0)); then mapfile -t hosts < <(printf '%s\n' "${!ups[@]}" | sort); fi
+  for h in "${hosts[@]}"; do
+    [[ -n $h ]] || continue
+    if [[ -z ${ups[$h]:-} ]]; then
+      bad+=("$h: Prometheus has no collector target for it (re-run install.sh on the monitor)")
+    elif [[ ${ups[$h]} != 1 ]]; then
+      bad+=("$h: its collector is down (check 11)")
+    elif [[ -z ${budget[$h]:-} || -z ${occupancy[$h]:-} ]]; then
+      bad+=("$h: Fibre is not pushing metrics (no fibre_server_upload_shard_budget_bytes or occupancy_bytes from it)")
+      nopush+=("$h")
+    else
+      v=$(awk -v a="${budget[$h]}" -v b="${occupancy[$h]}" 'BEGIN { printf "%.0f", (a + 0 > b + 0) ? a : b }')
+      [[ $v =~ ^[0-9]+$ ]] || v=0
+      if ((v > 180)); then
+        bad+=("$h: its newest Fibre sample is ${v}s old")
+        nopush+=("$h")
+      else
+        ok+=("$h (newest sample ${v}s old)")
+      fi
+    fi
+  done
+  if ((${#ok[@]} + ${#bad[@]} == 0)); then
+    report FAIL 13 "$name" "Fibre is on, but Prometheus has no collector target (job otelcol). Fix: put the Fibre host in the inventory's fibre group and re-run install.sh on the monitor"
+  elif ((${#bad[@]} > 0)); then
+    detail=$(join "${bad[@]}")
+    if ((${#ok[@]} > 0)); then detail+="; ok: $(join "${ok[@]}")"; fi
+    fix="the step named with each host"
+    if ((${#nopush[@]} > 0)); then
+      ep=${ep:-http://127.0.0.1:<otlp port>}
+      fix="on $(join "${nopush[@]}"), add \"--otel-endpoint $ep\" to ExecStart in $unit.service (or Environment=FIBRE_OTEL_ENDPOINT=$ep), run \"systemctl daemon-reload\", then \"systemctl restart $unit\" at a moment you choose; celestia-mon-doctor on that host (check 7) shows what the unit sets now"
+    fi
+    report FAIL 13 "$name" "$detail. Fix: $fix"
+  else
+    report OK 13 "$name" "Prometheus has fresh Fibre metrics from $(join "${ok[@]}"); the collector takes OTLP only on 127.0.0.1:$(url_port "$ep"), so Fibre's endpoint matches it"
+  fi
+}
+
+size_bytes() { # Prometheus size such as 8GB or 512MiB (base 1024) -> bytes; empty when it is not one
+  awk -v s="$1" 'BEGIN {
+    if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
+    n = substr(s, 1, RLENGTH)
+    u = toupper(substr(s, RLENGTH + 1))
+    sub(/IB$/, "B", u)
+    p = index("KMGTPE", substr(u, 1, 1))
+    if (u == "B") f = 1
+    else if (length(u) == 2 && substr(u, 2, 1) == "B" && p > 0) f = 1024 ^ p
+    else exit
+    printf "%.0f\n", n * f
+  }'
+}
+
+# retention_size bounds Prometheus's blocks only: the WAL, the head chunks and the
+# space a compaction writes before it deletes the old blocks come on top. The
+# install's preflight asks for retention_size * 1.5 + 2 GiB on the data mount;
+# here what Prometheus holds now plus the free space must reach the same amount.
+check_prometheus_disk() {
+  local name="monitor disk" dir=${C[prometheus_data_dir]} rs=${C[prometheus_retention_size]} used avail="" mount="" size need text
+  if ! has_role monitor; then report SKIP 15 "$name" "not the monitor host"; return; fi
+  if [[ -z $dir || ! -d $dir ]]; then
+    report SKIP 15 "$name" "Prometheus data directory ${dir:-(not set)} not found (pass --prometheus-data-dir)"
+    return
+  fi
+  if [[ $(id -u) -ne 0 ]]; then
+    report SKIP 15 "$name" "run as root to measure $dir"
+    return
+  fi
+  # du's exit status is not used: Prometheus may delete a file while du walks the directory.
+  used=$(du -sb -- "$dir" 2>/dev/null | awk 'END { print $1 }')
+  read -r avail mount < <(df -P -B1 -- "$dir" 2>/dev/null | awk 'NR == 2 { print $4, $6 }')
+  if [[ ! $used =~ ^[0-9]+$ || ! $avail =~ ^[0-9]+$ ]]; then
+    report SKIP 15 "$name" "cannot read the size of $dir or the free space of its mount"
+    return
+  fi
+  text="Prometheus holds $(gib "$used") GiB in $dir and $mount has $(gib "$avail") GiB free"
+  size=$(size_bytes "$rs")
+  if [[ -z $size || $size == 0 ]]; then
+    report OK 15 "$name" "$text (no retention size to compare with; pass --prometheus-retention-size)"
+    return
+  fi
+  need=$(awk -v s="$size" 'BEGIN { printf "%.0f", s * 1.5 + 2147483648 }')
+  if ((used + avail >= need)); then
+    report OK 15 "$name" "$text: room for retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB"
+  else
+    report FAIL 15 "$name" "$text, $(gib "$((used + avail))") GiB in all, but Prometheus may need retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB there: the WAL, head chunks and compaction space come on top of retention_size. Fix: free space on $mount, or lower celestia_mon_prometheus_retention_size and re-run install.sh on the monitor"
+  fi
+}
+
+# Disk load on the Celestia hosts around Prometheus's last compaction, which runs
+# about every 2 hours, read from Prometheus. The same queries work in Grafana's
+# Explore; T is the time of the compaction:
+#   T        max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])
+#   latency  rate(node_disk_write_time_seconds_total{job="node"}[1m]) / rate(node_disk_writes_completed_total{job="node"}[1m])
+#   busy     rate(node_disk_io_time_seconds_total{job="node"}[1m])
+# For each, the worst disk's peak per host in the 10 minutes from 3 minutes before T
+# is set against its peak in the hour before that.
+check_compaction() {
+  local name="compaction io" t h v lat busy when
+  local -a parts=()
+  local -A lp=() lb=() bp=() bb=()
+  if ! has_role monitor; then report SKIP 16 "$name" "not the monitor host"; return; fi
+  if ((!PROM_OK)); then report SKIP 16 "$name" "Prometheus not answering (check 11)"; return; fi
+  t=$(prom_value 'max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])')
+  t=${t%%.*}
+  if [[ ! $t =~ ^[0-9]+$ ]]; then
+    report SKIP 16 "$name" "no Prometheus compaction in the last 6 hours (the first comes about 3 hours after Prometheus starts, then one every 2 hours); run doctor again later"
+    return
+  fi
+  when=$(date -u -d "@$t" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)
+  lat='rate(node_disk_write_time_seconds_total{job="node"}[1m]) / (rate(node_disk_writes_completed_total{job="node"}[1m]) > 0)'
+  busy='rate(node_disk_io_time_seconds_total{job="node"}[1m])'
+  while read -r h v; do lp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[10m:15s] @ $((t + 420))))" host)
+  while read -r h v; do lb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[1h:15s] @ $((t - 180))))" host)
+  while read -r h v; do bp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[10m:15s] @ $((t + 420))))" host)
+  while read -r h v; do bb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[1h:15s] @ $((t - 180))))" host)
+  while read -r h; do
+    [[ -n $h ]] || continue
+    parts+=("$h $(awk -v a="${lp[$h]:-}" -v b="${lb[$h]:-}" -v c="${bp[$h]:-}" -v d="${bb[$h]:-}" '
+      function f(v, k, fmt) { return (v ~ /^[0-9.eE+-]+$/) ? sprintf(fmt, v * k) : "?" }
+      BEGIN { printf "write latency %s ms (%s ms), busy %s%% (%s%%)", f(a, 1000, "%.1f"), f(b, 1000, "%.1f"), f(c, 100, "%.0f"), f(d, 100, "%.0f") }')")
+  done < <(printf '%s\n' "${!lp[@]}" "${!bp[@]}" | sort -u)
+  if ((${#parts[@]} == 0)); then
+    report SKIP 16 "$name" "no disk data from the Celestia hosts (job node) around the compaction at $when"
+    return
+  fi
+  report INFO 16 "$name" "last Prometheus compaction about $when; peak of the worst disk per Celestia host in the 10 minutes around it (in the hour before in brackets): $(join "${parts[@]}"). A clear rise on a validator or Fibre disk means Prometheus competes with it; IOWeight cannot stop that under the none I/O scheduler (common on NVMe) unless io.cost is set, so then put Prometheus's data (${C[prometheus_data_dir]}) on another disk"
 }
 
 # ------------------------------------------------------------------- main
@@ -939,7 +1292,8 @@ if [[ -z ${C[fibre_enabled]} ]]; then
   if unit_loaded "${C[fibre_unit]}"; then C[fibre_enabled]=true; else C[fibre_enabled]=false; fi
 fi
 
-printf 'celestia-mon-doctor on %s (roles: %s)\n' "${HOSTNAME:-$(uname -n)}" "${C[roles]:-none}"
+printf 'celestia-mon-doctor on %s (roles: %s; signer: %s; fibre_enabled: %s)\n' "${HOSTNAME:-$(uname -n)}" \
+  "${C[roles]:-none}" "${C[signer]:-not set}" "${C[fibre_enabled]}"
 if has_role validator; then find_node; fi
 
 check_metrics
@@ -954,6 +1308,10 @@ check_time
 check_disks
 check_stack
 check_rule_metrics
+check_fibre_pipeline
+check_memory
+check_prometheus_disk
+check_compaction
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

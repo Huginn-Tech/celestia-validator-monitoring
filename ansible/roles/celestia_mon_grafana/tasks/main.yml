@@ -10,6 +10,19 @@
       in ansible-vault (Grafana reads it only on its first start).
     quiet: true
 
+# An empty or wildcard address would make Grafana listen on every interface; the
+# private-address pattern rejects both. The preflight checks that it is on this host.
+- name: Check the Grafana listen address
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_grafana_listen is defined
+      - (celestia_mon_grafana_listen | string) is match(celestia_mon_private_address_regex)
+    fail_msg: >-
+      celestia_mon_grafana_listen is '{{ celestia_mon_grafana_listen | default('') }}'. Set it to 127.0.0.1
+      (the default; reach Grafana through an SSH tunnel) or to a private address of this host
+      (Tailscale, WireGuard, LAN). Grafana never listens on every interface.
+    quiet: true
+
 # Stop before changing anything when another process already uses the port.
 - name: Check that nothing else listens on the Grafana port
   ansible.builtin.include_role:
@@ -71,6 +84,11 @@
         owner: root
         group: root
         mode: "0644"
+      # Release hosts sometimes reset a connection; retry before giving up.
+      register: celestia_mon_grafana_download
+      until: celestia_mon_grafana_download is succeeded
+      retries: 5
+      delay: 10
 
     # Unpacked on the same filesystem as /opt/celestia-mon, so the move below is a rename.
     # The first step clears what an interrupted run left behind.
@@ -292,12 +310,14 @@
 
 # Grafana's first start runs its database migrations. Waiting here also lets
 # the bind check at the end of the playbook see Grafana's listening socket.
-- name: Wait for Grafana on its private address
+- name: Wait for Grafana on its listen address
   ansible.builtin.wait_for:
-    host: "{{ celestia_mon_private_ip }}"
+    host: "{{ celestia_mon_grafana_listen }}"
     port: "{{ celestia_mon_ports.grafana }}"
     timeout: 180
-    msg: celestia-mon-grafana does not listen on port {{ celestia_mon_ports.grafana }} of {{ celestia_mon_private_ip }}. See journalctl -u celestia-mon-grafana.
+    msg: >-
+      celestia-mon-grafana does not listen on port {{ celestia_mon_ports.grafana }} of {{ celestia_mon_grafana_listen }}.
+      See journalctl -u celestia-mon-grafana.
 
 - name: Find older Grafana versions
   ansible.builtin.find:

@@ -10,13 +10,13 @@ What celestia-validator-monitoring exposes, and how to keep the network and the 
 | OpenTelemetry collector metrics (9911) | private address | Prometheus on the monitor |
 | OpenTelemetry collector OTLP (9915) | 127.0.0.1 | Fibre on the same host |
 | Prometheus (9912), Alertmanager (9913) | 127.0.0.1 | the monitor itself: Grafana, doctor, an SSH tunnel |
-| Grafana (9914) | private address | you, with a login |
+| Grafana (9914) | 127.0.0.1 by default, or the private address in `celestia_mon_grafana_listen` | you, with a login: through an SSH tunnel, a reverse proxy on the monitor, or that private address |
 
-The install fails if one of these services listens on a wildcard or public address. Prometheus and Alertmanager have no login, so they stay on loopback. Grafana has anonymous access, external snapshots and public dashboards turned off, and its Prometheus datasource is `http://127.0.0.1:9912`.
+The install fails if one of these services listens on a wildcard or public address. Prometheus and Alertmanager have no login, so they stay on loopback. Grafana stays on loopback too unless you set `celestia_mon_grafana_listen` to a private address of the monitor (Tailscale, WireGuard, a LAN); the install stops when that address is not the monitor's, and Grafana never listens on `0.0.0.0`. Open it with `ssh -N -L 9914:127.0.0.1:9914 <user>@<monitor>` and `http://localhost:9914`, or run a reverse proxy on the monitor in front of `127.0.0.1:9914` ([quickstart step 7](quickstart.md#7-open-grafana)). Grafana has anonymous access, external snapshots and public dashboards turned off, and its Prometheus datasource is `http://127.0.0.1:9912`.
 
 The secrets (receiver tokens, the dead-man URL, Grafana's password) sit in one ansible-vault file that only the monitor host gets; the inventory copies on the other hosts hold none. On the monitor, the rendered Alertmanager settings are readable by root and the `celestia-mon-alertmanager` user only.
 
-`install.sh` downloads uv and every release by a version and sha256 pinned in `versions.yml`, builds its Ansible in a temporary directory that it deletes at the end, and installs nothing with apt or pip.
+`install.sh` downloads uv and every release by a version and sha256 pinned in `versions.yml`, installs ansible-core and every package it needs from `ansible/requirements.lock` (each file checked against its sha256 there, wheels only) into a temporary directory that it deletes at the end, and installs nothing with apt or pip. The lock is made in GitHub Actions by the `lock` workflow from the pins in `versions.yml`.
 
 ## Tailnet policy
 
@@ -41,9 +41,10 @@ Deny by default: a policy that holds only the grants below allows nothing else b
     {"src": ["tag:celestia-mon-monitor"], "dst": ["tag:kms"], "ip": ["tcp:9910"]},
     // tmkms connects to the validator's privval port (priv_validator_laddr) and nothing else.
     {"src": ["tag:kms"], "dst": ["tag:validator"], "ip": ["tcp:26659"]},
-    // Admins: SSH to every server, and Grafana on the monitor.
-    {"src": ["autogroup:admin"], "dst": ["tag:celestia-mon-monitor", "tag:validator", "tag:fibre", "tag:kms"], "ip": ["tcp:22"]},
-    {"src": ["autogroup:admin"], "dst": ["tag:celestia-mon-monitor"], "ip": ["tcp:9914"]}
+    // Admins: SSH to every server. Grafana listens on 127.0.0.1 by default and is reached
+    // through an SSH tunnel; only if you set celestia_mon_grafana_listen to the monitor's
+    // tailnet address, add: {"src": ["autogroup:admin"], "dst": ["tag:celestia-mon-monitor"], "ip": ["tcp:9914"]}
+    {"src": ["autogroup:admin"], "dst": ["tag:celestia-mon-monitor", "tag:validator", "tag:fibre", "tag:kms"], "ip": ["tcp:22"]}
   ]
 }
 ```

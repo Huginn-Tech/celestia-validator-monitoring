@@ -1,7 +1,8 @@
 ---
 # Renders the alert rules, Alertmanager and Prometheus configs and the dashboard
-# settings for one example inventory, so CI can check them. It runs on the CI
-# machine only (connection local) and touches no host. Usage, from the repo root:
+# settings for one example inventory, so CI can check them, after the inventory and
+# receiver checks the roles run. It runs on the CI machine only (connection local) and
+# touches no host. Usage, from the repo root:
 #   ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split
 # Output: monitoring/rules/tests/<scenario>/celestia-mon.rules.yml (next to the rule tests)
 # and build/<scenario>/{rules/celestia-mon.rules.yml,alertmanager.yml,prometheus.yml,dashboard-config.json}.
@@ -55,6 +56,10 @@
       loop:
         - "{{ celestia_mon_ci_tests }}"
         - "{{ celestia_mon_ci_build }}/rules"
+
+    # The same receiver check the celestia_mon_alertmanager role runs before it renders the config.
+    - name: Check the alert receivers
+      ansible.builtin.include_tasks: "{{ celestia_mon_ci_root }}/ansible/roles/celestia_mon_alertmanager/tasks/receivers.yml"
 
     - name: Render the Alertmanager config
       ansible.builtin.template:

@@ -42,9 +42,13 @@ celestia_mon_versions:
     sha256:
       x86_64: "18ef5c3888ae59828cb13f38d57e9389b8173ecc719eff163bfafc74b38f5936"
       aarch64: "7fb91bd5d10529c60723eaec3caf44726f89280e5aeed78af8fc63fcad004c9b"
-  # ansible-core from PyPI, installed by install.sh into that venv.
+  # ansible-core from PyPI. install.sh installs it and every package it needs into that venv
+  # from ansible/requirements.lock only, each file checked against its sha256 there
+  # (uv pip install --require-hashes), and refuses a lock made for another ansible-core.
   ansible_core: "2.18.19"
-  # ansible-core's dependencies (jinja2, PyYAML, cryptography, ...) come from PyPI files uploaded
-  # before this time (uv --exclude-newer), so a release newer than the pins is never picked up.
-  # Keep it at least two weeks old, and after the ansible-core release above; bump it with the pins.
+  # The lock workflow (.github/workflows/lock.yml, run by hand) resolves ansible-core's
+  # dependencies (jinja2, PyYAML, cryptography, ...) from PyPI files uploaded before this time
+  # (uv --exclude-newer), so the same pins always give the same lock. Keep it at least two
+  # weeks old, and after the ansible-core release above; after changing either pin, run the
+  # lock workflow and commit the requirements.lock it uploads.
   python_deps_before: "2026-09-25T00:00:00Z"

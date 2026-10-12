@@ -1,22 +1,26 @@
 {#
   Alertmanager configuration for celestia-mon. Rendered by the celestia_mon_alertmanager role (with no_log,
   because receivers carry tokens) and by CI with dummy receivers.
-  Inputs: celestia_mon_receivers.page, celestia_mon_receivers.message (lists of {type: telegram|pagerduty|slack|webhook, ...})
-  and celestia_mon_deadman_webhook_url. An empty list uses the other list's receivers, so no alert is dropped.
+  Inputs: celestia_mon_receivers, one list of {type: pagerduty|telegram|discord|slack|webhook, ...}
+  (checked by the role's tasks/receivers.yml), and celestia_mon_deadman_webhook_url.
+  Routing follows the type: page alerts go to every receiver, message alerts to every receiver
+  except PagerDuty. Without PagerDuty, page alerts still reach the chat channels and webhooks.
 #}
-{% set page = celestia_mon_receivers.page | default([], true) %}
-{% set message = celestia_mon_receivers.message | default([], true) %}
+{% set receivers = celestia_mon_receivers | default([], true) %}
+{% set chat = receivers | rejectattr('type', 'equalto', 'pagerduty') | list %}
 {% macro receiver_configs(entries) %}
-{% for type in ['telegram', 'pagerduty', 'slack', 'webhook'] %}
+{% for type in ['pagerduty', 'telegram', 'discord', 'slack', 'webhook'] %}
 {%   set items = entries | selectattr('type', 'equalto', type) | list %}
 {%   if items | length > 0 %}
     {{ type }}_configs:
 {%     for r in items %}
-{%       if type == 'telegram' %}
+{%       if type == 'pagerduty' %}
+      - routing_key: {{ r.routing_key | string | to_json }}
+{%       elif type == 'telegram' %}
       - bot_token: {{ r.bot_token | string | to_json }}
         chat_id: {{ r.chat_id | string | int }}
-{%       elif type == 'pagerduty' %}
-      - routing_key: {{ r.routing_key | string | to_json }}
+{%       elif type == 'discord' %}
+      - webhook_url: {{ r.webhook_url | string | to_json }}
 {%       elif type == 'slack' %}
       - api_url: {{ r.api_url | string | to_json }}
 {%         if r.channel is defined %}
@@ -54,12 +58,12 @@ route:
       matchers:
         - 'severity="message"'
 
-# One validator per install, so the rules need no 'equal' labels: one cause, one notification.
+# One validator per install, so most rules need no 'equal' labels: one cause, one notification.
 inhibit_rules:
   # A stalled node or a page-level service outage explains missed signatures,
   # signer trouble and an idle Fibre server.
   - source_matchers:
-      - 'alertname="NodeNotAtHead"'
+      - 'alertname="NodeNotAdvancing"'
     target_matchers:
       - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing"'
   - source_matchers:
@@ -73,13 +77,21 @@ inhibit_rules:
       - 'unit=~"fibre|otelcol"'
     target_matchers:
       - 'alertname="FibreNotServing"'
+  # Fibre being down explains FibreNotServing. There can be several Fibre hosts, so this
+  # holds back only the same host's alert.
+  - source_matchers:
+      - 'alertname="FibreDown"'
+    target_matchers:
+      - 'alertname="FibreNotServing"'
+    equal: [host]
 
 receivers:
-  # With no page receivers, page alerts go to the message receivers (and the other way round).
+  # page: PagerDuty (when set) plus every chat channel and webhook.
   - name: page
-{{ receiver_configs(page or message) }}
+{{ receiver_configs(receivers) }}
+  # message: every chat channel and webhook, never PagerDuty.
   - name: message
-{{ receiver_configs(message or page) }}
+{{ receiver_configs(chat) }}
   # Without a dead-man URL the heartbeat goes to this receiver and is dropped.
   - name: deadman
 {% if celestia_mon_deadman_webhook_url | string | length > 0 %}

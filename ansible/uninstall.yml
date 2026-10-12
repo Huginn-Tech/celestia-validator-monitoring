@@ -1,24 +1,36 @@
 ---
-# Removes everything celestia-mon installed on a host, and nothing else: the celestia-mon-*
-# systemd units, the celestia-mon-* users and groups, /opt/celestia-mon, /etc/celestia-mon,
-# /var/lib/celestia-mon (Prometheus and Grafana data), /var/cache/celestia-mon,
-# /usr/local/bin/celestia-mon-doctor and the ufw rules with the comment celestia-mon.
+# Removes what celestia-mon installed on a host, and nothing else:
+#   - the celestia-mon-* systemd units (stopped, disabled, unit files removed),
+#   - /opt/celestia-mon (the binaries), /var/cache/celestia-mon and /usr/local/bin/celestia-mon-doctor,
+#   - the ufw rules the install recorded in /var/lib/celestia-mon/firewall-added.json, each one
+#     only while `ufw show added` lists it with the recorded source, port, protocol and the
+#     comment celestia-mon. A rule that was there before the install is never recorded.
+# It keeps Prometheus's and Grafana's data (/var/lib/celestia-mon), the settings
+# (/etc/celestia-mon) and the celestia-mon-* system users and groups, so a reinstall picks up
+# where it left off. With celestia_mon_uninstall_purge=true (install.sh --uninstall --purge)
+# it removes those too.
 # celestia-appd, Fibre, tmkms and every other service, user, file and firewall rule stay
 # as they are. A second run changes nothing. install.sh --uninstall runs it on the host
 # itself for that host only, first as a dry run. It reads no inventory settings, so
 # install.sh needs neither the inventory nor the vault password for it. By hand, from ansible/:
-#   ansible-playbook -i <inventory> uninstall.yml --limit <host> --check
+#   ansible-playbook -i <inventory> uninstall.yml --limit <host> --check [-e celestia_mon_uninstall_purge=true]
 - name: Remove celestia-mon
   hosts: all
   become: true
   gather_facts: false
   vars:
+    celestia_mon_uninstall_purge: false
+    # celestia_mon_firewall_record of the celestia_mon role.
+    celestia_mon_uninstall_record: /var/lib/celestia-mon/firewall-added.json
+    # Removed on every uninstall.
     celestia_mon_uninstall_paths:
       - /opt/celestia-mon
-      - /etc/celestia-mon
-      - /var/lib/celestia-mon
       - /var/cache/celestia-mon
       - /usr/local/bin/celestia-mon-doctor
+    # Removed only with celestia_mon_uninstall_purge.
+    celestia_mon_uninstall_purge_paths:
+      - /var/lib/celestia-mon
+      - /etc/celestia-mon
     # The units celestia-mon installs, plus any other celestia-mon-* unit file or drop-in directory.
     celestia_mon_uninstall_units: >-
       {{ (['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service', 'celestia-mon-prometheus.service',
@@ -31,9 +43,25 @@
       {{ ansible_facts.getent_passwd | default({}) | dict2items | map(attribute='key') | select('match', 'celestia-mon-') | list }}
     celestia_mon_uninstall_groups: >-
       {{ ansible_facts.getent_group | default({}) | dict2items | map(attribute='key') | select('match', 'celestia-mon-') | list }}
+    celestia_mon_uninstall_existing: "{{ celestia_mon_uninstall_found.results | selectattr('stat.exists') | map(attribute='item') | list }}"
+    # The recorded rules ({source, port, proto, comment}) with the comment celestia-mon.
+    celestia_mon_uninstall_recorded: >-
+      {{ (celestia_mon_uninstall_record_file.content | b64decode | from_json | selectattr('comment', 'equalto', 'celestia-mon') | list)
+         if celestia_mon_uninstall_record_file.content is defined else [] }}
+    # The same rules as [source, port, proto, comment].
+    celestia_mon_uninstall_recorded_rules: >-
+      {{ celestia_mon_uninstall_recorded | map(attribute='source') | map('string')
+         | zip(celestia_mon_uninstall_recorded | map(attribute='port') | map('string'),
+               celestia_mon_uninstall_recorded | map(attribute='proto') | map('string'),
+               celestia_mon_uninstall_recorded | map(attribute='comment') | map('string'))
+         | map('list') | list }}
     # `ufw show added` prints each rule as a command: "ufw allow from <ip> to any port <p> proto tcp comment 'celestia-mon'".
-    celestia_mon_uninstall_rules: >-
-      {{ celestia_mon_uninstall_ufw.stdout_lines | default([]) | select('match', '^ufw .* comment .celestia-mon.$') | list }}
+    celestia_mon_uninstall_live_rules: >-
+      {{ celestia_mon_uninstall_ufw.stdout | default('')
+         | regex_findall("^ufw allow from ([^ ]+) to any port ([0-9]+) proto ([a-z]+) comment '([^']*)'$", multiline=true)
+         | map('list') | list }}
+    # The rules uninstall deletes: recorded at install, and listed by ufw now with all four the same.
+    celestia_mon_uninstall_rules: "{{ celestia_mon_uninstall_recorded_rules | select('in', celestia_mon_uninstall_live_rules) | list }}"
 
   handlers:
     - name: Reload systemd
@@ -84,8 +112,15 @@
         path: "{{ item }}"
         get_checksum: false
         get_mime: false
-      loop: "{{ celestia_mon_uninstall_paths }}"
+      loop: "{{ celestia_mon_uninstall_paths + celestia_mon_uninstall_purge_paths }}"
       register: celestia_mon_uninstall_found
+
+    # A missing file means the install added no ufw rule here.
+    - name: Read the record of the ufw rules the install added
+      ansible.builtin.slurp:
+        src: "{{ celestia_mon_uninstall_record }}"
+      register: celestia_mon_uninstall_record_file
+      failed_when: false
 
     - name: Read the ufw rules
       ansible.builtin.command: ufw show added
@@ -102,15 +137,38 @@
         content: |
           Host:      {{ inventory_hostname }}
           Services:  {{ celestia_mon_uninstall_loaded | map(attribute='item') | join(', ') or 'none' }}
-          Users:     {{ celestia_mon_uninstall_users | join(', ') or 'none' }}
-          Groups:    {{ celestia_mon_uninstall_groups | join(', ') or 'none' }}
-          Files:     {{ celestia_mon_uninstall_found.results | selectattr('stat.exists') | map(attribute='item') | join(', ') or 'none' }}
-          ufw rules: {{ celestia_mon_uninstall_rules | map('regex_replace', '^ufw ', '') | join('; ') or 'none' }}
+          Files:     {{ celestia_mon_uninstall_existing | select('in', celestia_mon_uninstall_paths) | join(', ') or 'none' }}
+          ufw rules: {{ celestia_mon_uninstall_rules_text }}
+          {% if celestia_mon_uninstall_unmatched %}
+          ufw kept:  {{ celestia_mon_uninstall_unmatched_text }}
+                     (recorded at install, but ufw lists no such rule with the comment celestia-mon now)
+          {% endif %}
+          {% if celestia_mon_uninstall_purge | bool %}
+          Purge:     {{ (celestia_mon_uninstall_existing | select('in', celestia_mon_uninstall_purge_paths) | list
+                         + celestia_mon_uninstall_users + celestia_mon_uninstall_groups) | unique | join(', ') or 'none' }}
+          {% else %}
+          Kept:      {{ (celestia_mon_uninstall_existing | select('in', celestia_mon_uninstall_purge_paths) | list
+                         + celestia_mon_uninstall_users) | join(', ') or 'none' }}
+                     (data, settings and users, so a reinstall picks up where it left off; --purge deletes them)
+          {% endif %}
         mode: "0600"
       changed_when: false
       check_mode: false
       diff: false
       when: celestia_mon_plan_file is defined
+      vars:
+        celestia_mon_uninstall_rules_text: >-
+          {%- for r in celestia_mon_uninstall_rules -%}
+          allow from {{ r[0] }} to port {{ r[1] }}/{{ r[2] }} (comment {{ r[3] }}){{ '' if loop.last else '; ' }}
+          {%- else -%}
+          none
+          {%- endfor -%}
+        # Recorded rules ufw no longer lists as recorded (deleted or changed by hand): left as they are.
+        celestia_mon_uninstall_unmatched: "{{ celestia_mon_uninstall_recorded_rules | reject('in', celestia_mon_uninstall_live_rules) | list }}"
+        celestia_mon_uninstall_unmatched_text: >-
+          {%- for r in celestia_mon_uninstall_unmatched -%}
+          allow from {{ r[0] }} to port {{ r[1] }}/{{ r[2] }}{{ '' if loop.last else '; ' }}
+          {%- endfor -%}
 
     - name: Stop and disable celestia-mon's units
       ansible.builtin.systemd_service:
@@ -142,38 +200,55 @@
     - name: Apply a pending systemd reload
       ansible.builtin.meta: flush_handlers
 
-    - name: Remove celestia-mon's users
-      ansible.builtin.user:
-        name: "{{ item }}"
-        state: absent
-      loop: "{{ celestia_mon_uninstall_users }}"
-
-    # userdel usually removes a user's own group; this catches the rest.
-    - name: Remove celestia-mon's groups
-      ansible.builtin.group:
-        name: "{{ item }}"
-        state: absent
-      loop: "{{ celestia_mon_uninstall_groups }}"
-
-    - name: Remove celestia-mon's files
+    - name: Remove celestia-mon's binaries and cache
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop: "{{ celestia_mon_uninstall_paths }}"
 
     # Deleting by the rule itself, not by number, so other rules and their order stay as they are.
-    - name: Remove the ufw rules with the comment celestia-mon
+    - name: Remove the ufw rules the install added
       ansible.builtin.command:
-        argv: "{{ ['ufw', 'delete'] + item.split()[1:-2] }}"
+        argv: [ufw, delete, allow, from, "{{ item[0] }}", to, any, port, "{{ item[1] }}", proto, "{{ item[2] }}"]
       environment:
         LC_ALL: C
       register: celestia_mon_uninstall_deleted
       changed_when: celestia_mon_uninstall_deleted.stdout is search('Rule deleted|Rules updated')
       loop: "{{ celestia_mon_uninstall_rules }}"
+      loop_control:
+        label: allow from {{ item[0] }} to any port {{ item[1] }} proto {{ item[2] }}
 
     - name: List the ufw rules a real run removes
       ansible.builtin.debug:
-        msg: "{{ item }}"
+        msg: ufw delete allow from {{ item[0] }} to any port {{ item[1] }} proto {{ item[2] }}
       changed_when: true
       loop: "{{ celestia_mon_uninstall_rules }}"
       when: ansible_check_mode
+
+    # The recorded rules are deleted now, or were gone already: none of them is celestia-mon's any more.
+    - name: Remove the record of the ufw rules
+      ansible.builtin.file:
+        path: "{{ celestia_mon_uninstall_record }}"
+        state: absent
+
+    - name: Remove celestia-mon's data, settings, users and groups (--purge)
+      when: celestia_mon_uninstall_purge | bool
+      block:
+        - name: Remove celestia-mon's users
+          ansible.builtin.user:
+            name: "{{ item }}"
+            state: absent
+          loop: "{{ celestia_mon_uninstall_users }}"
+
+        # userdel usually removes a user's own group; this catches the rest.
+        - name: Remove celestia-mon's groups
+          ansible.builtin.group:
+            name: "{{ item }}"
+            state: absent
+          loop: "{{ celestia_mon_uninstall_groups }}"
+
+        - name: Remove celestia-mon's data and settings
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop: "{{ celestia_mon_uninstall_purge_paths }}"

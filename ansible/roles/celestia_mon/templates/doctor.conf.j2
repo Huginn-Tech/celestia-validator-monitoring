@@ -1,6 +1,9 @@
 # Settings for celestia-mon-doctor (/usr/local/bin/celestia-mon-doctor), written by the celestia-mon playbook.
 # The next playbook run overwrites this file: change the inventory instead.
 # Any key can also be passed as a flag, for example --node-home /path.
+{# Both plays that install doctor render this file on a host with several roles, so it may
+   only use the shared celestia_mon settings, groups and hostvars; anything else would make
+   the two renders differ and every run report a change. #}
 roles={{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
 signer={{ celestia_mon_signer }}
 fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
@@ -14,12 +17,16 @@ node_home={{ celestia_mon_node_home | default('') }}
 data_mounts={{ celestia_mon_data_mounts | default([]) | join(',') }}
 {% if inventory_hostname in groups.get('fibre', []) %}
 fibre_mount={{ celestia_mon_fibre_mount | default('') }}
-fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
 {% endif %}
+fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
 fibre_public_endpoint={{ (hostvars[groups['fibre'][0]].celestia_mon_fibre_public_endpoint | default('')) if groups.get('fibre', []) else '' }}
 {% if inventory_hostname in groups.get('monitor', []) %}
 prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
 alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
+fibre_hosts={{ groups.get('fibre', []) | join(',') if (celestia_mon_fibre_enabled | bool) else '' }}
+{# The data directory of role celestia_mon_prometheus (celestia_mon_prometheus_data_dir), as in the preflight. #}
+prometheus_data_dir=/var/lib/celestia-mon/prometheus
+prometheus_retention_size={{ celestia_mon_prometheus_retention_size }}
 {% endif %}
 signer_median_max={{ celestia_mon_thresholds.signer_median_seconds }}
 disk_min_free_ratio={{ celestia_mon_thresholds.disk_message_free_ratio }}

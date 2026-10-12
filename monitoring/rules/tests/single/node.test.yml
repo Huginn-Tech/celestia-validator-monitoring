@@ -1,4 +1,4 @@
-# NodeNotAtHead and ValidatorNotSigning on the example-single inventory (validator node-1).
+# NodeNotAdvancing and ValidatorNotSigning on the example-single inventory (validator node-1).
 # The chain makes 10 blocks per minute; samples are one minute apart.
 rule_files:
   - celestia-mon.rules.yml
@@ -16,13 +16,15 @@ tests:
         values: '999+10x40'
     alert_rule_test:
       - eval_time: 40m
-        alertname: NodeNotAtHead
+        alertname: NodeNotAdvancing
         exp_alerts: []
       - eval_time: 40m
         alertname: ValidatorNotSigning
         exp_alerts: []
 
-  - name: Chain halted or node stuck; NodeNotAtHead pages, ValidatorNotSigning stays quiet
+  # The last new block arrives at 10m. From 11m the 2-minute window holds no change,
+  # and after 1 more minute the alert fires.
+  - name: Chain halted or node stuck; NodeNotAdvancing pages, ValidatorNotSigning stays quiet
     interval: 1m
     input_series:
       - series: >-
@@ -32,11 +34,11 @@ tests:
           cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
         values: '999+10x10 1099x30'
     alert_rule_test:
-      - eval_time: 13m
-        alertname: NodeNotAtHead
+      - eval_time: 11m
+        alertname: NodeNotAdvancing
         exp_alerts: []
-      - eval_time: 14m
-        alertname: NodeNotAtHead
+      - eval_time: 12m
+        alertname: NodeNotAdvancing
         exp_alerts:
           - exp_labels:
               chain_id: celestia
@@ -46,13 +48,15 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on node-1 is not following new blocks"
-              description: "The consensus height has not changed for 5 minutes. Check status.celestia.org first: the whole chain may have halted."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotathead"
+              summary: "Node on node-1 is not advancing"
+              description: "The node has committed no new block for 3 minutes. Check status.celestia.org or an explorer first: the whole chain may have halted."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning
         exp_alerts: []
 
+  # The last own signature is at 5m (height 1049). From 6m the gap is above 10 blocks,
+  # and after 2 more minutes the alert fires.
   - name: Jailed validator; the last signed height freezes while the chain moves
     interval: 1m
     input_series:
@@ -63,10 +67,10 @@ tests:
           cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
         values: '999+10x5 1049x25'
     alert_rule_test:
-      - eval_time: 12m
+      - eval_time: 7m
         alertname: ValidatorNotSigning
         exp_alerts: []
-      - eval_time: 13m
+      - eval_time: 8m
         alertname: ValidatorNotSigning
         exp_alerts:
           - exp_labels:
@@ -78,8 +82,26 @@ tests:
               severity: page
             exp_annotations:
               summary: "Validator on node-1 is not signing"
-              description: "The chain moves but the validator has not signed for more than 50 blocks."
+              description: "The chain moves but the validator has not signed for more than 10 blocks."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+
+  # The gap is 11 blocks for exactly one minute (6m), then the validator signs again.
+  - name: One short gap above 10 blocks that closes within 2 minutes stays quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x20'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x5 1049 1069+10x13'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
 
   - name: Restart; the last signed height is absent until the first own signature, which comes in time
     interval: 1m

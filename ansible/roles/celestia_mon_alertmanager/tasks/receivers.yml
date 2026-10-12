@@ -1,0 +1,34 @@
+---
+# Checks celestia_mon_receivers without printing it: entries carry tokens. tools/ci/render.yml
+# runs this file too, so CI checks the example inventories the same way.
+# Routing follows the type (monitoring/alertmanager.yml.j2): page alerts go to every receiver,
+# message alerts to every receiver except PagerDuty, so at least one other receiver is needed.
+- name: Check the alert receivers
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_alertmanager_receivers is not mapping
+      - celestia_mon_alertmanager_receivers is not string
+      - celestia_mon_alertmanager_receivers | length > 0
+      - celestia_mon_alertmanager_receivers | reject('mapping') | list | length == 0
+      - >-
+        celestia_mon_alertmanager_receivers | map(attribute='type', default='')
+        | difference(['pagerduty', 'telegram', 'discord', 'slack', 'webhook']) | length == 0
+      - celestia_mon_alertmanager_receivers | rejectattr('type', 'equalto', 'pagerduty') | list | length > 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'pagerduty') | rejectattr('routing_key', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('bot_token', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('chat_id', 'defined') | list | length == 0
+      # Alertmanager needs a non-zero numeric chat_id; a name such as @channel would render as 0.
+      - >-
+        celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | map(attribute='chat_id') | map('string')
+        | reject('match', '^-?[1-9][0-9]*$') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'discord') | rejectattr('webhook_url', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'slack') | rejectattr('api_url', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'webhook') | rejectattr('url', 'defined') | list | length == 0
+    fail_msg: >-
+      celestia_mon_receivers must be one list of receivers, each with a type and its keys: pagerduty (routing_key,
+      Events API v2), telegram (bot_token, numeric chat_id), discord (webhook_url), slack (api_url, optional channel)
+      or webhook (url). Page alerts go to all of them; message alerts go to all but pagerduty, so set at least one
+      receiver that is not pagerduty. The separate page and message lists of earlier versions are no longer read.
+    quiet: true
+  vars:
+    celestia_mon_alertmanager_receivers: "{{ celestia_mon_receivers | default([], true) }}"

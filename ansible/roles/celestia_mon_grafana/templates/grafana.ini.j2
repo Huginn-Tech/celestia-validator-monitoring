@@ -8,7 +8,9 @@ plugins = {{ celestia_mon_grafana_data_dir }}/plugins
 provisioning = {{ celestia_mon_grafana_config_dir }}/provisioning
 
 [server]
-http_addr = {{ celestia_mon_private_ip }}
+# celestia_mon_grafana_listen: 127.0.0.1 by default (reach Grafana through an SSH tunnel or a
+# local reverse proxy), or a private address of this host. Never every interface.
+http_addr = {{ celestia_mon_grafana_listen }}
 http_port = {{ celestia_mon_ports.grafana }}
 
 [log]

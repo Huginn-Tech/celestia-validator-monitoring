@@ -35,8 +35,13 @@ celestia_mon_services:
   alertmanager: {unit: celestia-mon-alertmanager, ports: [alertmanager], dir: alertmanager, version: alertmanager, disk_mb: 250}
   grafana: {unit: celestia-mon-grafana, ports: [grafana], dir: grafana, version: grafana, disk_mb: 1300}
 
-# Ports that listen on 127.0.0.1; the others listen on celestia_mon_private_ip.
+# Ports that listen on 127.0.0.1; grafana listens on celestia_mon_grafana_listen, the others
+# on celestia_mon_private_ip.
 celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager]
+
+# The ufw rules firewall.yml added on this host, as a JSON list of {source, port, proto, comment}.
+# ansible/uninstall.yml deletes only these (and repeats the path, as it loads no role).
+celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 
 # The services site.yml installs on this host (keys of celestia_mon_services): node_exporter
 # on Celestia hosts, the collector on Fibre hosts, the stack on the monitor.
