@@ -1,7 +1,7 @@
 # Watchdog fires while no page or message notification failed in the last hour,
 # whatever the other series say, also before Alertmanager's own metrics arrive.
 # Failed webhook calls do not stop it: Alertmanager labels the dead-man webhook and
-# webhook-type page/message receivers alike (integration="webhook").
+# webhook receivers alike (integration="webhook"). notifications.test.yml covers NotificationsFailing.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m

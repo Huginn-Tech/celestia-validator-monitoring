@@ -1,6 +1,6 @@
 # FibreNotServing on the example-split inventory (Fibre on fibre-1). Fibre starts at
 # 1m (start time 60 s) and gets its first upload at 2m. The last-success gauge holds
-# the Unix time of the last successful upload; at 30 uploads a minute the 7-day
+# the Unix time of the last accepted upload; at 30 uploads a minute the 7-day
 # average puts the stale threshold at its 1 h floor.
 rule_files:
   - celestia-mon.rules.yml
@@ -43,8 +43,8 @@ tests:
               reason: stale
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 has no recent successful upload"
-              description: "No upload has succeeded for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
+              summary: "Fibre on fibre-1 has no recent accepted upload"
+              description: "No upload has been accepted for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   - name: Fibre restarts and gets no upload since; time counts from the new start
@@ -81,8 +81,8 @@ tests:
               reason: stale
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 has no recent successful upload"
-              description: "No upload has succeeded for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
+              summary: "Fibre on fibre-1 has no recent accepted upload"
+              description: "No upload has been accepted for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   - name: Fibre restarts and uploads resume; no alert

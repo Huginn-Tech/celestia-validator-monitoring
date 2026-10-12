@@ -2,10 +2,12 @@
 # Lets the monitor host reach a port Prometheus scrapes (one of celestia-mon's, or
 # celestia-appd's metrics port on the validator host) through ufw, only when ufw
 # is already active on this host. Never enables, resets or reorders the firewall:
-# each rule is appended with `ufw allow ... comment celestia-mon`, the comment
-# ansible/uninstall.yml finds the rules by. A source that already has a rule for the
-# port (ALLOW, DENY, REJECT or LIMIT, with or without a comment) is left alone, because
-# ufw would replace that rule with ours and the uninstall would then delete it.
+# each rule is appended with `ufw allow ... comment celestia-mon`. A source that already
+# has a rule for the port (ALLOW, DENY, REJECT or LIMIT, with or without a comment) is
+# left alone, because ufw would replace that rule with ours.
+# Each rule a real run adds is recorded in celestia_mon_firewall_record
+# (/var/lib/celestia-mon/firewall-added.json); ansible/uninstall.yml deletes only the
+# recorded rules, so a rule that was there before the install is never removed.
 # A host reaching its own address goes through lo, which ufw already accepts, so
 # this host's own address is skipped (the monitor itself, or a single-host setup).
 # A dry run (--check) adds nothing and lists the rules a real run adds instead;
@@ -38,6 +40,11 @@
       {{ celestia_mon_firewall_ufw.stdout | default('')
          | regex_findall('^' ~ celestia_mon_firewall_port ~ '/tcp +(DENY|REJECT|LIMIT) +([^ ]+)', multiline=true)
          | selectattr('1', 'in', celestia_mon_firewall_wanted) | map('join', ' from ') | list }}
+    # The sources ufw added a rule for in this run: "Rule added", or "Rules updated" when ufw
+    # was turned off in the meantime (the rule is then in its configuration only).
+    celestia_mon_firewall_added: >-
+      {{ celestia_mon_firewall_rule.results | default([]) | selectattr('stdout', 'defined')
+         | selectattr('stdout', 'search', 'Rule added|Rules updated') | map(attribute='item') | list }}
   block:
     # ufw prints "Skipping adding existing rule" when the rule is there in another spelling.
     # "Rule updated" means ufw replaced a rule that differs only in action or comment (its
@@ -83,3 +90,40 @@
       diff: false
       loop: "{{ celestia_mon_firewall_kept }}"
       when: ansible_check_mode and celestia_mon_plan_file is defined
+
+  # Also when a later rule of the loop failed, so every rule ufw added is on record.
+  always:
+    - name: Record the ufw rules added for port {{ celestia_mon_firewall_port }}
+      when: celestia_mon_firewall_added | length > 0
+      vars:
+        celestia_mon_firewall_old: >-
+          {{ (celestia_mon_firewall_recorded.content | b64decode | from_json) if celestia_mon_firewall_recorded.content is defined else [] }}
+      block:
+        - name: Create the celestia-mon state directory
+          ansible.builtin.file:
+            path: "{{ celestia_mon_firewall_record | dirname }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        # A missing file is a first install: the record starts empty.
+        - name: Read the rules recorded so far
+          ansible.builtin.slurp:
+            src: "{{ celestia_mon_firewall_record }}"
+          register: celestia_mon_firewall_recorded
+          failed_when: false
+
+        - name: Add the new rules to the record
+          ansible.builtin.copy:
+            dest: "{{ celestia_mon_firewall_record }}"
+            content: >-
+              {%- set ns = namespace(rules=celestia_mon_firewall_old) -%}
+              {%- for source in celestia_mon_firewall_added -%}
+              {%- set rule = {'comment': 'celestia-mon', 'port': celestia_mon_firewall_port | int, 'proto': 'tcp', 'source': source} -%}
+              {%- if rule not in ns.rules -%}{%- set ns.rules = ns.rules + [rule] -%}{%- endif -%}
+              {%- endfor -%}
+              {{ ns.rules | to_nice_json }}
+            owner: root
+            group: root
+            mode: "0644"

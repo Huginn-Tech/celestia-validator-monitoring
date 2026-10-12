@@ -19,7 +19,8 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
 
 Layout: a 'Now' strip without a row header, then the rows 'Validator and signer',
 'Fibre' and 'Hosts'. Panels that do not apply are left out: no signer panels with
-a local signer, no Fibre panels without Fibre.
+a local signer, no Fibre panels without Fibre. A row whose panels are wider than
+the 24 grid columns continues on a second line.
 
 Python 3 standard library only. The same settings always give the same bytes.
 Every query is plain PromQL (no Grafana variables), so CI can send each one to
@@ -38,7 +39,6 @@ FIBRE_LINKS = [
     ("Fibre runtime dashboard (celestia-app)",
      "https://github.com/celestiaorg/celestia-app/blob/v10.4.0/observability/docker/grafana/dashboards/fibre-runtime.json"),
     ("Tensile: Fibre from outside", "https://tensile.huginn.tech"),
-    ("Valopers: Fibre providers (testnet)", "https://testnet.celestia.valopers.com/fibre/providers"),
 ]
 HOSTS_LINKS = [
     ("Node Exporter Full (grafana.com 1860)", "https://grafana.com/grafana/dashboards/1860-node-exporter-full/"),
@@ -48,6 +48,11 @@ HOSTS_LINKS = [
 # bond and team masters (their member NICs count) and VLAN sub-interfaces (their parent counts).
 VIRT = (r"lo|docker.*|veth.*|br.*|vmbr.*|virbr.*|cni.*|flannel.*|cali.*|cilium.*|vxlan.*|kube.*"
         r"|tailscale.*|wg.*|tun.*|tap.*|bond.*|team.*|.+\..+")
+
+# Block devices left out of disk latency: LVM/LUKS (dm), software RAID (md) and ZFS volumes (zd)
+# count the I/O of their physical disks again; CD drives (sr) and network block devices (nbd)
+# are noise. node_exporter already leaves out partitions, loop, ram and zram devices.
+DISK = r"dm-.*|md.*|zd.*|sr.*|nbd.*"
 
 # One fixed colour per node_exporter host, in inventory order, when there is more than
 # one. Green, orange and red stay free for thresholds. Hosts past the list keep
@@ -101,14 +106,19 @@ def override(matcher, option, **props):
             "properties": [{"id": k.replace("__", "."), "value": v} for k, v in props.items()]}
 
 
-def timeseries(pid, title, desc, targets, unit, line=None, overrides=(), mirror=()):
+def timeseries(pid, title, desc, targets, unit, line=None, overrides=(), mirror=(), maximum=None, decimals=None):
     """Lines over time. line: a threshold drawn as a dashed red line.
     mirror: refIds drawn below zero (receive above, transmit below); the legend keeps
-    their positive values and becomes a table with Max and Last."""
+    their positive values and becomes a table with Max and Last.
+    maximum: top of the axis (e.g. 1 for a share); decimals: fixed decimals of the values."""
     custom = {"drawStyle": "line", "fillOpacity": 0, "lineWidth": 1, "showPoints": "never", "spanNulls": False,
               "thresholdsStyle": {"mode": "dashed" if line is not None else "off"}}
     defaults = {"color": {"mode": "palette-classic"}, "custom": custom, "min": 0, "unit": unit,
                 "thresholds": steps(("green", None), ("red", line)) if line is not None else steps(("green", None))}
+    if maximum is not None:
+        defaults["max"] = maximum
+    if decimals is not None:
+        defaults["decimals"] = decimals
     legend = {"displayMode": "list", "placement": "bottom", "showLegend": True}
     if mirror:
         del defaults["min"]
@@ -120,12 +130,14 @@ def timeseries(pid, title, desc, targets, unit, line=None, overrides=(), mirror=
 
 
 def stat(pid, title, desc, targets, thresholds, overrides=(), unit="none", decimals=0, graph="none",
-         no_value=None):
+         no_value=None, mappings=()):
     """Current values, one tile per series, coloured by thresholds or value mappings.
     graph: "area" draws a sparkline over the dashboard range (needs range queries)."""
     defaults = {"color": {"mode": "thresholds"}, "decimals": decimals, "thresholds": thresholds, "unit": unit}
     if no_value is not None:
         defaults["noValue"] = no_value
+    if mappings:
+        defaults["mappings"] = list(mappings)
     options = {"colorMode": "value", "graphMode": graph, "justifyMode": "auto", "orientation": "auto",
                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
                "showPercentChange": False, "textMode": "value_and_name", "wideLayout": True}
@@ -163,8 +175,16 @@ def link_capacity(link, sel):
     return num(int(rate) if rate == int(rate) else rate)
 
 
+def blocks_since_signature(cap):
+    """Blocks since the node's own last signature, as ValidatorNotSigning computes it, capped at cap.
+    Until the first own signature after a start, the value is the full block height."""
+    return ("clamp_max(cometbft_consensus_height - (max without (validator_address) "
+            "(cometbft_consensus_validator_last_signed_height) or cometbft_consensus_height * 0), %s)" % num(cap))
+
+
 def now_strip(cfg):
     """(panel, width, links) for the top strip."""
+    t = cfg["thresholds"]
     fibre = cfg["fibre_enabled"]
     loads = []
     for link in cfg["links"]:
@@ -175,54 +195,72 @@ def now_strip(cfg):
         for direction, metric in (("in", "receive"), ("out", "transmit")):
             peak = "max_over_time((sum by (host) (rate(node_network_%s_bytes_total%s[1m])))[1h:1m])" % (metric, sel)
             loads.append(("%s / %s or %s" % (peak, cap, unknown), "{{host}} %s" % direction))
+    blocks = t["not_signing_blocks"]
     strip = [
-        (stat(1, "Node at chain head",
-              "Is the node following new blocks, or stuck, syncing, or watching a halted chain? Is it peered? "
-              "NodeNotAtHead alerts when new blocks (3 min) stays at 0. If the whole chain stopped "
-              "(check status.celestia.org and an explorer), coordinate instead of fixing locally.",
+        (stat(1, "Node progress",
+              "Is the node committing new blocks, and is it peered? New blocks committed locally in the last "
+              "3 minutes, block sync and peers. This shows that the node is advancing, not that it is at the "
+              "network's head: compare its height with an explorer or status.celestia.org. NodeNotAdvancing "
+              "pages when no new block arrives for 3 minutes. If the whole chain stopped, coordinate instead "
+              "of fixing locally.",
               refs([("changes(cometbft_consensus_height[3m])", "new blocks (3 min)"),
                     ("cometbft_blocksync_syncing", "block sync"),
                     ("cometbft_p2p_peers", "peers")], instant=True),
               steps(("red", None), ("green", 1)),
               [override("byFrameRefID", "B", mappings=mapping((0, "no", "green"), (1, "yes", "orange")))]),
-         5 if fibre else 6, []),
+         4, []),
+        # Red from one block above the threshold, because ValidatorNotSigning fires on '> not_signing_blocks'.
+        (stat(16, "Signing",
+              "Is my validator signing right now? Red above the ValidatorNotSigning threshold (%g blocks); "
+              "history in Blocks since my last signature." % blocks,
+              refs([(blocks_since_signature(10 * blocks), "blocks since my last signature")], instant=True),
+              steps(("green", None), ("red", blocks + 1)),
+              mappings=[{"type": "range", "options": {"from": 10 * blocks, "to": 10 * blocks, "result": {
+                  "color": "red", "index": 0, "text": "%g+" % (10 * blocks)}}}]),
+         4, []),
         (stat(8, "Services per host",
               "Are celestia-appd, Fibre and tmkms running, and how often did systemd restart them in the last "
-              "24 hours? Restarts count only automatic restarts under Restart=.",
+              "24 hours? Restarts count only automatic restarts under Restart=. A 'not reporting' tile appears "
+              "while Prometheus cannot read a host's metrics (celestia-app, node_exporter or the Fibre "
+              "collector); that host's other tiles are then missing, not fine.",
               refs([('node_systemd_unit_state{state="active"}', "{{host}} {{name}}"),
-                    ("increase(node_systemd_service_restart_total[24h])", "{{host}} {{name}} restarts (24h)")],
+                    ("increase(node_systemd_service_restart_total[24h])", "{{host}} {{name}} restarts (24h)"),
+                    ('up{job=~"celestia-app|node|otelcol"} == 0', "{{host}} {{job}} metrics")],
                    instant=True),
               steps(("green", None), ("orange", 1)),
-              [override("byFrameRefID", "A", mappings=mapping((0, "not active", "red"), (1, "active", "green")))]),
-         8 if fibre else 10, HOSTS_LINKS),
+              [override("byFrameRefID", "A", mappings=mapping((0, "not active", "red"), (1, "active", "green"))),
+               override("byFrameRefID", "C", mappings=mapping((0, "not reporting", "red")))]),
+         7 if fibre else 9, HOSTS_LINKS),
         (bargauge(11, "Link load (busiest minute, last hour)",
                   "Busiest 1-minute average in the last hour, against celestia_mon_link_mbps or, when that is not set, "
                   "the NIC port speed. Port speed can be above what your provider lets through. Counts every "
-                  "physical NIC; VPN, container, bridge, bond master and VLAN interfaces are left out.",
+                  "physical NIC; VPN, container, bridge, bond master and VLAN interfaces are left out. "
+                  "Current load over time: Network traffic.",
                   refs(loads, instant=True), "percentunit",
                   steps(("green", None), ("orange", 0.7), ("red", 0.9)), decimals=0,
                   mappings=[{"type": "range", "options": {"from": -1, "to": -1, "result": {
                       "color": "text", "index": 0, "text": "speed unknown: set celestia_mon_link_mbps"}}}]),
-         6 if fibre else 8, HOSTS_LINKS),
+         5 if fibre else 7, HOSTS_LINKS),
     ]
     if fibre:
         strip.append(
-            (stat(12, "Fibre load vs limit",
-                  "Shard bytes this server holds over its stake-based budget. Shards are kept for the "
-                  "shard-retention window (4 h by default). The budget is the full-stake limit (2 TiB per window "
-                  "by default, about 146 MiB/s) times this validator's share of rows, and every blob gives this "
-                  "validator that same share. So the reading follows the network's Fibre data in the window "
-                  "against the full-stake limit. Each blob also adds proofs and a 64 KiB RLC: about 2.2 MB at "
-                  "full stake and 3.9 MB at the 148-row minimum. Small blobs therefore read high (a 1 MiB blob "
-                  "counts as 3-5 MB), and low-stake validators reach the limit first. Falls to 0 while this "
-                  "validator is out of the active set.",
+            (stat(12, "Fibre storage budget used",
+                  "Share of this server's stake-based storage budget held by shards, on disk plus in-flight "
+                  "reservations; at 100% the storage limiter rejects uploads (budget_exceeded). Shards are kept "
+                  "for the shard-retention window (4 h by default). The budget is the full-stake limit "
+                  "(2 TiB per window by default, about 146 MiB/s) times this validator's share of rows, and "
+                  "every blob gives this validator that same share. So the reading follows the network's Fibre "
+                  "data in the window against the full-stake limit. Each blob also adds proofs and a 64 KiB RLC: "
+                  "about 2.2 MB at full stake and 3.9 MB at the 148-row minimum. Small blobs therefore read high "
+                  "(a 1 MiB blob counts as 3-5 MB), and low-stake validators reach the limit first. Falls to 0 "
+                  "while this validator is out of the active set.",
                   # '> 0' hides an unlimited budget and one never derived because the validator
                   # was out of the active set when Fibre started.
                   refs([("max by (host) (fibre_server_upload_shard_occupancy_bytes) / "
                          "max by (host) (fibre_server_upload_shard_budget_bytes > 0)", "{{host}}")]),
                   steps(("text", None), ("orange", 0.9)), unit="percentunit", decimals=1, graph="area",
                   no_value="No limit: unlimited budget, or not in the active set when Fibre started"),
-             5, FIBRE_LINKS))
+             4, FIBRE_LINKS))
     return strip
 
 
@@ -233,13 +271,11 @@ def validator_row(cfg):
     row = [
         (timeseries(2, "Blocks since my last signature",
                     "Is my validator signing right now? Works after restarts and jails, when missed-block "
-                    "counters freeze. Dashed line: the ValidatorNotSigning threshold. The line stops at %g "
-                    "blocks (10 times the threshold): right after a node start the value is the full block "
+                    "counters freeze. Dashed line: the ValidatorNotSigning threshold (%g blocks). The line stops "
+                    "at %g blocks (10 times the threshold): right after a node start the value is the full block "
                     "height until the first own signature, and one restart would otherwise flatten the chart. "
-                    "The alert uses the uncapped value." % cap,
-                    refs([("clamp_max(cometbft_consensus_height - (max without (validator_address) "
-                           "(cometbft_consensus_validator_last_signed_height) or cometbft_consensus_height * 0), "
-                           "%s)" % num(cap), "{{host}}")]),
+                    "The alert uses the uncapped value." % (t["not_signing_blocks"], cap),
+                    refs([(blocks_since_signature(cap), "{{host}}")]),
                     "none", line=t["not_signing_blocks"]),
          8 if remote else 24, []),
     ]
@@ -259,10 +295,11 @@ def validator_row(cfg):
         (timeseries(4, "Signing failures by reason",
                     "Which path fails? no_connection or timeout: the KMS host or the link. Proposal only: the KMS "
                     "cannot propose. raw_bytes only: tmkms is too old for Fibre. Each retry counts as a failure. "
-                    "Empty on a healthy setup.",
-                    refs([("sum by (message_type, reason) (rate(cometbft_privval_signing_failures_total[5m]))",
+                    "Empty on a healthy setup. Failures in each 5-minute window. A failure counter appears with "
+                    "its first failure, so the first failure of each kind after a node start does not show.",
+                    refs([("sum by (message_type, reason) (increase(cometbft_privval_signing_failures_total[5m]))",
                            "{{message_type}} {{reason}}")]),
-                    "reqps"),
+                    "none", decimals=0),
          8, []),
     ]
 
@@ -278,20 +315,28 @@ def fibre_row(cfg):
         disk += [("node_filesystem_size_bytes%s - node_filesystem_free_bytes%s" % (sel, sel),
                   "{{host}} {{mountpoint}} used"),
                  ("node_filesystem_avail_bytes%s" % sel, "{{host}} {{mountpoint}} free")]
+    last = "max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds)"
     panels = [
-        timeseries(5, "Time since last successful upload",
-                   "Is Fibre serving, not just running? Counted from Fibre's start until its first upload. "
-                   "Dashed line: the FibreNotServing threshold, the time ten uploads take at this server's "
-                   "7-day average and never under the minimum; no line when the server had no upload in 7 days.",
-                   refs([("time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds "
-                          "or on (host) (node_systemd_unit_start_time_seconds{name=%s} > 0))" % unit, "{{host}}")])
+        timeseries(5, "Time since last accepted upload",
+                   "Is Fibre serving, not just running? Time since the server last accepted an upload. Until its "
+                   "first accepted upload after a start, the line is labelled no accepted upload yet and counts "
+                   "from Fibre start. Dashed line: the FibreNotServing threshold, the time %g uploads take at this "
+                   "server's 7-day average and never under %g minutes; no line when the server had no upload in "
+                   "7 days. A quiet network also makes the time grow. To tell a quiet network from a fault, check "
+                   "on Tensile (https://tensile.huginn.tech) whether the network is carrying Fibre uploads."
+                   % (t["fibre_stale_uploads"], t["fibre_stale_min_seconds"] / 60),
+                   # The timestamp is not reported before the first accepted upload after each Fibre
+                   # start, so B counts from the unit start until A has a value.
+                   refs([("time() - %s" % last, "{{host}}"),
+                         ("(time() - max by (host) (node_systemd_unit_start_time_seconds{name=%s} > 0)) "
+                          "unless on (host) %s" % (unit, last), "{{host}} no accepted upload yet (since Fibre start)")])
                    # The 7-day rate barely moves; a 5 min step keeps this query cheap for Prometheus.
-                   + [target("B", "clamp_min(%s / (sum by (host) "
+                   + [target("C", "clamp_min(%s / (sum by (host) "
                               "(rate(fibre_server_upload_shard_duration_seconds_count[7d])) > 0), %s)"
                               % (num(t["fibre_stale_uploads"]), num(t["fibre_stale_min_seconds"])),
                               "{{host}} alert threshold", interval="5m")],
                    "s",
-                   overrides=[override("byFrameRefID", "B", color={"fixedColor": "red", "mode": "fixed"},
+                   overrides=[override("byFrameRefID", "C", color={"fixedColor": "red", "mode": "fixed"},
                                        custom__lineStyle={"dash": [10, 10], "fill": "dash"})]),
         timeseries(6, "Shard requests",
                    "Are uploads and downloads arriving and succeeding? Is the storage limiter refusing uploads? "
@@ -340,10 +385,46 @@ def hosts_row(cfg):
         disks += [("node_filesystem_avail_bytes%s / node_filesystem_size_bytes%s" % (sel, sel),
                    "{{host}} {{mountpoint}} free"),
                   ("node_filesystem_readonly%s" % sel, "{{host}} {{mountpoint}} read-only")]
+    dev = "{device!~%s}" % q(DISK)
+    # Both directions together; '> 0' leaves a gap instead of 0/0 while a disk is idle.
+    latency = ("(rate(node_disk_read_time_seconds_total%s[5m]) + rate(node_disk_write_time_seconds_total%s[5m])) / "
+               "((rate(node_disk_reads_completed_total%s[5m]) + rate(node_disk_writes_completed_total%s[5m])) > 0)"
+               % (dev, dev, dev, dev))
+    load = "rate(node_disk_read_bytes_total%s[5m]) + rate(node_disk_written_bytes_total%s[5m])" % (dev, dev)
+    # Two lines of 24 columns: build() wraps after CPU per host.
     return [
         (timeseries(13, "Network traffic", desc, refs(traffic), "Bps", overrides=dashed,
                     mirror=["B", "D"] if cfg["fibre_enabled"] else ["B"]),
          12, HOSTS_LINKS),
+        # Idle and iowait are idle time; steal counts as busy.
+        (timeseries(14, "CPU per host",
+                    "Is a host short of CPU? Share of all cores busy, 5-minute average; on a VM, steal counts as "
+                    "busy. A validator host near 100% votes late and adds to signer latency; a Fibre host near "
+                    "100% slows uploads: size the host up or move Fibre off it. The KMS host appears only with "
+                    "celestia_mon_kms_scrape. One pegged core may not show: see Node Exporter Full.",
+                    refs([('1 - sum by (host) (rate(node_cpu_seconds_total{mode=~"idle|iowait"}[5m])) '
+                           '/ count by (host) (node_cpu_seconds_total{mode="idle"})', "{{host}}")]),
+                    "percentunit", maximum=1),
+         12, HOSTS_LINKS),
+        (timeseries(15, "Disk latency and load",
+                    "Is each disk answering in time? Average time one read or write took, per physical disk; "
+                    "bytes moved as dashed lines on the right axis. High latency with high load: something on the "
+                    "host loads the disk (Fibre, compaction, Prometheus); give Fibre its own disk. High latency "
+                    "with low load: the disk or the provider storage is slow. LVM, RAID, ZFS volume and CD "
+                    "devices are left out; their physical disks count. lsblk maps mounts to devices.",
+                    refs([(latency, "{{host}} {{device}}"), (load, "{{host}} {{device}} read+write")]),
+                    "s",
+                    overrides=[override("byFrameRefID", "B", unit="Bps", custom__axisPlacement="right",
+                                        custom__lineStyle={"dash": [10, 10], "fill": "dash"})]),
+         12, HOSTS_LINKS),
+        (bargauge(9, "Free space per data disk",
+                  "Which data disk is close to full or read-only? Colours follow the DiskLow thresholds.",
+                  refs(disks, instant=True), "percentunit",
+                  steps(("red", None), ("orange", t["disk_page_free_ratio"]), ("green", t["disk_message_free_ratio"])),
+                  [override("byRegexp", ".* read-only", decimals=0, unit="none",
+                            thresholds=steps(("green", None), ("red", 1)),
+                            mappings=mapping((0, "no", "green"), (1, "yes", "red")))]),
+         6, HOSTS_LINKS),
         (timeseries(10, "Memory per host",
                     "Is Fibre (worst case about 27 GiB at default limits) or the node running out of RAM? "
                     "OOM kills in the last hour as a dashed line on the right axis.",
@@ -352,14 +433,6 @@ def hosts_row(cfg):
                     "bytes",
                     overrides=[override("byFrameRefID", "B", decimals=0, unit="none", custom__axisPlacement="right",
                                         custom__lineStyle={"dash": [10, 10], "fill": "dash"})]),
-         6, HOSTS_LINKS),
-        (bargauge(9, "Free space per data disk",
-                  "Which data disk is close to full or read-only? Colours follow the DiskLow thresholds.",
-                  refs(disks, instant=True), "percentunit",
-                  steps(("red", None), ("orange", t["disk_page_free_ratio"]), ("green", t["disk_message_free_ratio"])),
-                  [override("byRegexp", ".* read-only", decimals=0, unit="none",
-                            thresholds=steps(("green", None), ("red", 1)),
-                            mappings=mapping((0, "no", "green"), (1, "yes", "red")))]),
          6, HOSTS_LINKS),
     ]
 
@@ -393,6 +466,10 @@ def build(cfg):
             y += 1
         x = 0
         for p, width, links in items:
+            # A panel that does not fit the 24 columns starts the next line.
+            if x + width > 24:
+                x = 0
+                y += height
             p["gridPos"] = {"h": height, "w": width, "x": x, "y": y}
             p["datasource"] = ds
             p["links"] = [{"targetBlank": True, "title": lt, "url": lu} for lt, lu in links]

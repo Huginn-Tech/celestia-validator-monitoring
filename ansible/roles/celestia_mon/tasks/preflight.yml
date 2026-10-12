@@ -27,6 +27,11 @@
   changed_when: false
   check_mode: false
 
+# Lines such as "inet 10.0.0.5/24 ...", "inet6 fd00::5/64 ..." or "inet 10.0.0.5 peer 10.0.0.6/32 ...".
+- name: Note the addresses of this machine
+  ansible.builtin.set_fact:
+    celestia_mon_preflight_addresses: "{{ celestia_mon_preflight_ip.stdout | regex_findall('inet6? ([0-9A-Fa-f.:]+)[/ ]') | map('lower') | list }}"
+
 - name: Check that celestia_mon_private_ip is an address of this machine
   ansible.builtin.assert:
     that:
@@ -36,9 +41,22 @@
       this machine ({{ celestia_mon_preflight_addresses | join(', ') }}). Fix the inventory, or run for the host this
       machine is (install.sh --host).
     quiet: true
-  vars:
-    # Lines such as "inet 10.0.0.5/24 ...", "inet6 fd00::5/64 ..." or "inet 10.0.0.5 peer 10.0.0.6/32 ...".
-    celestia_mon_preflight_addresses: "{{ celestia_mon_preflight_ip.stdout | regex_findall('inet6? ([0-9A-Fa-f.:]+)[/ ]') | map('lower') | list }}"
+
+# Grafana listens on 127.0.0.1 unless the operator names a private address of the monitor
+# host. There is no fallback: a wildcard such as 0.0.0.0, or an address this machine does
+# not have, stops the install.
+- name: Check the address Grafana listens on
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_grafana_listen | string | lower not in ['', '0.0.0.0', '::', '[::]', '*']
+      - celestia_mon_grafana_listen | string | lower in celestia_mon_preflight_addresses
+      - celestia_mon_grafana_listen | string is match(celestia_mon_private_address_regex)
+    fail_msg: >-
+      celestia_mon_grafana_listen is "{{ celestia_mon_grafana_listen }}", which is not a private address of this machine
+      ({{ celestia_mon_preflight_addresses | join(', ') }}); Grafana never listens on 0.0.0.0. Keep the default 127.0.0.1
+      and reach Grafana through an SSH tunnel, or set a private address of this host (Tailscale, WireGuard, a LAN).
+    quiet: true
+  when: "'grafana' in celestia_mon_host_services"
 
 # The minimal subset: distribution, service manager, architecture and user.
 - name: Read the system facts
@@ -70,8 +88,11 @@
     label: "{{ item.0.unit }} {{ item.1 }}"
 
 # Disk: a release needs room for its download, the unpacked release and the installed
-# binaries (celestia_mon_services.*.disk_mb) unless that version is installed already, and
-# Prometheus's data may grow to celestia_mon_prometheus_retention_size on the monitor.
+# binaries (celestia_mon_services.*.disk_mb) under /opt and /var/cache, unless that version is
+# installed already. On the monitor, the disk of Prometheus's data directory must hold
+# celestia_mon_prometheus_retention_size x 1.5 + 2 GiB: the retention size does not cover the
+# write-ahead log, the head chunks or the temporary blocks of a compaction. What Prometheus
+# keeps there already counts toward it, so a re-run on a full-grown install passes.
 - name: Look for the pinned releases already installed here
   ansible.builtin.stat:
     path: "/opt/celestia-mon/{{ celestia_mon_services[item].dir }}-{{ celestia_mon_versions[celestia_mon_services[item].version].version }}"
@@ -80,6 +101,7 @@
   loop: "{{ celestia_mon_host_services }}"
   register: celestia_mon_preflight_releases
 
+# The path is celestia_mon_prometheus_data_dir of the celestia_mon_prometheus role.
 - name: Measure the data Prometheus keeps now
   ansible.builtin.command:
     argv: [du, -sb, /var/lib/celestia-mon/prometheus]
@@ -89,6 +111,18 @@
   check_mode: false
   when: "'prometheus' in celestia_mon_host_services"
 
+# df needs a path that exists: the data directory, or the nearest parent that does, so a
+# disk mounted at /var/lib/celestia-mon is the one checked.
+- name: Look for Prometheus's data directory
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+    get_mime: false
+  loop:
+    - /var/lib/celestia-mon/prometheus
+    - /var/lib/celestia-mon
+  register: celestia_mon_preflight_data_paths
+
 - name: Read the free disk space where celestia-mon writes
   ansible.builtin.command:
     # A block list: in a flow list [...] the comma in --output=avail,target would split the option.
@@ -97,7 +131,10 @@
       - --output=avail,target
       - -B1
       - "{{ item }}"
-  loop: [/opt, /var/cache, /var/lib]
+  loop:
+    - /opt
+    - /var/cache
+    - "{{ celestia_mon_preflight_data_paths.results | selectattr('stat.exists') | map(attribute='item') | first | default('/var/lib') }}"
   register: celestia_mon_preflight_df
   changed_when: false
   check_mode: false
@@ -112,10 +149,12 @@
     celestia_mon_preflight_install_mib: >-
       {{ celestia_mon_preflight_releases.results | rejectattr('stat.exists') | map(attribute='item')
          | map('extract', celestia_mon_services, 'disk_mb') | sum }}
-    celestia_mon_preflight_data_mib: >-
-      {{ ([0, (celestia_mon_prometheus_retention_size | string | regex_replace('iB$', 'B') | human_to_bytes)
-              - (celestia_mon_preflight_tsdb.stdout | default('') | regex_search('^[0-9]+') | default('0', true) | int)] | max) // 1048576
+    # Room Prometheus's data needs on its disk in total (retention size x 1.5 + 2 GiB), and what it keeps there now, in MiB.
+    celestia_mon_preflight_data_total_mib: >-
+      {{ ((celestia_mon_prometheus_retention_size | string | regex_replace('iB$', 'B') | human_to_bytes) * 3 // 2 + 2147483648) // 1048576
          if 'prometheus' in celestia_mon_host_services else 0 }}
+    celestia_mon_preflight_data_used_mib: >-
+      {{ (celestia_mon_preflight_tsdb.stdout | default('') | regex_search('^[0-9]+') | default('0', true) | int) // 1048576 }}
     celestia_mon_preflight_mem_available_mib: >-
       {{ (celestia_mon_preflight_meminfo.content | b64decode | regex_findall('MemAvailable: +([0-9]+) kB') | first | default(0) | int) // 1024 }}
     # Values systemd takes but that have no fixed size (infinity, a percentage) are left out of the sums.
@@ -126,17 +165,20 @@
       {{ (celestia_mon_host_services | map('extract', celestia_mon_memory) | map(attribute='max') | map('string')
           | select('match', '^[0-9.]+ *[KMGT]?$') | map('human_to_bytes') | sum) // 1048576 }}
 
-# The install space is needed under /opt and /var/cache, the Prometheus data under /var/lib;
-# directories on one filesystem add up.
+- name: Note the free space Prometheus's data still needs
+  ansible.builtin.set_fact:
+    celestia_mon_preflight_data_mib: "{{ [0, celestia_mon_preflight_data_total_mib | int - celestia_mon_preflight_data_used_mib | int] | max }}"
+
+# The install space is needed under /opt and /var/cache, Prometheus's data on the disk of its
+# data directory; directories on one filesystem add up.
 - name: Check the free disk space
   ansible.builtin.assert:
     that:
       - celestia_mon_preflight_free_mib | int >= celestia_mon_preflight_need_mib | int
     fail_msg: >-
       {{ celestia_mon_preflight_mount }} has {{ celestia_mon_preflight_free_mib }} MiB free, and celestia-mon needs
-      {{ celestia_mon_preflight_need_mib }} MiB there ({{ celestia_mon_preflight_install_mib }} MiB to install the services on
-      this host, {{ celestia_mon_preflight_data_mib }} MiB for Prometheus data). Free some space, or lower
-      celestia_mon_prometheus_retention_size.
+      {{ celestia_mon_preflight_need_mib }} MiB free there.{{ celestia_mon_preflight_install_text }}{{ celestia_mon_preflight_data_need_text }}
+      Free some space{{ ', or lower celestia_mon_prometheus_retention_size' if celestia_mon_preflight_on_data_mount | bool else '' }}.
     quiet: true
   loop: "{{ celestia_mon_preflight_df.results }}"
   loop_control:
@@ -147,16 +189,30 @@
     celestia_mon_preflight_free_mib: "{{ celestia_mon_preflight_row[0] | int // 1048576 }}"
     celestia_mon_preflight_mounts: >-
       {{ celestia_mon_preflight_df.results | map(attribute='stdout_lines') | map('last') | map('split', none, 1) | map('last') | list }}
+    celestia_mon_preflight_on_install_mount: >-
+      {{ celestia_mon_preflight_mount in celestia_mon_preflight_mounts[:2] and celestia_mon_preflight_install_mib | int > 0 }}
+    celestia_mon_preflight_on_data_mount: >-
+      {{ celestia_mon_preflight_mount == celestia_mon_preflight_mounts[2] and 'prometheus' in celestia_mon_host_services }}
     celestia_mon_preflight_need_mib: >-
-      {{ (celestia_mon_preflight_install_mib | int if celestia_mon_preflight_mount in celestia_mon_preflight_mounts[:2] else 0)
-         + (celestia_mon_preflight_data_mib | int if celestia_mon_preflight_mount == celestia_mon_preflight_mounts[2] else 0) }}
+      {{ (celestia_mon_preflight_install_mib | int if celestia_mon_preflight_on_install_mount | bool else 0)
+         + (celestia_mon_preflight_data_mib | int if celestia_mon_preflight_on_data_mount | bool else 0) }}
+    celestia_mon_preflight_install_text: >-
+      {{ (' ' ~ celestia_mon_preflight_install_mib ~ ' MiB to install the services on this host.')
+         if celestia_mon_preflight_on_install_mount | bool else '' }}
+    celestia_mon_preflight_data_need_text: >-
+      {{ (' ' ~ celestia_mon_preflight_data_mib ~ ' MiB for Prometheus data: with celestia_mon_prometheus_retention_size '
+          ~ celestia_mon_prometheus_retention_size ~ ', its data directory needs ' ~ celestia_mon_prometheus_retention_size
+          ~ ' x 1.5 + 2 GiB = ' ~ celestia_mon_preflight_data_total_mib ~ ' MiB on this disk (the write-ahead log, the head chunks'
+          ~ ' and compaction need room beyond the retention size), and it keeps ' ~ celestia_mon_preflight_data_used_mib ~ ' MiB there now.')
+         if celestia_mon_preflight_on_data_mount | bool else '' }}
 
 - name: Report the memory headroom
   ansible.builtin.debug:
     msg: >-
-      {{ celestia_mon_preflight_mem_available_mib }} MiB of memory is available now. celestia-mon's services on this
-      host are slowed down above {{ celestia_mon_preflight_mem_high_mib }} MiB in total (MemoryHigh) and stopped at
-      {{ celestia_mon_preflight_mem_max_mib }} MiB (MemoryMax); see celestia_mon_memory.
+      {{ celestia_mon_preflight_mem_available_mib }} MiB of memory is available now. Above {{ celestia_mon_preflight_mem_high_mib }} MiB
+      in total (MemoryHigh, the soft target) the kernel reclaims the memory of celestia-mon's services on this host and slows them
+      down; a service that reaches its MemoryMax ({{ celestia_mon_preflight_mem_max_mib }} MiB in total) is ended and restarted.
+      See celestia_mon_memory.
 
 - name: Read the ufw status for the install plan
   ansible.builtin.command: ufw status
@@ -168,6 +224,32 @@
   check_mode: false
   when: celestia_mon_plan_file is defined
 
+# Fibre pushes its metrics to the collector only when its unit says where: --otel-endpoint in
+# ExecStart, or FIBRE_OTEL_ENDPOINT from an EnvironmentFile= or Environment= (the flag wins, and
+# an EnvironmentFile= wins over Environment=). celestia-mon never edits or restarts Fibre: when
+# the unit does not point at the collector, the plan names the change and the restart as a
+# step for the operator.
+- name: Read where Fibre sends its metrics
+  when:
+    - celestia_mon_plan_file is defined
+    - celestia_mon_fibre_enabled
+    - inventory_hostname in groups.get('fibre', [])
+  block:
+    # With only a name the module just reads the unit (systemctl show); a unit systemd does
+    # not know has LoadState not-found.
+    - name: Read the Fibre unit's command line and environment
+      ansible.builtin.systemd_service:
+        name: "{{ celestia_mon_units.fibre }}.service"
+      register: celestia_mon_preflight_fibre_unit
+
+    # The module keeps the last EnvironmentFiles= line, as "/etc/default/fibre (ignore_errors=no)".
+    - name: Read the Fibre unit's environment file
+      ansible.builtin.slurp:
+        src: "{{ item }}"
+      loop: "{{ celestia_mon_preflight_fibre_unit.status.EnvironmentFiles | default('') | regex_findall('^([^ ]+) [(]ignore_errors=') }}"
+      register: celestia_mon_preflight_fibre_envfiles
+      failed_when: false
+
 - name: Write the install plan for this host
   ansible.builtin.copy:
     dest: "{{ celestia_mon_plan_file }}"
@@ -175,13 +257,28 @@
       Host:      {{ inventory_hostname }} ({{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(', ') }})
       Services:  {{ celestia_mon_host_services | map('extract', celestia_mon_services, 'unit') | join(', ') }}
                  systemd units, each run by its own system user of the same name, with Nice={{ celestia_mon_nice }},
-                 CPUWeight={{ celestia_mon_cpu_weight }}, IOWeight={{ celestia_mon_io_weight }} and in total
-                 MemoryHigh {{ celestia_mon_preflight_mem_high_mib }} MiB, MemoryMax {{ celestia_mon_preflight_mem_max_mib }} MiB
+                 CPUWeight={{ celestia_mon_cpu_weight }}, IOWeight={{ celestia_mon_io_weight }} (no CPU quota) and in total
+                 MemoryHigh {{ celestia_mon_preflight_mem_high_mib }} MiB (soft), MemoryMax {{ celestia_mon_preflight_mem_max_mib }} MiB
       Listens:   {{ celestia_mon_preflight_listens }}
       Files:     /opt/celestia-mon, /etc/celestia-mon, {{ celestia_mon_preflight_data_dir }}/var/cache/celestia-mon,
                  /usr/local/bin/celestia-mon-doctor, /etc/systemd/system/celestia-mon-*.service
       Memory:    {{ celestia_mon_preflight_mem_available_mib }} MiB available now
       Disk:      {{ celestia_mon_preflight_install_mib }} MiB to install{{ celestia_mon_preflight_data_text }}
+      {% if celestia_mon_preflight_fibre_unit.status is defined %}
+      {% if celestia_mon_preflight_fibre_unit.status.LoadState | default('') != 'loaded' %}
+      Fibre:     {{ celestia_mon_units.fibre }}.service is not loaded on this host: set celestia_mon_units.fibre to the name of the Fibre unit.
+      {% elif celestia_mon_preflight_fibre_ok | bool %}
+      Fibre:     {{ celestia_mon_units.fibre }}.service sends its metrics to the collector ({{ celestia_mon_preflight_fibre_now }}).
+      {% elif '$' in celestia_mon_preflight_fibre_got %}
+      Fibre:     {{ celestia_mon_units.fibre }}.service takes its OTLP endpoint from a variable ({{ celestia_mon_preflight_fibre_now }});
+                 celestia-mon-doctor checks the value after the install.
+      {% else %}
+      Fibre:     {{ celestia_mon_units.fibre }}.service does not send its metrics to the collector yet ({{ celestia_mon_preflight_fibre_now }}).
+                 Operator step, at a moment you choose (celestia-mon never edits or restarts Fibre):
+                 {{ celestia_mon_preflight_fibre_change }}, then run
+                 sudo systemctl daemon-reload && sudo systemctl restart {{ celestia_mon_units.fibre }}
+      {% endif %}
+      {% endif %}
       ufw:       {{ celestia_mon_preflight_ufw_text }}
     mode: "0600"
   changed_when: false
@@ -190,16 +287,56 @@
   when: celestia_mon_plan_file is defined
   vars:
     celestia_mon_preflight_ip_text: "{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in (celestia_mon_private_ip | string) else celestia_mon_private_ip }}"
+    celestia_mon_preflight_grafana_text: >-
+      {{ ('[' ~ celestia_mon_grafana_listen ~ ']') if ':' in (celestia_mon_grafana_listen | string) else celestia_mon_grafana_listen }}
     celestia_mon_preflight_listens: >-
       {%- for k in celestia_mon_host_services | map('extract', celestia_mon_services, 'ports') | flatten -%}
-      {{ ('127.0.0.1' if k in celestia_mon_loopback_ports else celestia_mon_preflight_ip_text)
+      {{ ('127.0.0.1' if k in celestia_mon_loopback_ports else celestia_mon_preflight_grafana_text if k == 'grafana' else celestia_mon_preflight_ip_text)
          ~ ':' ~ celestia_mon_ports[k] ~ ' (' ~ k ~ ')' }}{{ '' if loop.last else ', ' }}
       {%- endfor -%}
     celestia_mon_preflight_monitor: "{{ 'prometheus' in celestia_mon_host_services }}"
-    celestia_mon_preflight_data_dir: "{{ '/var/lib/celestia-mon, ' if celestia_mon_preflight_monitor else '' }}"
+    celestia_mon_preflight_data_dir: "{{ '/var/lib/celestia-mon, ' if celestia_mon_preflight_monitor | bool else '' }}"
     celestia_mon_preflight_data_text: >-
-      {{ (', up to ' ~ celestia_mon_preflight_data_mib ~ ' MiB more for Prometheus data') if celestia_mon_preflight_monitor else '' }}
+      {{ (', up to ' ~ celestia_mon_preflight_data_mib ~ ' MiB more for Prometheus data (retention size '
+          ~ celestia_mon_prometheus_retention_size ~ ' x 1.5 + 2 GiB on its disk, less the '
+          ~ celestia_mon_preflight_data_used_mib ~ ' MiB it keeps now)') if celestia_mon_preflight_monitor | bool else '' }}
     celestia_mon_preflight_ufw_text: >-
-      {{ 'active: celestia-mon adds only the rules listed below, if any'
+      {{ 'active: celestia-mon adds only the rules listed below, if any, and records them in ' ~ celestia_mon_firewall_record
+         ~ '; --uninstall deletes only recorded rules'
          if celestia_mon_preflight_ufw.stdout | default('') is match('Status: active')
          else 'not active: celestia-mon adds no firewall rules' }}
+    # Where the Fibre unit sends its metrics now, read from the unit and its environment file.
+    # ExecStart reads as "{ path=... ; argv[]=/usr/bin/fibre start --otel-endpoint ... ; ignore_errors=no ; ... }".
+    celestia_mon_preflight_fibre_want: "http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}"
+    celestia_mon_preflight_fibre_status: "{{ celestia_mon_preflight_fibre_unit.status | default({}) }}"
+    celestia_mon_preflight_fibre_flag: >-
+      {{ celestia_mon_preflight_fibre_status.ExecStart | default('') | regex_findall('argv[[][]]=(.*?) ; ignore_errors=') | first | default('')
+         | regex_findall('--otel-endpoint(?:=| +)([^ ]+)') | last | default('') }}
+    celestia_mon_preflight_fibre_file: >-
+      {{ celestia_mon_preflight_fibre_envfiles.results | default([]) | selectattr('content', 'defined') | map(attribute='content')
+         | map('b64decode') | join('\n') | regex_findall('^[ ]*(?:export +)?FIBRE_OTEL_ENDPOINT=([^ ]*)', multiline=true) | last | default('') }}
+    celestia_mon_preflight_fibre_env: >-
+      {{ celestia_mon_preflight_fibre_status.Environment | default('') | regex_findall('(?:^| )"?FIBRE_OTEL_ENDPOINT=([^ "]*)')
+         | last | default('') }}
+    celestia_mon_preflight_fibre_src: >-
+      {{ '--otel-endpoint in ExecStart' if celestia_mon_preflight_fibre_flag
+         else 'FIBRE_OTEL_ENDPOINT in an EnvironmentFile=' if celestia_mon_preflight_fibre_file
+         else 'FIBRE_OTEL_ENDPOINT in Environment=' if celestia_mon_preflight_fibre_env
+         else '' }}
+    celestia_mon_preflight_fibre_got: >-
+      {{ (celestia_mon_preflight_fibre_flag or celestia_mon_preflight_fibre_file or celestia_mon_preflight_fibre_env)
+         | replace('"', '') | replace("'", '') | regex_replace('/+$', '') }}
+    celestia_mon_preflight_fibre_ok: >-
+      {{ celestia_mon_preflight_fibre_got in [celestia_mon_preflight_fibre_want, celestia_mon_preflight_fibre_want | replace('127.0.0.1', 'localhost')] }}
+    celestia_mon_preflight_fibre_now: >-
+      {{ (celestia_mon_preflight_fibre_src ~ ' is ' ~ celestia_mon_preflight_fibre_got) if celestia_mon_preflight_fibre_got
+         else 'neither --otel-endpoint nor FIBRE_OTEL_ENDPOINT is set' }}
+    celestia_mon_preflight_fibre_change: >-
+      {{ ('in ExecStart of ' ~ celestia_mon_units.fibre ~ '.service, change --otel-endpoint ' ~ celestia_mon_preflight_fibre_got
+          ~ ' to --otel-endpoint ' ~ celestia_mon_preflight_fibre_want) if celestia_mon_preflight_fibre_flag
+         else ('set FIBRE_OTEL_ENDPOINT=' ~ celestia_mon_preflight_fibre_want ~ ' in the EnvironmentFile= of '
+               ~ celestia_mon_units.fibre ~ '.service') if celestia_mon_preflight_fibre_file
+         else ('set Environment=FIBRE_OTEL_ENDPOINT=' ~ celestia_mon_preflight_fibre_want ~ ' in '
+               ~ celestia_mon_units.fibre ~ '.service') if celestia_mon_preflight_fibre_env
+         else ('add --otel-endpoint ' ~ celestia_mon_preflight_fibre_want ~ ' to ExecStart in ' ~ celestia_mon_units.fibre
+               ~ '.service (or Environment=FIBRE_OTEL_ENDPOINT=' ~ celestia_mon_preflight_fibre_want ~ ')') }}

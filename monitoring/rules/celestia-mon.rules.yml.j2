@@ -85,16 +85,18 @@ groups:
 {% endfor %}
 {% endfor %}
 
-      # NodeNotAtHead: the node stopped following new blocks.
-      - alert: NodeNotAtHead
-        expr: changes(cometbft_consensus_height{job="celestia-app"}[3m]) == 0
-        for: 2m
+      # NodeNotAdvancing: the node committed no new block for 3 minutes (2 minutes without a
+      # height change, held for 1 more). It shows the node is not advancing, not whether it is
+      # at the network's head.
+      - alert: NodeNotAdvancing
+        expr: changes(cometbft_consensus_height{job="celestia-app"}[2m]) == 0
+        for: 1m
         labels:
           severity: page
         annotations:
-          summary: "{% raw %}Node on {{ $labels.host }} is not following new blocks{% endraw %}"
-          description: "The consensus height has not changed for 5 minutes. Check status.celestia.org first: the whole chain may have halted."
-          runbook: "{{ docs }}#nodenotathead"
+          summary: "{% raw %}Node on {{ $labels.host }} is not advancing{% endraw %}"
+          description: "The node has committed no new block for 3 minutes. Check status.celestia.org or an explorer first: the whole chain may have halted."
+          runbook: "{{ docs }}#nodenotadvancing"
 
       # ValidatorNotSigning: the chain moves but the node's own key does not sign.
       - alert: ValidatorNotSigning
@@ -103,7 +105,7 @@ groups:
           - (max without (validator_address) (cometbft_consensus_validator_last_signed_height{job="celestia-app"})
           or cometbft_consensus_height{job="celestia-app"} * 0) > {{ th.not_signing_blocks }}
           and on (instance) changes(cometbft_consensus_height{job="celestia-app"}[5m]) > 0
-        for: 3m
+        for: 2m
         labels:
           severity: page
         annotations:
@@ -133,7 +135,43 @@ groups:
 {% endif %}
 {% if fibre_on %}
 
-      # FibreNotServing: Fibre runs but serves no uploads, or sends no metrics.
+      # FibreDown: the Fibre unit is not active or not loaded for 10 minutes, or the Fibre host's
+      # node_exporter is unreachable for 10 minutes while the monitor runs on another host. ServiceDown
+      # sends a message about the unit after 2 minutes; this pages if it stays down.
+      - alert: FibreDown
+        expr: node_systemd_unit_state{name="{{ fibre }}",state="active"} == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}{{ $labels.name }} is down on {{ $labels.host }}{% endraw %}"
+          description: "systemd has not reported the Fibre unit as active for 10 minutes."
+          runbook: "{{ docs }}#fibredown"
+{% for h in fibres %}
+      - alert: FibreDown
+        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ fibre }}"}) and on () up{job="node",host="{{ h }}"} == 1
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}{{ $labels.name }} is not loaded on {{ $labels.host }}{% endraw %}"
+          description: "For 10 minutes node_exporter has listed no Fibre unit: it is stopped and disabled, or the inventory names the wrong unit."
+          runbook: "{{ docs }}#fibredown"
+{% if h != celestia_mon_monitor_host %}
+      - alert: FibreDown
+        expr: up{job="node",host="{{ h }}"} == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}Fibre host {{ $labels.host }} does not answer{% endraw %}"
+          description: "Prometheus has not reached node_exporter on the Fibre host for 10 minutes: the host, its network or node_exporter is down."
+          runbook: "{{ docs }}#fibredown"
+{% endif %}
+{% endfor %}
+
+      # FibreNotServing: Fibre runs but accepts no uploads, or sends no metrics. A quiet network
+      # also makes the time since the last accepted upload grow, so this stays a message.
       - alert: FibreNotServing
         expr: >-
           time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
@@ -145,8 +183,8 @@ groups:
           severity: message
           reason: stale
         annotations:
-          summary: "{% raw %}Fibre on {{ $labels.host }} has no recent successful upload{% endraw %}"
-          description: "No upload has succeeded for longer than {{ th.fibre_stale_uploads }} uploads take at the 7-day average rate, and for over {{ '%g' | format(th.fibre_stale_min_seconds / 60) }} minutes."
+          summary: "{% raw %}Fibre on {{ $labels.host }} has no recent accepted upload{% endraw %}"
+          description: "No upload has been accepted for longer than {{ th.fibre_stale_uploads }} uploads take at the 7-day average rate, and for over {{ '%g' | format(th.fibre_stale_min_seconds / 60) }} minutes."
           runbook: "{{ docs }}#fibrenotserving"
 {% for h in fibres %}
       - alert: FibreNotServing
@@ -259,12 +297,25 @@ groups:
           description: "Rule evaluation failed in the last 10 minutes, so some alerts may not fire. The Prometheus log names the rule and the error."
           runbook: "{{ docs }}#monitoringbroken"
 
+      # NotificationsFailing: Alertmanager could not deliver a notification through one integration
+      # (Telegram, Discord, Slack or PagerDuty). One alert per integration, sent to the chat channels,
+      # so a broken one is reported through the others. Webhook failures are left out: the dead-man
+      # webhook and webhook receivers share integration="webhook".
+      - alert: NotificationsFailing
+        expr: sum by (host, integration) (increase(alertmanager_notifications_failed_total{integration!="webhook"}[15m])) > 0
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Alertmanager on {{ $labels.host }} cannot deliver {{ $labels.integration }} notifications{% endraw %}"
+          description: "{% raw %}A {{ $labels.integration }} notification failed in the last 15 minutes. Alerts reach you through your other receivers only.{% endraw %}"
+          runbook: "{{ docs }}#notificationsfailing"
+
       # Watchdog: the heartbeat for the dead-man service. It stops when monitoring is down, and for an
       # hour after a page or message notification through any integration other than webhook (Telegram,
-      # PagerDuty, Slack) failed, so the dead-man service reports a broken alert channel through its own
-      # channel. Failed webhook calls do not stop it: Alertmanager labels the dead-man webhook and
-      # webhook-type page/message receivers alike (integration="webhook"), so a broken webhook receiver
-      # gets no dead-man signal.
+      # Discord, Slack, PagerDuty) failed, so the dead-man service reports a broken alert channel through
+      # its own channel, also when no other receiver can carry NotificationsFailing. Failed webhook calls
+      # do not stop it: Alertmanager labels the dead-man webhook and webhook receivers alike
+      # (integration="webhook"), so a broken webhook receiver gets no dead-man signal.
       - alert: Watchdog
         expr: vector(1) unless on () (sum(increase(alertmanager_notifications_failed_total{integration!="webhook"}[1h])) > 0)
         labels:

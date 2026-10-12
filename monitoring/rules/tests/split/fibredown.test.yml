@@ -1,0 +1,120 @@
+# FibreDown on the example-split inventory (Fibre on fibre-1, monitor on mon-1). It pages when
+# the Fibre unit is not active or not loaded for 10 minutes, or when fibre-1's node_exporter is
+# unreachable for 10 minutes (the monitor runs elsewhere, so that means the host is likely down).
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Fibre unit stops; a page after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x25'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9910
+              host: fibre-1
+              role: fibre
+              name: fibre.service
+              state: active
+              type: simple
+              severity: page
+            exp_annotations:
+              summary: "fibre.service is down on fibre-1"
+              description: "systemd has not reported the Fibre unit as active for 10 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+
+  - name: A Fibre restart shorter than 10 minutes does not page
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x4 1x21'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+
+  - name: Fibre unit stopped and disabled is unloaded; a page after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              name: fibre.service
+              severity: page
+            exp_annotations:
+              summary: "fibre.service is not loaded on fibre-1"
+              description: "For 10 minutes node_exporter has listed no Fibre unit: it is stopped and disabled, or the inventory names the wrong unit."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+
+  - name: Fibre host stops answering; a page after 10 minutes, and no unit alert while node_exporter is down
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x25'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9910
+              host: fibre-1
+              role: fibre
+              severity: page
+            exp_annotations:
+              summary: "Fibre host fibre-1 does not answer"
+              description: "Prometheus has not reached node_exporter on the Fibre host for 10 minutes: the host, its network or node_exporter is down."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+
+  - name: node_exporter down on a host without Fibre does not page as FibreDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x25'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []

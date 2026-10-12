@@ -220,8 +220,8 @@ jobs:
             printf '%s peak memory %d MiB (MemoryHigh %d MiB)\n' "$unit" $((peak / 1048576)) $((high / 1048576))
             if [ "$peak" -ge "$high" ]; then echo "$unit reached its MemoryHigh"; exit 1; fi
           }
-          check celestia-mon-node-exporter $((64 * 1048576)) $((128 * 1048576))
-          check celestia-mon-otelcol $((256 * 1048576)) $((512 * 1048576))
+          check celestia-mon-node-exporter $((128 * 1048576)) $((256 * 1048576))
+          check celestia-mon-otelcol $((384 * 1048576)) $((1024 * 1048576))
       - name: doctor finds celestia-mon's units on private addresses
         run: |
           out=$(sudo bash tools/doctor.sh --config /dev/null --roles kms --data-mounts / --head-wait 2 || true)
@@ -308,24 +308,62 @@ jobs:
           for s in single split; do
             amtool check-config "build/$s/alertmanager.yml"
           done
-      # The example inventories use Telegram and PagerDuty; this renders the split example
-      # again with every receiver type (it overwrites build/split, so it runs last).
-      - name: amtool accepts every receiver type
+      # celestia_mon_receivers is one list; routing follows the type. This renders the split
+      # example again with every receiver type (it overwrites build/split, so it runs last), checks
+      # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
+      # every receiver but PagerDuty, Watchdog -> deadman), and checks that the receiver check
+      # refuses a PagerDuty-only list and the old page/message lists.
+      - name: amtool accepts every receiver type, and routing follows the type
         run: |
+          set -euo pipefail
+          render() {
+            ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split -e @"$1"
+          }
           cat > "$RUNNER_TEMP/receivers.yml" <<'EOF'
+          celestia_mon_receivers:
+            - {type: pagerduty, routing_key: ci-only}
+            - {type: telegram, bot_token: "000000000:ci-only", chat_id: -1000000000000}
+            - {type: discord, webhook_url: "https://discord.example.invalid/api/webhooks/0/ci-only"}
+            - {type: slack, api_url: "https://slack.example.invalid/one"}
+            - {type: slack, api_url: "https://slack.example.invalid/two", channel: "#validator"}
+            - {type: webhook, url: "https://webhook.example.invalid/hook"}
+          EOF
+          render "$RUNNER_TEMP/receivers.yml"
+          am=build/split/alertmanager.yml
+          amtool check-config "$am"
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page host=fibre-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
+          amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
+          python - "$am" <<'EOF'
+          import sys
+          import yaml
+          receivers = {r["name"]: r for r in yaml.safe_load(open(sys.argv[1]))["receivers"]}
+          def count(name):
+              return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
+          chat = {"telegram_configs": 1, "discord_configs": 1, "slack_configs": 2, "webhook_configs": 1}
+          assert count("page") == {"pagerduty_configs": 1, **chat}, count("page")
+          assert count("message") == chat, count("message")
+          print("page:", count("page"), "message:", count("message"))
+          EOF
+          cat > "$RUNNER_TEMP/pagerduty-only.yml" <<'EOF'
+          celestia_mon_receivers:
+            - {type: pagerduty, routing_key: ci-only}
+          EOF
+          if render "$RUNNER_TEMP/pagerduty-only.yml"; then
+            echo "a PagerDuty-only receiver list was accepted: message alerts would go nowhere"
+            exit 1
+          fi
+          cat > "$RUNNER_TEMP/old-shape.yml" <<'EOF'
           celestia_mon_receivers:
             page:
               - {type: pagerduty, routing_key: ci-only}
-              - {type: slack, api_url: "https://slack.example.invalid/page"}
             message:
-              - {type: telegram, bot_token: "000000000:ci-only", chat_id: -1000000000000}
-              - {type: slack, api_url: "https://slack.example.invalid/message", channel: "#validator"}
-              - {type: webhook, url: "https://webhook.example.invalid/message"}
+              - {type: webhook, url: "https://webhook.example.invalid/hook"}
           EOF
-          ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split -e @"$RUNNER_TEMP/receivers.yml"
-          amtool check-config build/split/alertmanager.yml
-          grep -q 'slack_configs' build/split/alertmanager.yml
-          grep -q 'webhook_configs' build/split/alertmanager.yml
+          if render "$RUNNER_TEMP/old-shape.yml"; then
+            echo "the old page/message receiver lists were accepted"
+            exit 1
+          fi
 
   dashboard:
     runs-on: ubuntu-24.04
@@ -360,8 +398,8 @@ jobs:
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
-          test "$(count single)" = 7
-          test "$(count split)" = 13
+          test "$(count single)" = 10
+          test "$(count split)" = 16
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
@@ -497,11 +535,14 @@ jobs:
         run: cat "$RUNNER_TEMP/monitor/prometheus.log" || true
 
   # install.sh end to end on the runner, as an operator runs it on a host: a dry run that
-  # changes nothing, the install, a second run that changes nothing, doctor on the result,
-  # then --uninstall, which must leave no celestia-mon unit, user, group, directory or ufw
-  # rule, and a second --uninstall that changes nothing. ufw is enabled first and the
-  # inventory names a monitor address other than this host's (celestia_mon_firewall_sources),
-  # so rules are added and removed. No setup-python: install.sh brings its own Ansible.
+  # changes nothing, the install, a second run that changes nothing, doctor on the result, the
+  # units' memory against their MemoryHigh, then --uninstall, which must remove the units,
+  # binaries and recorded ufw rules and keep the data, settings and users, and
+  # --uninstall --purge, which must leave no celestia-mon unit, user, group, directory or ufw
+  # rule; a second run of each changes nothing. ufw is enabled first with a rule of the
+  # operator's (it even carries the comment celestia-mon) that must survive both, and the
+  # inventory names monitor addresses other than this host's (celestia_mon_firewall_sources),
+  # so rules are added, recorded and removed. No setup-python: install.sh brings its own Ansible.
   install:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -510,6 +551,36 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@v5
+      # install.sh installs Ansible only from ansible/requirements.lock, and refuses the
+      # placeholder that is committed until the lock workflow (.github/workflows/lock.yml) has
+      # made the first lock. While it is the placeholder, this makes a lock in the runner's
+      # checkout the way that workflow does (pinned uv, checked against versions.yml; hashes of
+      # every file), so install.sh runs with --require-hashes as on a host. A committed lock is
+      # used as it is.
+      - name: Use the committed Ansible lock, or make one while it is the placeholder
+        run: |
+          set -euo pipefail
+          if grep -q '^ansible-core==' ansible/requirements.lock; then
+            echo "Using the committed ansible/requirements.lock."
+            exit 0
+          fi
+          echo "::warning::ansible/requirements.lock is the placeholder: run the lock workflow and commit its lock. This job makes one meanwhile."
+          pins=.celestia_mon_versions
+          uv_version=$(yq "$pins.uv.version" versions.yml)
+          uv_sha256=$(yq "$pins.uv.sha256.x86_64" versions.yml)
+          ansible_core=$(yq "$pins.ansible_core" versions.yml)
+          deps_before=$(yq "$pins.python_deps_before" versions.yml)
+          tarball=uv-x86_64-unknown-linux-gnu.tar.gz
+          mkdir -p "$RUNNER_TEMP/uv" "$RUNNER_TEMP/lock"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" "https://github.com/astral-sh/uv/releases/download/$uv_version/$tarball"
+          echo "$uv_sha256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/uv" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
+          echo "ansible-core==$ansible_core" >"$RUNNER_TEMP/lock/requirements.in"
+          UV_NO_CONFIG=1 UV_NO_PROGRESS=1 UV_PYTHON_DOWNLOADS=never "$RUNNER_TEMP/uv/uv" pip compile "$RUNNER_TEMP/lock/requirements.in" \
+            --universal --python-version 3.12 --generate-hashes --only-binary :all: --exclude-newer "$deps_before" \
+            --no-header --output-file "$RUNNER_TEMP/lock/requirements.lock"
+          cp "$RUNNER_TEMP/lock/requirements.lock" ansible/requirements.lock
+          cat ansible/requirements.lock
       - name: Write a one-host inventory
         run: |
           inv="$RUNNER_TEMP/install"
@@ -523,7 +594,7 @@ jobs:
                 celestia_mon_private_ip: 127.0.0.1
                 celestia_mon_data_mounts: [/]
                 celestia_mon_fibre_mount: /
-                celestia_mon_firewall_sources: [10.255.255.1]
+                celestia_mon_firewall_sources: [10.255.255.1, 10.255.255.2]
             children:
               validator:
                 hosts:
@@ -543,24 +614,27 @@ jobs:
                 tmkms: tmkms
               celestia_mon_prometheus_retention_size: 1GB
               celestia_mon_receivers:
-                page: []
-                message:
-                  - type: webhook
-                    url: http://127.0.0.1:9/message
+                - {type: webhook, url: "http://127.0.0.1:9/message"}
               celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
               celestia_mon_grafana_admin_password: ci-test-only
           EOF
-      - name: Enable ufw, as on a hardened host
+      # The rule for 10.255.255.2 is there before the install, even with celestia-mon's comment:
+      # the install must not record it, and no uninstall may remove it.
+      - name: Enable ufw, as on a hardened host, with a rule of the operator's
         run: |
           sudo ufw allow 22/tcp
+          sudo ufw allow from 10.255.255.2 to any port 9910 proto tcp comment celestia-mon
           sudo ufw --force enable
           sudo ufw status verbose
       - name: The dry run changes nothing and lists the ufw rules
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --check | tee "$RUNNER_TEMP/check.log"
           grep -q 'ufw rule:  allow from 10.255.255.1 to port 9910/tcp' "$RUNNER_TEMP/check.log"
+          if grep -q 'ufw rule:  allow from 10.255.255.2 to port 9910/tcp' "$RUNNER_TEMP/check.log"; then
+            echo "the plan adds a rule that exists already"; exit 1
+          fi
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "the dry run created units"; exit 1; fi
-          if sudo ufw show added | grep -q celestia-mon; then echo "the dry run added ufw rules"; exit 1; fi
+          if sudo ufw show added | grep -q 'from 10\.255\.255\.1 '; then echo "the dry run added ufw rules"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
       - name: Install
         run: sudo bash ./install.sh --inventory "$INV" --host ci --yes
@@ -570,18 +644,26 @@ jobs:
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
           grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
           test ! -e /var/tmp/celestia-mon-install
-      - name: The units run with the resource caps, and the ufw rules carry the comment
+      # The rules for 10.255.255.2 on the other scraped ports (the collector's, celestia-appd's)
+      # are added and recorded; only its rule for 9910, there before the install, is not.
+      - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
         run: |
           for u in node-exporter otelcol prometheus alertmanager grafana; do
             systemctl is-active "celestia-mon-$u"
             systemctl show "celestia-mon-$u" -p Nice -p CPUWeight -p IOWeight -p MemoryHigh -p MemoryMax
           done
-          test "$(systemctl show celestia-mon-prometheus -p MemoryMax --value)" = "$((2 * 1024 * 1024 * 1024))"
+          test "$(systemctl show celestia-mon-prometheus -p MemoryHigh --value)" = "$((2 * 1024 * 1024 * 1024))"
+          test "$(systemctl show celestia-mon-prometheus -p MemoryMax --value)" = "$((4 * 1024 * 1024 * 1024))"
           test "$(systemctl show celestia-mon-node-exporter -p Nice --value)" = 10
           sudo ufw show added | grep -q "allow from 10.255.255.1 to any port 9910 proto tcp comment 'celestia-mon'"
+          rec=/var/lib/celestia-mon/firewall-added.json
+          sudo cat "$rec"
+          sudo jq -e 'any(.[]; .source == "10.255.255.1" and .port == 9910 and .proto == "tcp" and .comment == "celestia-mon")' "$rec"
+          sudo jq -e 'all(.[]; .source != "10.255.255.2" or .port != 9910)' "$rec"
       # The runner has no celestia-appd, so its metrics target is the one target down. The
       # stack's own jobs (prometheus, alertmanager), node and otelcol must be up, and the rule
-      # metrics they export must have series.
+      # metrics they export must have series. systemd-logind stands in for Fibre and pushes
+      # nothing, so check 12 names the broken sources and check 13 reports that Fibre does not push.
       - name: doctor reads Prometheus and Alertmanager on loopback
         run: |
           out=$(sudo celestia-mon-doctor || true)
@@ -592,25 +674,78 @@ jobs:
             # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
             if grep -qE "[:,] ${m//./\.} \(" <<<"$line"; then echo "check 12 lists $m, which has series here"; exit 1; fi
           done
-      - name: Uninstall leaves nothing behind
+          grep -Eq '^FAIL +12 +rule metrics .*cometbft_consensus_height \(celestia-app target not up: check 11\)' <<<"$out"
+          grep -Eq '^FAIL +12 +rule metrics .*fibre_server_upload_shard_budget_bytes \(Fibre is not pushing metrics: check 13\)' <<<"$out"
+          grep -Eq '^FAIL +13 +fibre pipeline +ci: Fibre is not pushing metrics ' <<<"$out"
+          grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
+          grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
+      # The defaults must leave headroom: each unit's peak memory since it started (memory.peak
+      # of its cgroup, cgroup v2, kernel 5.19 or later) must stay at or below half its MemoryHigh.
+      # Pages of the binaries that the install read stay charged to the installer; the
+      # collectors job measures node_exporter and the collector after a cold start.
+      - name: Every unit's peak memory stays at or below half its MemoryHigh
         run: |
-          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes
+          fail=0
+          for u in node-exporter otelcol prometheus alertmanager grafana; do
+            unit=celestia-mon-$u
+            high=$(systemctl show -P MemoryHigh "$unit")
+            current=$(systemctl show -P MemoryCurrent "$unit")
+            peak=$(cat "/sys/fs/cgroup$(systemctl show -P ControlGroup "$unit")/memory.peak")
+            printf '%-27s current %5d MiB, peak %5d MiB, MemoryHigh %5d MiB\n' "$unit" \
+              $((current / 1048576)) $((peak / 1048576)) $((high / 1048576))
+            if ((peak * 2 > high)); then echo "$unit peaked above half of its MemoryHigh: raise its default in celestia_mon_memory"; fail=1; fi
+          done
+          exit "$fail"
+      - name: Uninstall removes the services and the recorded rules, and keeps data, settings and users
+        run: |
+          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/uninstall.log"
           left=0
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
           if systemctl list-units --all 'celestia-mon-*' --no-legend | grep -q .; then echo "units left"; left=1; fi
+          for p in /opt/celestia-mon /var/cache/celestia-mon /usr/local/bin/celestia-mon-doctor \
+                   /var/lib/celestia-mon/firewall-added.json /var/tmp/celestia-mon-install; do
+            if sudo test -e "$p"; then echo "$p left"; left=1; fi
+          done
+          for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon; do
+            sudo test -e "$p" || { echo "$p removed without --purge"; left=1; }
+          done
+          getent passwd celestia-mon-prometheus >/dev/null || { echo "users removed without --purge"; left=1; }
+          added=$(sudo ufw show added)
+          printf '%s\n' "$added"
+          # Only the operator's rule for 10.255.255.2 to 9910 may carry the comment now.
+          if [ "$(grep -c "comment 'celestia-mon'" <<<"$added")" != 1 ]; then echo "recorded ufw rules left"; left=1; fi
+          grep -qx "ufw allow from 10.255.255.2 to any port 9910 proto tcp comment 'celestia-mon'" <<<"$added" ||
+            { echo "uninstall removed a rule that was there before the install"; left=1; }
+          grep -qx 'ufw allow 22/tcp' <<<"$added" || { echo "uninstall touched another ufw rule"; left=1; }
+          grep -qF -- '--uninstall --purge --host ci' "$RUNNER_TEMP/uninstall.log" || { echo "no --purge hint"; left=1; }
+          exit "$left"
+      - name: A second uninstall changes nothing
+        run: |
+          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/again.log"
+          grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again.log"
+      - name: Uninstall --purge leaves nothing behind
+        run: |
+          sudo bash ./install.sh --uninstall --purge --host ci --check | tee "$RUNNER_TEMP/purge-plan.log"
+          grep -q '^Purge: .*/var/lib/celestia-mon' "$RUNNER_TEMP/purge-plan.log"
+          sudo bash ./install.sh --uninstall --purge --host ci --yes
+          left=0
+          if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
           if getent passwd | grep -q '^celestia-mon-'; then echo "users left"; left=1; fi
           if getent group | grep -q '^celestia-mon-'; then echo "groups left"; left=1; fi
           for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon \
                    /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
-          if sudo ufw show added | grep -q celestia-mon; then echo "ufw rules left"; left=1; fi
-          sudo ufw show added | grep -q '^ufw allow 22/tcp$' || { echo "uninstall touched another ufw rule"; left=1; }
+          added=$(sudo ufw show added)
+          if [ "$(grep -c "comment 'celestia-mon'" <<<"$added")" != 1 ]; then echo "ufw rules with the comment celestia-mon changed"; left=1; fi
+          grep -qx "ufw allow from 10.255.255.2 to any port 9910 proto tcp comment 'celestia-mon'" <<<"$added" ||
+            { echo "purge removed a rule that was there before the install"; left=1; }
+          grep -qx 'ufw allow 22/tcp' <<<"$added" || { echo "purge touched another ufw rule"; left=1; }
           exit "$left"
-      - name: A second uninstall changes nothing
+      - name: A second purge changes nothing
         run: |
-          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/again.log"
-          grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again.log"
+          sudo bash ./install.sh --uninstall --purge --host ci --yes | tee "$RUNNER_TEMP/again-purge.log"
+          grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again-purge.log"
       - name: Show the service logs
         if: failure()
         run: sudo journalctl -u 'celestia-mon-*' --no-pager -n 200
