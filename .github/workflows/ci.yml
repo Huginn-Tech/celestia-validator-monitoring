@@ -465,6 +465,11 @@ jobs:
           python3 -m http.server 9913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
           curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9912/-/ready
           curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9913/-/ready
+          # /-/ready answers before the first scrape: wait until both targets have been scraped once.
+          for _ in $(seq 60); do
+            if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up)' | grep -q '"value":[[0-9.]*,"2"]'; then break; fi
+            sleep 1
+          done
 
           rc=0
           out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>stderr.txt) || rc=$?

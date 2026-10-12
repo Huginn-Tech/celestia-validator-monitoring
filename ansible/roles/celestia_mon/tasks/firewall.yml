@@ -22,7 +22,7 @@
   check_mode: false
 
 - name: Add the missing ufw rules
-  when: celestia_mon_firewall_ufw.stdout | default('') is match('Status: active')
+  when: "celestia_mon_firewall_ufw.stdout | default('') is match('Status: active')"
   vars:
     celestia_mon_firewall_wanted: >-
       {{ celestia_mon_firewall_sources | default([hostvars[celestia_mon_monitor_host].celestia_mon_private_ip])
