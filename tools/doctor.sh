@@ -160,7 +160,13 @@ last_line() {
   printf '%s' "${l:0:200}"
 }
 ms() { awk -v s="$1" 'BEGIN { printf "%.1f", s * 1000 }'; }
-http_get() { curl -fsS -g --max-time 5 "$1" 2>/dev/null; }
+# The API answers end without a newline; add one so `while read` loops see the last line.
+http_get() {
+  local rc=0
+  curl -fsS -g --max-time 5 "$1" 2>/dev/null || rc=$?
+  echo
+  return "$rc"
+}
 url_hostport() {
   local u=${1#*://}
   printf '%s' "${u%%/*}"
@@ -955,8 +961,11 @@ rule_metrics() {
     }'
 }
 
-prom_query() { # PromQL -> JSON reply of an instant query to Prometheus, empty on error
-  curl -fsS -g --max-time 10 -G --data-urlencode "query=$1" "${C[prometheus_url]%/}/api/v1/query" 2>/dev/null
+prom_query() { # PromQL -> JSON reply of an instant query to Prometheus (newline-terminated), empty on error
+  local rc=0
+  curl -fsS -g --max-time 10 -G --data-urlencode "query=$1" "${C[prometheus_url]%/}/api/v1/query" 2>/dev/null || rc=$?
+  echo
+  return "$rc"
 }
 prom_vector() { # PromQL, label -> "<label value> <sample value>" for each series of the reply
   prom_query "$1" | sed 's/{"metric":/\n&/g' | sed -n 's/.*"'"$2"'":"\([^"]*\)".*"value":\[[^],]*,"\([^"]*\)"].*/\1 \2/p'
