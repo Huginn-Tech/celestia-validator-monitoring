@@ -1,0 +1,275 @@
+# celestia-mon alert rules, rendered by Ansible from monitoring/rules/celestia-mon.rules.yml.j2.
+# Change the template or the inventory, not the rendered file. See docs/alerts.md.
+{% set appd = celestia_mon_units.appd ~ '.service' %}
+{% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
+{% set tmkms = (celestia_mon_units.tmkms | default('')) ~ '.service' %}
+{% set remote = celestia_mon_signer == 'remote' %}
+{% set fibre_on = celestia_mon_fibre_enabled | bool %}
+{% set th = celestia_mon_thresholds %}
+{% set validators = groups.get('validator', []) %}
+{% set fibres = groups.get('fibre', []) if fibre_on else [] %}
+{% set kms = groups.get('kms', []) %}
+{% set vf = validators + groups.get('fibre', []) %}
+{% set units = [('appd', appd, 'page', validators)]
+   + ([('tmkms', tmkms, 'page', kms)] if remote else [])
+   + ([('fibre', fibre, 'message', fibres)] if fibre_on else []) %}
+{% set docs = 'https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
+groups:
+  - name: celestia_mon
+    rules:
+      # ServiceDown: celestia-appd, Fibre, tmkms or a collector is down, not loaded or crash looping.
+      - alert: ServiceDown
+        expr: up{job="celestia-app"} == 0
+        for: 3m
+        labels:
+          severity: page
+          unit: celestia_app
+        annotations:
+          summary: "{% raw %}celestia-app metrics are unreachable on {{ $labels.host }}{% endraw %}"
+          description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+          runbook: "{{ docs }}#servicedown"
+      - alert: ServiceDown
+        expr: up{job="node"} == 0
+        for: 3m
+        labels:
+          severity: message
+          unit: node_exporter
+        annotations:
+          summary: "{% raw %}node_exporter is unreachable on {{ $labels.host }}{% endraw %}"
+          description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
+          runbook: "{{ docs }}#servicedown"
+{% if fibre_on %}
+      - alert: ServiceDown
+        expr: up{job="otelcol"} == 0
+        for: 3m
+        labels:
+          severity: message
+          unit: otelcol
+        annotations:
+          summary: "{% raw %}otelcol is unreachable on {{ $labels.host }}{% endraw %}"
+          description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
+          runbook: "{{ docs }}#servicedown"
+{% endif %}
+{% for key, name, severity, hosts in units %}
+      - alert: ServiceDown
+        expr: node_systemd_unit_state{name="{{ name }}",state="active"} == 0
+        for: 2m
+        labels:
+          severity: {{ severity }}
+          unit: {{ key }}
+        annotations:
+          summary: "{% raw %}{{ $labels.name }} is not active on {{ $labels.host }}{% endraw %}"
+          description: "systemd has not reported the unit as active for 2 minutes."
+          runbook: "{{ docs }}#servicedown"
+      - alert: ServiceDown
+        # increase() extrapolates to the window edges (2 restarts can read as 2.07); floor() counts whole restarts.
+        expr: floor(increase(node_systemd_service_restart_total{name="{{ name }}"}[30m])) > {{ th.crashloop_restarts }}
+        labels:
+          severity: {{ severity }}
+          unit: {{ key }}
+        annotations:
+          summary: "{% raw %}{{ $labels.name }} is crash looping on {{ $labels.host }}{% endraw %}"
+          description: "systemd restarted the unit more than {{ th.crashloop_restarts }} times in 30 minutes."
+          runbook: "{{ docs }}#servicedown"
+{% for h in hosts if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
+      - alert: ServiceDown
+        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ name }}"}) and on () up{job="node",host="{{ h }}"} == 1
+        for: 2m
+        labels:
+          severity: {{ severity }}
+          unit: {{ key }}
+        annotations:
+          summary: "{% raw %}{{ $labels.name }} is not loaded on {{ $labels.host }}{% endraw %}"
+          description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+          runbook: "{{ docs }}#servicedown"
+{% endfor %}
+{% endfor %}
+
+      # NodeNotAtHead: the node stopped following new blocks.
+      - alert: NodeNotAtHead
+        expr: changes(cometbft_consensus_height{job="celestia-app"}[3m]) == 0
+        for: 2m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}Node on {{ $labels.host }} is not following new blocks{% endraw %}"
+          description: "The consensus height has not changed for 5 minutes. Check status.celestia.org first: the whole chain may have halted."
+          runbook: "{{ docs }}#nodenotathead"
+
+      # ValidatorNotSigning: the chain moves but the node's own key does not sign.
+      - alert: ValidatorNotSigning
+        expr: >-
+          cometbft_consensus_height{job="celestia-app"}
+          - (max without (validator_address) (cometbft_consensus_validator_last_signed_height{job="celestia-app"})
+          or cometbft_consensus_height{job="celestia-app"} * 0) > {{ th.not_signing_blocks }}
+          and on (instance) changes(cometbft_consensus_height{job="celestia-app"}[5m]) > 0
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}Validator on {{ $labels.host }} is not signing{% endraw %}"
+          description: "The chain moves but the validator has not signed for more than {{ th.not_signing_blocks }} blocks."
+          runbook: "{{ docs }}#validatornotsigning"
+{% if remote %}
+
+      # RemoteSignerProblem: the remote signer is too slow, or cannot sign proposals.
+      - alert: RemoteSignerProblem
+        expr: cometbft_privval_signing_latency_median_seconds > {{ th.signer_median_seconds }}
+        for: 15m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Remote signer on {{ $labels.host }} is slower than {% endraw %}{{ '%g' | format(th.signer_median_seconds * 1000) }} ms"
+          description: "The median of the last 50 signatures has been above {{ '%g' | format(th.signer_median_seconds * 1000) }} ms for 15 minutes."
+          runbook: "{{ docs }}#remotesignerproblem"
+      - alert: RemoteSignerProblem
+        expr: increase(cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}[6h]) > 0
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Remote signer on {{ $labels.host }} fails to sign proposals{% endraw %}"
+          description: "{% raw %}Proposal signing failed with reason {{ $labels.reason }} in the last 6 hours; votes may still succeed.{% endraw %}"
+          runbook: "{{ docs }}#remotesignerproblem"
+{% endif %}
+{% if fibre_on %}
+
+      # FibreNotServing: Fibre runs but serves no uploads, or sends no metrics.
+      - alert: FibreNotServing
+        expr: >-
+          time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
+          or on (host) (node_systemd_unit_start_time_seconds{name="{{ fibre }}"} > 0))
+          > on (host) clamp_min({{ th.fibre_stale_uploads }} / sum by (host) (rate(fibre_server_upload_shard_duration_seconds_count[7d])),
+          {{ th.fibre_stale_min_seconds }})
+        for: 10m
+        labels:
+          severity: message
+          reason: stale
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} has no recent successful upload{% endraw %}"
+          description: "No upload has succeeded for longer than {{ th.fibre_stale_uploads }} uploads take at the 7-day average rate, and for over {{ '%g' | format(th.fibre_stale_min_seconds / 60) }} minutes."
+          runbook: "{{ docs }}#fibrenotserving"
+{% for h in fibres %}
+      - alert: FibreNotServing
+        expr: >-
+          absent(fibre_server_upload_shard_budget_bytes{host="{{ h }}"})
+          and on () node_systemd_unit_state{host="{{ h }}",name="{{ fibre }}",state="active"} == 1
+        for: 30m
+        labels:
+          severity: message
+          reason: no_telemetry
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} sends no metrics{% endraw %}"
+          description: "The Fibre unit is active but no Fibre metrics have arrived for 30 minutes; set its OTLP endpoint."
+          runbook: "{{ docs }}#fibrenotserving"
+{% endfor %}
+{% endif %}
+
+      # DiskLow: a watched disk is filling up or turned read-only. Data mounts page on
+      # validator and kms hosts and send messages on Fibre hosts. The Fibre store has its
+      # own rules unless it is also a node data mount. Each mount gets one set of rules.
+{% for h in (vf + kms) | unique if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
+{% set node_host = h in validators or h in kms %}
+{% set store = hostvars[h].celestia_mon_fibre_mount | default('') if h in fibres else '' %}
+{% for m in hostvars[h].celestia_mon_data_mounts | default([]) if node_host or m != store %}
+{% if node_host %}
+      - alert: DiskLow
+        expr: >-
+          node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
+          or node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"} / node_filesystem_size_bytes{host="{{ h }}",mountpoint="{{ m }}"}
+          < {{ th.disk_page_free_ratio }}
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}{{ $labels.mountpoint }} on {{ $labels.host }} is read-only or almost full{% endraw %}"
+          description: "The filesystem is read-only or has less than {{ '%g' | format(th.disk_page_free_ratio * 100) }}% free space."
+          runbook: "{{ docs }}#disklow"
+{% else %}
+      - alert: DiskLow
+        expr: node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}{{ $labels.mountpoint }} on {{ $labels.host }} is read-only{% endraw %}"
+          description: "The filesystem is read-only."
+          runbook: "{{ docs }}#disklow"
+{% endif %}
+      - alert: DiskLow
+        expr: >-
+          node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"} / node_filesystem_size_bytes{host="{{ h }}",mountpoint="{{ m }}"}
+          < {{ th.disk_message_free_ratio }}
+{% if not node_host %}
+          unless node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
+{% endif %}
+        for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}{{ $labels.mountpoint }} on {{ $labels.host }} has little free space{% endraw %}"
+          description: "Free space has been below {{ '%g' | format(th.disk_message_free_ratio * 100) }}% for 10 minutes."
+          runbook: "{{ docs }}#disklow"
+{% endfor %}
+{% endfor %}
+{% for h in fibres if hostvars[h].celestia_mon_fibre_mount | default('') %}
+{% set m = hostvars[h].celestia_mon_fibre_mount %}
+{% if not ((h in validators or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default([])) %}
+      - alert: DiskLow
+        expr: node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Fibre store {{ $labels.mountpoint }} on {{ $labels.host }} is read-only{% endraw %}"
+          description: "Fibre cannot store new shards on a read-only filesystem."
+          runbook: "{{ docs }}#disklow"
+      - alert: DiskLow
+        expr: >-
+          node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"} / node_filesystem_size_bytes{host="{{ h }}",mountpoint="{{ m }}"}
+          < {{ th.disk_message_free_ratio }}
+          unless on (host) max by (host) (fibre_server_upload_shard_budget_bytes) > 0
+          unless node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
+        for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Fibre store {{ $labels.mountpoint }} on {{ $labels.host }} has little free space{% endraw %}"
+          description: "Free space has been below {{ '%g' | format(th.disk_message_free_ratio * 100) }}% for 10 minutes and Fibre reports no storage budget."
+          runbook: "{{ docs }}#disklow"
+{% endif %}
+      - alert: DiskLow
+        expr: >-
+          max by (host) (fibre_server_upload_shard_budget_bytes) - max by (host) (fibre_server_upload_shard_occupancy_bytes)
+          > on (host) max by (host) (node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"})
+          and on (host) max by (host) (fibre_server_upload_shard_budget_bytes) > 0
+        for: 30m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Fibre store on {{ $labels.host }} cannot hold the storage budget{% endraw %}"
+          description: "For 30 minutes the room the Fibre budget still needs has exceeded the free space on {{ m }}."
+          runbook: "{{ docs }}#disklow"
+{% endfor %}
+
+      # MonitoringBroken: Prometheus failed to evaluate alert rules, so some alerts cannot fire.
+      - alert: MonitoringBroken
+        expr: increase(prometheus_rule_evaluation_failures_total[10m]) > 0
+        labels:
+          severity: message
+          host: {{ celestia_mon_monitor_host | to_json }}
+        annotations:
+          summary: "Prometheus on {{ celestia_mon_monitor_host }} fails to evaluate alert rules"
+          description: "Rule evaluation failed in the last 10 minutes, so some alerts may not fire. The Prometheus log names the rule and the error."
+          runbook: "{{ docs }}#monitoringbroken"
+
+      # Watchdog: the heartbeat for the dead-man service. It stops when monitoring is down, and for an
+      # hour after a page or message notification through any integration other than webhook (Telegram,
+      # PagerDuty, Slack) failed, so the dead-man service reports a broken alert channel through its own
+      # channel. Failed webhook calls do not stop it: Alertmanager labels the dead-man webhook and
+      # webhook-type page/message receivers alike (integration="webhook"), so a broken webhook receiver
+      # gets no dead-man signal.
+      - alert: Watchdog
+        expr: vector(1) unless on () (sum(increase(alertmanager_notifications_failed_total{integration!="webhook"}[1h])) > 0)
+        labels:
+          severity: heartbeat
+        annotations:
+          summary: "celestia-mon heartbeat"
+          description: "Fires while monitoring runs and no page or message notification failed in the last hour; failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop."
+          runbook: "{{ docs }}#watchdog"

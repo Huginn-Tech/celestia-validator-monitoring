@@ -1,7 +1,7 @@
 # ServiceDown on the example-single inventory (node-1 runs the validator and the
-# monitoring stack; local key, Fibre off). CI renders taut.rules.yml next to this file first.
+# monitoring stack; local key, Fibre off). CI renders celestia-mon.rules.yml next to this file first.
 rule_files:
-  - taut.rules.yml
+  - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
@@ -83,7 +83,7 @@ tests:
             exp_annotations:
               summary: "celestia-appd.service is not active on node-1"
               description: "systemd has not reported the unit as active for 2 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
               instance: 10.10.0.11:26660
@@ -94,7 +94,7 @@ tests:
             exp_annotations:
               summary: "celestia-app metrics are unreachable on node-1"
               description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: celestia-appd crash loop pages
     interval: 1m
@@ -126,7 +126,7 @@ tests:
             exp_annotations:
               summary: "celestia-appd.service is crash looping on node-1"
               description: "systemd restarted the unit more than 2 times in 30 minutes."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Two restarts in 30 minutes are not a crash loop
     interval: 1m
@@ -174,7 +174,7 @@ tests:
             exp_annotations:
               summary: "celestia-appd.service is not loaded on node-1"
               description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: node_exporter down; one message and no unit-missing alert
     interval: 1m
@@ -202,4 +202,4 @@ tests:
             exp_annotations:
               summary: "node_exporter is unreachable on node-1"
               description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

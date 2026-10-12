@@ -1,0 +1,38 @@
+---
+# Stops the play before a celestia-mon service starts on a port that another process
+# already uses. Read-only. Each role includes it before it starts its unit.
+#   celestia_mon_port_check_port  required, the TCP port the service listens on
+#   celestia_mon_port_check_unit  required, the celestia-mon unit (without .service) that may own it
+
+# With only a name the module just reads the unit; a missing unit has MainPID 0.
+- name: Read the main PID of {{ celestia_mon_port_check_unit }}
+  ansible.builtin.systemd_service:
+    name: "{{ celestia_mon_port_check_unit }}"
+  register: celestia_mon_port_check_status
+
+- name: Read the listeners on port {{ celestia_mon_port_check_port }}
+  ansible.builtin.command: ss -Htlnp 'sport = :{{ celestia_mon_port_check_port }}'
+  register: celestia_mon_port_check_sockets
+  changed_when: false
+  check_mode: false
+
+- name: Check who listens on port {{ celestia_mon_port_check_port }}
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_port_check_others | length == 0
+    fail_msg: >-
+      port {{ celestia_mon_port_check_port }} is used by {{ celestia_mon_port_check_owners or 'another process' }};
+      set celestia_mon_ports.{{ celestia_mon_port_check_key }} to a free port
+    quiet: true
+  vars:
+    celestia_mon_port_check_others: >-
+      {{ celestia_mon_port_check_sockets.stdout_lines
+         | reject('search', 'pid=' ~ (celestia_mon_port_check_status.status.MainPID | default('0')) ~ ',') | list }}
+    # ss prints the owners as users:(("name",pid=N,fd=M),...), shown here as "name (N)".
+    # No backreferences: they reach regex_replace with an extra backslash and print literally.
+    celestia_mon_port_check_owners: >-
+      {{ celestia_mon_port_check_others | join(' ') | regex_findall('"([^"]+)",pid=([0-9]+)')
+         | map('join', ' (') | map('regex_replace', '$', ')') | unique | join(', ') }}
+    celestia_mon_port_check_key: >-
+      {{ celestia_mon_ports | dict2items | selectattr('value', 'in', [celestia_mon_port_check_port | int, celestia_mon_port_check_port | string])
+         | map(attribute='key') | first | default('<key>', true) }}

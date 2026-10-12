@@ -1,44 +1,59 @@
 ---
-- name: Check the inventory
+# Installs celestia-mon. install.sh runs it on each host for that host only
+# (--limit <host> -e ansible_connection=local), first as a dry run (--check --diff).
+- name: Check the inventory and this host
   hosts: all
+  become: true
+  # Facts are read in the preflight, after the skip below, so a KMS host celestia-mon does not manage is never contacted.
   gather_facts: false
   vars_files:
     - ../versions.yml
   roles:
-    - role: taut
+    - role: celestia_mon
+  tasks:
+    - name: Skip hosts celestia-mon does not manage
+      ansible.builtin.meta: end_host
+      when: not (celestia_mon_host_managed | bool)
+
+    # Read-only. Includes the local-run guard: a run with ansible_connection=local must target
+    # one inventory host, and that host's celestia_mon_private_ip must be an address of this machine.
+    - name: Run the preflight checks
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: preflight
 
 - name: Collectors on Celestia hosts
   hosts: validator:fibre:kms
   become: true
-  # Facts are gathered after the skip below, so a KMS host Taut does not manage is never contacted.
+  # Facts are gathered after the skip below, so a KMS host celestia-mon does not manage is never contacted.
   gather_facts: false
   vars_files:
     - ../versions.yml
   tasks:
     - name: Load the shared settings
       ansible.builtin.include_role:
-        name: taut
+        name: celestia_mon
         public: true
 
-    - name: Skip hosts Taut does not manage
+    - name: Skip hosts celestia-mon does not manage
       ansible.builtin.meta: end_host
-      when: not (taut_host_managed | bool)
+      when: not (celestia_mon_host_managed | bool)
 
-    - name: Gather facts on the hosts Taut manages
+    - name: Gather facts on the hosts celestia-mon manages
       ansible.builtin.setup:
 
     - name: Install node_exporter
       ansible.builtin.include_role:
-        name: taut_node_exporter
+        name: celestia_mon_node_exporter
 
     - name: Install the OpenTelemetry collector for Fibre
       ansible.builtin.include_role:
-        name: taut_otelcol
-      when: taut_fibre_enabled and inventory_hostname in groups.get('fibre', [])
+        name: celestia_mon_otelcol
+      when: celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])
 
     - name: Install doctor
       ansible.builtin.include_role:
-        name: taut
+        name: celestia_mon
         tasks_from: doctor
 
 - name: Monitoring stack
@@ -47,21 +62,21 @@
   vars_files:
     - ../versions.yml
   roles:
-    - role: taut_prometheus
-    - role: taut_alertmanager
-    - role: taut_grafana
+    - role: celestia_mon_prometheus
+    - role: celestia_mon_alertmanager
+    - role: celestia_mon_grafana
   tasks:
     - name: Install doctor
       ansible.builtin.include_role:
-        name: taut
+        name: celestia_mon
         tasks_from: doctor
 
-- name: Check that nothing Taut installed listens on a public address
+- name: Check that nothing celestia-mon installed listens on a public address
   hosts: all
   become: true
   gather_facts: false
   tasks:
     - name: Run the bind check
       ansible.builtin.include_role:
-        name: taut
+        name: celestia_mon
         tasks_from: bind_check

@@ -1,0 +1,184 @@
+---
+# celestia-mon's collector runs as its own unit, user, config and ports, next to any other
+# collector on the host. Stop before changing anything when a port is taken.
+- name: Check that nothing else listens on the collector's Prometheus port
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.otelcol_prometheus }}"
+    celestia_mon_port_check_unit: celestia-mon-otelcol
+
+- name: Check that nothing else listens on the collector's OTLP port
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.otelcol_otlp }}"
+    celestia_mon_port_check_unit: celestia-mon-otelcol
+
+- name: Create the celestia-mon-otelcol user
+  ansible.builtin.user:
+    name: celestia-mon-otelcol
+    system: true
+    shell: /usr/sbin/nologin
+    home: /nonexistent
+    create_home: false
+
+- name: Look for otelcol-contrib {{ celestia_mon_otelcol_version }}
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_otelcol_binary }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  register: celestia_mon_otelcol_installed
+
+# In check mode nothing is downloaded, so the tasks that need the binary or the
+# unit are skipped until the pinned version is installed. This task reports the
+# pending install as a change instead.
+- name: Report the pending install of otelcol-contrib {{ celestia_mon_otelcol_version }}
+  ansible.builtin.debug:
+    msg: Would install {{ celestia_mon_otelcol_binary }} and restart celestia-mon-otelcol.
+  changed_when: true
+  when: ansible_check_mode and not celestia_mon_otelcol_installed.stat.exists
+
+- name: Install otelcol-contrib {{ celestia_mon_otelcol_version }}
+  when: not celestia_mon_otelcol_installed.stat.exists and not ansible_check_mode
+  block:
+    - name: Create the download directory
+      ansible.builtin.file:
+        path: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download otelcol-contrib and verify its checksum
+      ansible.builtin.get_url:
+        url: "{{ celestia_mon_otelcol_url }}/{{ celestia_mon_otelcol_tarball }}"
+        dest: "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
+        checksum: "sha256:{{ celestia_mon_otelcol_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack otelcol-contrib
+      ansible.builtin.unarchive:
+        src: "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
+        dest: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+        include:
+          - otelcol-contrib
+        remote_src: true
+
+    - name: Create the install directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /opt/celestia-mon
+        - "{{ celestia_mon_otelcol_dir }}"
+
+    - name: Install the otelcol-contrib binary
+      ansible.builtin.copy:
+        src: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}/otelcol-contrib"
+        dest: "{{ celestia_mon_otelcol_binary }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Remove the downloaded files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
+        - "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+
+- name: Create the collector configuration directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /etc/celestia-mon
+    - "{{ celestia_mon_otelcol_config | dirname }}"
+
+- name: Write the collector configuration
+  ansible.builtin.template:
+    src: config.yaml.j2
+    dest: "{{ celestia_mon_otelcol_config }}"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ celestia_mon_otelcol_binary }} validate --config=%s"
+  notify: Restart celestia-mon-otelcol
+
+- name: Write the celestia-mon-otelcol service
+  ansible.builtin.template:
+    src: celestia-mon-otelcol.service.j2
+    dest: /etc/systemd/system/celestia-mon-otelcol.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: celestia_mon_otelcol_unit_file
+  notify: Restart celestia-mon-otelcol
+
+# Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Enable and start celestia-mon-otelcol
+  ansible.builtin.systemd_service:
+    name: celestia-mon-otelcol
+    enabled: true
+    state: started
+    daemon_reload: "{{ celestia_mon_otelcol_unit_file is changed }}"
+  when: celestia_mon_otelcol_installed.stat.exists or not ansible_check_mode
+
+- name: Apply a pending celestia-mon-otelcol restart
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+- name: Wait for the collector's Prometheus endpoint on {{ celestia_mon_otelcol_prometheus_endpoint }}
+  ansible.builtin.wait_for:
+    host: "{{ celestia_mon_private_ip }}"
+    port: "{{ celestia_mon_ports.otelcol_prometheus }}"
+    timeout: 30
+    msg: celestia-mon-otelcol does not listen on {{ celestia_mon_otelcol_prometheus_endpoint }}. See journalctl -u celestia-mon-otelcol.
+  when: not ansible_check_mode
+
+- name: Wait for the collector's OTLP receiver on {{ celestia_mon_otelcol_otlp_endpoint }}
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ celestia_mon_ports.otelcol_otlp }}"
+    timeout: 30
+    msg: celestia-mon-otelcol does not listen on {{ celestia_mon_otelcol_otlp_endpoint }}. See journalctl -u celestia-mon-otelcol.
+  when: not ansible_check_mode
+
+- name: Find older otelcol-contrib versions
+  ansible.builtin.find:
+    paths: /opt/celestia-mon
+    patterns: otelcol-contrib-*
+    excludes: otelcol-contrib-{{ celestia_mon_otelcol_version }}
+    file_type: directory
+  register: celestia_mon_otelcol_old
+  when: celestia_mon_otelcol_installed.stat.exists or not ansible_check_mode
+
+- name: Remove older otelcol-contrib versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ celestia_mon_otelcol_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Let the monitor host reach the collector's Prometheus endpoint through ufw
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: firewall
+  vars:
+    celestia_mon_firewall_port: "{{ celestia_mon_ports.otelcol_prometheus }}"

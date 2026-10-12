@@ -1,0 +1,21 @@
+---
+# Derived values. The settings themselves (versions, checksums, ports, unit names,
+# resource caps) live in versions.yml and the celestia_mon role defaults.
+celestia_mon_node_exporter_version: "{{ celestia_mon_versions.node_exporter.version }}"
+celestia_mon_node_exporter_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
+celestia_mon_node_exporter_release: "node_exporter-{{ celestia_mon_node_exporter_version }}.linux-{{ celestia_mon_node_exporter_arch }}"
+celestia_mon_node_exporter_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ celestia_mon_node_exporter_version }}"
+# The tarball's SHA-256 pinned in versions.yml (from the release's sha256sums.txt).
+celestia_mon_node_exporter_sha256: "{{ celestia_mon_versions.node_exporter.sha256[celestia_mon_node_exporter_arch] }}"
+
+# Each version gets its own directory and the unit runs the binary from there, so
+# nothing else on the host is overwritten. An upgrade is a new directory and a restart.
+celestia_mon_node_exporter_dir: "/opt/celestia-mon/node_exporter-{{ celestia_mon_node_exporter_version }}"
+celestia_mon_node_exporter_binary: "{{ celestia_mon_node_exporter_dir }}/node_exporter"
+
+# host:port on the private address (IPv6 addresses go in brackets).
+celestia_mon_node_exporter_listen_address: >-
+  {{ '[' ~ celestia_mon_private_ip ~ ']' if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_ports.node_exporter }}
+
+# Anchored regex of the Celestia services on this host, for the systemd collector.
+celestia_mon_node_exporter_unit_include: "^({{ celestia_mon_host_units | map('regex_escape') | join('|') }})\\.service$"

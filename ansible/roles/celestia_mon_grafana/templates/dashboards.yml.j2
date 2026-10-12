@@ -1,0 +1,9 @@
+# Managed by celestia-mon (Ansible role celestia_mon_grafana). Local changes are overwritten.
+apiVersion: 1
+providers:
+  - name: celestia_mon
+    folder: Celestia validator
+    type: file
+    allowUiUpdates: false
+    options:
+      path: {{ celestia_mon_grafana_dashboard_dir }}

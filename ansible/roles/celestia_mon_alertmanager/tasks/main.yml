@@ -1,0 +1,209 @@
+---
+# Checks the receiver list without printing it: entries carry tokens. An empty
+# page or message list uses the other list's receivers (monitoring/alertmanager.yml.j2).
+- name: Check the alert receivers
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_alertmanager_receivers | length > 0
+      - celestia_mon_alertmanager_receivers | map(attribute='type', default='') | difference(['telegram', 'pagerduty', 'slack', 'webhook']) | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('bot_token', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | rejectattr('chat_id', 'defined') | list | length == 0
+      # Alertmanager needs a non-zero numeric chat_id; a name such as @channel would render as 0.
+      - >-
+        celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'telegram') | map(attribute='chat_id') | map('string')
+        | reject('match', '^-?[1-9][0-9]*$') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'pagerduty') | rejectattr('routing_key', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'slack') | rejectattr('api_url', 'defined') | list | length == 0
+      - celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'webhook') | rejectattr('url', 'defined') | list | length == 0
+    fail_msg: >-
+      Set at least one receiver in celestia_mon_receivers.page or celestia_mon_receivers.message (an empty list uses
+      the other list's receivers). Each receiver needs a type and its keys: telegram (bot_token, numeric chat_id),
+      pagerduty (routing_key), slack (api_url, optional channel) or webhook (url).
+    quiet: true
+  vars:
+    celestia_mon_alertmanager_receivers: "{{ (celestia_mon_receivers.page | default([], true)) + (celestia_mon_receivers.message | default([], true)) }}"
+
+# celestia-mon's Alertmanager has its own unit, user, paths and port (celestia-mon-alertmanager), so it
+# installs next to any other Alertmanager on the host and leaves it alone.
+- name: Check that celestia-mon-alertmanager can use port {{ celestia_mon_ports.alertmanager }}
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.alertmanager }}"
+    celestia_mon_port_check_unit: celestia-mon-alertmanager
+
+- name: Create the celestia-mon-alertmanager group
+  ansible.builtin.group:
+    name: celestia-mon-alertmanager
+    system: true
+
+- name: Create the celestia-mon-alertmanager user
+  ansible.builtin.user:
+    name: celestia-mon-alertmanager
+    group: celestia-mon-alertmanager
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ celestia_mon_alertmanager_data_dir }}"
+    create_home: false
+
+- name: Look for the pinned Alertmanager binaries
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_alertmanager_home }}/{{ item }}"
+  loop: "{{ celestia_mon_alertmanager_binaries }}"
+  register: celestia_mon_alertmanager_found
+
+# In check mode nothing is downloaded, so tasks that need the binaries or the unit
+# are skipped until the pinned version is installed.
+- name: Note whether the pinned Alertmanager binaries are installed
+  ansible.builtin.set_fact:
+    celestia_mon_alertmanager_present: "{{ celestia_mon_alertmanager_found.results | rejectattr('stat.exists') | list | length == 0 }}"
+
+- name: Report the pending install of Alertmanager {{ celestia_mon_alertmanager_version }}
+  ansible.builtin.debug:
+    msg: >-
+      Would install {{ celestia_mon_alertmanager_binaries | join(' and ') }} {{ celestia_mon_alertmanager_version }} in {{ celestia_mon_alertmanager_home }}
+      and restart celestia-mon-alertmanager.
+  changed_when: true
+  when: ansible_check_mode and not celestia_mon_alertmanager_present
+
+# The shared parents first, so a service directory below never creates them with its own owner.
+- name: Create the Alertmanager directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/celestia-mon
+    - /etc/celestia-mon
+    - /var/lib/celestia-mon
+    - "{{ celestia_mon_alertmanager_home }}"
+
+- name: Create the Alertmanager configuration directory
+  ansible.builtin.file:
+    path: "{{ celestia_mon_alertmanager_config_dir }}"
+    state: directory
+    owner: root
+    group: celestia-mon-alertmanager
+    mode: "0750"
+
+- name: Create the Alertmanager data directory
+  ansible.builtin.file:
+    path: "{{ celestia_mon_alertmanager_data_dir }}"
+    state: directory
+    owner: celestia-mon-alertmanager
+    group: celestia-mon-alertmanager
+    mode: "0750"
+
+- name: Install Alertmanager {{ celestia_mon_alertmanager_version }}
+  when: not celestia_mon_alertmanager_present and not ansible_check_mode
+  block:
+    - name: Create the download cache
+      ansible.builtin.file:
+        path: /var/cache/celestia-mon
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the Alertmanager release and check it against the pinned checksum
+      ansible.builtin.get_url:
+        url: "{{ celestia_mon_alertmanager_download_url }}/{{ celestia_mon_alertmanager_release }}.tar.gz"
+        dest: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
+        checksum: "sha256:{{ celestia_mon_alertmanager_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack the Alertmanager release
+      ansible.builtin.unarchive:
+        src: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
+        dest: /var/cache/celestia-mon
+        remote_src: true
+
+    - name: Install the Alertmanager binaries
+      ansible.builtin.copy:
+        src: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}/{{ item }}
+        dest: "{{ celestia_mon_alertmanager_home }}/{{ item }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ celestia_mon_alertmanager_binaries }}"
+
+    - name: Remove the downloaded Alertmanager release
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
+        - /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}
+
+# The rendered file holds receiver tokens: never show it or its diff. If this task
+# fails, amtool rejected the new file and the old one stays in place: check the
+# receivers in celestia_mon_receivers against the keys Alertmanager expects.
+- name: Render the Alertmanager configuration
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../monitoring/alertmanager.yml.j2"
+    dest: "{{ celestia_mon_alertmanager_config_dir }}/alertmanager.yml"
+    owner: root
+    group: celestia-mon-alertmanager
+    mode: "0640"
+    validate: "{{ celestia_mon_alertmanager_home }}/amtool check-config %s"
+  no_log: true
+  notify: Reload Alertmanager
+
+# The unit names the versioned binary, so a new version changes it and restarts the service.
+- name: Install the celestia-mon-alertmanager systemd unit
+  ansible.builtin.template:
+    src: celestia-mon-alertmanager.service.j2
+    dest: /etc/systemd/system/celestia-mon-alertmanager.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: celestia_mon_alertmanager_unit_file
+  notify: Restart Alertmanager
+
+# Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Start celestia-mon-alertmanager and enable it at boot
+  ansible.builtin.systemd_service:
+    name: celestia-mon-alertmanager
+    enabled: true
+    state: started
+    daemon_reload: "{{ celestia_mon_alertmanager_unit_file is changed }}"
+  when: celestia_mon_alertmanager_present or not ansible_check_mode
+
+# Apply pending reloads and restarts now, so a failure later in the play
+# (Grafana) cannot drop them.
+- name: Apply pending Alertmanager changes
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+# Waiting here also lets the bind check at the end of the playbook see the socket.
+- name: Wait for Alertmanager on {{ celestia_mon_alertmanager_listen_address }}
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ celestia_mon_ports.alertmanager }}"
+    timeout: 60
+    msg: celestia-mon-alertmanager does not listen on {{ celestia_mon_alertmanager_listen_address }}. See journalctl -u celestia-mon-alertmanager.
+  when: not ansible_check_mode
+
+- name: Find older Alertmanager versions
+  ansible.builtin.find:
+    paths: /opt/celestia-mon
+    patterns: alertmanager-*
+    excludes: alertmanager-{{ celestia_mon_alertmanager_version }}
+    file_type: directory
+  register: celestia_mon_alertmanager_old
+  when: celestia_mon_alertmanager_present or not ansible_check_mode
+
+- name: Remove older Alertmanager versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ celestia_mon_alertmanager_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"

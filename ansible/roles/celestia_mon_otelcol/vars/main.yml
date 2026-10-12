@@ -1,0 +1,24 @@
+---
+# Derived values. The settings themselves (versions, checksums, ports, resource caps)
+# live in versions.yml and the celestia_mon role defaults.
+celestia_mon_otelcol_version: "{{ celestia_mon_versions.otelcol_contrib.version }}"
+celestia_mon_otelcol_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
+celestia_mon_otelcol_tarball: "otelcol-contrib_{{ celestia_mon_otelcol_version }}_linux_{{ celestia_mon_otelcol_arch }}.tar.gz"
+celestia_mon_otelcol_url: "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v{{ celestia_mon_otelcol_version }}"
+# The tarball's SHA-256 pinned in versions.yml (from the release's <tarball>.sha256 file).
+celestia_mon_otelcol_sha256: "{{ celestia_mon_versions.otelcol_contrib.sha256[celestia_mon_otelcol_arch] }}"
+
+# The service, user and config are named celestia-mon-otelcol, and each version gets its own
+# directory that the unit runs the binary from, so another collector on the host
+# (the official package uses otelcol-contrib and /usr/bin) is never replaced.
+celestia_mon_otelcol_dir: "/opt/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+celestia_mon_otelcol_binary: "{{ celestia_mon_otelcol_dir }}/otelcol-contrib"
+celestia_mon_otelcol_config: /etc/celestia-mon/otelcol/config.yaml
+
+# Fibre pushes metrics and traces here, on loopback only:
+# --otel-endpoint http://127.0.0.1:<celestia_mon_ports.otelcol_otlp> (default 9915).
+celestia_mon_otelcol_otlp_endpoint: "127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}"
+
+# Prometheus scrapes this host:port on the private address (IPv6 addresses go in brackets).
+celestia_mon_otelcol_prometheus_endpoint: >-
+  {{ '[' ~ celestia_mon_private_ip ~ ']' if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_ports.otelcol_prometheus }}

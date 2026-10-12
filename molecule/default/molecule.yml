@@ -1,13 +1,13 @@
 ---
 # One privileged Ubuntu 24.04 container with systemd as PID 1 that plays every role
-# Taut has: validator, Fibre host and monitor, with a remote signer and Fibre on.
+# celestia-mon has: validator, Fibre host and monitor, with a remote signer and Fibre on.
 dependency:
   name: galaxy
   enabled: false
 driver:
   name: docker
 platforms:
-  - name: taut-node
+  - name: celestia-mon-node
     image: ubuntu:24.04
     dockerfile: Dockerfile.j2
     pre_build_image: false
@@ -28,28 +28,31 @@ provisioner:
   inventory:
     group_vars:
       all:
-        taut_signer: remote
-        taut_fibre_enabled: true
+        celestia_mon_signer: remote
+        celestia_mon_fibre_enabled: true
         # Dummy receivers on a closed local port: nothing leaves the CI runner.
-        # page is empty, so page alerts use the message receivers.
-        taut_receivers:
+        # page is empty, so page alerts use the message receivers. Webhooks only:
+        # a failed Slack, Telegram or PagerDuty notification stops the Watchdog
+        # heartbeat by design, and the test alerts here can never be delivered.
+        celestia_mon_receivers:
           page: []
           message:
             - type: webhook
               url: http://127.0.0.1:9/message
-            - type: slack
-              api_url: http://127.0.0.1:9/slack
-              channel: "#taut-test"
-        taut_deadman_webhook_url: http://127.0.0.1:9/deadman
-        taut_grafana_admin_password: molecule-test-only
+            - type: webhook
+              url: http://127.0.0.1:9/chat
+        celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
+        celestia_mon_grafana_admin_password: molecule-test-only
+        # Small enough for the free disk of a CI runner; verify.yml checks Prometheus applies it.
+        celestia_mon_prometheus_retention_size: 1GB
     host_vars:
-      taut-node:
-        taut_private_ip: "{{ ansible_default_ipv4.address }}"
-        taut_data_mounts:
+      celestia-mon-node:
+        celestia_mon_private_ip: "{{ ansible_default_ipv4.address }}"
+        celestia_mon_data_mounts:
           - /
-        taut_fibre_mount: /
-        taut_fibre_public_endpoint: fibre.example.invalid:7980
-        taut_link_mbps: 1000
+        celestia_mon_fibre_mount: /
+        celestia_mon_fibre_public_endpoint: fibre.example.invalid:7980
+        celestia_mon_link_mbps: 1000
 verifier:
   name: ansible
 # Adds a check-mode run (--check) on the fresh container before the real run, so a

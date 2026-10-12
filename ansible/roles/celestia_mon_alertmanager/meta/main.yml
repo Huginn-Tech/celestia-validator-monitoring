@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: Huginn Tech
+  description: Alertmanager with the celestia-mon routing, inhibitions and Watchdog heartbeat on the monitor host
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies:
+  - role: celestia_mon

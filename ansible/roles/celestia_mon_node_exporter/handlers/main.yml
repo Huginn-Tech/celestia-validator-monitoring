@@ -1,0 +1,6 @@
+---
+- name: Restart celestia-mon-node-exporter
+  ansible.builtin.systemd_service:
+    name: celestia-mon-node-exporter
+    state: restarted
+  when: celestia_mon_node_exporter_installed.stat.exists or not ansible_check_mode

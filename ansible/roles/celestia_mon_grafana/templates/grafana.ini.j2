@@ -1,0 +1,46 @@
+# Managed by celestia-mon (Ansible role celestia_mon_grafana). Local changes are overwritten.
+# Settings not listed here keep Grafana's defaults ({{ celestia_mon_grafana_home }}/conf/defaults.ini).
+
+[paths]
+data = {{ celestia_mon_grafana_data_dir }}
+logs = {{ celestia_mon_grafana_data_dir }}/log
+plugins = {{ celestia_mon_grafana_data_dir }}/plugins
+provisioning = {{ celestia_mon_grafana_config_dir }}/provisioning
+
+[server]
+http_addr = {{ celestia_mon_private_ip }}
+http_port = {{ celestia_mon_ports.grafana }}
+
+[log]
+# Logs go to the journal: journalctl -u celestia-mon-grafana
+mode = console
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+check_for_plugin_updates = false
+
+[users]
+allow_sign_up = false
+
+[auth.anonymous]
+# Every page needs a login.
+enabled = false
+
+[snapshots]
+# No "Publish to snapshots.raintank.io": snapshots stay on this host.
+external_enabled = false
+
+[public_dashboards]
+# No public dashboard links that open without a login.
+enabled = false
+
+[security]
+admin_user = admin
+# Read only when Grafana creates the admin user on its first start.
+# Change the password later in the Grafana UI (Profile > Change password).
+admin_password = $__file{{ '{' ~ celestia_mon_grafana_admin_password_file ~ '}' }}
+
+[plugins]
+# Otherwise Grafana downloads and auto-updates a set of plugins from grafana.com on every start.
+preinstall_disabled = true

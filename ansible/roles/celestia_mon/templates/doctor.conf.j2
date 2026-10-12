@@ -1,0 +1,26 @@
+# Settings for celestia-mon-doctor (/usr/local/bin/celestia-mon-doctor), written by the celestia-mon playbook.
+# The next playbook run overwrites this file: change the inventory instead.
+# Any key can also be passed as a flag, for example --node-home /path.
+roles={{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
+signer={{ celestia_mon_signer }}
+fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
+appd_unit={{ celestia_mon_units.appd }}
+fibre_unit={{ celestia_mon_units.fibre }}
+{% if inventory_hostname in groups.get('validator', []) %}
+node_rpc_url=http://127.0.0.1:{{ celestia_mon_node_rpc_port }}
+node_metrics_url=http://{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_node_metrics_port }}/metrics
+node_home={{ celestia_mon_node_home | default('') }}
+{% endif %}
+data_mounts={{ celestia_mon_data_mounts | default([]) | join(',') }}
+{% if inventory_hostname in groups.get('fibre', []) %}
+fibre_mount={{ celestia_mon_fibre_mount | default('') }}
+fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
+{% endif %}
+fibre_public_endpoint={{ (hostvars[groups['fibre'][0]].celestia_mon_fibre_public_endpoint | default('')) if groups.get('fibre', []) else '' }}
+{% if inventory_hostname in groups.get('monitor', []) %}
+prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
+alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
+{% endif %}
+signer_median_max={{ celestia_mon_thresholds.signer_median_seconds }}
+disk_min_free_ratio={{ celestia_mon_thresholds.disk_message_free_ratio }}
+private_address_regex={{ celestia_mon_private_address_regex }}

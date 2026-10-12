@@ -13,6 +13,10 @@ env:
   ANSIBLE_CONFIG: ansible/ansible.cfg
   ANSIBLE_ROLES_PATH: ansible/roles
 
+# Jobs that need Ansible install the ansible-core pinned in versions.yml, the one install.sh
+# uses on the hosts. tools/ci/pins.py writes that pin and the release versions and amd64
+# sha256 values of versions.yml to $GITHUB_ENV (ANSIBLE_CORE_VERSION, PROMETHEUS_VERSION,
+# PROMETHEUS_SHA256, ...).
 jobs:
   lint:
     runs-on: ubuntu-24.04
@@ -21,20 +25,27 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install linters
+      - name: Read the pinned versions
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.18,<2.19" "ansible-lint>=25,<26" "yamllint>=1.35,<2"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: Install linters
+        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION" "ansible-lint>=25,<26" "yamllint>=1.35,<2"
       - name: yamllint
         run: yamllint --strict .
       - name: ansible-lint
         run: ansible-lint
       - name: shellcheck
+        run: shellcheck install.sh tools/*.sh
+      # The docs run it as ./install.sh, and git archive keeps the mode git records.
+      - name: install.sh is executable
         run: |
-          shopt -s nullglob
-          files=(tools/*.sh)
-          if [ ${#files[@]} -gt 0 ]; then shellcheck "${files[@]}"; fi
+          mode=$(git ls-files --stage install.sh | cut -d ' ' -f 1)
+          if [ "$mode" != 100755 ]; then
+            echo "install.sh has mode $mode in git; set it with: git update-index --chmod=+x install.sh"
+            exit 1
+          fi
 
   secrets:
     runs-on: ubuntu-24.04
@@ -69,11 +80,13 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install Ansible
+      - name: Read the pinned versions
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.18,<2.19"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: Install Ansible
+        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
       - name: Write a one-host inventory and playbook
         run: |
           CI_DIR="$RUNNER_TEMP/collectors"
@@ -85,7 +98,7 @@ jobs:
               ci:
                 ansible_connection: local
                 ansible_python_interpreter: /usr/bin/python3
-                taut_private_ip: 127.0.0.1
+                celestia_mon_private_ip: 127.0.0.1
             children:
               validator:
                 hosts:
@@ -97,9 +110,9 @@ jobs:
                 hosts:
                   ci:
             vars:
-              taut_signer: local
-              taut_fibre_enabled: true
-              taut_units:
+              celestia_mon_signer: local
+              celestia_mon_fibre_enabled: true
+              celestia_mon_units:
                 appd: systemd-journald
                 fibre: systemd-logind
                 tmkms: tmkms
@@ -111,14 +124,14 @@ jobs:
             tasks:
               - name: Load the shared settings
                 ansible.builtin.include_role:
-                  name: taut
+                  name: celestia_mon
                   public: true
               - name: Install node_exporter
                 ansible.builtin.include_role:
-                  name: taut_node_exporter
+                  name: celestia_mon_node_exporter
               - name: Install the OpenTelemetry collector
                 ansible.builtin.include_role:
-                  name: taut_otelcol
+                  name: celestia_mon_otelcol
           - name: Bind check
             hosts: all
             become: true
@@ -126,7 +139,7 @@ jobs:
             tasks:
               - name: Run the bind check
                 ansible.builtin.include_role:
-                  name: taut
+                  name: celestia_mon
                   tasks_from: bind_check
           EOF
       - name: Dry run on a fresh host
@@ -139,7 +152,7 @@ jobs:
           grep -Eq '^ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0' "$CI_DIR/second.log"
       - name: node_exporter lists only the configured units
         run: |
-          sudo systemctl is-active taut-node-exporter
+          sudo systemctl is-active celestia-mon-node-exporter
           node=$(curl -sf http://127.0.0.1:9910/metrics)
           grep -q '^node_systemd_unit_state{name="systemd-journald.service",state="active"' <<<"$node"
           grep -q '^node_systemd_unit_start_time_seconds{name="systemd-logind.service"}' <<<"$node"
@@ -148,7 +161,7 @@ jobs:
           if [ "$units" -ne 2 ]; then echo "systemd collector lists $units units, expected 2"; exit 1; fi
       - name: The collector sums Fibre's size attributes away and drops traces
         run: |
-          sudo systemctl is-active taut-otelcol
+          sudo systemctl is-active celestia-mon-otelcol
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9911/metrics && break; sleep 1; done
           now=$(date +%s%N)
           start=$((now - 1000000000))
@@ -172,19 +185,56 @@ jobs:
           grep -Eq '^fibre_server_upload_shard_duration_seconds_count\{[^}]*success="true"[^}]*\} 2$' <<<"$otel"
           if grep -q upload_size <<<"$otel"; then echo "upload_size was not summed away"; exit 1; fi
           if sudo ss -Htln | grep -Eq ':8888[[:space:]]'; then echo "the collector opened its own telemetry port"; exit 1; fi
-      - name: doctor finds Taut's units on private addresses
+      # Each collector unit runs under the default caps (celestia_mon_nice, celestia_mon_cpu_weight,
+      # celestia_mon_io_weight, celestia_mon_memory), and its peak memory stays below MemoryHigh, so
+      # a new otelcol-contrib release that needs more memory shows up here. The units restart with a
+      # cold page cache first, as after a reboot: pages of each binary that Ansible's copy and
+      # `validate` loaded stay charged to the runner's cgroup, so only a cold start counts them
+      # against the unit's own cgroup (cgroup v2; memory.peak exists from kernel 5.19).
+      - name: The collector units run under the resource caps
+        run: |
+          sudo systemctl stop celestia-mon-otelcol celestia-mon-node-exporter
+          sync
+          echo 3 | sudo tee /proc/sys/vm/drop_caches >/dev/null
+          sudo systemctl start celestia-mon-node-exporter celestia-mon-otelcol
+          # Any HTTP answer means the port is open. The collector opens its OTLP receiver
+          # last, after its Prometheus exporter.
+          for _ in $(seq 30); do
+            curl -s -o /dev/null http://127.0.0.1:9910/ && curl -s -o /dev/null http://127.0.0.1:9915/ && break
+            sleep 1
+          done
+          curl -sf -o /dev/null http://127.0.0.1:9910/metrics
+          curl -sf -H 'Content-Type: application/json' --data @"$CI_DIR/otlp.json" http://127.0.0.1:9915/v1/metrics
+          curl -sf -o /dev/null http://127.0.0.1:9911/metrics
+          check() {
+            local unit=$1 high=$2 max=$3 peak
+            for p in Nice CPUWeight IOWeight MemoryHigh MemoryMax; do
+              printf '%s %s=%s\n' "$unit" "$p" "$(systemctl show -P "$p" "$unit")"
+            done
+            test "$(systemctl show -P Nice "$unit")" = 10
+            test "$(systemctl show -P CPUWeight "$unit")" = 20
+            test "$(systemctl show -P IOWeight "$unit")" = 20
+            test "$(systemctl show -P MemoryHigh "$unit")" = "$high"
+            test "$(systemctl show -P MemoryMax "$unit")" = "$max"
+            peak=$(cat "/sys/fs/cgroup/system.slice/$unit.service/memory.peak")
+            printf '%s peak memory %d MiB (MemoryHigh %d MiB)\n' "$unit" $((peak / 1048576)) $((high / 1048576))
+            if [ "$peak" -ge "$high" ]; then echo "$unit reached its MemoryHigh"; exit 1; fi
+          }
+          check celestia-mon-node-exporter $((64 * 1048576)) $((128 * 1048576))
+          check celestia-mon-otelcol $((256 * 1048576)) $((512 * 1048576))
+      - name: doctor finds celestia-mon's units on private addresses
         run: |
           out=$(sudo bash tools/doctor.sh --config /dev/null --roles kms --data-mounts / --head-wait 2 || true)
           printf '%s\n' "$out"
-          grep -Eq '^OK +8 +private binds +.*taut-node-exporter 127\.0\.0\.1:9910' <<<"$out"
-          grep -Eq '^OK +8 .*taut-otelcol 127\.0\.0\.1:9915' <<<"$out"
-      - name: The playbook stops when another process holds a Taut port
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-node-exporter 127\.0\.0\.1:9910' <<<"$out"
+          grep -Eq '^OK +8 .*celestia-mon-otelcol 127\.0\.0\.1:9915' <<<"$out"
+      - name: The playbook stops when another process holds a celestia-mon port
         run: |
           python3 -m http.server 9920 --bind 127.0.0.1 >/dev/null 2>&1 &
           server=$!
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9920/ && break; sleep 1; done
           cat > "$CI_DIR/taken.json" <<'EOF'
-          {"taut_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
+          {"celestia_mon_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
                           "alertmanager": 9913, "grafana": 9914, "otelcol_otlp": 9915}}
           EOF
           if ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml -e @"$CI_DIR/taken.json" "$CI_DIR/site.yml" >"$CI_DIR/taken.log"; then
@@ -194,11 +244,14 @@ jobs:
           fi
           kill "$server"
           cat "$CI_DIR/taken.log"
-          grep -Eq 'port 9920 is used by python[0-9.]* \([0-9]+\); set taut_ports\.node_exporter to a free port' "$CI_DIR/taken.log"
+          grep -Eq 'port 9920 is used by python[0-9.]* \([0-9]+\); set celestia_mon_ports\.node_exporter to a free port' "$CI_DIR/taken.log"
       - name: Show the collector logs
         if: failure()
-        run: sudo journalctl -u taut-node-exporter -u taut-otelcol --no-pager -n 200
+        run: sudo journalctl -u celestia-mon-node-exporter -u celestia-mon-otelcol --no-pager -n 200
 
+  # Renders the rules, Alertmanager, Prometheus and dashboard settings for both example
+  # inventories and checks them with promtool and amtool from the pinned releases, whose
+  # tarballs are checked against the sha256 in versions.yml (no checksum file is fetched).
   rules:
     runs-on: ubuntu-24.04
     steps:
@@ -206,38 +259,39 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install Ansible
+      - name: Read the pinned versions
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.18,<2.19"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: Install Ansible
+        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
       - name: Render both example inventories
         run: |
           for s in single split; do
-            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "taut_ci_scenario=$s"
+            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
-          pin() { python -c 'import sys, yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"][sys.argv[1]])' "$1"; }
-          prom="$(pin prometheus)"
-          am="$(pin alertmanager)"
-          mkdir -p "$RUNNER_TEMP/taut-bin"
+          prom="prometheus-$PROMETHEUS_VERSION.linux-amd64"
+          am="alertmanager-$ALERTMANAGER_VERSION.linux-amd64"
+          mkdir -p "$RUNNER_TEMP/celestia-mon-bin"
           cd "$RUNNER_TEMP"
           base="https://github.com/prometheus"
-          curl -fsSLO "$base/prometheus/releases/download/v$prom/prometheus-$prom.linux-amd64.tar.gz"
-          curl -fsSL -o prometheus.sha256 "$base/prometheus/releases/download/v$prom/sha256sums.txt"
-          grep " prometheus-$prom.linux-amd64.tar.gz\$" prometheus.sha256 | sha256sum -c -
-          curl -fsSLO "$base/alertmanager/releases/download/v$am/alertmanager-$am.linux-amd64.tar.gz"
-          curl -fsSL -o alertmanager.sha256 "$base/alertmanager/releases/download/v$am/sha256sums.txt"
-          grep " alertmanager-$am.linux-amd64.tar.gz\$" alertmanager.sha256 | sha256sum -c -
-          tar -xzf "prometheus-$prom.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "prometheus-$prom.linux-amd64/promtool"
-          tar -xzf "alertmanager-$am.linux-amd64.tar.gz" -C taut-bin --strip-components=1 "alertmanager-$am.linux-amd64/amtool"
-          echo "$RUNNER_TEMP/taut-bin" >> "$GITHUB_PATH"
+          curl -fsSLO "$base/prometheus/releases/download/v$PROMETHEUS_VERSION/$prom.tar.gz"
+          echo "$PROMETHEUS_SHA256  $prom.tar.gz" | sha256sum -c -
+          curl -fsSLO "$base/alertmanager/releases/download/v$ALERTMANAGER_VERSION/$am.tar.gz"
+          echo "$ALERTMANAGER_SHA256  $am.tar.gz" | sha256sum -c -
+          tar -xzf "$prom.tar.gz" -C celestia-mon-bin --strip-components=1 "$prom/promtool"
+          tar -xzf "$am.tar.gz" -C celestia-mon-bin --strip-components=1 "$am/amtool"
+          echo "$RUNNER_TEMP/celestia-mon-bin" >> "$GITHUB_PATH"
       - name: promtool check rules
+        # Several rules share an alert name and severity on purpose (one per branch,
+        # host or mount), which the duplicate-rules lint would report.
         run: |
           for s in single split; do
-            promtool check rules --lint=none "monitoring/rules/tests/$s/taut.rules.yml"
+            promtool check rules --lint=none "monitoring/rules/tests/$s/celestia-mon.rules.yml"
           done
       - name: promtool test rules
         run: |
@@ -254,6 +308,24 @@ jobs:
           for s in single split; do
             amtool check-config "build/$s/alertmanager.yml"
           done
+      # The example inventories use Telegram and PagerDuty; this renders the split example
+      # again with every receiver type (it overwrites build/split, so it runs last).
+      - name: amtool accepts every receiver type
+        run: |
+          cat > "$RUNNER_TEMP/receivers.yml" <<'EOF'
+          celestia_mon_receivers:
+            page:
+              - {type: pagerduty, routing_key: ci-only}
+              - {type: slack, api_url: "https://slack.example.invalid/page"}
+            message:
+              - {type: telegram, bot_token: "000000000:ci-only", chat_id: -1000000000000}
+              - {type: slack, api_url: "https://slack.example.invalid/message", channel: "#validator"}
+              - {type: webhook, url: "https://webhook.example.invalid/message"}
+          EOF
+          ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split -e @"$RUNNER_TEMP/receivers.yml"
+          amtool check-config build/split/alertmanager.yml
+          grep -q 'slack_configs' build/split/alertmanager.yml
+          grep -q 'webhook_configs' build/split/alertmanager.yml
 
   dashboard:
     runs-on: ubuntu-24.04
@@ -262,19 +334,20 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install Ansible
+      - name: Read the pinned versions
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.18,<2.19"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: Install Ansible
+        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
+      # A throwaway Prometheus container that only parses the panel queries; it is not celestia-mon's.
       - name: Start a throwaway Prometheus at the version in versions.yml
-        run: |
-          version="$(python -c 'import yaml; print(yaml.safe_load(open("versions.yml"))["taut_versions"]["prometheus"])')"
-          docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$version"
+        run: docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$PROMETHEUS_VERSION"
       - name: Render the dashboard settings for both example inventories
         run: |
           for s in single split; do
-            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "taut_ci_scenario=$s"
+            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Generate the dashboards
         run: |
@@ -320,11 +393,227 @@ jobs:
           run bash tools/doctor.sh --data-mounts /,/does-not-exist
           echo "::endgroup::"
           echo "::group::every key in doctor.conf.j2"
-          sed -n 's/^\([a-z_]\{1,\}\)=.*/\1=/p' ansible/roles/taut/templates/doctor.conf.j2 >"$RUNNER_TEMP/doctor.conf"
+          sed -n 's/^\([a-z_]\{1,\}\)=.*/\1=/p' ansible/roles/celestia_mon/templates/doctor.conf.j2 >"$RUNNER_TEMP/doctor.conf"
           echo 'roles=validator,fibre' >>"$RUNNER_TEMP/doctor.conf"
           cat "$RUNNER_TEMP/doctor.conf"
           run sudo bash tools/doctor.sh --config "$RUNNER_TEMP/doctor.conf" --head-wait 2
           echo "::endgroup::"
+
+  # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
+  # loaded with rules that use every PromQL form the metric parser has to handle (strings
+  # with escaped quotes and braces, on/ignoring/group_left/by/without lists, bool, offset,
+  # @ start(), subqueries, recording-rule names with colons, +Inf, 1e6). A python
+  # http.server stands in for Alertmanager's /-/ready on 127.0.0.1:9913. The parser must
+  # find exactly 8 names: up, prometheus_ready and prometheus_build_info have series; the
+  # 5 ci_* names do not. A second scrape job points at a closed port, so check 11 must
+  # report it down with its error.
+  doctor-monitor:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Read the pinned versions
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: doctor checks 11 and 12 against Prometheus on loopback
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/monitor"
+          mkdir -p "$dir/data" "$dir/am/-"
+          cd "$dir"
+          rel="prometheus-$PROMETHEUS_VERSION.linux-amd64"
+          curl -fsSLO "https://github.com/prometheus/prometheus/releases/download/v$PROMETHEUS_VERSION/$rel.tar.gz"
+          echo "$PROMETHEUS_SHA256  $rel.tar.gz" | sha256sum -c -
+          tar -xzf "$rel.tar.gz" --strip-components=1 "$rel/prometheus"
+          cat > prometheus.yml <<'EOF'
+          global:
+            scrape_interval: 5s
+            evaluation_interval: 5s
+          rule_files:
+            - rules.yml
+          scrape_configs:
+            - job_name: prometheus
+              static_configs:
+                - targets: ["127.0.0.1:9912"]
+            - job_name: closed
+              static_configs:
+                - targets: ["127.0.0.1:9"]
+          EOF
+          cat > rules.yml <<'EOF'
+          groups:
+            - name: ci
+              rules:
+                - alert: CiPresent
+                  expr: 'up{job="prometheus"} == 1 and on (instance) prometheus_ready > bool 0'
+                - alert: CiMissing
+                  expr: >-
+                    sum by (host) (rate(ci_missing_total{reason!~"a\"b|}"}[5m] offset 1h))
+                    > on (host) group_left (role) max by (host, role) (ci_missing_info) * 1e6
+                - alert: CiOther
+                  expr: >-
+                    label_replace(vector(1), "dst", "$1", "src", "(.*)") unless on () absent(prometheus_build_info)
+                    or ci_missing_gauge @ start() < +Inf or count(ci:missing:rate5m) > 0
+                    or quantile_over_time(0.5, ci_missing_q[10m:1m]) > 0
+          EOF
+          ./prometheus --config.file=prometheus.yml --storage.tsdb.path=data \
+            --web.listen-address=127.0.0.1:9912 >prometheus.log 2>&1 &
+          touch am/-/ready
+          python3 -m http.server 9913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9912/-/ready
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9913/-/ready
+          # /-/ready answers before the first scrape: wait until both targets have been scraped once.
+          for _ in $(seq 60); do
+            if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up)' | grep -q '"value":[[0-9.]*,"2"]'; then break; fi
+            sleep 1
+          done
+
+          rc=0
+          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>stderr.txt) || rc=$?
+          printf '%s\n' "$out"
+          cat stderr.txt
+          if [ "$rc" -ne 1 ] || [ -s stderr.txt ]; then
+            echo "doctor exited $rc (expected 1: the closed target is down) or wrote to stderr"
+            exit 1
+          fi
+          if ! grep -Eq '^FAIL +11 +monitor stack +1 of 2 scrape targets down: closed http://127\.0\.0\.1:9/metrics \(connection refused\)\.' <<<"$out"; then
+            echo "check 11 did not report the closed target"
+            exit 1
+          fi
+          line=$(grep -E '^WARN +12 +rule metrics +5 of 8 metrics ' <<<"$out" || true)
+          if [ -z "$line" ]; then
+            echo "check 12 did not find exactly 8 metric names with 5 of them missing"
+            exit 1
+          fi
+          for m in ci_missing_total ci_missing_info ci_missing_gauge ci:missing:rate5m ci_missing_q; do
+            if ! grep -qF " $m (" <<<"$line"; then echo "check 12 does not list $m"; exit 1; fi
+          done
+          grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
+      - name: Show the Prometheus log
+        if: failure()
+        run: cat "$RUNNER_TEMP/monitor/prometheus.log" || true
+
+  # install.sh end to end on the runner, as an operator runs it on a host: a dry run that
+  # changes nothing, the install, a second run that changes nothing, doctor on the result,
+  # then --uninstall, which must leave no celestia-mon unit, user, group, directory or ufw
+  # rule, and a second --uninstall that changes nothing. ufw is enabled first and the
+  # inventory names a monitor address other than this host's (celestia_mon_firewall_sources),
+  # so rules are added and removed. No setup-python: install.sh brings its own Ansible.
+  install:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - name: Write a one-host inventory
+        run: |
+          inv="$RUNNER_TEMP/install"
+          mkdir -p "$inv"
+          chmod 0755 "$inv"
+          echo "INV=$inv/hosts.yml" >> "$GITHUB_ENV"
+          cat > "$inv/hosts.yml" <<'EOF'
+          all:
+            hosts:
+              ci:
+                celestia_mon_private_ip: 127.0.0.1
+                celestia_mon_data_mounts: [/]
+                celestia_mon_fibre_mount: /
+                celestia_mon_firewall_sources: [10.255.255.1]
+            children:
+              validator:
+                hosts:
+                  ci:
+              fibre:
+                hosts:
+                  ci:
+              monitor:
+                hosts:
+                  ci:
+            vars:
+              celestia_mon_signer: local
+              celestia_mon_fibre_enabled: true
+              celestia_mon_units:
+                appd: systemd-journald
+                fibre: systemd-logind
+                tmkms: tmkms
+              celestia_mon_prometheus_retention_size: 1GB
+              celestia_mon_receivers:
+                page: []
+                message:
+                  - type: webhook
+                    url: http://127.0.0.1:9/message
+              celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
+              celestia_mon_grafana_admin_password: ci-test-only
+          EOF
+      - name: Enable ufw, as on a hardened host
+        run: |
+          sudo ufw allow 22/tcp
+          sudo ufw --force enable
+          sudo ufw status verbose
+      - name: The dry run changes nothing and lists the ufw rules
+        run: |
+          sudo bash ./install.sh --inventory "$INV" --host ci --check | tee "$RUNNER_TEMP/check.log"
+          grep -q 'ufw rule:  allow from 10.255.255.1 to port 9910/tcp' "$RUNNER_TEMP/check.log"
+          if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "the dry run created units"; exit 1; fi
+          if sudo ufw show added | grep -q celestia-mon; then echo "the dry run added ufw rules"; exit 1; fi
+          test ! -e /var/tmp/celestia-mon-install
+      - name: Install
+        run: sudo bash ./install.sh --inventory "$INV" --host ci --yes
+      - name: A second run changes nothing
+        run: |
+          sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/second.log"
+          grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
+          grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
+          test ! -e /var/tmp/celestia-mon-install
+      - name: The units run with the resource caps, and the ufw rules carry the comment
+        run: |
+          for u in node-exporter otelcol prometheus alertmanager grafana; do
+            systemctl is-active "celestia-mon-$u"
+            systemctl show "celestia-mon-$u" -p Nice -p CPUWeight -p IOWeight -p MemoryHigh -p MemoryMax
+          done
+          test "$(systemctl show celestia-mon-prometheus -p MemoryMax --value)" = "$((2 * 1024 * 1024 * 1024))"
+          test "$(systemctl show celestia-mon-node-exporter -p Nice --value)" = 10
+          sudo ufw show added | grep -q "allow from 10.255.255.1 to any port 9910 proto tcp comment 'celestia-mon'"
+      # The runner has no celestia-appd, so its metrics target is the one target down. The
+      # stack's own jobs (prometheus, alertmanager), node and otelcol must be up, and the rule
+      # metrics they export must have series.
+      - name: doctor reads Prometheus and Alertmanager on loopback
+        run: |
+          out=$(sudo celestia-mon-doctor || true)
+          printf '%s\n' "$out"
+          grep -Eq '^FAIL +11 +monitor stack +1 of 5 scrape targets down: celestia-app ' <<<"$out"
+          line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
+          for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
+            # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
+            if grep -qE "[:,] ${m//./\.} \(" <<<"$line"; then echo "check 12 lists $m, which has series here"; exit 1; fi
+          done
+      - name: Uninstall leaves nothing behind
+        run: |
+          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes
+          left=0
+          if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
+          if systemctl list-units --all 'celestia-mon-*' --no-legend | grep -q .; then echo "units left"; left=1; fi
+          if getent passwd | grep -q '^celestia-mon-'; then echo "users left"; left=1; fi
+          if getent group | grep -q '^celestia-mon-'; then echo "groups left"; left=1; fi
+          for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon \
+                   /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install; do
+            if sudo test -e "$p"; then echo "$p left"; left=1; fi
+          done
+          if sudo ufw show added | grep -q celestia-mon; then echo "ufw rules left"; left=1; fi
+          sudo ufw show added | grep -q '^ufw allow 22/tcp$' || { echo "uninstall touched another ufw rule"; left=1; }
+          exit "$left"
+      - name: A second uninstall changes nothing
+        run: |
+          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/again.log"
+          grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again.log"
+      - name: Show the service logs
+        if: failure()
+        run: sudo journalctl -u 'celestia-mon-*' --no-pager -n 200
 
   molecule:
     runs-on: ubuntu-24.04
@@ -334,11 +623,15 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install molecule
+      - name: Read the pinned versions
         run: |
           python -m pip install --upgrade pip
-          pip install "ansible-core>=2.18,<2.19" "molecule>=26.8,<27" "molecule-plugins[docker]>=26.7,<27"
-          ansible-galaxy collection install -r ansible/requirements.yml
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      # community.docker and ansible.posix are for molecule's docker driver only; the roles use ansible.builtin.
+      - name: Install molecule
+        run: |
+          pip install "ansible-core==$ANSIBLE_CORE_VERSION" "molecule>=26.8,<27" "molecule-plugins[docker]>=26.7,<27"
           ansible-galaxy collection install "community.docker:>=4.0.0,<6.0.0" "ansible.posix:>=1.6.0,<3.0.0"
       - name: molecule test
         run: molecule test

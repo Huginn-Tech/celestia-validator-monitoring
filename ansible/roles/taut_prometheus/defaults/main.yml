@@ -1,4 +1,0 @@
----
-# Directory Prometheus loads alert rules from (rule_files: <dir>/*.yml).
-# The Taut rules are rendered into it as taut.rules.yml.
-taut_prometheus_rules_dir: /etc/taut/prometheus/rules

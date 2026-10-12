@@ -1,7 +1,8 @@
 # What the example-single switches leave out: with a local key there is no
-# RemoteSignerProblem, with Fibre off there is no FibreNotServing. Watchdog always fires.
+# RemoteSignerProblem, with Fibre off there is no FibreNotServing. Watchdog fires without
+# Alertmanager metrics.
 rule_files:
-  - taut.rules.yml
+  - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
@@ -33,7 +34,7 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
 
-  - name: Watchdog is always firing
+  - name: Watchdog fires before any Alertmanager metrics arrive
     interval: 1m
     input_series:
       - series: >-
@@ -46,15 +47,19 @@ tests:
           - exp_labels:
               severity: heartbeat
             exp_annotations:
-              summary: "Taut heartbeat"
-              description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"
+              summary: "celestia-mon heartbeat"
+              description: >-
+                Fires while monitoring runs and no page or message notification failed in the last hour;
+                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 10m
         alertname: Watchdog
         exp_alerts:
           - exp_labels:
               severity: heartbeat
             exp_annotations:
-              summary: "Taut heartbeat"
-              description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
-              runbook: "https://github.com/s0urledd/taut/blob/main/docs/alerts.md#watchdog"
+              summary: "celestia-mon heartbeat"
+              description: >-
+                Fires while monitoring runs and no page or message notification failed in the last hour;
+                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"

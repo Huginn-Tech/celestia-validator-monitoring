@@ -1,24 +1,35 @@
 ---
-- name: Verify the Taut install
+- name: Verify the celestia-mon install
   hosts: all
   gather_facts: true
   vars:
-    # systemd units of the services Taut installs on this all-in-one host.
-    taut_verify_units:
-      - taut-node-exporter.service
-      - taut-otelcol.service
-      - taut-prometheus.service
-      - taut-alertmanager.service
-      - taut-grafana.service
-    # Unit names and binaries other installs on the host use; Taut must leave them alone.
-    taut_verify_foreign_units:
+    # systemd units of the services celestia-mon installs on this all-in-one host, with the
+    # memory caps of the shared defaults as systemd shows them, in bytes.
+    celestia_mon_verify_units:
+      celestia-mon-node-exporter.service:
+        memory_high: 67108864 # 64M
+        memory_max: 134217728 # 128M
+      celestia-mon-otelcol.service:
+        memory_high: 268435456 # 256M
+        memory_max: 536870912 # 512M
+      celestia-mon-prometheus.service:
+        memory_high: 1073741824 # 1G
+        memory_max: 2147483648 # 2G
+      celestia-mon-alertmanager.service:
+        memory_high: 67108864 # 64M
+        memory_max: 134217728 # 128M
+      celestia-mon-grafana.service:
+        memory_high: 268435456 # 256M
+        memory_max: 536870912 # 512M
+    # Unit names and binaries other installs on the host use; celestia-mon must leave them alone.
+    celestia_mon_verify_foreign_units:
       - node_exporter.service
       - prometheus-node-exporter.service
       - otelcol-contrib.service
       - prometheus.service
       - alertmanager.service
       - grafana-server.service
-    taut_verify_foreign_binaries:
+    celestia_mon_verify_foreign_binaries:
       - node_exporter
       - otelcol-contrib
       - prometheus
@@ -27,139 +38,266 @@
       - amtool
       - grafana
       - grafana-server
-    # Taut's default ports (taut_ports). All but the OTLP receiver listen on the private address.
-    taut_verify_ports:
+    # celestia-mon's default ports (celestia_mon_ports).
+    celestia_mon_verify_ports:
       node_exporter: 9910
       otelcol_prometheus: 9911
       prometheus: 9912
       alertmanager: 9913
       grafana: 9914
       otelcol_otlp: 9915
+    # Services the other hosts or the operator reach, on the private address.
+    celestia_mon_verify_private_ports:
+      - node_exporter
+      - otelcol_prometheus
+      - grafana
+    # Services only this host uses, on loopback.
+    celestia_mon_verify_loopback_ports:
+      - prometheus
+      - alertmanager
+      - otelcol_otlp
     # Scrape jobs Prometheus must have, with the role label of this host's target.
-    taut_verify_jobs:
+    celestia_mon_verify_jobs:
+      - job: prometheus
+        role: monitor
+      - job: alertmanager
+        role: monitor
       - job: celestia-app
         role: validator
       - job: node
         role: validator
       - job: otelcol
         role: fibre
+    celestia_mon_verify_prometheus: "http://127.0.0.1:{{ celestia_mon_verify_ports.prometheus }}"
+    celestia_mon_verify_alertmanager: "http://127.0.0.1:{{ celestia_mon_verify_ports.alertmanager }}"
+    # molecule.yml sets celestia_mon_prometheus_retention_size: 1GB; Prometheus counts 1GB as 1024^3 bytes.
+    celestia_mon_verify_retention_query: 'prometheus_tsdb_retention_limit_bytes{job="prometheus"}'
+    celestia_mon_verify_retention_bytes: 1073741824
+    # GOMEMLIMIT of Prometheus and Alertmanager: 90% of their default MemoryHigh, in bytes.
+    celestia_mon_verify_gomemlimit_query: 'go_gc_gomemlimit_bytes{job=~"prometheus|alertmanager"}'
+    celestia_mon_verify_gomemlimit:
+      prometheus: 966367641 # 0.9 * 1G
+      alertmanager: 60397977 # 0.9 * 64M
   tasks:
     - name: Collect the service states
       ansible.builtin.service_facts:
 
-    - name: Check that every Taut service is running
+    - name: Check that every celestia-mon service is running
       ansible.builtin.assert:
         that:
           - item in ansible_facts.services
           - ansible_facts.services[item].state == 'running'
         fail_msg: "{{ item }} is not running"
         quiet: true
-      loop: "{{ taut_verify_units }}"
+      loop: "{{ celestia_mon_verify_units | list }}"
 
-    - name: Check that Taut took none of the usual unit names
+    - name: Check that celestia-mon took none of the usual unit names
       ansible.builtin.assert:
         that:
           - item not in ansible_facts.services
-        fail_msg: "{{ item }} exists; Taut's units are named taut-*."
+        fail_msg: "{{ item }} exists; celestia-mon's units are named celestia-mon-*."
         quiet: true
-      loop: "{{ taut_verify_foreign_units }}"
+      loop: "{{ celestia_mon_verify_foreign_units }}"
 
     - name: Look for binaries in /usr/local/bin
       ansible.builtin.stat:
         path: /usr/local/bin/{{ item }}
         get_checksum: false
-      loop: "{{ taut_verify_foreign_binaries }}"
-      register: taut_verify_binaries
+      loop: "{{ celestia_mon_verify_foreign_binaries }}"
+      register: celestia_mon_verify_binaries
 
-    - name: Check that Taut put no binary in /usr/local/bin
+    - name: Check that celestia-mon put no binary in /usr/local/bin
       ansible.builtin.assert:
         that:
-          - taut_verify_binaries.results | selectattr('stat.exists') | list | length == 0
+          - celestia_mon_verify_binaries.results | selectattr('stat.exists') | list | length == 0
         fail_msg: >-
-          Found {{ taut_verify_binaries.results | selectattr('stat.exists') | map(attribute='item') | join(', ') }}
-          in /usr/local/bin; Taut installs its binaries under /opt/taut.
+          Found {{ celestia_mon_verify_binaries.results | selectattr('stat.exists') | map(attribute='item') | join(', ') }}
+          in /usr/local/bin; celestia-mon installs its binaries under /opt/celestia-mon.
         quiet: true
 
-    - name: Check that every Taut port answers on the private address
-      ansible.builtin.wait_for:
-        host: "{{ taut_private_ip }}"
-        port: "{{ taut_verify_ports[item] }}"
-        timeout: 60
-      loop:
-        - node_exporter
-        - otelcol_prometheus
-        - prometheus
-        - alertmanager
-        - grafana
+    # With only a name the module just reads the unit's properties.
+    - name: Read the resource caps of each celestia-mon service
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: "{{ celestia_mon_verify_units | list }}"
+      register: celestia_mon_verify_caps
 
-    - name: Check that the collector's OTLP receiver answers on loopback
+    - name: Check that each celestia-mon service runs with the default resource caps
+      ansible.builtin.assert:
+        that:
+          - item.status.Nice | int == 10
+          - item.status.CPUWeight | int == 20
+          - item.status.IOWeight | int == 20
+          - item.status.MemoryHigh | int == celestia_mon_verify_units[item.item].memory_high
+          - item.status.MemoryMax | int == celestia_mon_verify_units[item.item].memory_max
+        fail_msg: >-
+          {{ item.item }} has Nice={{ item.status.Nice }} CPUWeight={{ item.status.CPUWeight }} IOWeight={{ item.status.IOWeight }}
+          MemoryHigh={{ item.status.MemoryHigh }} MemoryMax={{ item.status.MemoryMax }}; expected Nice=10 CPUWeight=20 IOWeight=20
+          MemoryHigh={{ celestia_mon_verify_units[item.item].memory_high }} MemoryMax={{ celestia_mon_verify_units[item.item].memory_max }}.
+        quiet: true
+      loop: "{{ celestia_mon_verify_caps.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Check that node_exporter, the collector's metrics and Grafana answer on the private address
+      ansible.builtin.wait_for:
+        host: "{{ celestia_mon_private_ip }}"
+        port: "{{ celestia_mon_verify_ports[item] }}"
+        timeout: 60
+      loop: "{{ celestia_mon_verify_private_ports }}"
+
+    - name: Check that Prometheus, Alertmanager and the OTLP receiver answer on loopback
       ansible.builtin.wait_for:
         host: 127.0.0.1
-        port: "{{ taut_verify_ports.otelcol_otlp }}"
+        port: "{{ celestia_mon_verify_ports[item] }}"
         timeout: 60
+      loop: "{{ celestia_mon_verify_loopback_ports }}"
 
-    - name: Check that the Alertmanager cluster port stays closed
+    # 9094 is Alertmanager's default cluster port, which celestia-mon turns off.
+    - name: Check that Prometheus, Alertmanager and Alertmanager's cluster port are closed on the private address
       ansible.builtin.wait_for:
-        host: "{{ taut_private_ip }}"
-        port: 9094
+        host: "{{ celestia_mon_private_ip }}"
+        port: "{{ item }}"
         state: stopped
         timeout: 5
+      loop:
+        - "{{ celestia_mon_verify_ports.prometheus }}"
+        - "{{ celestia_mon_verify_ports.alertmanager }}"
+        - 9094
 
-    - name: Read the Prometheus scrape targets
+    - name: Wait until Prometheus has scraped itself and Alertmanager
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.prometheus }}/api/v1/targets?state=active"
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/targets?state=active"
         return_content: true
-      register: taut_verify_targets
+      register: celestia_mon_verify_targets
+      until: >-
+        celestia_mon_verify_targets.json.data.activeTargets | default([])
+        | selectattr('labels.job', 'in', ['prometheus', 'alertmanager']) | selectattr('health', 'equalto', 'up') | list | length == 2
+      retries: 12
+      delay: 5
 
     - name: Check that Prometheus has exactly the expected jobs
       ansible.builtin.assert:
         that:
-          - taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | sort == taut_verify_jobs | map(attribute='job') | sort
+          - celestia_mon_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | sort == celestia_mon_verify_jobs | map(attribute='job') | sort
         fail_msg: >-
-          Expected one target per job in {{ taut_verify_jobs | map(attribute='job') | join(', ') }}, got
-          {{ taut_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | join(', ') }}.
+          Expected one target per job in {{ celestia_mon_verify_jobs | map(attribute='job') | join(', ') }}, got
+          {{ celestia_mon_verify_targets.json.data.activeTargets | map(attribute='scrapePool') | join(', ') }}.
         quiet: true
 
     - name: Check the host and role labels of each job
       ansible.builtin.assert:
         that:
           - >-
-            taut_verify_targets.json.data.activeTargets
+            celestia_mon_verify_targets.json.data.activeTargets
             | selectattr('labels.job', 'equalto', item.job)
             | selectattr('labels.role', 'equalto', item.role)
             | selectattr('labels.host', 'equalto', inventory_hostname)
             | list | length == 1
         fail_msg: "Job {{ item.job }} has no target labelled host={{ inventory_hostname }}, role={{ item.role }}."
         quiet: true
-      loop: "{{ taut_verify_jobs }}"
+      loop: "{{ celestia_mon_verify_jobs }}"
       loop_control:
         label: "{{ item.job }}"
 
+    # Prometheus reports the retention it applies from prometheus.yml as a metric of its own.
+    - name: Read the retention size Prometheus applies
+      ansible.builtin.uri:
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/query?query={{ celestia_mon_verify_retention_query | urlencode }}"
+        return_content: true
+      register: celestia_mon_verify_retention
+      until: celestia_mon_verify_retention.json.data.result | default([]) | length == 1
+      retries: 6
+      delay: 5
+
+    - name: Check that Prometheus applies the configured retention size
+      ansible.builtin.assert:
+        that:
+          - celestia_mon_verify_retention.json.data.result[0].value[1] | float == celestia_mon_verify_retention_bytes
+        fail_msg: >-
+          Prometheus keeps up to {{ celestia_mon_verify_retention.json.data.result[0].value[1] }} bytes of blocks,
+          expected {{ celestia_mon_verify_retention_bytes }} (celestia_mon_prometheus_retention_size).
+        quiet: true
+
+    # Both report the Go memory limit they run with as a metric of their own.
+    - name: Read the Go memory limit of Prometheus and Alertmanager
+      ansible.builtin.uri:
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/query?query={{ celestia_mon_verify_gomemlimit_query | urlencode }}"
+        return_content: true
+      register: celestia_mon_verify_gomemlimit_result
+      until: celestia_mon_verify_gomemlimit_result.json.data.result | default([]) | length == 2
+      retries: 6
+      delay: 5
+
+    - name: Check that Prometheus and Alertmanager run with GOMEMLIMIT below MemoryHigh
+      ansible.builtin.assert:
+        that:
+          - item.value[1] | float == celestia_mon_verify_gomemlimit[item.metric.job]
+        fail_msg: >-
+          {{ item.metric.job }} runs with a Go memory limit of {{ item.value[1] }} bytes,
+          expected {{ celestia_mon_verify_gomemlimit[item.metric.job] }} (90% of its MemoryHigh).
+        quiet: true
+      loop: "{{ celestia_mon_verify_gomemlimit_result.json.data.result }}"
+      loop_control:
+        label: "{{ item.metric.job }}"
+
     - name: Read the loaded Alertmanager configuration
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.alertmanager }}/api/v2/status"
+        url: "{{ celestia_mon_verify_alertmanager }}/api/v2/status"
         return_content: true
-      register: taut_verify_am_status
+      register: celestia_mon_verify_am_status
 
-    # The scenario leaves taut_receivers.page empty, so the page receiver must carry
+    # The scenario leaves celestia_mon_receivers.page empty, so the page receiver must carry
     # the message receivers' configs.
     - name: Check that page alerts fall back to the message receivers
       ansible.builtin.assert:
         that:
           - >-
-            (taut_verify_am_status.json.config.original | from_yaml).receivers
-            | selectattr('name', 'equalto', 'page') | map(attribute='webhook_configs', default=[]) | first | length == 1
-          - >-
-            (taut_verify_am_status.json.config.original | from_yaml).receivers
-            | selectattr('name', 'equalto', 'page') | map(attribute='slack_configs', default=[]) | first | length == 1
-        fail_msg: The page receiver lacks the message receivers' webhook and Slack configs.
+            (celestia_mon_verify_am_status.json.config.original | from_yaml).receivers
+            | selectattr('name', 'equalto', 'page') | map(attribute='webhook_configs', default=[]) | first | length == 2
+        fail_msg: The page receiver lacks the message receivers' two webhook configs.
         quiet: true
 
     - name: Wait for the Watchdog alert to reach Alertmanager
       ansible.builtin.uri:
-        url: "http://{{ taut_private_ip }}:{{ taut_verify_ports.alertmanager }}/api/v2/alerts"
+        url: "{{ celestia_mon_verify_alertmanager }}/api/v2/alerts"
         return_content: true
-      register: taut_verify_alerts
-      until: taut_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
+      register: celestia_mon_verify_alerts
+      until: celestia_mon_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
       retries: 18
       delay: 10
+
+    # Grafana reaches Prometheus on 127.0.0.1; Grafana itself listens on the private address.
+    - name: Check that Grafana's Prometheus datasource answers
+      ansible.builtin.uri:
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/datasources/uid/celestia-mon-prometheus/health"
+        url_username: admin
+        url_password: "{{ celestia_mon_grafana_admin_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: celestia_mon_verify_datasource
+      until: celestia_mon_verify_datasource.json.status | default('') == 'OK'
+      retries: 6
+      delay: 5
+
+    - name: Read Grafana's snapshot sharing options
+      ansible.builtin.uri:
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/snapshot/shared-options/"
+        url_username: admin
+        url_password: "{{ celestia_mon_grafana_admin_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: celestia_mon_verify_snapshots
+
+    - name: Check that Grafana cannot publish snapshots outside this host
+      ansible.builtin.assert:
+        that:
+          - not (celestia_mon_verify_snapshots.json.externalEnabled | bool)
+        fail_msg: Grafana offers external snapshots; grafana.ini must set [snapshots] external_enabled = false.
+        quiet: true
+
+    # Anonymous access is off, so the dashboard needs a login.
+    - name: Check that Grafana refuses the dashboard without a login
+      ansible.builtin.uri:
+        url: "http://{{ celestia_mon_private_ip }}:{{ celestia_mon_verify_ports.grafana }}/api/dashboards/uid/celestia-mon-validator"
+        status_code: 401

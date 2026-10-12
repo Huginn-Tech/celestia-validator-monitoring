@@ -1,0 +1,6 @@
+---
+- name: Restart celestia-mon-otelcol
+  ansible.builtin.systemd_service:
+    name: celestia-mon-otelcol
+    state: restarted
+  when: celestia_mon_otelcol_installed.stat.exists or not ansible_check_mode

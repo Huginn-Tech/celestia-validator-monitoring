@@ -1,17 +1,4 @@
 ---
-taut_signer: local
-taut_fibre_enabled: false
-
-# Replace the placeholders and keep the real values in ansible-vault.
-taut_receivers:
-  page:
-    - type: telegram
-      bot_token: "000000000:REPLACE_ME"
-      chat_id: -1000000000000
-  message:
-    - type: telegram
-      bot_token: "000000000:REPLACE_ME"
-      chat_id: -1000000000000
-
-taut_deadman_webhook_url: "https://deadman.example.invalid/ping/REPLACE_ME"
-taut_grafana_admin_password: "REPLACE_ME"
+# Shared settings, free of secrets. The secrets are in host_vars/node-1/vault.yml.
+celestia_mon_signer: local
+celestia_mon_fibre_enabled: false

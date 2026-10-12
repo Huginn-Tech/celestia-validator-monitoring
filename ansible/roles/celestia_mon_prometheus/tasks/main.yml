@@ -1,0 +1,185 @@
+---
+# celestia-mon's Prometheus has its own unit, user, paths and port (celestia-mon-prometheus), so it
+# installs next to any other Prometheus on the host and leaves it alone.
+- name: Check that celestia-mon-prometheus can use port {{ celestia_mon_ports.prometheus }}
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: port_check
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports.prometheus }}"
+    celestia_mon_port_check_unit: celestia-mon-prometheus
+
+- name: Create the celestia-mon-prometheus group
+  ansible.builtin.group:
+    name: celestia-mon-prometheus
+    system: true
+
+- name: Create the celestia-mon-prometheus user
+  ansible.builtin.user:
+    name: celestia-mon-prometheus
+    group: celestia-mon-prometheus
+    system: true
+    shell: /usr/sbin/nologin
+    home: "{{ celestia_mon_prometheus_data_dir }}"
+    create_home: false
+
+- name: Look for the pinned Prometheus binaries
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_prometheus_home }}/{{ item }}"
+  loop: "{{ celestia_mon_prometheus_binaries }}"
+  register: celestia_mon_prometheus_found
+
+# In check mode nothing is downloaded, so tasks that need the binaries or the unit
+# are skipped until the pinned version is installed.
+- name: Note whether the pinned Prometheus binaries are installed
+  ansible.builtin.set_fact:
+    celestia_mon_prometheus_present: "{{ celestia_mon_prometheus_found.results | rejectattr('stat.exists') | list | length == 0 }}"
+
+- name: Report the pending install of Prometheus {{ celestia_mon_prometheus_version }}
+  ansible.builtin.debug:
+    msg: >-
+      Would install {{ celestia_mon_prometheus_binaries | join(' and ') }} {{ celestia_mon_prometheus_version }} in {{ celestia_mon_prometheus_home }}
+      and restart celestia-mon-prometheus.
+  changed_when: true
+  when: ansible_check_mode and not celestia_mon_prometheus_present
+
+# The shared parents first, so a service directory below never creates them with its own owner.
+- name: Create the Prometheus directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - /opt/celestia-mon
+    - /etc/celestia-mon
+    - /var/lib/celestia-mon
+    - "{{ celestia_mon_prometheus_home }}"
+    - "{{ celestia_mon_prometheus_config_dir }}"
+    - "{{ celestia_mon_prometheus_rules_dir }}"
+
+- name: Create the Prometheus data directory
+  ansible.builtin.file:
+    path: "{{ celestia_mon_prometheus_data_dir }}"
+    state: directory
+    owner: celestia-mon-prometheus
+    group: celestia-mon-prometheus
+    mode: "0750"
+
+- name: Install Prometheus {{ celestia_mon_prometheus_version }}
+  when: not celestia_mon_prometheus_present and not ansible_check_mode
+  block:
+    - name: Create the download cache
+      ansible.builtin.file:
+        path: /var/cache/celestia-mon
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download the Prometheus release and check it against the pinned checksum
+      ansible.builtin.get_url:
+        url: "{{ celestia_mon_prometheus_download_url }}/{{ celestia_mon_prometheus_release }}.tar.gz"
+        dest: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
+        checksum: "sha256:{{ celestia_mon_prometheus_sha256 }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack the Prometheus release
+      ansible.builtin.unarchive:
+        src: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
+        dest: /var/cache/celestia-mon
+        remote_src: true
+
+    - name: Install the Prometheus binaries
+      ansible.builtin.copy:
+        src: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}/{{ item }}
+        dest: "{{ celestia_mon_prometheus_home }}/{{ item }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      loop: "{{ celestia_mon_prometheus_binaries }}"
+
+    - name: Remove the downloaded Prometheus release
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
+        - /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}
+
+- name: Render the celestia-mon alert rules
+  ansible.builtin.template:
+    src: "{{ playbook_dir }}/../monitoring/rules/celestia-mon.rules.yml.j2"
+    dest: "{{ celestia_mon_prometheus_rules_dir }}/celestia-mon.rules.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ celestia_mon_prometheus_home }}/promtool check rules %s"
+  notify: Reload Prometheus
+
+- name: Render the Prometheus configuration
+  ansible.builtin.template:
+    src: prometheus.yml.j2
+    dest: "{{ celestia_mon_prometheus_config_dir }}/prometheus.yml"
+    owner: root
+    group: root
+    mode: "0644"
+    validate: "{{ celestia_mon_prometheus_home }}/promtool check config %s"
+  notify: Reload Prometheus
+
+# The unit names the versioned binary, so a new version changes it and restarts the service.
+- name: Install the celestia-mon-prometheus systemd unit
+  ansible.builtin.template:
+    src: celestia-mon-prometheus.service.j2
+    dest: /etc/systemd/system/celestia-mon-prometheus.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: celestia_mon_prometheus_unit_file
+  notify: Restart Prometheus
+
+# Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+# that someone else edited on disk and has not reloaded yet.
+- name: Start celestia-mon-prometheus and enable it at boot
+  ansible.builtin.systemd_service:
+    name: celestia-mon-prometheus
+    enabled: true
+    state: started
+    daemon_reload: "{{ celestia_mon_prometheus_unit_file is changed }}"
+  when: celestia_mon_prometheus_present or not ansible_check_mode
+
+# Apply pending reloads and restarts now, so a failure later in the play
+# (Alertmanager or Grafana) cannot drop them.
+- name: Apply pending Prometheus changes
+  ansible.builtin.meta: flush_handlers
+
+# systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+# Waiting here also lets the bind check at the end of the playbook see the socket.
+- name: Wait for Prometheus on {{ celestia_mon_prometheus_listen_address }}
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ celestia_mon_ports.prometheus }}"
+    timeout: 60
+    msg: celestia-mon-prometheus does not listen on {{ celestia_mon_prometheus_listen_address }}. See journalctl -u celestia-mon-prometheus.
+  when: not ansible_check_mode
+
+- name: Find older Prometheus versions
+  ansible.builtin.find:
+    paths: /opt/celestia-mon
+    patterns: prometheus-*
+    excludes: prometheus-{{ celestia_mon_prometheus_version }}
+    file_type: directory
+  register: celestia_mon_prometheus_old
+  when: celestia_mon_prometheus_present or not ansible_check_mode
+
+- name: Remove older Prometheus versions
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ celestia_mon_prometheus_old.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"

@@ -4,7 +4,7 @@ CLAUDE.local.md
 
 # Build and test output
 build/
-monitoring/rules/tests/*/taut.rules.yml
+monitoring/rules/tests/*/celestia-mon.rules.yml
 *.retry
 __pycache__/
 .venv/

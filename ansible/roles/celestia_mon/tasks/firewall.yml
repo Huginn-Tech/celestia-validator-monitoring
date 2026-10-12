@@ -1,0 +1,85 @@
+---
+# Lets the monitor host reach a port Prometheus scrapes (one of celestia-mon's, or
+# celestia-appd's metrics port on the validator host) through ufw, only when ufw
+# is already active on this host. Never enables, resets or reorders the firewall:
+# each rule is appended with `ufw allow ... comment celestia-mon`, the comment
+# ansible/uninstall.yml finds the rules by. A source that already has a rule for the
+# port (ALLOW, DENY, REJECT or LIMIT, with or without a comment) is left alone, because
+# ufw would replace that rule with ours and the uninstall would then delete it.
+# A host reaching its own address goes through lo, which ufw already accepts, so
+# this host's own address is skipped (the monitor itself, or a single-host setup).
+# A dry run (--check) adds nothing and lists the rules a real run adds instead;
+# install.sh shows them in its plan (celestia_mon_plan_file).
+#   celestia_mon_firewall_port     required, the TCP port to allow
+#   celestia_mon_firewall_sources  optional list of addresses (default: the monitor's celestia_mon_private_ip)
+- name: Read the ufw status
+  ansible.builtin.command: ufw status
+  environment:
+    LC_ALL: C
+  register: celestia_mon_firewall_ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Add the missing ufw rules
+  when: "celestia_mon_firewall_ufw.stdout | default('') is match('Status: active')"
+  vars:
+    celestia_mon_firewall_wanted: >-
+      {{ celestia_mon_firewall_sources | default([hostvars[celestia_mon_monitor_host].celestia_mon_private_ip])
+         | map('string') | map('lower') | reject('equalto', celestia_mon_private_ip | string | lower) | unique | list }}
+    # `ufw status` prints an incoming rule as "<port>/tcp   <ACTION>   <source>   [# comment]".
+    celestia_mon_firewall_ruled: >-
+      {{ celestia_mon_firewall_ufw.stdout | default('')
+         | regex_findall('^' ~ celestia_mon_firewall_port ~ '/tcp +(?:ALLOW|DENY|REJECT|LIMIT) +([^ ]+)', multiline=true)
+         | map('lower') | list }}
+    celestia_mon_firewall_missing: "{{ celestia_mon_firewall_wanted | reject('in', celestia_mon_firewall_ruled) | list }}"
+    # Sources whose existing rule is not a plain ALLOW, as "DENY from 10.0.0.4", for the plan.
+    celestia_mon_firewall_kept: >-
+      {{ celestia_mon_firewall_ufw.stdout | default('')
+         | regex_findall('^' ~ celestia_mon_firewall_port ~ '/tcp +(DENY|REJECT|LIMIT) +([^ ]+)', multiline=true)
+         | selectattr('1', 'in', celestia_mon_firewall_wanted) | map('join', ' from ') | list }}
+  block:
+    # ufw prints "Skipping adding existing rule" when the rule is there in another spelling.
+    # "Rule updated" means ufw replaced a rule that differs only in action or comment (its
+    # source written differently in the inventory than in `ufw status`), or reloaded chains
+    # it found missing: the task fails so that never passes unseen. Check `ufw status`.
+    - name: Allow the monitor host through ufw to port {{ celestia_mon_firewall_port }}
+      ansible.builtin.command:
+        argv: [ufw, allow, from, "{{ item }}", to, any, port, "{{ celestia_mon_firewall_port }}", proto, tcp, comment, celestia-mon]
+      environment:
+        LC_ALL: C
+      register: celestia_mon_firewall_rule
+      changed_when: celestia_mon_firewall_rule.stdout is search('Rule added|Rules updated')
+      failed_when: celestia_mon_firewall_rule.rc != 0 or 'Rule updated' in celestia_mon_firewall_rule.stdout
+      loop: "{{ celestia_mon_firewall_missing }}"
+
+    - name: List the ufw rules a real run adds for port {{ celestia_mon_firewall_port }}
+      ansible.builtin.debug:
+        msg: ufw allow from {{ item }} to any port {{ celestia_mon_firewall_port }} proto tcp comment celestia-mon
+      changed_when: true
+      loop: "{{ celestia_mon_firewall_missing }}"
+      when: ansible_check_mode
+
+    - name: Add the ufw rules a real run adds to the install plan, port {{ celestia_mon_firewall_port }}
+      ansible.builtin.lineinfile:
+        path: "{{ celestia_mon_plan_file }}"
+        line: "ufw rule:  allow from {{ item }} to port {{ celestia_mon_firewall_port }}/tcp (comment celestia-mon)"
+        create: true
+        mode: "0600"
+      changed_when: false
+      check_mode: false
+      diff: false
+      loop: "{{ celestia_mon_firewall_missing }}"
+      when: ansible_check_mode and celestia_mon_plan_file is defined
+
+    - name: Add the existing ufw rules celestia-mon keeps to the install plan, port {{ celestia_mon_firewall_port }}
+      ansible.builtin.lineinfile:
+        path: "{{ celestia_mon_plan_file }}"
+        line: "ufw rule:  existing {{ item }} to port {{ celestia_mon_firewall_port }}/tcp kept as it is"
+        create: true
+        mode: "0600"
+      changed_when: false
+      check_mode: false
+      diff: false
+      loop: "{{ celestia_mon_firewall_kept }}"
+      when: ansible_check_mode and celestia_mon_plan_file is defined

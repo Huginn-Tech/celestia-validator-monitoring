@@ -1,0 +1,4 @@
+---
+# Directory Prometheus loads alert rules from (rule_files: <dir>/*.yml).
+# The celestia-mon rules are rendered into it as celestia-mon.rules.yml.
+celestia_mon_prometheus_rules_dir: /etc/celestia-mon/prometheus/rules

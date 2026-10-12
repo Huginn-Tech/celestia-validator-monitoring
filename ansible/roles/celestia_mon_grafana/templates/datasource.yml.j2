@@ -1,0 +1,11 @@
+# Managed by celestia-mon (Ansible role celestia_mon_grafana). Local changes are overwritten.
+# Prometheus runs on this host and listens on loopback only.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    uid: celestia-mon-prometheus
+    type: prometheus
+    access: proxy
+    url: "http://127.0.0.1:{{ celestia_mon_ports.prometheus }}"
+    isDefault: true
+    editable: false
