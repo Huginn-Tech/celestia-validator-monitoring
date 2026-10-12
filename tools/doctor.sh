@@ -751,7 +751,7 @@ read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING and TARGETS_DOW
   TARGETS_PENDING=0
   TARGETS_DOWN=()
   # One line per active target, starting at its scrapePool field.
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n $line ]]; do
     [[ $line == '"scrapePool":"'* && $line =~ $re_health ]] || continue
     case ${BASH_REMATCH[1]} in
       up) TARGETS_UP=$((TARGETS_UP + 1)) ;;
