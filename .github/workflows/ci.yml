@@ -589,7 +589,8 @@ jobs:
           grep -Eq '^FAIL +11 +monitor stack +1 of 5 scrape targets down: celestia-app ' <<<"$out"
           line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
           for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
-            if grep -qF " $m (" <<<"$line"; then echo "check 12 lists $m, which has series here"; exit 1; fi
+            # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
+            if grep -qE "[:,] ${m//./\.} \(" <<<"$line"; then echo "check 12 lists $m, which has series here"; exit 1; fi
           done
       - name: Uninstall leaves nothing behind
         run: |
