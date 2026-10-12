@@ -108,11 +108,11 @@
         group: root
         mode: "0755"
 
-    - name: Download the Alertmanager release and verify its checksum
+    - name: Download the Alertmanager release and check it against the pinned checksum
       ansible.builtin.get_url:
         url: "{{ celestia_mon_alertmanager_download_url }}/{{ celestia_mon_alertmanager_release }}.tar.gz"
         dest: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
-        checksum: "sha256:{{ celestia_mon_alertmanager_download_url }}/sha256sums.txt"
+        checksum: "sha256:{{ celestia_mon_alertmanager_sha256 }}"
         owner: root
         group: root
         mode: "0644"
@@ -185,7 +185,7 @@
 # Waiting here also lets the bind check at the end of the playbook see the socket.
 - name: Wait for Alertmanager on {{ celestia_mon_alertmanager_listen_address }}
   ansible.builtin.wait_for:
-    host: "{{ celestia_mon_private_ip }}"
+    host: 127.0.0.1
     port: "{{ celestia_mon_ports.alertmanager }}"
     timeout: 60
     msg: celestia-mon-alertmanager does not listen on {{ celestia_mon_alertmanager_listen_address }}. See journalctl -u celestia-mon-alertmanager.

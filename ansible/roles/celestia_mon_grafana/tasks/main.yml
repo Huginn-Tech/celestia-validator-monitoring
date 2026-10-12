@@ -63,11 +63,11 @@
         - /var/cache/celestia-mon
         - /opt/celestia-mon
 
-    - name: Download the Grafana release and verify its checksum
+    - name: Download the Grafana release and check it against the pinned checksum
       ansible.builtin.get_url:
         url: "{{ celestia_mon_grafana_url }}"
         dest: "/var/cache/celestia-mon/{{ celestia_mon_grafana_tarball }}"
-        checksum: "sha256:{{ celestia_mon_grafana_url }}.sha256"
+        checksum: "sha256:{{ celestia_mon_grafana_sha256 }}"
         owner: root
         group: root
         mode: "0644"
@@ -95,12 +95,16 @@
         group: root
         mode: "0755"
 
+    # The release stores its files as uid 1000 (ubuntu) and group-writable, and tar running
+    # as root keeps stored owners. --no-same-owner makes everything root:root, so no login
+    # account can change the code celestia-mon-grafana runs.
     - name: Unpack the Grafana release
       ansible.builtin.unarchive:
         src: "/var/cache/celestia-mon/{{ celestia_mon_grafana_tarball }}"
         dest: /opt/celestia-mon/.staging/grafana
         extra_opts:
           - --strip-components=1
+          - --no-same-owner
         remote_src: true
 
     # One rename, so an interrupted unpack never leaves a partial version under /opt/celestia-mon.
@@ -198,53 +202,68 @@
   notify: Restart celestia-mon-grafana
 
 # The dashboard is generated on the control node from the inventory, so groups
-# that do not apply are left out and threshold lines match the alerts. These
-# steps only write under build/ in the checkout, so they also run in check mode.
-- name: Create the dashboard build directory on the control node
-  ansible.builtin.file:
-    path: "{{ celestia_mon_grafana_build_dir }}"
-    state: directory
-    mode: "0755"
-  delegate_to: localhost
-  run_once: true
-  become: false
-  check_mode: false
-  changed_when: false
+# that do not apply are left out and threshold lines match the alerts. The
+# generator works in a temporary directory that is removed afterwards, so the
+# checkout is left as it is. These steps also run in check mode.
+- name: Generate and install the dashboard
+  block:
+    - name: Create a temporary directory for the dashboard on the control node
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: celestia-mon-dashboard.
+      register: celestia_mon_grafana_tmp
+      delegate_to: localhost
+      run_once: true
+      become: false
+      check_mode: false
+      changed_when: false
 
-- name: Write the dashboard settings on the control node
-  ansible.builtin.template:
-    src: dashboard-config.json.j2
-    dest: "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.config.json"
-    mode: "0644"
-  delegate_to: localhost
-  run_once: true
-  become: false
-  check_mode: false
-  changed_when: false
+    - name: Write the dashboard settings on the control node
+      ansible.builtin.template:
+        src: dashboard-config.json.j2
+        dest: "{{ celestia_mon_grafana_tmp.path }}/config.json"
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      become: false
+      check_mode: false
+      changed_when: false
 
-- name: Generate the dashboard on the control node
-  ansible.builtin.command:
-    argv:
-      - "{{ ansible_playbook_python }}"
-      - "{{ celestia_mon_grafana_repo_dir }}/monitoring/dashboards/gen_dashboard.py"
-      - --config
-      - "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.config.json"
-      - --out
-      - "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.json"
-  delegate_to: localhost
-  run_once: true
-  become: false
-  check_mode: false
-  changed_when: false
+    - name: Generate the dashboard on the control node
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ celestia_mon_grafana_repo_dir }}/monitoring/dashboards/gen_dashboard.py"
+          - --config
+          - "{{ celestia_mon_grafana_tmp.path }}/config.json"
+          - --out
+          - "{{ celestia_mon_grafana_tmp.path }}/dashboard.json"
+      delegate_to: localhost
+      run_once: true
+      become: false
+      check_mode: false
+      changed_when: false
 
-# Grafana rereads provisioned dashboard files on its own; no restart needed.
-- name: Install the dashboard
-  ansible.builtin.copy:
-    src: "{{ celestia_mon_grafana_build_dir }}/{{ celestia_mon_monitor_host }}.json"
-    dest: "{{ celestia_mon_grafana_dashboard_dir }}/celestia-mon-validator.json"
-    owner: root
-    group: celestia-mon-grafana
-    mode: "0640"
+    # Grafana rereads provisioned dashboard files on its own; no restart needed.
+    - name: Install the dashboard
+      ansible.builtin.copy:
+        src: "{{ celestia_mon_grafana_tmp.path }}/dashboard.json"
+        dest: "{{ celestia_mon_grafana_dashboard_dir }}/celestia-mon-validator.json"
+        owner: root
+        group: celestia-mon-grafana
+        mode: "0640"
+
+  always:
+    - name: Remove the temporary dashboard directory on the control node
+      ansible.builtin.file:
+        path: "{{ celestia_mon_grafana_tmp.path }}"
+        state: absent
+      delegate_to: localhost
+      run_once: true
+      become: false
+      check_mode: false
+      changed_when: false
+      when: celestia_mon_grafana_tmp.path is defined
 
 - name: Write the celestia-mon-grafana service
   ansible.builtin.template:

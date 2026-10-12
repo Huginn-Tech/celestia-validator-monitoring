@@ -1,11 +1,26 @@
 ---
-- name: Check the inventory
+# Installs celestia-mon. install.sh runs it on each host for that host only
+# (--limit <host> -e ansible_connection=local), first as a dry run (--check --diff).
+- name: Check the inventory and this host
   hosts: all
+  become: true
+  # Facts are read in the preflight, after the skip below, so a KMS host celestia-mon does not manage is never contacted.
   gather_facts: false
   vars_files:
     - ../versions.yml
   roles:
     - role: celestia_mon
+  tasks:
+    - name: Skip hosts celestia-mon does not manage
+      ansible.builtin.meta: end_host
+      when: not (celestia_mon_host_managed | bool)
+
+    # Read-only. Includes the local-run guard: a run with ansible_connection=local must target
+    # one inventory host, and that host's celestia_mon_private_ip must be an address of this machine.
+    - name: Run the preflight checks
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: preflight
 
 - name: Collectors on Celestia hosts
   hosts: validator:fibre:kms

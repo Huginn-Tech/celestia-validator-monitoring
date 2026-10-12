@@ -1,9 +1,50 @@
 ---
 # Single source of truth for every binary celestia-mon installs or uses in CI.
-# Pin releases that are at least two weeks old. Checksums are verified at download time.
+# Pin releases that are at least two weeks old, on a line upstream still supports.
+# Each sha256 is the official checksum of the tarball the role downloads; the roles
+# verify downloads against these values and never fetch a checksum file at run time.
 celestia_mon_versions:
-  node_exporter: "1.9.1"
-  otelcol_contrib: "0.120.0"
-  prometheus: "3.5.0"
-  alertmanager: "0.28.1"
-  grafana: "12.1.1"
+  # node_exporter-<version>.linux-<arch>.tar.gz (sha256sums.txt of the release)
+  node_exporter:
+    version: "1.12.1"
+    sha256:
+      amd64: "b51d8a76aa2a9156a55d501aca6276fae09e262259a5e4e831d2c2222f084e63"
+      arm64: "ad35b605f9954b9f1ffddf5ba054bdc5a98d790b9eae5291e1eeb83f1ecbd0e7"
+  # otelcol-contrib_<version>_linux_<arch>.tar.gz (the .sha256 file next to each tarball)
+  otelcol_contrib:
+    version: "0.161.0"
+    sha256:
+      amd64: "778c689efa681ff6e4722ce9f66b9b7f57c3ba009ab2e2b43dc2e0315862c731"
+      arm64: "cd5de93213a0dbb90e4998b3b9e4e15ed691ec635cf7cf4147f95799fb16b676"
+  # prometheus-<version>.linux-<arch>.tar.gz (sha256sums.txt). 3.13 is the LTS line, supported until 2027-07-31.
+  prometheus:
+    version: "3.13.3"
+    sha256:
+      amd64: "b349c732d8a853e657d0e7ae1bbad4d11b586615fb65fdc59d896b9f869c001e"
+      arm64: "aa9be9c36608e7ab7cc089726195d0e4fa74f87b330538df9d30d3da1f2b0e18"
+  # alertmanager-<version>.linux-<arch>.tar.gz (sha256sums.txt)
+  alertmanager:
+    version: "0.34.1"
+    sha256:
+      amd64: "265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8"
+      arm64: "d98d6cbaf52151c7e76e24355fec88b11cebcb9875d4cdd8b76ddce7a7e5535c"
+  # Grafana OSS grafana-<version>.linux-<arch>.tar.gz from dl.grafana.com/oss/release/ (the .sha256
+  # file next to it). 12.4 is the last minor of Grafana 12, supported until 2027-05-24.
+  grafana:
+    version: "12.4.11"
+    sha256:
+      amd64: "b4b73a3a5639dcb4c3649d9a3998c2746b62d7b8275ec523b62287fa78382d11"
+      arm64: "ef2948887873edeac75eb36639a7e214a654881e7262c354766d927f182d1c9c"
+  # uv-<arch>-unknown-linux-gnu.tar.gz (the .sha256 file next to each tarball). install.sh
+  # uses it to build a throwaway venv with ansible-core; the keys are `uname -m` values.
+  uv:
+    version: "0.12.14"
+    sha256:
+      x86_64: "18ef5c3888ae59828cb13f38d57e9389b8173ecc719eff163bfafc74b38f5936"
+      aarch64: "7fb91bd5d10529c60723eaec3caf44726f89280e5aeed78af8fc63fcad004c9b"
+  # ansible-core from PyPI, installed by install.sh into that venv.
+  ansible_core: "2.18.19"
+  # ansible-core's dependencies (jinja2, PyYAML, cryptography, ...) come from PyPI files uploaded
+  # before this time (uv --exclude-newer), so a release newer than the pins is never picked up.
+  # Keep it at least two weeks old, and after the ansible-core release above; bump it with the pins.
+  python_deps_before: "2026-09-25T00:00:00Z"

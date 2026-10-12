@@ -248,12 +248,28 @@ groups:
           runbook: "{{ docs }}#disklow"
 {% endfor %}
 
-      # Watchdog: always firing; the dead-man service alerts when it stops arriving.
+      # MonitoringBroken: Prometheus failed to evaluate alert rules, so some alerts cannot fire.
+      - alert: MonitoringBroken
+        expr: increase(prometheus_rule_evaluation_failures_total[10m]) > 0
+        labels:
+          severity: message
+          host: {{ celestia_mon_monitor_host | to_json }}
+        annotations:
+          summary: "Prometheus on {{ celestia_mon_monitor_host }} fails to evaluate alert rules"
+          description: "Rule evaluation failed in the last 10 minutes, so some alerts may not fire. The Prometheus log names the rule and the error."
+          runbook: "{{ docs }}#monitoringbroken"
+
+      # Watchdog: the heartbeat for the dead-man service. It stops when monitoring is down, and for an
+      # hour after a page or message notification through any integration other than webhook (Telegram,
+      # PagerDuty, Slack) failed, so the dead-man service reports a broken alert channel through its own
+      # channel. Failed webhook calls do not stop it: Alertmanager labels the dead-man webhook and
+      # webhook-type page/message receivers alike (integration="webhook"), so a broken webhook receiver
+      # gets no dead-man signal.
       - alert: Watchdog
-        expr: vector(1)
+        expr: vector(1) unless on () (sum(increase(alertmanager_notifications_failed_total{integration!="webhook"}[1h])) > 0)
         labels:
           severity: heartbeat
         annotations:
           summary: "celestia-mon heartbeat"
-          description: "Always firing. Only the dead-man service receives it, and it alerts when the heartbeats stop."
+          description: "Fires while monitoring runs and no page or message notification failed in the last hour; failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop."
           runbook: "{{ docs }}#watchdog"

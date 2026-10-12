@@ -1,0 +1,29 @@
+name: versions
+
+# Once a month, lists the upstream releases that are newer than the pins in versions.yml
+# (every release on the pinned line, and the newest of each newer line) in the log and the
+# job summary. It only reports: it never changes versions.yml or opens a pull request.
+on:
+  schedule:
+    - cron: "17 6 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  newer-releases:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+      - name: List newer releases of every pinned component
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/ci/check_versions.py versions.yml

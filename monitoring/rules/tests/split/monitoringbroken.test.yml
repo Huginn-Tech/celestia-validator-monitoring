@@ -1,0 +1,59 @@
+# MonitoringBroken on the example-split inventory (monitor mon-1): Prometheus failed
+# to evaluate alert rules in the last 10 minutes. Prometheus starts the failure
+# counter of every rule group at 0.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Rules evaluate without errors
+    interval: 1m
+    input_series:
+      - series: >-
+          prometheus_rule_evaluation_failures_total{job="prometheus",instance="127.0.0.1:9912",host="mon-1",role="monitor",rule_group="/etc/celestia-mon/prometheus/rules/celestia-mon.rules.yml;celestia_mon"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: MonitoringBroken
+        exp_alerts: []
+
+  - name: A failed rule evaluation sends a message for 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          prometheus_rule_evaluation_failures_total{job="prometheus",instance="127.0.0.1:9912",host="mon-1",role="monitor",rule_group="/etc/celestia-mon/prometheus/rules/celestia-mon.rules.yml;celestia_mon"}
+        values: '0x4 1x30'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: MonitoringBroken
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: MonitoringBroken
+        exp_alerts:
+          - exp_labels:
+              job: prometheus
+              instance: 127.0.0.1:9912
+              host: mon-1
+              role: monitor
+              rule_group: "/etc/celestia-mon/prometheus/rules/celestia-mon.rules.yml;celestia_mon"
+              severity: message
+            exp_annotations:
+              summary: "Prometheus on mon-1 fails to evaluate alert rules"
+              description: >-
+                Rule evaluation failed in the last 10 minutes, so some alerts may not fire.
+                The Prometheus log names the rule and the error.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitoringbroken"
+      - eval_time: 20m
+        alertname: MonitoringBroken
+        exp_alerts: []
+
+  - name: A Prometheus restart resets the counter and stays quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          prometheus_rule_evaluation_failures_total{job="prometheus",instance="127.0.0.1:9912",host="mon-1",role="monitor",rule_group="/etc/celestia-mon/prometheus/rules/celestia-mon.rules.yml;celestia_mon"}
+        values: '3x10 _ 0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: MonitoringBroken
+        exp_alerts: []

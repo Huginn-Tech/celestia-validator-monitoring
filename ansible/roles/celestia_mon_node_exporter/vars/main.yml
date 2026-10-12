@@ -1,10 +1,12 @@
 ---
-# Derived values. The settings themselves (versions, ports, unit names) live in
-# versions.yml and the celestia_mon role defaults.
-celestia_mon_node_exporter_version: "{{ celestia_mon_versions.node_exporter }}"
+# Derived values. The settings themselves (versions, checksums, ports, unit names,
+# resource caps) live in versions.yml and the celestia_mon role defaults.
+celestia_mon_node_exporter_version: "{{ celestia_mon_versions.node_exporter.version }}"
 celestia_mon_node_exporter_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
 celestia_mon_node_exporter_release: "node_exporter-{{ celestia_mon_node_exporter_version }}.linux-{{ celestia_mon_node_exporter_arch }}"
 celestia_mon_node_exporter_url: "https://github.com/prometheus/node_exporter/releases/download/v{{ celestia_mon_node_exporter_version }}"
+# The tarball's SHA-256 pinned in versions.yml (from the release's sha256sums.txt).
+celestia_mon_node_exporter_sha256: "{{ celestia_mon_versions.node_exporter.sha256[celestia_mon_node_exporter_arch] }}"
 
 # Each version gets its own directory and the unit runs the binary from there, so
 # nothing else on the host is overwritten. An upgrade is a new directory and a restart.

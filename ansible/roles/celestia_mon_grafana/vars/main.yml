@@ -1,12 +1,14 @@
 ---
-# Grafana OSS from the official tarball; the version is pinned in versions.yml.
+# Grafana OSS from the official tarball; the version and its SHA-256 are pinned in versions.yml.
 # celestia-mon's Grafana runs as its own unit, user, port and paths, next to any other
 # Grafana on the host. An upgrade is a new directory under /opt/celestia-mon and a restart.
-celestia_mon_grafana_version: "{{ celestia_mon_versions.grafana }}"
+celestia_mon_grafana_version: "{{ celestia_mon_versions.grafana.version }}"
 celestia_mon_grafana_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] }}"
 celestia_mon_grafana_tarball: "grafana-{{ celestia_mon_grafana_version }}.linux-{{ celestia_mon_grafana_arch }}.tar.gz"
-# A .sha256 file next to the tarball holds its bare SHA-256 digest.
 celestia_mon_grafana_url: "https://dl.grafana.com/oss/release/{{ celestia_mon_grafana_tarball }}"
+# The tarball's SHA-256 pinned in versions.yml (as grafana.com lists it for the release);
+# nothing is fetched to check the download.
+celestia_mon_grafana_sha256: "{{ celestia_mon_versions.grafana.sha256[celestia_mon_grafana_arch] }}"
 # The tarball's top folder (grafana-<v>/ or grafana-v<v>/, depending on the release) is stripped on unpack.
 celestia_mon_grafana_home: "/opt/celestia-mon/grafana-{{ celestia_mon_grafana_version }}"
 
@@ -17,4 +19,3 @@ celestia_mon_grafana_admin_password_file: "{{ celestia_mon_grafana_config_dir }}
 
 # The repository checkout on the control node (site.yml lives in ansible/).
 celestia_mon_grafana_repo_dir: "{{ playbook_dir }}/.."
-celestia_mon_grafana_build_dir: "{{ celestia_mon_grafana_repo_dir }}/build/dashboards"

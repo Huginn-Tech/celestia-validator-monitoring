@@ -1,10 +1,13 @@
 ---
-celestia_mon_alertmanager_version: "{{ celestia_mon_versions.alertmanager }}"
+celestia_mon_alertmanager_version: "{{ celestia_mon_versions.alertmanager.version }}"
 celestia_mon_alertmanager_arch_map:
   x86_64: amd64
   aarch64: arm64
-celestia_mon_alertmanager_release: "alertmanager-{{ celestia_mon_alertmanager_version }}.linux-{{ celestia_mon_alertmanager_arch_map[ansible_facts.architecture] }}"
+celestia_mon_alertmanager_arch: "{{ celestia_mon_alertmanager_arch_map[ansible_facts.architecture] }}"
+celestia_mon_alertmanager_release: "alertmanager-{{ celestia_mon_alertmanager_version }}.linux-{{ celestia_mon_alertmanager_arch }}"
 celestia_mon_alertmanager_download_url: "https://github.com/prometheus/alertmanager/releases/download/v{{ celestia_mon_alertmanager_version }}"
+# Pinned in versions.yml from the release's sha256sums.txt; nothing is fetched to check the download.
+celestia_mon_alertmanager_sha256: "{{ celestia_mon_versions.alertmanager.sha256[celestia_mon_alertmanager_arch] }}"
 
 # The binaries go to /opt/celestia-mon/alertmanager-<version>/ and the unit runs them from there,
 # so nothing else on the host is replaced. An upgrade is a new directory plus a restart.
@@ -15,5 +18,5 @@ celestia_mon_alertmanager_binaries:
 
 celestia_mon_alertmanager_config_dir: /etc/celestia-mon/alertmanager
 celestia_mon_alertmanager_data_dir: /var/lib/celestia-mon/alertmanager
-celestia_mon_alertmanager_listen_address: >-
-  {{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_ports.alertmanager }}
+# Loopback only: Prometheus runs on the same host, and Alertmanager has no login.
+celestia_mon_alertmanager_listen_address: "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"

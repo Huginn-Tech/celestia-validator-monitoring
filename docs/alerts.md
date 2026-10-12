@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has six alerts and a heartbeat. Each alert names the host it is about (the Watchdog excepted) and carries a severity:
+celestia-validator-monitoring has seven alerts and a heartbeat. Each alert names the host it is about (the Watchdog excepted) and carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -16,11 +16,12 @@ celestia-validator-monitoring has six alerts and a heartbeat. Each alert names t
 | [RemoteSignerProblem](#remotesignerproblem) | message | Remote signer too slow, or unable to sign proposals |
 | [FibreNotServing](#fibrenotserving) | message | Fibre running but not serving uploads, or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
-| [Watchdog](#watchdog) | heartbeat | Monitoring itself down (through the dead-man service) |
+| [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
+| [Watchdog](#watchdog) | heartbeat | Monitoring itself down, or an alert that could not be delivered (through the dead-man service) |
 
 **One cause, one notification.** While NodeNotAtHead or a page-level ServiceDown fires, ValidatorNotSigning, RemoteSignerProblem and FibreNotServing are held back. While the Fibre unit or its collector (celestia-mon-otelcol) is down, FibreNotServing is held back.
 
-**Thresholds** below are the defaults. Change them in `celestia_mon_thresholds` in your inventory (list every key) and run the playbook again; the dashboard's threshold lines follow.
+**Thresholds** below are the defaults. Change them in `celestia_mon_thresholds` in your inventory (list every key) and run `install.sh` on the monitor again; the dashboard's threshold lines follow.
 
 | Key | Default | Used by |
 |---|---|---|
@@ -32,7 +33,7 @@ celestia-validator-monitoring has six alerts and a heartbeat. Each alert names t
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
 | `crashloop_restarts` | 2 | ServiceDown (crash loop) |
 
-To see what is firing now, open Prometheus (`http://<monitor private address>:9912/alerts`) or Alertmanager (`:9913`).
+To see what is firing now, open Prometheus (`http://127.0.0.1:9912/alerts`) or Alertmanager (`http://127.0.0.1:9913`). Both listen on the monitor's loopback only: use them on the monitor, or through an SSH tunnel from your machine (`ssh -L 9912:127.0.0.1:9912 -L 9913:127.0.0.1:9913 <monitor>`, then the same URLs with `localhost`).
 
 ## ServiceDown
 
@@ -54,7 +55,7 @@ tmkms is watched only when its host has `celestia_mon_kms_scrape: true`. The cra
 **Check first.**
 
 1. On the host in the alert, `systemctl status <unit>` and `journalctl -u <unit> -n 100`. After an upgrade or a config change, the last lines usually name the cause: a binary that does not match the network's app version, a config key, a full or read-only disk.
-2. For "is not loaded": the unit was stopped and disabled, or `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Correct `celestia_mon_units` if needed and run the playbook again.
+2. For "is not loaded": the unit was stopped and disabled, or `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Correct `celestia_mon_units` if needed and run `install.sh` again on that host and on the monitor.
 3. For "is unreachable": from the monitor, `curl -s http://<host private address>:<port>/metrics | head`. If that fails while the service runs, check its listen address (for celestia-appd, `prometheus_listen_addr` in `config.toml`), a firewall on the host, and the private network between the hosts. `sudo celestia-mon-doctor` on the host checks the listen addresses and the node's metrics.
 
 **Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#troubleshooting), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
@@ -150,16 +151,35 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
 
+## MonitoringBroken
+
+**What it means.** Prometheus failed to evaluate one or more alert rules in the last 10 minutes, so some alerts may not fire. It fires at once and clears 10 minutes after the last failure. The alert names the monitor host.
+
+**Severity.** message.
+
+**Check first.**
+
+1. On the monitor, `journalctl -u celestia-mon-prometheus -n 100`: each "Evaluating rule failed" line names the rule and the error.
+2. Prometheus's rules page on the monitor (`http://127.0.0.1:9912/rules`, through an SSH tunnel from your machine) shows the failing rule and its last error.
+3. Free space for Prometheus's data (`df -h /var/lib/celestia-mon/prometheus`), and `sudo celestia-mon-doctor` on the monitor: checks 11 and 12 show whether Prometheus answers and which rule metrics have no series.
+
 ## Watchdog
 
-**What it means.** The Watchdog always fires. Alertmanager sends it every 1 to 2 minutes, only to the dead-man service in `celestia_mon_deadman_webhook_url`, which alerts you when the heartbeats stop. You never receive it from celestia-validator-monitoring itself. If the dead-man service alerts you, monitoring is down and no other celestia-validator-monitoring alert can reach you.
+**What it means.** The Watchdog always fires while monitoring works. Alertmanager sends it every 1 to 2 minutes, only to the dead-man service in `celestia_mon_deadman_webhook_url`, which alerts you when the heartbeats stop. You never receive it from celestia-validator-monitoring itself. The heartbeats stop:
+
+- when the monitor host, Prometheus or Alertmanager is down, or the monitor has lost its network;
+- for one hour after a page or message notification failed (Telegram, PagerDuty or Slack), so a broken alert channel reaches you through the dead-man service. Failed calls to the dead-man URL itself do not count.
+
+Set the dead-man service to notify you by email and on a channel other than your alert chat: when the alert chat is what broke, it is the only one left to tell you. If the dead-man service alerts you, assume that no other celestia-validator-monitoring alert can reach you until you find the cause.
+
+Receivers of type `webhook` in `celestia_mon_receivers` are not covered: Alertmanager labels their failures the same way as the dead-man webhook's (`integration="webhook"`), so a failing webhook receiver does not stop the heartbeat.
 
 **Severity.** heartbeat.
 
 **Check first.**
 
 1. Is the monitor host up and reachable? If the monitor is also the validator host, the validator may be down too.
-2. On the monitor, `systemctl status celestia-mon-prometheus celestia-mon-alertmanager` and `journalctl -u celestia-mon-alertmanager -n 100` (failed webhook calls to the dead-man URL show there).
-3. Outbound HTTPS from the monitor to the dead-man service, and the URL in `celestia_mon_deadman_webhook_url`.
+2. On the monitor, `systemctl status celestia-mon-prometheus celestia-mon-alertmanager` and `journalctl -u celestia-mon-alertmanager -n 100`. A failed notification shows there with its receiver and error, for example a rejected bot token or a removed chat; so do failed webhook calls to the dead-man URL.
+3. Outbound HTTPS from the monitor to the dead-man service and to the receivers, and the URL in `celestia_mon_deadman_webhook_url`.
 
-To test the chain end to end, stop Alertmanager on the monitor for longer than the dead-man period, then start it again (see the [quickstart](quickstart.md#6-set-up-the-dead-man-service)).
+The heartbeat resumes one hour after the last failed notification. To test the chain end to end, stop Alertmanager on the monitor for longer than the dead-man period, then start it again (see the [quickstart](quickstart.md#8-set-up-the-dead-man-service)).

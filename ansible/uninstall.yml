@@ -1,0 +1,179 @@
+---
+# Removes everything celestia-mon installed on a host, and nothing else: the celestia-mon-*
+# systemd units, the celestia-mon-* users and groups, /opt/celestia-mon, /etc/celestia-mon,
+# /var/lib/celestia-mon (Prometheus and Grafana data), /var/cache/celestia-mon,
+# /usr/local/bin/celestia-mon-doctor and the ufw rules with the comment celestia-mon.
+# celestia-appd, Fibre, tmkms and every other service, user, file and firewall rule stay
+# as they are. A second run changes nothing. install.sh --uninstall runs it on the host
+# itself for that host only, first as a dry run. It reads no inventory settings, so
+# install.sh needs neither the inventory nor the vault password for it. By hand, from ansible/:
+#   ansible-playbook -i <inventory> uninstall.yml --limit <host> --check
+- name: Remove celestia-mon
+  hosts: all
+  become: true
+  gather_facts: false
+  vars:
+    celestia_mon_uninstall_paths:
+      - /opt/celestia-mon
+      - /etc/celestia-mon
+      - /var/lib/celestia-mon
+      - /var/cache/celestia-mon
+      - /usr/local/bin/celestia-mon-doctor
+    # The units celestia-mon installs, plus any other celestia-mon-* unit file or drop-in directory.
+    celestia_mon_uninstall_units: >-
+      {{ (['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service', 'celestia-mon-prometheus.service',
+           'celestia-mon-alertmanager.service', 'celestia-mon-grafana.service']
+          + (celestia_mon_uninstall_unit_files.files | map(attribute='path') | map('basename') | map('regex_replace', '[.]d$', '')
+             | select('match', '.*[.]service$') | list)) | unique }}
+    celestia_mon_uninstall_loaded: >-
+      {{ celestia_mon_uninstall_unit_state.results | rejectattr('status.LoadState', 'equalto', 'not-found') | list }}
+    celestia_mon_uninstall_users: >-
+      {{ ansible_facts.getent_passwd | default({}) | dict2items | map(attribute='key') | select('match', 'celestia-mon-') | list }}
+    celestia_mon_uninstall_groups: >-
+      {{ ansible_facts.getent_group | default({}) | dict2items | map(attribute='key') | select('match', 'celestia-mon-') | list }}
+    # `ufw show added` prints each rule as a command: "ufw allow from <ip> to any port <p> proto tcp comment 'celestia-mon'".
+    celestia_mon_uninstall_rules: >-
+      {{ celestia_mon_uninstall_ufw.stdout_lines | default([]) | select('match', '^ufw .* comment .celestia-mon.$') | list }}
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+
+  tasks:
+    # install.sh runs the playbook on the host itself (ansible_connection=local) for one host,
+    # with the inventory "<host>," because nothing here reads inventory settings or secrets.
+    - name: Check that a local run targets one inventory host
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts_all | length == 1
+          - inventory_hostname == (celestia_mon_install_host | default(inventory_hostname))
+        fail_msg: >-
+          A local run (ansible_connection=local) must be limited to the one inventory host this machine is
+          (install.sh --host, or ansible-playbook --limit), named as in the inventory's host list, not by a group.
+          This run targets {{ ansible_play_hosts_all | join(', ') }}.
+        quiet: true
+      when: ansible_connection | default('ssh') == 'local'
+
+    # Unit files, drop-in directories, and the links in *.wants/ that disabling would remove.
+    - name: Find celestia-mon's unit files
+      ansible.builtin.find:
+        paths: /etc/systemd/system
+        patterns: celestia-mon-*
+        file_type: any
+        recurse: true
+        depth: 2
+      register: celestia_mon_uninstall_unit_files
+
+    # With only a name the module just reads the unit; a unit systemd does not know has LoadState not-found.
+    - name: Read the state of celestia-mon's units
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+      loop: "{{ celestia_mon_uninstall_units }}"
+      register: celestia_mon_uninstall_unit_state
+
+    - name: Read the users and groups
+      ansible.builtin.getent:
+        database: "{{ item }}"
+      loop:
+        - passwd
+        - group
+
+    - name: Look for celestia-mon's files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+        get_mime: false
+      loop: "{{ celestia_mon_uninstall_paths }}"
+      register: celestia_mon_uninstall_found
+
+    - name: Read the ufw rules
+      ansible.builtin.command: ufw show added
+      environment:
+        LC_ALL: C
+      register: celestia_mon_uninstall_ufw
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Write the removal plan for this host
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_plan_file }}"
+        content: |
+          Host:      {{ inventory_hostname }}
+          Services:  {{ celestia_mon_uninstall_loaded | map(attribute='item') | join(', ') or 'none' }}
+          Users:     {{ celestia_mon_uninstall_users | join(', ') or 'none' }}
+          Groups:    {{ celestia_mon_uninstall_groups | join(', ') or 'none' }}
+          Files:     {{ celestia_mon_uninstall_found.results | selectattr('stat.exists') | map(attribute='item') | join(', ') or 'none' }}
+          ufw rules: {{ celestia_mon_uninstall_rules | map('regex_replace', '^ufw ', '') | join('; ') or 'none' }}
+        mode: "0600"
+      changed_when: false
+      check_mode: false
+      diff: false
+      when: celestia_mon_plan_file is defined
+
+    - name: Stop and disable celestia-mon's units
+      ansible.builtin.systemd_service:
+        name: "{{ item.item }}"
+        state: stopped
+        enabled: false
+      loop: "{{ celestia_mon_uninstall_loaded }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # A unit that failed keeps that state after a stop, and systemd would list it until a reboot.
+    - name: Clear the failed state of celestia-mon's units
+      ansible.builtin.command:
+        argv: [systemctl, reset-failed, "{{ item.item }}"]
+      changed_when: true
+      loop: "{{ celestia_mon_uninstall_loaded | selectattr('status.ActiveState', 'equalto', 'failed') | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: Remove celestia-mon's unit files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ celestia_mon_uninstall_unit_files.files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      notify: Reload systemd
+
+    - name: Apply a pending systemd reload
+      ansible.builtin.meta: flush_handlers
+
+    - name: Remove celestia-mon's users
+      ansible.builtin.user:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ celestia_mon_uninstall_users }}"
+
+    # userdel usually removes a user's own group; this catches the rest.
+    - name: Remove celestia-mon's groups
+      ansible.builtin.group:
+        name: "{{ item }}"
+        state: absent
+      loop: "{{ celestia_mon_uninstall_groups }}"
+
+    - name: Remove celestia-mon's files
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ celestia_mon_uninstall_paths }}"
+
+    # Deleting by the rule itself, not by number, so other rules and their order stay as they are.
+    - name: Remove the ufw rules with the comment celestia-mon
+      ansible.builtin.command:
+        argv: "{{ ['ufw', 'delete'] + item.split()[1:-2] }}"
+      environment:
+        LC_ALL: C
+      register: celestia_mon_uninstall_deleted
+      changed_when: celestia_mon_uninstall_deleted.stdout is search('Rule deleted|Rules updated')
+      loop: "{{ celestia_mon_uninstall_rules }}"
+
+    - name: List the ufw rules a real run removes
+      ansible.builtin.debug:
+        msg: "{{ item }}"
+      changed_when: true
+      loop: "{{ celestia_mon_uninstall_rules }}"
+      when: ansible_check_mode

@@ -17,6 +17,10 @@ fibre_mount={{ celestia_mon_fibre_mount | default('') }}
 fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
 {% endif %}
 fibre_public_endpoint={{ (hostvars[groups['fibre'][0]].celestia_mon_fibre_public_endpoint | default('')) if groups.get('fibre', []) else '' }}
+{% if inventory_hostname in groups.get('monitor', []) %}
+prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
+alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
+{% endif %}
 signer_median_max={{ celestia_mon_thresholds.signer_median_seconds }}
 disk_min_free_ratio={{ celestia_mon_thresholds.disk_message_free_ratio }}
 private_address_regex={{ celestia_mon_private_address_regex }}

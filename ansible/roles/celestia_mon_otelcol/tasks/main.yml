@@ -28,6 +28,9 @@
 - name: Look for otelcol-contrib {{ celestia_mon_otelcol_version }}
   ansible.builtin.stat:
     path: "{{ celestia_mon_otelcol_binary }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: celestia_mon_otelcol_installed
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
@@ -54,7 +57,7 @@
       ansible.builtin.get_url:
         url: "{{ celestia_mon_otelcol_url }}/{{ celestia_mon_otelcol_tarball }}"
         dest: "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
-        checksum: "sha256:{{ celestia_mon_otelcol_url }}/{{ celestia_mon_otelcol_checksums }}"
+        checksum: "sha256:{{ celestia_mon_otelcol_sha256 }}"
         owner: root
         group: root
         mode: "0644"

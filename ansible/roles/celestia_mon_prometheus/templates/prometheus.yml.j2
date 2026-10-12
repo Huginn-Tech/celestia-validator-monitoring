@@ -11,16 +11,43 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Blocks are deleted when either limit is reached. Set both: a retention section
+# without time turns time-based retention off.
+storage:
+  tsdb:
+    retention:
+      time: {{ celestia_mon_prometheus_retention | string | to_json }}
+      size: {{ celestia_mon_prometheus_retention_size | string | to_json }}
+
 rule_files:
   - "{{ celestia_mon_prometheus_rules_dir }}/*.yml"
 
+# Alertmanager runs on this host and listens on loopback only.
 alerting:
   alertmanagers:
     - static_configs:
         - targets:
-            - "{{ target(celestia_mon_monitor_host, celestia_mon_ports.alertmanager) }}"
+            - "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"
 
 scrape_configs:
+  # Prometheus and Alertmanager themselves, on loopback: failing rule evaluations
+  # and failed notifications must be visible to the alert rules.
+  - job_name: prometheus
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ celestia_mon_ports.prometheus }}"
+        labels:
+          host: {{ celestia_mon_monitor_host | to_json }}
+          role: monitor
+
+  - job_name: alertmanager
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"
+        labels:
+          host: {{ celestia_mon_monitor_host | to_json }}
+          role: monitor
+
   # celestia-appd's own metrics endpoint ([instrumentation] prometheus_listen_addr).
   - job_name: celestia-app
     static_configs:

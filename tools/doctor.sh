@@ -8,8 +8,8 @@
 #   SKIP  the check does not apply on this host, or cannot run yet
 # Exit code: 0 when no check failed, 1 when one did, 2 on a usage error.
 #
-# Settings are read from /etc/celestia-mon/doctor.conf (key=value lines, written by the
-# celestia-mon playbook) and can be given or overridden as flags: "--node-rpc-url URL"
+# Settings are read from /etc/celestia-mon/doctor.conf (key=value lines, written by
+# install.sh) and can be given or overridden as flags: "--node-rpc-url URL"
 # sets node_rpc_url. Without a config file the defaults below apply and the
 # host's roles are guessed from its systemd units. Run it as root
 # (sudo celestia-mon-doctor) so it can read the node's config and see which process
@@ -18,6 +18,9 @@
 # celestia-appd (checks 4 and 5) runs as the node's service user. A
 # multiplexer build of it unpacks any missing embedded binaries into
 # <node home>/bin, as the node itself does at every start.
+#
+# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 and 12
+# run on the monitor host and ask them there.
 #
 # Needs only bash, coreutils, util-linux (runuser), curl, ss, systemctl, grep,
 # sed and awk.
@@ -39,6 +42,8 @@ declare -A C=(
   [fibre_public_endpoint]=""
   [fibre_port]=""
   [fibre_otel_endpoint]="http://127.0.0.1:9915"
+  [prometheus_url]="http://127.0.0.1:9912"
+  [alertmanager_url]="http://127.0.0.1:9913"
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
   [time_offset_max]="0.1"
@@ -50,9 +55,9 @@ usage() {
   cat <<'EOF'
 Usage: celestia-mon-doctor [--config FILE] [--KEY VALUE ...]
 
-Read-only checks for a Celestia validator, Fibre or KMS host. Settings come
-from /etc/celestia-mon/doctor.conf (KEY=VALUE lines) and can be overridden with flags
-(--node-rpc-url URL sets node_rpc_url).
+Read-only checks for a Celestia validator, Fibre, KMS or monitor host.
+Settings come from /etc/celestia-mon/doctor.conf (KEY=VALUE lines) and can be
+overridden with flags (--node-rpc-url URL sets node_rpc_url).
 
   roles                  comma-separated: validator, fibre, kms, monitor
                          (default: guessed from the units on this host)
@@ -72,6 +77,10 @@ from /etc/celestia-mon/doctor.conf (KEY=VALUE lines) and can be overridden with 
                          --server-listen-address, else server_listen_address
                          in Fibre's config/server_config.toml, else 7980)
   fibre_otel_endpoint    expected OTLP base URL (default http://127.0.0.1:9915)
+  prometheus_url         celestia-mon's Prometheus, on the monitor host
+                         (default http://127.0.0.1:9912)
+  alertmanager_url       celestia-mon's Alertmanager, on the monitor host
+                         (default http://127.0.0.1:9913)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   time_offset_max        seconds (default 0.1)
@@ -233,12 +242,23 @@ listeners() { # port -> local addresses of the TCP sockets listening on it
   ss -Htln 2>/dev/null | awk -v p=":$1" 'length($4) > length(p) && substr($4, length($4) - length(p) + 1) == p { print $4 }'
 }
 
-addr_class() { # local address as ss prints it -> wildcard, private or public
+addr_host() { # local address as ss prints it -> the address without port, brackets, zone or ::ffff:
   local h=${1%:*}
   h=${h%%\%*}
   h=${h#\[}
   h=${h%\]}
-  h=${h#::ffff:}
+  printf '%s' "${h#::ffff:}"
+}
+
+is_loopback() { # local address as ss prints it -> true for 127.0.0.0/8 and ::1
+  local h
+  h=$(addr_host "$1")
+  [[ $h == 127.* || $h == ::1 ]]
+}
+
+addr_class() { # local address as ss prints it -> wildcard, private or public
+  local h
+  h=$(addr_host "$1")
   case $h in
     0.0.0.0 | '*' | ::) echo wildcard ;;
     *)
@@ -357,14 +377,14 @@ check_signer() {
   laddr=$(toml_get "$cfg" "" priv_validator_laddr)
   if [[ -z $laddr ]]; then
     if [[ $signer == remote ]]; then
-      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, but celestia-mon is set to signer: remote. Fix: set celestia_mon_signer: local in the inventory and re-run the playbook (or finish the remote signer setup)"
+      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, but celestia-mon is set to signer: remote. Fix: set celestia_mon_signer: local in the inventory and re-run install.sh on each host (or finish the remote signer setup)"
     else
       report SKIP 2 "$name" "local key (priv_validator_laddr is empty)"
     fi
     return
   fi
   if [[ $signer == local ]]; then
-    report FAIL 2 "$name" "priv_validator_laddr = $laddr, but celestia-mon is set to signer: local. Fix: set celestia_mon_signer: remote in the inventory and re-run the playbook"
+    report FAIL 2 "$name" "priv_validator_laddr = $laddr, but celestia-mon is set to signer: local. Fix: set celestia_mon_signer: remote in the inventory and re-run install.sh on each host"
     return
   fi
   if [[ -z $METRICS ]]; then
@@ -571,7 +591,7 @@ check_fibre_otel() {
   fi
   port=$(url_port "$want")
   if [[ -z $(listeners "$port") ]]; then
-    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run the celestia-mon playbook so the collector (celestia-mon-otelcol) is installed and running, then read \"journalctl -u celestia-mon-otelcol -n 100\""
+    report FAIL 7 "$name" "$src is $got, but nothing listens on port $port. Fix: re-run install.sh on this host so the collector (celestia-mon-otelcol) is installed and running, then read \"journalctl -u celestia-mon-otelcol -n 100\""
     return
   fi
   report OK 7 "$name" "$src is $got"
@@ -593,12 +613,14 @@ firewall_state() {
 
 # The systemd units celestia-mon installs. Check 8 looks only at the sockets of their
 # main processes, so other software on the host (a node_exporter, Prometheus,
-# Grafana or collector of its own) is left alone.
+# Grafana or collector of its own) is left alone. Every one of them must listen
+# on a private address; Prometheus and Alertmanager on 127.0.0.1 only.
 CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-grafana)
+CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager)
 
 check_binds() {
-  local name="private binds" fw unit pid addr
-  local -a ok=() bad=()
+  local name="private binds" fw unit pid addr detail
+  local -a ok=() bad=() wide=()
   local -A unit_of=()
   fw=$(firewall_state)
   if [[ $(id -u) -ne 0 ]]; then
@@ -613,10 +635,20 @@ check_binds() {
   while read -r pid addr; do
     [[ -n $pid && -n ${unit_of[$pid]+set} ]] || continue
     unit=${unit_of[$pid]}
-    if [[ $(addr_class "$addr") == private ]]; then ok+=("$unit $addr"); else bad+=("$unit $addr"); fi
+    if [[ $(addr_class "$addr") != private ]]; then
+      bad+=("$unit $addr")
+    elif [[ " ${CELESTIA_MON_LOOPBACK_UNITS[*]} " == *" $unit "* ]] && ! is_loopback "$addr"; then
+      wide+=("$unit $addr")
+    else
+      ok+=("$unit $addr")
+    fi
   done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
   if ((${#bad[@]} > 0)); then
-    report FAIL 8 "$name" "$(join "${bad[@]}") not on a private address; firewall: $fw. Fix: set celestia_mon_private_ip for this host to its private address and re-run the celestia-mon playbook"
+    detail="$(join "${bad[@]}") not on a private address"
+    if ((${#wide[@]} > 0)); then detail+="; $(join "${wide[@]}") not on 127.0.0.1"; fi
+    report FAIL 8 "$name" "$detail; firewall: $fw. Fix: set celestia_mon_private_ip for this host to its private address and re-run install.sh on each host"
+  elif ((${#wide[@]} > 0)); then
+    report FAIL 8 "$name" "$(join "${wide[@]}") not on 127.0.0.1, where Prometheus and Alertmanager listen; firewall: $fw. Fix: re-run install.sh on this host"
   elif ((${#ok[@]} > 0)); then
     report OK 8 "$name" "$(join "${ok[@]}"); firewall: $fw"
   else
@@ -703,6 +735,149 @@ check_disks() {
   fi
 }
 
+# --------------------------------------------------------- monitor checks
+
+http_code() { curl -s -g -o /dev/null --max-time 5 -w '%{http_code}' "$1" 2>/dev/null; }
+answer() { # HTTP status from http_code -> words for a report line
+  if [[ $1 == 000 ]]; then printf 'no connection'; else printf 'HTTP %s' "$1"; fi
+}
+
+TARGETS_UP=0      # scrape targets whose last scrape worked
+TARGETS_PENDING=0 # scrape targets not scraped yet
+TARGETS_DOWN=()   # "job url (error)" of each target whose last scrape failed
+read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING and TARGETS_DOWN
+  local line pool url err re_url='"scrapeUrl":"([^"]*)"' re_health='"health":"([a-z]*)"' re_err='"lastError":"(([^"\\]|\\.)*)"'
+  TARGETS_UP=0
+  TARGETS_PENDING=0
+  TARGETS_DOWN=()
+  # One line per active target, starting at its scrapePool field.
+  while IFS= read -r line; do
+    [[ $line == '"scrapePool":"'* && $line =~ $re_health ]] || continue
+    case ${BASH_REMATCH[1]} in
+      up) TARGETS_UP=$((TARGETS_UP + 1)) ;;
+      down)
+        pool=${line#'"scrapePool":"'}
+        pool=${pool%%'"'*}
+        url=""
+        err=""
+        if [[ $line =~ $re_url ]]; then url=${BASH_REMATCH[1]}; fi
+        # Keep the last part of the error, such as "connection refused".
+        if [[ $line =~ $re_err ]]; then err=${BASH_REMATCH[1]//'\"'/'"'}; fi
+        TARGETS_DOWN+=("$pool $url${err:+ (${err##*: })}")
+        ;;
+      *) TARGETS_PENDING=$((TARGETS_PENDING + 1)) ;;
+    esac
+  done < <(http_get "$1/api/v1/targets?state=active" | sed 's/"scrapePool":/\n&/g')
+}
+
+PROM_OK=0
+check_stack() {
+  local name="monitor stack" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} code end total
+  if ! has_role monitor; then report SKIP 11 "$name" "not the monitor host"; return; fi
+  # Prometheus answers 503 until it has loaded its data, as it does right after
+  # an install; the first scrape of each target follows within one interval.
+  end=$((SECONDS + 60))
+  code=$(http_code "$prom/-/ready")
+  while [[ $code == 503 ]] && ((SECONDS < end)); do
+    sleep 2
+    code=$(http_code "$prom/-/ready")
+  done
+  if [[ $code != 200 ]]; then
+    report FAIL 11 "$name" "Prometheus is not ready at $prom ($(answer "$code")). Fix: read \"systemctl status celestia-mon-prometheus\" and \"journalctl -u celestia-mon-prometheus -n 100\"; it listens on 127.0.0.1 only, so run doctor on the monitor host"
+    return
+  fi
+  PROM_OK=1
+  code=$(http_code "$am/-/ready")
+  if [[ $code != 200 ]]; then
+    report FAIL 11 "$name" "Alertmanager is not ready at $am ($(answer "$code")), so no alert is sent. Fix: read \"systemctl status celestia-mon-alertmanager\" and \"journalctl -u celestia-mon-alertmanager -n 100\""
+    return
+  fi
+  read_targets "$prom"
+  # Prometheus lists no targets until its scrape manager's first reload, about
+  # 5 s after it turns ready; each target is then "unknown" until its first scrape.
+  while ((TARGETS_PENDING > 0 || TARGETS_UP + ${#TARGETS_DOWN[@]} == 0)) && ((SECONDS < end)); do
+    sleep 2
+    read_targets "$prom"
+  done
+  total=$((TARGETS_UP + TARGETS_PENDING + ${#TARGETS_DOWN[@]}))
+  if ((total == 0)); then
+    report FAIL 11 "$name" "Prometheus at $prom has no scrape targets. Fix: re-run install.sh on this host, then read \"journalctl -u celestia-mon-prometheus -n 100\""
+  elif ((${#TARGETS_DOWN[@]} > 0)); then
+    report FAIL 11 "$name" "${#TARGETS_DOWN[@]} of $total scrape targets down: $(join "${TARGETS_DOWN[@]}"). Fix: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where); \"curl -s <url> | head\" must answer from this host, so also check the private network and any firewall between the hosts"
+  elif ((TARGETS_PENDING > 0)); then
+    report WARN 11 "$name" "Prometheus and Alertmanager answer; $TARGETS_PENDING of $total scrape targets not scraped yet. Fix: run celestia-mon-doctor again in a minute"
+  else
+    report OK 11 "$name" "Prometheus at $prom and Alertmanager at $am answer; $total of $total scrape targets up"
+  fi
+}
+
+# Reads Prometheus's rules API (JSON) and prints "<metric> <rule>" for every
+# metric a loaded rule reads. The list comes from the rules Prometheus runs, so
+# it follows the rules file without a copy here. Each "query" is Prometheus's
+# own rendering of the expression, so only that form needs parsing: drop string
+# literals, label matchers, ranges and grouping label lists, then keep the names
+# that are not functions, aggregations, keywords, or units of numbers and durations.
+rule_metrics() {
+  grep -oE '"name":"[^"]*","query":"([^"\\]|\\.)*"' | awk '
+    BEGIN { esc = sprintf("%c", 1) }
+    {
+      rule = $0
+      sub(/^"name":"/, "", rule)
+      sub(/".*$/, "", rule)
+      q = $0
+      sub(/^"name":"[^"]*","query":"/, "", q)
+      sub(/"$/, "", q)
+      # JSON escapes: mark escaped backslashes first, so \\" stays an escaped
+      # quote inside a PromQL string. Prometheus writes < > & as unicode escapes.
+      gsub(/\\\\/, esc, q)
+      gsub(/\\"/, "\"", q)
+      gsub(/\\u[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]/, " ", q)
+      gsub("\"([^\"" esc "]|" esc ".)*\"", " ", q)
+      q = " " q
+      gsub(/[{][^}]*[}]/, " ", q)
+      gsub(/\[[^[]*\]/, " ", q)
+      gsub(/[^a-zA-Z0-9_:](by|without|on|ignoring|group_left|group_right) *[(][^)]*[)]/, " ", q)
+      while (match(q, /[a-zA-Z_:][a-zA-Z0-9_:]*/)) {
+        t = substr(q, RSTART, RLENGTH)
+        before = substr(q, RSTART - 1, 1)
+        q = substr(q, RSTART + RLENGTH)
+        if (before ~ /[0-9.]/ || q ~ /^ *[(]/) continue
+        if (tolower(t) ~ /^(and|or|unless|atan2|bool|offset|anchored|smoothed|inf|nan)$/) continue
+        print t, rule
+      }
+    }'
+}
+
+check_rule_metrics() {
+  local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total
+  local -a missing=() rules=()
+  if ! has_role monitor; then report SKIP 12 "$name" "not the monitor host"; return; fi
+  if ((!PROM_OK)); then report SKIP 12 "$name" "Prometheus not answering (check 11)"; return; fi
+  pairs=$(http_get "$prom/api/v1/rules?exclude_alerts=true" | rule_metrics | sort -u)
+  if [[ -z $pairs ]]; then
+    report FAIL 12 "$name" "Prometheus at $prom has no rules loaded. Fix: read \"journalctl -u celestia-mon-prometheus -n 100\" for errors in the rule files, then re-run install.sh on this host"
+    return
+  fi
+  names=$(cut -d ' ' -f 1 <<<"$pairs" | sort -u)
+  total=$(grep -c . <<<"$names")
+  # One query lists which of the names have series now.
+  present=$(curl -fsS -g --max-time 10 -G --data-urlencode "query=count by (__name__) ({__name__=~\"$(paste -sd '|' <<<"$names")\"})" "$prom/api/v1/query" 2>/dev/null)
+  if [[ $present != *'"status":"success"'* ]]; then
+    report FAIL 12 "$name" "the series query to $prom/api/v1/query failed. Fix: read \"journalctl -u celestia-mon-prometheus -n 100\""
+    return
+  fi
+  present=$(grep -oE '"__name__":"[^"]*"' <<<"$present" | cut -d '"' -f 4)
+  while read -r m; do
+    mapfile -t rules < <(awk -v m="$m" '$1 == m { print $2 }' <<<"$pairs")
+    missing+=("$m ($(join "${rules[@]}"))")
+  done < <(grep -vxF -f <(printf '%s\n' "$present") <<<"$names")
+  if ((${#missing[@]} == 0)); then
+    report OK 12 "$name" "all $total metrics the alert rules read have series"
+  else
+    report WARN 12 "$name" "${#missing[@]} of $total metrics the alert rules read have no series (the rules that read each are in brackets): $(join "${missing[@]}"). Fix: a counter of failures or the time of an event can stay absent until the first one happens; for any other name check that its target is up (check 11) and that the service exports it under this name (curl the target's /metrics)"
+  fi
+}
+
 # ------------------------------------------------------------------- main
 
 conf=/etc/celestia-mon/doctor.conf
@@ -757,6 +932,7 @@ if [[ -z ${C[roles]} ]]; then
   roles=()
   if unit_loaded "${C[appd_unit]}"; then roles+=(validator); fi
   if unit_loaded "${C[fibre_unit]}"; then roles+=(fibre); fi
+  if unit_loaded celestia-mon-prometheus; then roles+=(monitor); fi
   C[roles]=$(IFS=,; printf '%s' "${roles[*]}")
 fi
 if [[ -z ${C[fibre_enabled]} ]]; then
@@ -776,6 +952,8 @@ check_fibre_otel
 check_binds
 check_time
 check_disks
+check_stack
+check_rule_metrics
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

@@ -23,6 +23,18 @@ check_for_plugin_updates = false
 [users]
 allow_sign_up = false
 
+[auth.anonymous]
+# Every page needs a login.
+enabled = false
+
+[snapshots]
+# No "Publish to snapshots.raintank.io": snapshots stay on this host.
+external_enabled = false
+
+[public_dashboards]
+# No public dashboard links that open without a login.
+enabled = false
+
 [security]
 admin_user = admin
 # Read only when Grafana creates the admin user on its first start.
@@ -30,5 +42,5 @@ admin_user = admin
 admin_password = $__file{{ '{' ~ celestia_mon_grafana_admin_password_file ~ '}' }}
 
 [plugins]
-# Otherwise Grafana downloads and auto-updates four app plugins from grafana.com on every start.
+# Otherwise Grafana downloads and auto-updates a set of plugins from grafana.com on every start.
 preinstall_disabled = true

@@ -20,6 +20,9 @@
 - name: Look for node_exporter {{ celestia_mon_node_exporter_version }}
   ansible.builtin.stat:
     path: "{{ celestia_mon_node_exporter_binary }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
   register: celestia_mon_node_exporter_installed
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
@@ -46,7 +49,7 @@
       ansible.builtin.get_url:
         url: "{{ celestia_mon_node_exporter_url }}/{{ celestia_mon_node_exporter_release }}.tar.gz"
         dest: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
-        checksum: "sha256:{{ celestia_mon_node_exporter_url }}/sha256sums.txt"
+        checksum: "sha256:{{ celestia_mon_node_exporter_sha256 }}"
         owner: root
         group: root
         mode: "0644"

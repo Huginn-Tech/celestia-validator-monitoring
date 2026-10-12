@@ -20,8 +20,9 @@ celestia_mon_node_rpc_port: 26657
 
 # Ports of the services celestia-mon installs: one block that common tools do not use, so
 # celestia-mon runs next to an existing node_exporter, Prometheus, Grafana or collector.
-# All of them listen on celestia_mon_private_ip only, except otelcol_otlp: the collector's
-# OTLP/HTTP receiver on 127.0.0.1, where Fibre pushes its metrics
+# node_exporter, otelcol_prometheus and grafana listen on celestia_mon_private_ip;
+# prometheus, alertmanager and otelcol_otlp listen on 127.0.0.1 only. otelcol_otlp is the
+# collector's OTLP/HTTP receiver, where Fibre pushes its metrics
 # (--otel-endpoint http://127.0.0.1:9915 with the default below).
 # The playbook stops if another process already listens on one of them.
 # Overriding celestia_mon_ports replaces the whole map, so list every key.
@@ -58,18 +59,42 @@ celestia_mon_receivers:
 # every 1-2 minutes; the service alerts you when the pings stop.
 celestia_mon_deadman_webhook_url: ""
 
+# How long and how much data Prometheus keeps on the monitor host. Prometheus drops
+# the oldest data when either limit is reached. The size uses Prometheus's units
+# (B, KB, MB, GB, TB; base 1024); the install checks that the disk has room for it.
 celestia_mon_prometheus_retention: 30d
+celestia_mon_prometheus_retention_size: 8GB
+
+# Resource caps on every celestia-mon unit, so the monitoring never competes with
+# celestia-appd, Fibre or tmkms for CPU, disk or memory. Nice, CPUWeight and IOWeight
+# apply to every unit (systemd's defaults are 0, 100 and 100). Above MemoryHigh the
+# kernel reclaims the service's memory hard and slows it down; at MemoryMax it kills
+# the service and systemd restarts it. Values use systemd's units (K, M, G; base 1024).
+# Overriding celestia_mon_memory replaces the whole map, so list every service.
+celestia_mon_nice: 10
+celestia_mon_cpu_weight: 20
+celestia_mon_io_weight: 20
+celestia_mon_memory:
+  node_exporter: {high: 64M, max: 128M}
+  otelcol: {high: 256M, max: 512M}
+  prometheus: {high: 1G, max: 2G}
+  alertmanager: {high: 64M, max: 128M}
+  grafana: {high: 256M, max: 512M}
 
 # Per-host settings (set them in host_vars or the inventory):
-#   celestia_mon_private_ip            required on every host celestia-mon touches
-#   celestia_mon_data_mounts           list of mount points to watch (node data, tmkms state)
-#   celestia_mon_fibre_mount           Fibre store mount point (fibre hosts)
-#   celestia_mon_fibre_public_endpoint host:port registered with valaddr set-host (fibre hosts)
-#   celestia_mon_kms_scrape            install node_exporter on a kms host (default false)
-#   celestia_mon_link_mbps             optional, the link speed you pay for in Mbit/s, for the Link load
-#                              panel (every node_exporter host). Set it when the host reports
-#                              no NIC speed (virtio), has more than one physical NIC, or buys
-#                              less than its port speed
-#   celestia_mon_node_home             celestia-appd home for celestia-mon-doctor (validator host). Default: the
-#                              unit's --home, CELESTIA_APP_HOME, DAEMON_HOME, or ~/.celestia-app
-#                              of the unit's User
+#   celestia_mon_private_ip             required on every host celestia-mon touches; an address
+#                                       of that host itself (the playbook checks)
+#   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state)
+#   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts)
+#   celestia_mon_fibre_public_endpoint  host:port registered with valaddr set-host (fibre hosts)
+#   celestia_mon_kms_scrape             install node_exporter on a kms host (default false)
+#   celestia_mon_firewall_sources       optional list of addresses ufw lets reach this host's scraped
+#                                       ports, when ufw is active (default: the monitor's
+#                                       celestia_mon_private_ip)
+#   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
+#                                       Link load panel (every node_exporter host). Set it when
+#                                       the host reports no NIC speed (virtio), has more than one
+#                                       physical NIC, or buys less than its port speed
+#   celestia_mon_node_home              celestia-appd home for celestia-mon-doctor (validator host).
+#                                       Default: the unit's --home, CELESTIA_APP_HOME, DAEMON_HOME,
+#                                       or ~/.celestia-app of the unit's User

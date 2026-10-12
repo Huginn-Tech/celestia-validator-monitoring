@@ -17,6 +17,15 @@ ExecStart={{ celestia_mon_alertmanager_home }}/alertmanager \
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
+# Lower CPU and disk priority than the Celestia services, and a memory ceiling.
+Nice={{ celestia_mon_nice }}
+CPUWeight={{ celestia_mon_cpu_weight }}
+IOWeight={{ celestia_mon_io_weight }}
+MemoryHigh={{ celestia_mon_memory.alertmanager.high }}
+MemoryMax={{ celestia_mon_memory.alertmanager.max }}
+# Go's garbage collector works harder as the process nears this limit (90% of MemoryHigh),
+# before the kernel starts slowing the service down. Alertmanager sets no limit of its own.
+Environment=GOMEMLIMIT={{ (0.9 * (celestia_mon_memory.alertmanager.high | ansible.builtin.human_to_bytes)) | int }}
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

@@ -1,10 +1,13 @@
 ---
-celestia_mon_prometheus_version: "{{ celestia_mon_versions.prometheus }}"
+celestia_mon_prometheus_version: "{{ celestia_mon_versions.prometheus.version }}"
 celestia_mon_prometheus_arch_map:
   x86_64: amd64
   aarch64: arm64
-celestia_mon_prometheus_release: "prometheus-{{ celestia_mon_prometheus_version }}.linux-{{ celestia_mon_prometheus_arch_map[ansible_facts.architecture] }}"
+celestia_mon_prometheus_arch: "{{ celestia_mon_prometheus_arch_map[ansible_facts.architecture] }}"
+celestia_mon_prometheus_release: "prometheus-{{ celestia_mon_prometheus_version }}.linux-{{ celestia_mon_prometheus_arch }}"
 celestia_mon_prometheus_download_url: "https://github.com/prometheus/prometheus/releases/download/v{{ celestia_mon_prometheus_version }}"
+# Pinned in versions.yml from the release's sha256sums.txt; nothing is fetched to check the download.
+celestia_mon_prometheus_sha256: "{{ celestia_mon_versions.prometheus.sha256[celestia_mon_prometheus_arch] }}"
 
 # The binaries go to /opt/celestia-mon/prometheus-<version>/ and the unit runs them from there,
 # so nothing else on the host is replaced. An upgrade is a new directory plus a restart.
@@ -15,5 +18,5 @@ celestia_mon_prometheus_binaries:
 
 celestia_mon_prometheus_config_dir: /etc/celestia-mon/prometheus
 celestia_mon_prometheus_data_dir: /var/lib/celestia-mon/prometheus
-celestia_mon_prometheus_listen_address: >-
-  {{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_ports.prometheus }}
+# Loopback only: Grafana and Alertmanager run on the same host, and Prometheus has no login.
+celestia_mon_prometheus_listen_address: "127.0.0.1:{{ celestia_mon_ports.prometheus }}"

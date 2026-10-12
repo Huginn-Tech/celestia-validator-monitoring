@@ -6,12 +6,8 @@
 - name: Check the addresses celestia-mon's services listen on
   when: celestia_mon_host_managed | bool
   vars:
-    # The units site.yml installs on this host: node_exporter on Celestia hosts, the
-    # collector on Fibre hosts, the stack on the monitor.
-    celestia_mon_bind_check_services: >-
-      {{ (['celestia-mon-node-exporter'] if inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) else [])
-         + (['celestia-mon-otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
-         + (['celestia-mon-prometheus', 'celestia-mon-alertmanager', 'celestia-mon-grafana'] if inventory_hostname in groups.get('monitor', []) else []) }}
+    # The units site.yml installs on this host.
+    celestia_mon_bind_check_services: "{{ celestia_mon_host_services | map('extract', celestia_mon_services, 'unit') | list }}"
   block:
     # With only a name the module just reads the unit; a missing unit has MainPID 0.
     - name: Read the main PID of each celestia-mon service
@@ -33,13 +29,14 @@
           - celestia_mon_bind_check_address is match(celestia_mon_private_address_regex)
         fail_msg: >-
           {{ item | regex_findall('[(]"([^"]+)",pid=') | unique | join(', ') }} listens on {{ item.split()[3] }},
-          a wildcard or public address. celestia-mon's services must bind celestia_mon_private_ip only.
+          a wildcard or public address. celestia-mon's services must bind celestia_mon_private_ip or 127.0.0.1 only.
         quiet: true
       loop: "{{ celestia_mon_bind_check_sockets.stdout_lines | select('search', celestia_mon_bind_check_owner) | list }}"
       loop_control:
         label: "{{ item.split()[3] }}"
       vars:
-        celestia_mon_bind_check_pids: "{{ celestia_mon_bind_check_units.results | map(attribute='status.MainPID', default='0') | reject('equalto', '0') | list }}"
+        celestia_mon_bind_check_pids: >-
+          {{ celestia_mon_bind_check_units.results | map(attribute='status.MainPID', default='0') | reject('equalto', '0') | list }}
         # ss prints the owning processes as users:(("name",pid=...,fd=...),...).
         celestia_mon_bind_check_owner: "pid=({{ celestia_mon_bind_check_pids | join('|') if celestia_mon_bind_check_pids else 'none' }}),"
         # Local address without the port, IPv6 brackets or %interface suffix.

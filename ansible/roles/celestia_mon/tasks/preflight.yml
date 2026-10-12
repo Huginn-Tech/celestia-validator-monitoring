@@ -1,0 +1,205 @@
+---
+# Read-only checks before celestia-mon changes anything on this host. site.yml runs them in
+# its first play on every run, dry runs included, so a failed check stops the run before any
+# change. The first two checks are the local-run guard: install.sh runs the playbook on the
+# host itself (ansible_connection=local) for one inventory host, and a local run for several
+# hosts, or for a host that is not this machine, would put other hosts' services here.
+# With celestia_mon_plan_file set (install.sh sets it for its dry run), a short summary of
+# what celestia-mon puts on this host is written to that file.
+
+# install.sh also passes celestia_mon_install_host (its --host), so a group name that
+# happens to hold one host is refused too.
+- name: Check that a local run targets one inventory host
+  ansible.builtin.assert:
+    that:
+      - ansible_play_hosts_all | length == 1
+      - inventory_hostname == (celestia_mon_install_host | default(inventory_hostname))
+    fail_msg: >-
+      A local run (ansible_connection=local) must be limited to the one inventory host this machine is
+      (install.sh --host, or ansible-playbook --limit), named as in the inventory's host list, not by a group.
+      This run targets {{ ansible_play_hosts_all | join(', ') }}.
+    quiet: true
+  when: ansible_connection | default('ssh') == 'local'
+
+- name: Read the addresses of this machine
+  ansible.builtin.command: ip -o addr show
+  register: celestia_mon_preflight_ip
+  changed_when: false
+  check_mode: false
+
+- name: Check that celestia_mon_private_ip is an address of this machine
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_private_ip | string | lower in celestia_mon_preflight_addresses
+    fail_msg: >-
+      celestia_mon_private_ip of {{ inventory_hostname }} is {{ celestia_mon_private_ip }}, which is not an address of
+      this machine ({{ celestia_mon_preflight_addresses | join(', ') }}). Fix the inventory, or run for the host this
+      machine is (install.sh --host).
+    quiet: true
+  vars:
+    # Lines such as "inet 10.0.0.5/24 ...", "inet6 fd00::5/64 ..." or "inet 10.0.0.5 peer 10.0.0.6/32 ...".
+    celestia_mon_preflight_addresses: "{{ celestia_mon_preflight_ip.stdout | regex_findall('inet6? ([0-9A-Fa-f.:]+)[/ ]') | map('lower') | list }}"
+
+# The minimal subset: distribution, service manager, architecture and user.
+- name: Read the system facts
+  ansible.builtin.setup:
+    gather_subset:
+      - "!all"
+
+- name: Check the system
+  ansible.builtin.assert:
+    that:
+      - ansible_facts.distribution == 'Ubuntu'
+      - ansible_facts.distribution_version == '24.04'
+      - ansible_facts.service_mgr == 'systemd'
+      - ansible_facts.architecture in ['x86_64', 'aarch64']
+      - ansible_facts.effective_user_id | int == 0
+    fail_msg: >-
+      celestia-mon needs Ubuntu 24.04 with systemd on x86_64 or aarch64, run as root. This host runs
+      {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} on {{ ansible_facts.architecture }}
+      with {{ ansible_facts.service_mgr }}, and the play runs as uid {{ ansible_facts.effective_user_id }}.
+    quiet: true
+
+- name: Check that celestia-mon's ports are free or held by its own services
+  ansible.builtin.include_tasks: port_check.yml
+  vars:
+    celestia_mon_port_check_port: "{{ celestia_mon_ports[item.1] }}"
+    celestia_mon_port_check_unit: "{{ item.0.unit }}"
+  loop: "{{ celestia_mon_host_services | map('extract', celestia_mon_services) | list | subelements('ports') }}"
+  loop_control:
+    label: "{{ item.0.unit }} {{ item.1 }}"
+
+# Disk: a release needs room for its download, the unpacked release and the installed
+# binaries (celestia_mon_services.*.disk_mb) unless that version is installed already, and
+# Prometheus's data may grow to celestia_mon_prometheus_retention_size on the monitor.
+- name: Look for the pinned releases already installed here
+  ansible.builtin.stat:
+    path: "/opt/celestia-mon/{{ celestia_mon_services[item].dir }}-{{ celestia_mon_versions[celestia_mon_services[item].version].version }}"
+    get_checksum: false
+    get_mime: false
+  loop: "{{ celestia_mon_host_services }}"
+  register: celestia_mon_preflight_releases
+
+- name: Measure the data Prometheus keeps now
+  ansible.builtin.command:
+    argv: [du, -sb, /var/lib/celestia-mon/prometheus]
+  register: celestia_mon_preflight_tsdb
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: "'prometheus' in celestia_mon_host_services"
+
+- name: Read the free disk space where celestia-mon writes
+  ansible.builtin.command:
+    # A block list: in a flow list [...] the comma in --output=avail,target would split the option.
+    argv:
+      - df
+      - --output=avail,target
+      - -B1
+      - "{{ item }}"
+  loop: [/opt, /var/cache, /var/lib]
+  register: celestia_mon_preflight_df
+  changed_when: false
+  check_mode: false
+
+- name: Read the memory this machine has available
+  ansible.builtin.slurp:
+    src: /proc/meminfo
+  register: celestia_mon_preflight_meminfo
+
+- name: Note the disk space and memory celestia-mon needs here
+  ansible.builtin.set_fact:
+    celestia_mon_preflight_install_mib: >-
+      {{ celestia_mon_preflight_releases.results | rejectattr('stat.exists') | map(attribute='item')
+         | map('extract', celestia_mon_services, 'disk_mb') | sum }}
+    celestia_mon_preflight_data_mib: >-
+      {{ ([0, (celestia_mon_prometheus_retention_size | string | regex_replace('iB$', 'B') | human_to_bytes)
+              - (celestia_mon_preflight_tsdb.stdout | default('') | regex_search('^[0-9]+') | default('0', true) | int)] | max) // 1048576
+         if 'prometheus' in celestia_mon_host_services else 0 }}
+    celestia_mon_preflight_mem_available_mib: >-
+      {{ (celestia_mon_preflight_meminfo.content | b64decode | regex_findall('MemAvailable: +([0-9]+) kB') | first | default(0) | int) // 1024 }}
+    # Values systemd takes but that have no fixed size (infinity, a percentage) are left out of the sums.
+    celestia_mon_preflight_mem_high_mib: >-
+      {{ (celestia_mon_host_services | map('extract', celestia_mon_memory) | map(attribute='high') | map('string')
+          | select('match', '^[0-9.]+ *[KMGT]?$') | map('human_to_bytes') | sum) // 1048576 }}
+    celestia_mon_preflight_mem_max_mib: >-
+      {{ (celestia_mon_host_services | map('extract', celestia_mon_memory) | map(attribute='max') | map('string')
+          | select('match', '^[0-9.]+ *[KMGT]?$') | map('human_to_bytes') | sum) // 1048576 }}
+
+# The install space is needed under /opt and /var/cache, the Prometheus data under /var/lib;
+# directories on one filesystem add up.
+- name: Check the free disk space
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_preflight_free_mib | int >= celestia_mon_preflight_need_mib | int
+    fail_msg: >-
+      {{ celestia_mon_preflight_mount }} has {{ celestia_mon_preflight_free_mib }} MiB free, and celestia-mon needs
+      {{ celestia_mon_preflight_need_mib }} MiB there ({{ celestia_mon_preflight_install_mib }} MiB to install the services on
+      this host, {{ celestia_mon_preflight_data_mib }} MiB for Prometheus data). Free some space, or lower
+      celestia_mon_prometheus_retention_size.
+    quiet: true
+  loop: "{{ celestia_mon_preflight_df.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    celestia_mon_preflight_row: "{{ item.stdout_lines[-1].split(none, 1) }}"
+    celestia_mon_preflight_mount: "{{ celestia_mon_preflight_row[1] }}"
+    celestia_mon_preflight_free_mib: "{{ celestia_mon_preflight_row[0] | int // 1048576 }}"
+    celestia_mon_preflight_mounts: >-
+      {{ celestia_mon_preflight_df.results | map(attribute='stdout_lines') | map('last') | map('split', none, 1) | map('last') | list }}
+    celestia_mon_preflight_need_mib: >-
+      {{ (celestia_mon_preflight_install_mib | int if celestia_mon_preflight_mount in celestia_mon_preflight_mounts[:2] else 0)
+         + (celestia_mon_preflight_data_mib | int if celestia_mon_preflight_mount == celestia_mon_preflight_mounts[2] else 0) }}
+
+- name: Report the memory headroom
+  ansible.builtin.debug:
+    msg: >-
+      {{ celestia_mon_preflight_mem_available_mib }} MiB of memory is available now. celestia-mon's services on this
+      host are slowed down above {{ celestia_mon_preflight_mem_high_mib }} MiB in total (MemoryHigh) and stopped at
+      {{ celestia_mon_preflight_mem_max_mib }} MiB (MemoryMax); see celestia_mon_memory.
+
+- name: Read the ufw status for the install plan
+  ansible.builtin.command: ufw status
+  environment:
+    LC_ALL: C
+  register: celestia_mon_preflight_ufw
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: celestia_mon_plan_file is defined
+
+- name: Write the install plan for this host
+  ansible.builtin.copy:
+    dest: "{{ celestia_mon_plan_file }}"
+    content: |
+      Host:      {{ inventory_hostname }} ({{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(', ') }})
+      Services:  {{ celestia_mon_host_services | map('extract', celestia_mon_services, 'unit') | join(', ') }}
+                 systemd units, each run by its own system user of the same name, with Nice={{ celestia_mon_nice }},
+                 CPUWeight={{ celestia_mon_cpu_weight }}, IOWeight={{ celestia_mon_io_weight }} and in total
+                 MemoryHigh {{ celestia_mon_preflight_mem_high_mib }} MiB, MemoryMax {{ celestia_mon_preflight_mem_max_mib }} MiB
+      Listens:   {{ celestia_mon_preflight_listens }}
+      Files:     /opt/celestia-mon, /etc/celestia-mon, {{ celestia_mon_preflight_data_dir }}/var/cache/celestia-mon,
+                 /usr/local/bin/celestia-mon-doctor, /etc/systemd/system/celestia-mon-*.service
+      Memory:    {{ celestia_mon_preflight_mem_available_mib }} MiB available now
+      Disk:      {{ celestia_mon_preflight_install_mib }} MiB to install{{ celestia_mon_preflight_data_text }}
+      ufw:       {{ celestia_mon_preflight_ufw_text }}
+    mode: "0600"
+  changed_when: false
+  check_mode: false
+  diff: false
+  when: celestia_mon_plan_file is defined
+  vars:
+    celestia_mon_preflight_ip_text: "{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in (celestia_mon_private_ip | string) else celestia_mon_private_ip }}"
+    celestia_mon_preflight_listens: >-
+      {%- for k in celestia_mon_host_services | map('extract', celestia_mon_services, 'ports') | flatten -%}
+      {{ ('127.0.0.1' if k in celestia_mon_loopback_ports else celestia_mon_preflight_ip_text)
+         ~ ':' ~ celestia_mon_ports[k] ~ ' (' ~ k ~ ')' }}{{ '' if loop.last else ', ' }}
+      {%- endfor -%}
+    celestia_mon_preflight_monitor: "{{ 'prometheus' in celestia_mon_host_services }}"
+    celestia_mon_preflight_data_dir: "{{ '/var/lib/celestia-mon, ' if celestia_mon_preflight_monitor else '' }}"
+    celestia_mon_preflight_data_text: >-
+      {{ (', up to ' ~ celestia_mon_preflight_data_mib ~ ' MiB more for Prometheus data') if celestia_mon_preflight_monitor else '' }}
+    celestia_mon_preflight_ufw_text: >-
+      {{ 'active: celestia-mon adds only the rules listed below, if any'
+         if celestia_mon_preflight_ufw.stdout | default('') is match('Status: active')
+         else 'not active: celestia-mon adds no firewall rules' }}

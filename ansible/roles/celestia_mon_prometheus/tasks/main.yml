@@ -37,7 +37,9 @@
 
 - name: Report the pending install of Prometheus {{ celestia_mon_prometheus_version }}
   ansible.builtin.debug:
-    msg: Would install {{ celestia_mon_prometheus_binaries | join(' and ') }} {{ celestia_mon_prometheus_version }} in {{ celestia_mon_prometheus_home }} and restart celestia-mon-prometheus.
+    msg: >-
+      Would install {{ celestia_mon_prometheus_binaries | join(' and ') }} {{ celestia_mon_prometheus_version }} in {{ celestia_mon_prometheus_home }}
+      and restart celestia-mon-prometheus.
   changed_when: true
   when: ansible_check_mode and not celestia_mon_prometheus_present
 
@@ -76,11 +78,11 @@
         group: root
         mode: "0755"
 
-    - name: Download the Prometheus release and verify its checksum
+    - name: Download the Prometheus release and check it against the pinned checksum
       ansible.builtin.get_url:
         url: "{{ celestia_mon_prometheus_download_url }}/{{ celestia_mon_prometheus_release }}.tar.gz"
         dest: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
-        checksum: "sha256:{{ celestia_mon_prometheus_download_url }}/sha256sums.txt"
+        checksum: "sha256:{{ celestia_mon_prometheus_sha256 }}"
         owner: root
         group: root
         mode: "0644"
@@ -159,7 +161,7 @@
 # Waiting here also lets the bind check at the end of the playbook see the socket.
 - name: Wait for Prometheus on {{ celestia_mon_prometheus_listen_address }}
   ansible.builtin.wait_for:
-    host: "{{ celestia_mon_private_ip }}"
+    host: 127.0.0.1
     port: "{{ celestia_mon_ports.prometheus }}"
     timeout: 60
     msg: celestia-mon-prometheus does not listen on {{ celestia_mon_prometheus_listen_address }}. See journalctl -u celestia-mon-prometheus.

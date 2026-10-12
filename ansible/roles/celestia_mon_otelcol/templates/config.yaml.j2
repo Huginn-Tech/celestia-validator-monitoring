@@ -2,6 +2,7 @@
 # Fibre pushes metrics and traces over OTLP/HTTP to the loopback receiver; Prometheus
 # scrapes the metrics on the private address. Based on celestia-app
 # observability/docker/otel-collector/config.yml.
+# Written for otelcol-contrib 0.160.0 and newer (metrics_transform, resource_constant_labels).
 
 receivers:
   otlp:
@@ -14,7 +15,7 @@ processors:
   # shard_size), one series per size. Sum them away and keep only success.
   # Deleting the attributes instead would make the exporter keep one colliding
   # cumulative point and the counts would jump.
-  metricstransform/fibre:
+  metrics_transform/fibre:
     transforms:
       - include: '^fibre\.server\.(upload|download)_shard\.duration$'
         match_type: regexp
@@ -27,9 +28,11 @@ processors:
 exporters:
   prometheus:
     endpoint: "{{ celestia_mon_otelcol_prometheus_endpoint }}"
-    resource_to_telemetry_conversion:
-      enabled: true
-    add_metric_suffixes: true
+    # Every resource attribute becomes a label.
+    resource_constant_labels:
+      included: ["*"]
+    # Classic Prometheus names with unit and type suffixes (_seconds, _total).
+    translation_strategy: UnderscoreEscapingWithSuffixes
     metric_expiration: 5m
   # Fibre sends traces to the same endpoint; accept and drop them.
   nop:
@@ -42,7 +45,7 @@ service:
   pipelines:
     metrics:
       receivers: [otlp]
-      processors: [metricstransform/fibre]
+      processors: [metrics_transform/fibre]
       exporters: [prometheus]
     traces:
       receivers: [otlp]
