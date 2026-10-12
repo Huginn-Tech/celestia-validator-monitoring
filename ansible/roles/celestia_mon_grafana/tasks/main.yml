@@ -84,6 +84,11 @@
         owner: root
         group: root
         mode: "0644"
+      # Release hosts sometimes reset a connection; retry before giving up.
+      register: celestia_mon_grafana_download
+      until: celestia_mon_grafana_download is succeeded
+      retries: 5
+      delay: 10
 
     # Unpacked on the same filesystem as /opt/celestia-mon, so the move below is a rename.
     # The first step clears what an interrupted run left behind.

@@ -86,6 +86,11 @@
         owner: root
         group: root
         mode: "0644"
+      # Release hosts sometimes reset a connection; retry before giving up.
+      register: celestia_mon_prometheus_download
+      until: celestia_mon_prometheus_download is succeeded
+      retries: 5
+      delay: 10
 
     - name: Unpack the Prometheus release
       ansible.builtin.unarchive:
