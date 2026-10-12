@@ -32,7 +32,9 @@ tests:
               summary: "Alertmanager on mon-1 cannot deliver discord notifications"
               description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
-      - eval_time: 24m
+      # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
+      # the 0 at 9m is the one at 23m.
+      - eval_time: 23m
         alertname: NotificationsFailing
         exp_alerts:
           - exp_labels:
@@ -43,7 +45,7 @@ tests:
               summary: "Alertmanager on mon-1 cannot deliver discord notifications"
               description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
-      - eval_time: 25m
+      - eval_time: 24m
         alertname: NotificationsFailing
         exp_alerts: []
       - eval_time: 11m
