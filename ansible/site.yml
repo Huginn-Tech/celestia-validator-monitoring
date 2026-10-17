@@ -23,7 +23,7 @@
         tasks_from: preflight
 
 - name: Collectors on Celestia hosts
-  hosts: validator:fibre:kms
+  hosts: validator:backup_node:fibre:kms
   become: true
   # Facts are gathered after the skip below, so a KMS host celestia-mon does not manage is never contacted.
   gather_facts: false
@@ -46,6 +46,7 @@
       ansible.builtin.include_role:
         name: celestia_mon_node_exporter
 
+    # On every Fibre host, active or standby, so metrics flow the moment a standby is started.
     - name: Install the OpenTelemetry collector for Fibre
       ansible.builtin.include_role:
         name: celestia_mon_otelcol

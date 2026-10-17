@@ -2,14 +2,22 @@
 # The next playbook run overwrites this file: change the inventory instead.
 # Any key can also be passed as a flag, for example --node-home /path.
 {# Both plays that install doctor render this file on a host with several roles, so it may
-   only use the shared celestia_mon settings, groups and hostvars; anything else would make
+   only use the shared celestia_mon settings and vars, groups and hostvars; anything else would make
    the two renders differ and every run report a change. #}
-roles={{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
+{% set node_hosts = celestia_mon_appd_hosts %}
+{% set fibre_hosts = groups.get('fibre', []) if (celestia_mon_fibre_enabled | bool) else [] %}
+{# NAME=host:port of every Fibre host that sets an endpoint: doctor accepts a registration of any of them. #}
+{% set ns = namespace(endpoints=[]) %}
+{% for h in groups.get('fibre', []) if hostvars[h].celestia_mon_fibre_public_endpoint | default('') %}
+{% set ns.endpoints = ns.endpoints + [h ~ '=' ~ hostvars[h].celestia_mon_fibre_public_endpoint] %}
+{% endfor %}
+roles={{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
+inventory_host={{ inventory_hostname }}
 signer={{ celestia_mon_signer }}
 fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
 appd_unit={{ celestia_mon_units.appd }}
 fibre_unit={{ celestia_mon_units.fibre }}
-{% if inventory_hostname in groups.get('validator', []) %}
+{% if inventory_hostname in node_hosts %}
 node_rpc_url=http://127.0.0.1:{{ celestia_mon_node_rpc_port }}
 node_metrics_url=http://{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_node_metrics_port }}/metrics
 node_home={{ celestia_mon_node_home | default('') }}
@@ -19,15 +27,18 @@ data_mounts={{ celestia_mon_data_mounts | default([]) | join(',') }}
 fibre_mount={{ celestia_mon_fibre_mount | default('') }}
 {% endif %}
 fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
-fibre_public_endpoint={{ (hostvars[groups['fibre'][0]].celestia_mon_fibre_public_endpoint | default('')) if groups.get('fibre', []) else '' }}
+fibre_public_endpoint={{ ns.endpoints | join(',') }}
+{# Every Fibre host, active or standby: with two or more, a stopped Fibre unit is a standby. #}
+fibre_hosts={{ fibre_hosts | join(',') }}
 {% if inventory_hostname in groups.get('monitor', []) %}
 prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
 alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
-fibre_hosts={{ groups.get('fibre', []) | join(',') if (celestia_mon_fibre_enabled | bool) else '' }}
+node_hosts={{ node_hosts | join(',') }}
 {# The data directory of role celestia_mon_prometheus (celestia_mon_prometheus_data_dir), as in the preflight. #}
 prometheus_data_dir=/var/lib/celestia-mon/prometheus
 prometheus_retention_size={{ celestia_mon_prometheus_retention_size }}
 {% endif %}
 signer_median_max={{ celestia_mon_thresholds.signer_median_seconds }}
 disk_min_free_ratio={{ celestia_mon_thresholds.disk_message_free_ratio }}
+node_behind_blocks={{ celestia_mon_thresholds.node_behind_blocks | default(20) }}
 private_address_regex={{ celestia_mon_private_address_regex }}

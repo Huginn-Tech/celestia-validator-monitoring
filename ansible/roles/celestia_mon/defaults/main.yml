@@ -14,7 +14,7 @@ celestia_mon_units:
   fibre: fibre
   tmkms: tmkms
 
-# celestia-appd endpoints on the validator host.
+# celestia-appd endpoints on the validator and backup_node hosts.
 celestia_mon_node_metrics_port: 26660
 celestia_mon_node_rpc_port: 26657
 
@@ -46,6 +46,7 @@ celestia_mon_grafana_listen: 127.0.0.1
 # minutes, FibreDown's 10) are fixed in the rules.
 celestia_mon_thresholds:
   not_signing_blocks: 10
+  node_behind_blocks: 20
   signer_median_seconds: 0.010
   fibre_stale_uploads: 10
   fibre_stale_min_seconds: 3600
@@ -99,12 +100,20 @@ celestia_mon_memory:
   alertmanager: {high: 128M, max: 256M}
   grafana: {high: 512M, max: 1G}
 
+# Inventory groups (a host may be in several):
+#   validator    exactly one host: the celestia-appd node the signer normally connects to
+#   backup_node  any number: synced, key-less celestia-appd nodes that can take over signing
+#   fibre        every host with a Fibre install, active or standby; systemd says which one runs
+#   kms          optional: the tmkms host; nothing is installed there unless celestia_mon_kms_scrape
+#   monitor      exactly one host: Prometheus, Alertmanager and Grafana
+
 # Per-host settings (set them in host_vars or the inventory):
 #   celestia_mon_private_ip             required on every host celestia-mon touches; an address
 #                                       of that host itself (the playbook checks)
 #   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state)
-#   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts)
-#   celestia_mon_fibre_public_endpoint  host:port registered with valaddr set-host (fibre hosts)
+#   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts, active or standby)
+#   celestia_mon_fibre_public_endpoint  host:port that valaddr set-host registers while this host's
+#                                       Fibre is the active one (fibre hosts)
 #   celestia_mon_kms_scrape             install node_exporter on a kms host (default false)
 #   celestia_mon_firewall_sources       optional list of addresses ufw lets reach this host's scraped
 #                                       ports, when ufw is active (default: the monitor's
@@ -113,6 +122,7 @@ celestia_mon_memory:
 #                                       Link load panel (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one
 #                                       physical NIC, or buys less than its port speed
-#   celestia_mon_node_home              celestia-appd home for celestia-mon-doctor (validator host).
+#   celestia_mon_node_home              celestia-appd home for celestia-mon-doctor (validator and
+#                                       backup_node hosts).
 #                                       Default: the unit's --home, CELESTIA_APP_HOME, DAEMON_HOME,
 #                                       or ~/.celestia-app of the unit's User

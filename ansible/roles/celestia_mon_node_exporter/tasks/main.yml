@@ -149,11 +149,11 @@
   vars:
     celestia_mon_firewall_port: "{{ celestia_mon_ports.node_exporter }}"
 
-# Prometheus scrapes celestia-appd's own metrics port on the validator host too.
+# Prometheus scrapes celestia-appd's own metrics port on the validator and backup_node hosts too.
 - name: Let the monitor host reach celestia-appd's metrics through ufw
   ansible.builtin.include_role:
     name: celestia_mon
     tasks_from: firewall
   vars:
     celestia_mon_firewall_port: "{{ celestia_mon_node_metrics_port }}"
-  when: inventory_hostname in groups.get('validator', [])
+  when: inventory_hostname in celestia_mon_appd_hosts

@@ -108,6 +108,7 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
 
+  # FibreDown, not FibreNotServing, reports the stopped unit (and holds FibreNotServing back).
   - name: Fibre unit stopped; start time 0 and no last success keep FibreNotServing quiet
     interval: 1m
     input_series:
@@ -131,22 +132,16 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
       - eval_time: 160m
-        alertname: ServiceDown
+        alertname: FibreDown
         exp_alerts:
           - exp_labels:
-              job: node
-              instance: 10.10.0.3:9910
-              host: fibre-1
-              role: fibre
-              name: fibre.service
-              state: active
-              type: simple
-              severity: message
-              unit: fibre
+              severity: page
             exp_annotations:
-              summary: "fibre.service is not active on fibre-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              summary: "No Fibre unit is active"
+              description: >-
+                For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
+                the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   - name: Idle network; Fibre runs for hours without any upload and stays quiet
     interval: 1m

@@ -6,6 +6,9 @@
 {% macro target(h, port) %}{% set ip = hostvars[h].celestia_mon_private_ip | string %}{{ ('[' ~ ip ~ ']') if ':' in ip else ip }}:{{ port }}{% endmacro %}
 {% set validators = groups.get('validator', []) %}
 {% set fibres = groups.get('fibre', []) if celestia_mon_fibre_enabled else [] %}
+{# The role label names the host's inventory group, not the role it holds after a failover. #}
+{% macro node_role(h) %}{{ 'validator' if h in groups.get('validator', []) else 'fibre' if h in groups.get('fibre', [])
+   else 'backup_node' if h in groups.get('backup_node', []) else 'kms' }}{% endmacro %}
 # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
 global:
   scrape_interval: 15s
@@ -48,15 +51,16 @@ scrape_configs:
           host: {{ celestia_mon_monitor_host | to_json }}
           role: monitor
 
-  # celestia-appd's own metrics endpoint ([instrumentation] prometheus_listen_addr).
+  # celestia-appd's own metrics endpoint ([instrumentation] prometheus_listen_addr), on the
+  # validator and on each backup node: the rules read which node signs from the metrics.
   - job_name: celestia-app
     static_configs:
-{% for h in validators %}
+{% for h in celestia_mon_appd_hosts %}
       - targets:
           - "{{ target(h, hostvars[h].celestia_mon_node_metrics_port | default(celestia_mon_node_metrics_port)) }}"
         labels:
           host: {{ h | to_json }}
-          role: validator
+          role: {{ 'validator' if h in validators else 'backup_node' }}
 {% endfor %}
     # The node may use the celestia_ namespace; panels and rules use cometbft_.
     metric_relabel_configs:
@@ -68,18 +72,19 @@ scrape_configs:
   # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape).
   - job_name: node
     static_configs:
-{% for h in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) | unique %}
-{%   if h in groups.get('validator', []) or h in groups.get('fibre', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
+{% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) | unique %}
+{%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
       - targets:
           - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_ports)).node_exporter) }}"
         labels:
           host: {{ h | to_json }}
-          role: {{ 'validator' if h in groups.get('validator', []) else 'fibre' if h in groups.get('fibre', []) else 'kms' }}
+          role: {{ node_role(h) }}
 {%   endif %}
 {% endfor %}
 {% if fibres | length > 0 %}
 
-  # The OpenTelemetry collector that receives Fibre's OTLP metrics.
+  # The OpenTelemetry collector that receives Fibre's OTLP metrics, on every Fibre host,
+  # active or standby.
   - job_name: otelcol
     static_configs:
 {% for h in fibres %}

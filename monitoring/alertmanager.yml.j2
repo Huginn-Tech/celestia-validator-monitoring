@@ -58,29 +58,23 @@ route:
       matchers:
         - 'severity="message"'
 
-# One validator per install, so most rules need no 'equal' labels: one cause, one notification.
+# One validator per install: one cause, one notification.
 inhibit_rules:
-  # A stalled node or a page-level service outage explains missed signatures,
-  # signer trouble and an idle Fibre server.
+  # No node advancing explains missed signatures, signer trouble, an idle Fibre server
+  # and a node that lags the others.
   - source_matchers:
       - 'alertname="NodeNotAdvancing"'
     target_matchers:
-      - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing"'
+      - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing|NodeBehind"'
+  # No Fibre unit active anywhere explains FibreNotServing. FibreDown names no host.
   - source_matchers:
-      - 'alertname="ServiceDown"'
-      - 'severity="page"'
+      - 'alertname="FibreDown"'
     target_matchers:
-      - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing"'
-  # Fibre or its collector being down explains FibreNotServing.
+      - 'alertname="FibreNotServing"'
+  # A crash-looping Fibre or a collector that is down explains the same host's FibreNotServing.
   - source_matchers:
       - 'alertname="ServiceDown"'
       - 'unit=~"fibre|otelcol"'
-    target_matchers:
-      - 'alertname="FibreNotServing"'
-  # Fibre being down explains FibreNotServing. There can be several Fibre hosts, so this
-  # holds back only the same host's alert.
-  - source_matchers:
-      - 'alertname="FibreDown"'
     target_matchers:
       - 'alertname="FibreNotServing"'
     equal: [host]
