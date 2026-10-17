@@ -1,0 +1,8 @@
+---
+# Discord's API. Only CI changes it, to a local stand-in on 127.0.0.1 (plain http is refused
+# for any other host).
+celestia_mon_announcements_discord_api: https://discord.com/api/v10
+# How often each channel is read, and how long an announcement stays active in Alertmanager.
+# It is sent once either way: the announcement receivers send no "resolved" message.
+celestia_mon_announcements_interval_seconds: 60
+celestia_mon_announcements_active_minutes: 30

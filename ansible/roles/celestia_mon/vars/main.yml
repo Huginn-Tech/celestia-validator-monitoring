@@ -45,10 +45,12 @@ celestia_mon_services:
   prometheus: {unit: celestia-mon-prometheus, ports: [prometheus], dir: prometheus, version: prometheus, disk_mb: 700}
   alertmanager: {unit: celestia-mon-alertmanager, ports: [alertmanager], dir: alertmanager, version: alertmanager, disk_mb: 250}
   grafana: {unit: celestia-mon-grafana, ports: [grafana], dir: grafana, version: grafana, disk_mb: 1300}
+  # A script from this repository, not a release: no version, nothing to download.
+  announcements: {unit: celestia-mon-announcements, ports: [announcements], dir: announcements, version: "", disk_mb: 1}
 
 # Ports that listen on 127.0.0.1; grafana listens on celestia_mon_grafana_listen, the others
 # on celestia_mon_private_ip.
-celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager]
+celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager, announcements]
 
 # HTTP basic auth of Prometheus's and Alertmanager's APIs on the monitor host (tasks/api_password.yml).
 # Each password is generated once on the monitor host, never kept in the repository or the vault;
@@ -78,4 +80,5 @@ celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 celestia_mon_host_services: >-
   {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) else [])
      + (['otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
-     + (['prometheus', 'alertmanager', 'grafana'] if inventory_hostname in groups.get('monitor', []) else []) }}
+     + (['prometheus', 'alertmanager', 'grafana'] if inventory_hostname in groups.get('monitor', []) else [])
+     + (['announcements'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_announcements | length > 0 else []) }}

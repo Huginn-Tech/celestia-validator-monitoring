@@ -1,0 +1,7 @@
+---
+- name: Restart celestia-mon-announcements
+  ansible.builtin.systemd_service:
+    name: celestia-mon-announcements
+    state: restarted
+    daemon_reload: "{{ celestia_mon_announcements_unit_file is defined and celestia_mon_announcements_unit_file is changed }}"
+  when: celestia_mon_announcements_present or not ansible_check_mode

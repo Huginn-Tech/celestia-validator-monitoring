@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has thirteen alerts and a heartbeat. Each carries a severity:
+celestia-validator-monitoring has fourteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -23,6 +23,8 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
 | [NotificationsFailing](#notificationsfailing) | message | Alertmanager unable to deliver through one of your receivers |
 | [DeadmanFailing](#deadmanfailing) | message | Alertmanager unable to deliver the heartbeat to your dead-man service |
+| [AnnouncementsUnreadable](#announcementsunreadable) | message | Celestia's announcements no longer read (only with [CelestiaAnnouncement](#celestiaannouncement) on) |
+| [CelestiaAnnouncement](#celestiaannouncement) | page or message, your choice | A new message in Celestia's announcement channels on Discord (optional) |
 | [Watchdog](#watchdog) | heartbeat | Monitoring itself down, or an alert that could not be delivered (through the dead-man service) |
 
 ## Where alerts go
@@ -305,6 +307,33 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 1. On the monitor, `journalctl -u celestia-mon-alertmanager -n 100`: each failed heartbeat names the `deadman` receiver and the error, for example a 404 for a wrong URL. `sudo celestia-mon-doctor` there (check 22) counts the heartbeats sent and failed in the last 10 minutes.
 2. Compare `celestia_mon_deadman_webhook_url` in the vault file with the ping URL your dead-man service shows, fix it, and run `install.sh` on the monitor again.
 3. Outbound HTTPS from the monitor to the dead-man service.
+
+## CelestiaAnnouncement
+
+**What it means.** Celestia posted a new message in one of its announcement channels on Discord: usually a network upgrade with its height and time, or an incident. The notification carries the message as text (role pings and Discord markup removed), the channel it came from (for example `Celestia #mainnet-announcements`) and a link to the original. Each announcement is sent once, as soon as it is read (within a minute), and sends no "resolved" message.
+
+It is optional. celestia-mon-announcements, a small service on the monitor host, reads one or more channels on your own Discord server that follow Celestia's announcement channels ("Follow" on the channel in Celestia's Discord), with a bot of yours, and posts each new message to Alertmanager. The first read of a channel only notes its newest message, so nothing older is sent. Set it up on the monitor:
+
+1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several).
+2. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) (or reuse one): turn on **Message Content Intent**, invite it to your server, and give it **View Channel** and **Read Message History** in that channel. Copy its token.
+3. In the inventory, on the monitor host: `celestia_mon_announcements: [{channel_id: "<channel ID>", severity: page}]` (Developer Mode, then right-click the channel, Copy Channel ID). `page` reaches PagerDuty and every chat channel, `message` the chat channels only.
+4. In the monitor's vault (`sudo ./install.sh --edit-vault <file>`): `celestia_mon_discord_bot_token: "<token>"`. Then run `install.sh` on the monitor.
+
+**Severity.** The one you set per channel (`page` by default).
+
+**Check first.** Read the announcement: plan the upgrade it names before its height, and silence that host's alerts for the restart ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)). Celestia's [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/) page and [status.celestia.org](https://status.celestia.org/) carry the details.
+
+## AnnouncementsUnreadable
+
+**What it means.** celestia-mon-announcements has not read its Discord channel for 15 minutes, or the service is down, for 10 minutes more. New announcements would not reach you. It exists only when `celestia_mon_announcements` is set.
+
+**Severity.** message.
+
+**Check first.**
+
+1. On the monitor, `journalctl -u celestia-mon-announcements -n 50`. Each failed read names its cause and fix: Discord refused the token (401: a reset or wrong token, fix it in the vault), the bot may not read the channel (403: give it View Channel and Read Message History there), the channel is unknown (404: the ID, or the bot is not on that server), or Discord is unreachable.
+2. `systemctl status celestia-mon-announcements` when the service is down.
+3. After a fix in the vault, run `install.sh` on the monitor again.
 
 ## Watchdog
 

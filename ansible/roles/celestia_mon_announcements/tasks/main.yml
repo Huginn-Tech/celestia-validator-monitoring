@@ -1,0 +1,176 @@
+---
+# Celestia's announcements as alerts, on the monitor host. celestia-mon-announcements
+# (tools/celestia-mon-announcements) reads the Discord channels in celestia_mon_announcements
+# with the bot whose token is celestia_mon_discord_bot_token, and posts each new message to
+# Alertmanager as a CelestiaAnnouncement alert. With an empty list it is removed again.
+- name: Check the announcement settings
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_announcements is sequence
+      - celestia_mon_announcements is not string
+      - celestia_mon_announcements is not mapping
+      - celestia_mon_announcements | rejectattr('channel_id', 'defined') | list | length == 0
+      - celestia_mon_announcements | map(attribute='channel_id') | map('string') | reject('match', '^[0-9]{15,22}$') | list | length == 0
+      - celestia_mon_announcements | map(attribute='severity', default='page') | reject('in', ['page', 'message']) | list | length == 0
+      - >-
+        celestia_mon_announcements_discord_api is match('^https://')
+        or celestia_mon_announcements_discord_api is match('^http://127[.]0[.]0[.]1[:/]')
+    fail_msg: >-
+      celestia_mon_announcements must be a list of {channel_id: "<Discord channel ID>", severity: page or message}:
+      the ID of a channel on your own Discord server (digits, in quotes), and page (PagerDuty and the chat channels)
+      or message (chat channels only).
+    quiet: true
+
+# The token is checked apart, with no_log, so a failure never prints it.
+- name: Check the Discord bot token
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_discord_bot_token is defined
+      - celestia_mon_discord_bot_token | string | length > 50
+      - "'REPLACE_ME' not in celestia_mon_discord_bot_token | string"
+    fail_msg: >-
+      celestia_mon_announcements is set, so celestia_mon_discord_bot_token must be the token of a bot on your Discord server
+      (Developer Portal > your application > Bot > Reset Token), in the monitor host's vault.
+    quiet: true
+  no_log: true
+  when: celestia_mon_announcements | length > 0
+
+- name: Install celestia-mon-announcements
+  when: celestia_mon_announcements | length > 0
+  block:
+    - name: Check that nothing else listens on the announcements port
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: port_check
+      vars:
+        celestia_mon_port_check_port: "{{ celestia_mon_ports.announcements }}"
+        celestia_mon_port_check_unit: celestia-mon-announcements
+
+    - name: Create the celestia-mon-announcements user
+      ansible.builtin.user:
+        name: celestia-mon-announcements
+        system: true
+        shell: /usr/sbin/nologin
+        home: /nonexistent
+        create_home: false
+
+    - name: Look for the celestia-mon-announcements unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-announcements.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_announcements_unit
+
+    - name: Note whether celestia-mon-announcements is installed
+      ansible.builtin.set_fact:
+        celestia_mon_announcements_present: "{{ celestia_mon_announcements_unit.stat.exists }}"
+
+    - name: Create the announcements directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /opt/celestia-mon
+        - "{{ celestia_mon_announcements_dir }}"
+        - /etc/celestia-mon
+        - "{{ celestia_mon_announcements_config_dir }}"
+        - /var/lib/celestia-mon
+
+    - name: Install the announcements script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../tools/celestia-mon-announcements"
+        dest: "{{ celestia_mon_announcements_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart celestia-mon-announcements
+
+    - name: Write the announcements settings
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ celestia_mon_announcements_config }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart celestia-mon-announcements
+
+    - name: Write the Discord bot token
+      ansible.builtin.copy:
+        content: "{{ celestia_mon_discord_bot_token | string | trim }}"
+        dest: "{{ celestia_mon_announcements_token_file }}"
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      diff: false
+      notify: Restart celestia-mon-announcements
+
+    - name: Install the celestia-mon-announcements systemd unit
+      ansible.builtin.template:
+        src: celestia-mon-announcements.service.j2
+        dest: /etc/systemd/system/celestia-mon-announcements.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: celestia_mon_announcements_unit_file
+      notify: Restart celestia-mon-announcements
+
+    # Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+    # that someone else edited on disk and has not reloaded yet.
+    - name: Start celestia-mon-announcements and enable it at boot
+      ansible.builtin.systemd_service:
+        name: celestia-mon-announcements
+        enabled: true
+        state: started
+        daemon_reload: "{{ celestia_mon_announcements_unit_file is changed }}"
+      when: celestia_mon_announcements_present or not ansible_check_mode
+
+    - name: Apply a pending celestia-mon-announcements restart
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for celestia-mon-announcements on {{ celestia_mon_announcements_listen_address }}
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ celestia_mon_ports.announcements }}"
+        timeout: 60
+        msg: >-
+          celestia-mon-announcements does not listen on {{ celestia_mon_announcements_listen_address }}.
+          See journalctl -u celestia-mon-announcements.
+      when: not ansible_check_mode
+
+# Turned off (an empty list) after it ran: stop it and remove its unit, script, settings and
+# token. The newest message read per channel stays in /var/lib/celestia-mon/announcements.
+- name: Remove celestia-mon-announcements
+  when: celestia_mon_announcements | length == 0
+  block:
+    - name: Look for an earlier celestia-mon-announcements
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-announcements.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_announcements_old_unit
+
+    - name: Stop and disable celestia-mon-announcements
+      ansible.builtin.systemd_service:
+        name: celestia-mon-announcements
+        state: stopped
+        enabled: false
+      when: celestia_mon_announcements_old_unit.stat.exists
+
+    - name: Remove celestia-mon-announcements' unit, script, settings and token
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/celestia-mon-announcements.service
+        - "{{ celestia_mon_announcements_dir }}"
+        - "{{ celestia_mon_announcements_config_dir }}"
+      register: celestia_mon_announcements_removed
+
+    - name: Reload systemd after removing the unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: celestia_mon_announcements_old_unit.stat.exists and not ansible_check_mode

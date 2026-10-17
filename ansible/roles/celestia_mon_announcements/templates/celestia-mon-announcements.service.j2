@@ -1,0 +1,52 @@
+# Managed by celestia-mon (role celestia_mon_announcements). Local changes are overwritten.
+[Unit]
+Description=Celestia announcements from Discord to Alertmanager (celestia-mon)
+Wants=network-online.target
+After=network-online.target celestia-mon-alertmanager.service
+
+[Service]
+User=celestia-mon-announcements
+Group=celestia-mon-announcements
+ExecStart=/usr/bin/python3 -I {{ celestia_mon_announcements_script }} --config {{ celestia_mon_announcements_config }}
+# systemd reads both files as root and hands copies to the service only; neither is readable
+# by the service's user on disk.
+LoadCredential=discord-token:{{ celestia_mon_announcements_token_file }}
+LoadCredential=api-password:{{ celestia_mon_api_password_file }}
+StateDirectory=celestia-mon/announcements
+StateDirectoryMode=0700
+Restart=on-failure
+# Not faster: Discord answers a bot that keeps reconnecting with rate limits.
+RestartSec=30s
+# Lower CPU and disk priority than the Celestia services when they compete (no CPU quota),
+# a soft memory target (MemoryHigh) and a hard limit well above it (MemoryMax).
+Nice={{ celestia_mon_nice }}
+CPUWeight={{ celestia_mon_cpu_weight }}
+IOWeight={{ celestia_mon_io_weight }}
+MemoryHigh={{ celestia_mon_memory.announcements.high }}
+MemoryMax={{ celestia_mon_memory.announcements.max }}
+# When the whole host runs out of memory, the kernel ends this service before celestia-appd,
+# Fibre or tmkms.
+OOMScoreAdjust=500
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# of an ordinary service (a call outside the set fails with EPERM).
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

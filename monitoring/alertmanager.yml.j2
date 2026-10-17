@@ -9,7 +9,7 @@
 #}
 {% set receivers = celestia_mon_receivers | default([], true) %}
 {% set chat = receivers | rejectattr('type', 'equalto', 'pagerduty') | list %}
-{% macro receiver_configs(entries) %}
+{% macro receiver_configs(entries, resolved=true) %}
 {% for type in ['pagerduty', 'telegram', 'discord', 'slack', 'webhook'] %}
 {%   set items = entries | selectattr('type', 'equalto', type) | list %}
 {%   if items | length > 0 %}
@@ -30,7 +30,7 @@
 {%       else %}
       - url: {{ r.url | string | to_json }}
 {%       endif %}
-        send_resolved: true
+        send_resolved: {{ resolved | to_json }}
 {%     endfor %}
 {%   endif %}
 {% endfor %}
@@ -52,6 +52,21 @@ route:
       group_interval: 1m
       repeat_interval: 1m
       continue: false
+    # Celestia's announcements (celestia-mon-announcements): one notification per announcement,
+    # sent at once and once only, through receivers that send no "resolved" message.
+    - matchers:
+        - 'alertname="CelestiaAnnouncement"'
+      group_by: ['...']
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 8760h
+      routes:
+        - receiver: announcement-page
+          matchers:
+            - 'severity="page"'
+        - receiver: announcement-message
+          matchers:
+            - 'severity="message"'
     - receiver: page
       matchers:
         - 'severity="page"'
@@ -93,6 +108,10 @@ receivers:
   # message: every chat channel and webhook, never PagerDuty.
   - name: message
 {{ receiver_configs(chat) }}
+  - name: announcement-page
+{{ receiver_configs(receivers, false) }}
+  - name: announcement-message
+{{ receiver_configs(chat, false) }}
   # A receiver of its own, so Alertmanager's notification metrics tell its sends and failures
   # apart (receiver_name="deadman", from --enable-feature=receiver-name-in-metrics). The install
   # refuses an empty or placeholder URL on the monitor host.

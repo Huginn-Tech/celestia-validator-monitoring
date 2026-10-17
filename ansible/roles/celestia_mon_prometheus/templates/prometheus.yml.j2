@@ -105,3 +105,14 @@ scrape_configs:
           role: fibre
 {% endfor %}
 {% endif %}
+{% if celestia_mon_announcements | default([]) | length > 0 %}
+
+  # celestia-mon-announcements on this host: whether it still reads Celestia's announcements.
+  - job_name: announcements
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ celestia_mon_ports.announcements }}"
+        labels:
+          host: {{ inventory_hostname | to_json }}
+          role: monitor
+{% endif %}
