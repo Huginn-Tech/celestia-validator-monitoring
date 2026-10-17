@@ -329,7 +329,8 @@
          | regex_findall('--otel-endpoint(?:=| +)([^ ]+)') | last | default('') }}
     celestia_mon_preflight_fibre_file: >-
       {{ celestia_mon_preflight_fibre_envfiles.results | default([]) | selectattr('content', 'defined') | map(attribute='content')
-         | map('b64decode') | join('\n') | regex_findall('^[ ]*(?:export +)?FIBRE_OTEL_ENDPOINT=([^ ]*)', multiline=true) | last | default('') }}
+         | map('b64decode') | join(celestia_mon_newline)
+         | regex_findall('^[ ]*(?:export +)?FIBRE_OTEL_ENDPOINT=([^ ]*)', multiline=true) | last | default('') }}
     celestia_mon_preflight_fibre_env: >-
       {{ celestia_mon_preflight_fibre_status.Environment | default('') | regex_findall('(?:^| )"?FIBRE_OTEL_ENDPOINT=([^ "]*)')
          | last | default('') }}

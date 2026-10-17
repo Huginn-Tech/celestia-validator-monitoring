@@ -1,4 +1,7 @@
 ---
+# A line break for Jinja expressions in tasks: Ansible doubles the backslashes inside {{ }} of a
+# task's strings, so '\n' there is a backslash and an n, not a line break.
+celestia_mon_newline: "\n"
 # Addresses celestia-mon accepts as private: RFC 1918, CGNAT (Tailscale), loopback, IPv6 ULA.
 # One string: in double quotes, a backslash at the end of a line joins the next line without a space.
 celestia_mon_private_address_regex: "^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|\

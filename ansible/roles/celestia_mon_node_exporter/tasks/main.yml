@@ -37,8 +37,8 @@
   ansible.builtin.set_fact:
     celestia_mon_node_exporter_present: >-
       {{ celestia_mon_node_exporter_installed.stat.exists
-         and (celestia_mon_node_exporter_sums.content | default('') | b64decode)
-             == (celestia_mon_node_exporter_installed.stat.checksum | default('') ~ '  node_exporter\n') }}
+         and (celestia_mon_node_exporter_sums.content | default('') | b64decode | trim)
+             == (celestia_mon_node_exporter_installed.stat.checksum | default('') ~ '  node_exporter') }}
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
 # unit are skipped until the pinned version is installed. This task reports the
@@ -135,7 +135,7 @@
       ansible.builtin.copy:
         dest: "{{ celestia_mon_node_exporter_sums_file }}"
         content: >-
-          {{ celestia_mon_node_exporter_copied.stat.checksum ~ '  node_exporter\n' }}
+          {{ celestia_mon_node_exporter_copied.stat.checksum ~ '  node_exporter' ~ celestia_mon_newline }}
         owner: root
         group: root
         mode: "0644"

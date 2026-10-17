@@ -45,9 +45,9 @@
   ansible.builtin.set_fact:
     celestia_mon_prometheus_present: >-
       {{ celestia_mon_prometheus_found.results | rejectattr('stat.exists') | list | length == 0
-         and (celestia_mon_prometheus_sums.content | default('') | b64decode)
+         and (celestia_mon_prometheus_sums.content | default('') | b64decode | trim)
              == (celestia_mon_prometheus_found.results | map(attribute='stat.checksum', default='')
-                 | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join('\n')) ~ '\n' }}
+                 | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join(celestia_mon_newline)) }}
 
 - name: Report the pending install of Prometheus {{ celestia_mon_prometheus_version }}
   ansible.builtin.debug:
@@ -157,7 +157,7 @@
         dest: "{{ celestia_mon_prometheus_sums_file }}"
         content: >-
           {{ (celestia_mon_prometheus_installed.results | map(attribute='stat.checksum')
-              | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join('\n')) ~ '\n' }}
+              | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join(celestia_mon_newline)) ~ celestia_mon_newline }}
         owner: root
         group: root
         mode: "0644"
