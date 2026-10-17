@@ -1,0 +1,12 @@
+---
+# Paths of celestia-mon-announcements on the monitor host. The settings themselves are
+# celestia_mon_announcements and celestia_mon_discord_bot_token (celestia_mon role defaults).
+celestia_mon_announcements_dir: /opt/celestia-mon/announcements
+celestia_mon_announcements_script: "{{ celestia_mon_announcements_dir }}/celestia-mon-announcements"
+celestia_mon_announcements_config_dir: /etc/celestia-mon/announcements
+celestia_mon_announcements_config: "{{ celestia_mon_announcements_config_dir }}/config.json"
+# The bot token, root's only: systemd hands it to the service (LoadCredential).
+celestia_mon_announcements_token_file: "{{ celestia_mon_announcements_config_dir }}/discord-token"
+# StateDirectory of the unit: the newest message read in each channel.
+celestia_mon_announcements_state_dir: /var/lib/celestia-mon/announcements
+celestia_mon_announcements_listen_address: "127.0.0.1:{{ celestia_mon_ports.announcements }}"

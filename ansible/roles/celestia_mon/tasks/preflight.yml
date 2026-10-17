@@ -105,7 +105,9 @@
 # keeps there already counts toward it, so a re-run on a full-grown install passes.
 - name: Look for the pinned releases already installed here
   ansible.builtin.stat:
-    path: "/opt/celestia-mon/{{ celestia_mon_services[item].dir }}-{{ celestia_mon_versions[celestia_mon_services[item].version].version }}"
+    path: >-
+      /opt/celestia-mon/{{ celestia_mon_services[item].dir }}{{ ('-' ~ celestia_mon_versions[celestia_mon_services[item].version].version)
+      if celestia_mon_services[item].version else '' }}
     get_checksum: false
     get_mime: false
   loop: "{{ celestia_mon_host_services }}"

@@ -371,6 +371,27 @@ groups:
           runbook: "{{ docs }}#disklow"
 {% endfor %}
 
+{% if celestia_mon_announcements | default([]) | length > 0 %}
+      # AnnouncementsUnreadable: celestia-mon-announcements has not read a Discord channel for
+      # 15 minutes (a revoked token, a lost permission, Discord unreachable), or it is down, so
+      # Celestia's announcements would not reach you. The timestamp is 0 until the first read.
+      - alert: AnnouncementsUnreadable
+        expr: >-
+          time() - celestia_mon_announcements_last_success_timestamp_seconds > 900
+          or up{job="announcements"} == 0
+        for: 10m
+        labels:
+          severity: message
+          host: {{ celestia_mon_monitor_host | to_json }}
+        annotations:
+          summary: "Celestia announcements are not being read on {{ celestia_mon_monitor_host }}"
+          description: >-
+            celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
+            announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
+            names the cause and the fix.
+          runbook: "{{ docs }}#announcementsunreadable"
+
+{% endif %}
       # MonitoringBroken: Prometheus failed to evaluate alert rules, so some alerts cannot fire.
       - alert: MonitoringBroken
         expr: increase(prometheus_rule_evaluation_failures_total[10m]) > 0

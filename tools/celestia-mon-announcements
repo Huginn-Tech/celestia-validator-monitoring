@@ -1,0 +1,299 @@
+#!/usr/bin/python3 -I
+"""celestia-mon-announcements: Celestia's announcements as alerts.
+
+Reads the Discord channels named in the configuration (channels on the operator's own server
+that follow Celestia's announcement channels) and posts each new message to Alertmanager as
+one CelestiaAnnouncement alert, so it reaches the receivers like any other page or message
+alert. The first read of a channel only notes its newest message: nothing older is sent.
+
+  celestia-mon-announcements --config FILE [--once]
+
+The bot token and the API password come from systemd's credentials (LoadCredential):
+discord-token and api-password in $CREDENTIALS_DIRECTORY. Only the Python standard library
+is used. Prometheus scrapes the service's own metrics on the configured listen address.
+"""
+
+import argparse
+import base64
+import datetime
+import json
+import os
+import re
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+USER_AGENT = "DiscordBot (https://github.com/s0urledd/celestia-validator-monitoring, 1)"
+# Telegram takes 4096 characters per message; the rest of an alert's text needs some.
+MAX_TEXT = 1500
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+class Metrics:
+    """The service's metrics, served as Prometheus text."""
+
+    def __init__(self, channels):
+        self.lock = threading.Lock()
+        # 0 until the first successful read, so an alert also fires when no read ever works.
+        self.last_success = {c: 0.0 for c in channels}
+        self.forwarded = {c: 0 for c in channels}
+        self.errors = {}
+
+    def success(self, channel, forwarded):
+        with self.lock:
+            self.last_success[channel] = time.time()
+            self.forwarded[channel] += forwarded
+
+    def error(self, channel, reason):
+        with self.lock:
+            key = (channel, reason)
+            self.errors[key] = self.errors.get(key, 0) + 1
+
+    def render(self):
+        with self.lock:
+            out = [
+                "# HELP celestia_mon_announcements_last_success_timestamp_seconds "
+                "Unix time of the last read of the channel that worked, 0 before the first.",
+                "# TYPE celestia_mon_announcements_last_success_timestamp_seconds gauge",
+            ]
+            out += [f'celestia_mon_announcements_last_success_timestamp_seconds{{channel="{c}"}} {t}'
+                    for c, t in sorted(self.last_success.items())]
+            out += [
+                "# HELP celestia_mon_announcements_forwarded_total Announcements posted to Alertmanager.",
+                "# TYPE celestia_mon_announcements_forwarded_total counter",
+            ]
+            out += [f'celestia_mon_announcements_forwarded_total{{channel="{c}"}} {n}'
+                    for c, n in sorted(self.forwarded.items())]
+            out += [
+                "# HELP celestia_mon_announcements_errors_total Failed reads of a channel or posts to Alertmanager.",
+                "# TYPE celestia_mon_announcements_errors_total counter",
+            ]
+            out += [f'celestia_mon_announcements_errors_total{{channel="{c}",reason="{r}"}} {n}'
+                    for (c, r), n in sorted(self.errors.items())]
+            return "\n".join(out) + "\n"
+
+
+def serve_metrics(listen, metrics):
+    host, _, port = listen.rpartition(":")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/metrics":
+                self.send_error(404)
+                return
+            body = metrics.render().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer((host, int(port)), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+def credential(name):
+    directory = os.environ.get("CREDENTIALS_DIRECTORY")
+    if not directory:
+        sys.exit(f"no {name}: start it through its systemd unit, which passes the credentials")
+    with open(os.path.join(directory, name)) as f:
+        return f.read().strip()
+
+
+class DiscordError(Exception):
+    def __init__(self, reason, text, retry_after=0):
+        super().__init__(text)
+        self.reason = reason
+        self.retry_after = retry_after
+
+
+def discord_get(api, token, path):
+    req = urllib.request.Request(api + path, headers={"Authorization": "Bot " + token, "User-Agent": USER_AGENT})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.load(e)
+        except ValueError:
+            detail = {}
+        message = detail.get("message", e.reason)
+        if e.code == 401:
+            raise DiscordError("unauthorized", "Discord refused the bot token (401): put a valid "
+                               "celestia_mon_discord_bot_token in the vault") from None
+        if e.code == 403:
+            raise DiscordError("forbidden", f"Discord answered 403 {message}: give the bot View Channel "
+                               "and Read Message History in this channel") from None
+        if e.code == 404:
+            raise DiscordError("not_found", f"Discord answered 404 {message}: check the channel ID, "
+                               "and that the bot is on that server") from None
+        if e.code == 429:
+            raise DiscordError("rate_limited", "Discord rate-limits the bot",
+                               float(detail.get("retry_after", 5))) from None
+        raise DiscordError("http", f"Discord answered {e.code} {message}") from None
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise DiscordError("network", f"cannot reach Discord: {e}") from None
+
+
+def clean(text):
+    """Discord markup as plain text, without pings."""
+    def timestamp(m):
+        t = datetime.datetime.fromtimestamp(int(m.group(1)), datetime.timezone.utc)
+        return t.strftime("%Y-%m-%d %H:%M UTC")
+
+    text = re.sub(r"<t:(\d+)(?::[tTdDfFR])?>", timestamp, text)
+    text = re.sub(r"<@&\d+>|@everyone|@here", "", text)
+    text = re.sub(r"<@!?\d+>", "@user", text)
+    text = re.sub(r"<#\d+>", "#channel", text)
+    text = re.sub(r"<a?:(\w+):\d+>", r":\1:", text)
+    text = re.sub(r"<(https?://[^>\s]+)>", r"\1", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return text
+
+
+def message_text(msg):
+    parts = [msg.get("content") or ""]
+    for embed in msg.get("embeds") or []:
+        parts += [embed.get("title") or "", embed.get("description") or ""]
+    parts += [a.get("filename", "") for a in msg.get("attachments") or []]
+    text = clean("\n\n".join(p for p in parts if p))
+    if len(text) > MAX_TEXT:
+        text = text[:MAX_TEXT].rstrip() + " … (continues on Discord)"
+    return text or "(no text: open it on Discord)"
+
+
+def message_link(msg, guild, channel):
+    # A message from a followed channel (flag IS_CROSSPOST) links to the original.
+    ref = msg.get("message_reference") or {}
+    if msg.get("flags", 0) & 2 and ref.get("guild_id") and ref.get("channel_id") and ref.get("message_id"):
+        return f"https://discord.com/channels/{ref['guild_id']}/{ref['channel_id']}/{ref['message_id']}"
+    return f"https://discord.com/channels/{guild}/{channel}/{msg['id']}"
+
+
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def alert(cfg, channel, guild, msg):
+    # A followed channel posts as "<server> #<channel>", which names the network.
+    source = ((msg.get("author") or {}).get("username") or "Discord")[:100]
+    now = time.time()
+    link = message_link(msg, guild, channel["id"])
+    return {
+        "labels": {
+            "alertname": "CelestiaAnnouncement",
+            "severity": channel["severity"],
+            "host": cfg["host"],
+            "source": source,
+            "announcement": msg["id"],
+        },
+        "annotations": {
+            "summary": f"Celestia announcement from {source}",
+            "description": message_text(msg),
+            "link": link,
+        },
+        "startsAt": iso(now),
+        "endsAt": iso(now + 60 * cfg["active_minutes"]),
+        "generatorURL": link,
+    }
+
+
+def post_alerts(cfg, password, alerts):
+    login = base64.b64encode(f"{cfg['api_user']}:{password}".encode()).decode()
+    req = urllib.request.Request(
+        cfg["alertmanager_url"].rstrip("/") + "/api/v2/alerts",
+        data=json.dumps(alerts).encode(),
+        headers={"Content-Type": "application/json", "Authorization": "Basic " + login},
+        method="POST")
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        if resp.status != 200:
+            raise urllib.error.HTTPError(req.full_url, resp.status, "unexpected status", resp.headers, None)
+
+
+def load_state(path):
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+    except ValueError:
+        log(f"{path} is not valid JSON: starting over (no older messages are sent)")
+        return {}
+
+
+def save_state(path, state):
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, path)
+
+
+def poll(cfg, token, password, state, guilds, metrics):
+    """One read of every channel. Returns the seconds Discord asks to wait, if any."""
+    wait = 0
+    for channel in cfg["channels"]:
+        cid = channel["id"]
+        try:
+            if cid not in guilds:
+                guilds[cid] = discord_get(cfg["discord_api"], token, f"/channels/{cid}").get("guild_id", "@me")
+            last = state.get(cid)
+            if last is None:
+                newest = discord_get(cfg["discord_api"], token, f"/channels/{cid}/messages?limit=1")
+                state[cid] = newest[0]["id"] if newest else "0"
+                save_state(cfg["state_file"], state)
+                log(f"channel {cid}: reading from now on (older messages are not sent)")
+                metrics.success(cid, 0)
+                continue
+            msgs = discord_get(cfg["discord_api"], token, f"/channels/{cid}/messages?after={last}&limit=50")
+            msgs = sorted(msgs, key=lambda m: int(m["id"]))
+            if msgs:
+                try:
+                    post_alerts(cfg, password, [alert(cfg, channel, guilds[cid], m) for m in msgs])
+                except (urllib.error.URLError, OSError) as e:
+                    metrics.error(cid, "alertmanager")
+                    log(f"channel {cid}: Alertmanager did not take {len(msgs)} announcement(s), retrying: {e}")
+                    continue
+                state[cid] = msgs[-1]["id"]
+                save_state(cfg["state_file"], state)
+                log(f"channel {cid}: sent {len(msgs)} announcement(s) to Alertmanager")
+            metrics.success(cid, len(msgs))
+        except DiscordError as e:
+            metrics.error(cid, e.reason)
+            log(f"channel {cid}: {e}")
+            wait = max(wait, e.retry_after)
+    return wait
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--once", action="store_true", help="read every channel once and exit")
+    args = parser.parse_args()
+    with open(args.config) as f:
+        cfg = json.load(f)
+    token = credential("discord-token")
+    password = credential("api-password")
+    metrics = Metrics([c["id"] for c in cfg["channels"]])
+    if not args.once:
+        serve_metrics(cfg["listen"], metrics)
+    state = load_state(cfg["state_file"])
+    guilds = {}
+    while True:
+        wait = poll(cfg, token, password, state, guilds, metrics)
+        if args.once:
+            return
+        time.sleep(max(cfg["interval_seconds"], wait))
+
+
+if __name__ == "__main__":
+    main()

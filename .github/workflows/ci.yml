@@ -274,10 +274,16 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
+      # The mainnet example also reads one announcement channel, so its rules and scrape jobs
+      # include AnnouncementsUnreadable and the announcements job.
       - name: Render the example inventories
         run: |
           for s in single split mainnet; do
-            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
+            extra=()
+            if [ "$s" = mainnet ]; then
+              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}]}')
+            fi
+            ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
       - name: Install promtool and amtool at the pinned versions
         run: |
@@ -330,7 +336,8 @@ jobs:
           assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
           assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
-          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol")})
+          assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
+          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements")})
           EOF
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
@@ -362,6 +369,10 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
           amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
+          amtool config routes test --config.file="$am" --verify.receivers=announcement-page \
+            alertname=CelestiaAnnouncement severity=page host=mon-1 source=ci announcement=1
+          amtool config routes test --config.file="$am" --verify.receivers=announcement-message \
+            alertname=CelestiaAnnouncement severity=message host=mon-1 source=ci announcement=1
           python - "$am" <<'EOF'
           import sys
           import yaml
@@ -371,6 +382,13 @@ jobs:
           chat = {"telegram_configs": 1, "discord_configs": 1, "slack_configs": 2, "webhook_configs": 1}
           assert count("page") == {"pagerduty_configs": 1, **chat}, count("page")
           assert count("message") == chat, count("message")
+          # Announcements go to the same receivers, without a "resolved" message.
+          assert count("announcement-page") == count("page"), count("announcement-page")
+          assert count("announcement-message") == chat, count("announcement-message")
+          def resolved(name):
+              return {c["send_resolved"] for k, v in receivers[name].items() if k.endswith("_configs") for c in v}
+          assert resolved("page") == resolved("message") == {True}, (resolved("page"), resolved("message"))
+          assert resolved("announcement-page") == resolved("announcement-message") == {False}
           print("page:", count("page"), "message:", count("message"))
           EOF
           cat > "$RUNNER_TEMP/pagerduty-only.yml" <<'EOF'
@@ -392,6 +410,74 @@ jobs:
             echo "the old page/message receiver lists were accepted"
             exit 1
           fi
+
+  # celestia-mon-announcements against tools/ci/discord_stub.py, which stands in for Discord and
+  # for Alertmanager's alerts API: the first read only notes the newest message, the next posts
+  # the two new announcements as one request with clean text and links to the originals, a third
+  # posts nothing; a channel the bot may not read and a wrong token are reported, not fatal; and
+  # the metrics Prometheus scrapes are served.
+  announcements:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: celestia-mon-announcements reads, posts once and reports errors
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/ann"
+          mkdir -p "$d/cred"
+          token=ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+          printf '%s' "$token" >"$d/cred/discord-token"
+          printf 'ci-api-login' >"$d/cred/api-password"
+          STUB_TOKEN=$token python3 tools/ci/discord_stub.py 8765 "$d/posts.jsonl" &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8765/health
+          cat >"$d/config.json" <<EOF
+          {"host": "mon-1", "alertmanager_url": "http://127.0.0.1:8765", "api_user": "celestia-mon",
+           "listen": "127.0.0.1:9916", "discord_api": "http://127.0.0.1:8765/api/v10", "interval_seconds": 1,
+           "active_minutes": 30, "state_file": "$d/state.json",
+           "channels": [{"id": "111111111111111111", "severity": "page"}, {"id": "222222222222222222", "severity": "message"}]}
+          EOF
+          once() { CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" --once 2>>"$d/log"; }
+          once
+          cat "$d/log"
+          test ! -e "$d/posts.jsonl"
+          grep -q '^channel 111111111111111111: reading from now on' "$d/log"
+          grep -q '^channel 222222222222222222: Discord answered 403 Missing Access' "$d/log"
+          once
+          once
+          test "$(wc -l <"$d/posts.jsonl")" = 1
+          python3 - "$d/posts.jsonl" <<'EOF'
+          import json, re, sys
+          alerts = json.loads(open(sys.argv[1]).readline())
+          assert [a["labels"]["announcement"] for a in alerts] == ["1300000000000000101", "1300000000000000102"], alerts
+          first, second = alerts
+          assert first["labels"] == {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
+                                     "source": "Celestia #mocha-announcements", "announcement": "1300000000000000101"}, first
+          text = first["annotations"]["description"]
+          assert re.fullmatch(r"Mocha upgrades to v10.5.0 at d{4}-dd-dd dd:dd UTC. "
+                              r"Details: https://docs.celestia.org/upgrade?network=mocha&v=10.5.0", text), text
+          link = "https://discord.com/channels/638338779505229824/333333333333333333/5101"
+          assert first["annotations"]["link"] == first["generatorURL"] == link, first
+          assert second["labels"]["source"] == "Celestia #mainnet-announcements", second
+          assert second["annotations"]["description"] == "Mainnet notice
+
+Read #channel before the upgrade", second
+          print("posted:", json.dumps(alerts, indent=1))
+          EOF
+          CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" 2>>"$d/log" &
+          pid=$!
+          for _ in $(seq 30); do
+            m=$(curl -fsS http://127.0.0.1:9916/metrics || true)
+            if grep -q '^celestia_mon_announcements_errors_total{channel="222222222222222222",reason="forbidden"}' <<<"$m"; then break; fi
+            sleep 1
+          done
+          kill "$pid"
+          printf '%s\n' "$m"
+          grep -Eq '^celestia_mon_announcements_last_success_timestamp_seconds\{channel="111111111111111111"\} [1-9]' <<<"$m"
+          grep -Eq '^celestia_mon_announcements_last_success_timestamp_seconds\{channel="222222222222222222"\} 0' <<<"$m"
+          printf 'not-the-token' >"$d/cred/discord-token"
+          once
+          grep -q 'Discord refused the bot token (401)' "$d/log"
+          if grep -qF "$token" "$d/log"; then echo "the log holds the token"; exit 1; fi
 
   dashboard:
     runs-on: ubuntu-24.04
@@ -803,7 +889,16 @@ jobs:
                 - {type: webhook, url: "http://127.0.0.1:9/message"}
               celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
               celestia_mon_grafana_admin_password: ci-test-only-not-a-secret
+              celestia_mon_announcements:
+                - {channel_id: "111111111111111111", severity: page}
+              celestia_mon_announcements_discord_api: http://127.0.0.1:8765/api/v10
+              celestia_mon_announcements_interval_seconds: 5
+              celestia_mon_discord_bot_token: ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
           EOF
+          # tools/ci/discord_stub.py stands in for Discord for celestia-mon-announcements.
+          STUB_TOKEN=ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+            nohup python3 tools/ci/discord_stub.py 8765 "$RUNNER_TEMP/stub-posts.jsonl" >"$RUNNER_TEMP/stub.log" 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8765/health
       # The rule for 10.255.255.2 is there before the install, even with celestia-mon's comment:
       # the install must not record it, and no uninstall may remove it.
       - name: Enable ufw, as on a hardened host, with a rule of the operator's
@@ -954,6 +1049,24 @@ jobs:
           test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9913/api/v2/silences)" = 401
       # The rules for 10.255.255.2 on the other scraped ports (the collector's, celestia-appd's)
       # are added and recorded; only its rule for 9910, there before the install, is not.
+      # The first read only notes the newest message; the stand-in then shows two new ones, which
+      # reach Alertmanager as two CelestiaAnnouncement alerts. Prometheus scrapes the reader.
+      - name: Celestia announcements reach Alertmanager
+        run: |
+          set -euo pipefail
+          systemctl is-active celestia-mon-announcements
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/announcements/discord-token)" = "root:root 600"
+          login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          n=0
+          for _ in $(seq 60); do
+            n=$(login | curl -fsS -g -K - 'http://127.0.0.1:9913/api/v2/alerts?filter=alertname="CelestiaAnnouncement"' | jq length)
+            if [ "$n" = 2 ]; then break; fi
+            sleep 2
+          done
+          if [ "$n" != 2 ]; then sudo journalctl -u celestia-mon-announcements --no-pager | tail -n 30; exit 1; fi
+          curl -fsS http://127.0.0.1:9916/metrics |
+            grep -Eq '^celestia_mon_announcements_last_success_timestamp_seconds\{channel="111111111111111111"\} [1-9]'
+          login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="announcements"}' | jq -e '.data.result[0].value[1] == "1"'
       - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
         run: |
           for u in node-exporter otelcol prometheus alertmanager grafana; do
@@ -976,7 +1089,7 @@ jobs:
         run: |
           out=$(sudo celestia-mon-doctor || true)
           printf '%s\n' "$out"
-          grep -Eq '^FAIL +11 +monitor stack +1 of 5 scrape targets down: celestia-app ' <<<"$out"
+          grep -Eq '^FAIL +11 +monitor stack +1 of 6 scrape targets down: celestia-app ' <<<"$out"
           line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
           for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
             # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
@@ -1018,7 +1131,7 @@ jobs:
                    /var/lib/celestia-mon/firewall-added.json /var/tmp/celestia-mon-install \
                    /etc/celestia-mon/alertmanager/alertmanager.yml /etc/celestia-mon/grafana/admin-password \
                    /etc/celestia-mon/grafana/provisioning/datasources/celestia-mon.yml /etc/celestia-mon/api-password \
-                   /etc/celestia-mon/grafana-api-password; do
+                   /etc/celestia-mon/grafana-api-password /etc/celestia-mon/announcements/discord-token; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
           for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon; do

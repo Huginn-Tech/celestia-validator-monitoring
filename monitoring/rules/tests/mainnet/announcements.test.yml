@@ -1,0 +1,70 @@
+# AnnouncementsUnreadable on the mainnet example, rendered with one announcement channel
+# (CI passes celestia_mon_announcements). The timestamp is 0 until the first read works.
+rule_files:
+  - celestia-mon.rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # Read every minute: nothing fires.
+  - interval: 1m
+    input_series:
+      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="fibre-1",job="announcements"}'
+        values: '0+60x60'
+      - series: 'up{host="fibre-1",job="announcements"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: AnnouncementsUnreadable
+        exp_alerts: []
+
+  # No read ever worked (a wrong token): over 15 minutes from 16m on, firing 10 minutes later.
+  - interval: 1m
+    input_series:
+      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="fibre-1",job="announcements"}'
+        values: '0x60'
+      - series: 'up{host="fibre-1",job="announcements"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: AnnouncementsUnreadable
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: AnnouncementsUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+              channel: "111111111111111111"
+              job: announcements
+            exp_annotations:
+              summary: Celestia announcements are not being read on fibre-1
+              description: >-
+                celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
+                announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
+                names the cause and the fix.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
+
+  # The service is down: its target fails for 10 minutes.
+  - interval: 1m
+    input_series:
+      - series: 'up{host="fibre-1",job="announcements"}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: AnnouncementsUnreadable
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: AnnouncementsUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+              job: announcements
+            exp_annotations:
+              summary: Celestia announcements are not being read on fibre-1
+              description: >-
+                celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
+                announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
+                names the cause and the fix.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable

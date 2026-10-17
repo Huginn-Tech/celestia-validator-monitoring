@@ -33,6 +33,7 @@ celestia_mon_ports:
   alertmanager: 9913
   grafana: 9914
   otelcol_otlp: 9915
+  announcements: 9916
 
 # The address Grafana listens on, on the monitor host. The default, 127.0.0.1, keeps it off
 # every network: reach it through an SSH tunnel from your machine
@@ -70,6 +71,15 @@ celestia_mon_thresholds:
 # versions are refused.
 celestia_mon_receivers: []
 
+# Celestia's announcements as alerts (docs/alerts.md#celestiaannouncement), on the monitor host.
+# Each entry is a Discord channel on your own server that follows Celestia's announcement
+# channels ("Follow" in Celestia's Discord), and the severity its messages get: page (PagerDuty
+# and every chat channel) or message (chat channels only). A bot on your server reads them;
+# its token is celestia_mon_discord_bot_token, in the monitor's vault. Empty: off.
+#   celestia_mon_announcements:
+#     - {channel_id: "1234567890123456789", severity: page}
+celestia_mon_announcements: []
+
 # Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog
 # alert pings it every 1-2 minutes; the service alerts you when the pings stop. It must be an
 # https URL (http only to this host itself, such as a local relay); an empty value or the
@@ -106,6 +116,7 @@ celestia_mon_memory:
   prometheus: {high: 2G, max: 4G}
   alertmanager: {high: 128M, max: 256M}
   grafana: {high: 512M, max: 1G}
+  announcements: {high: 64M, max: 128M}
 
 # Inventory groups (a host may be in several):
 #   validator    exactly one host: the celestia-appd node the signer normally connects to

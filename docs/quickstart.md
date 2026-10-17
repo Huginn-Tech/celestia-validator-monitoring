@@ -333,7 +333,9 @@ Each resolves by itself after 5 minutes. [alerts.md](alerts.md) describes every 
 
 ## 11. Subscribe to network notices
 
-Upgrades are the most common reason a node stops at a height or crash loops. Celestia announces upgrades and incidents per network on [status.celestia.org](https://status.celestia.org/). Subscribe there for the networks you run, or route its feed ([RSS](https://status.celestia.org/feed.rss), [Atom](https://status.celestia.org/feed.atom)) into the same channel as your alerts. See also Celestia's [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/) page.
+Upgrades are the most common reason a node stops at a height or crash loops. Celestia announces upgrades and incidents in its announcement channels on Discord, and per network on [status.celestia.org](https://status.celestia.org/).
+
+celestia-validator-monitoring can pass the Discord announcements on to your receivers, PagerDuty included, as [CelestiaAnnouncement](alerts.md#celestiaannouncement) alerts: follow Celestia's announcement channels from a channel on your own Discord server, give a bot of yours read access to it, and set `celestia_mon_announcements` (inventory) and `celestia_mon_discord_bot_token` (vault) on the monitor. [alerts.md](alerts.md#celestiaannouncement) has the steps. Otherwise subscribe on status.celestia.org for the networks you run, or route its feed ([RSS](https://status.celestia.org/feed.rss), [Atom](https://status.celestia.org/feed.atom)) into the same channel as your alerts. See also Celestia's [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/) page.
 
 ## 12. Before planned restarts and upgrades
 

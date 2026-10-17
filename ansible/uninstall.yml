@@ -28,7 +28,7 @@
     celestia_mon_uninstall_record: /var/lib/celestia-mon/firewall-added.json
     # Removed on every uninstall: the binaries, and the settings files that hold secrets
     # (celestia_mon_api_password_file, celestia_mon_api_grafana_password_file and the files of the
-    # alertmanager and grafana roles).
+    # alertmanager, grafana and announcements roles).
     celestia_mon_uninstall_paths:
       - /opt/celestia-mon
       - /var/cache/celestia-mon
@@ -38,6 +38,7 @@
       - /etc/celestia-mon/grafana/provisioning/datasources/celestia-mon.yml
       - /etc/celestia-mon/api-password
       - /etc/celestia-mon/grafana-api-password
+      - /etc/celestia-mon/announcements/discord-token
     # Removed only with celestia_mon_uninstall_purge.
     celestia_mon_uninstall_purge_paths:
       - /var/lib/celestia-mon
@@ -45,7 +46,7 @@
     # The units celestia-mon installs, plus any other celestia-mon-* unit file or drop-in directory.
     celestia_mon_uninstall_units: >-
       {{ (['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service', 'celestia-mon-prometheus.service',
-           'celestia-mon-alertmanager.service', 'celestia-mon-grafana.service']
+           'celestia-mon-alertmanager.service', 'celestia-mon-grafana.service', 'celestia-mon-announcements.service']
           + (celestia_mon_uninstall_unit_files.files | map(attribute='path') | map('basename') | map('regex_replace', '[.]d$', '')
              | select('match', '.*[.]service$') | list)) | unique }}
     celestia_mon_uninstall_loaded: >-

@@ -1,0 +1,15 @@
+{
+  "host": {{ inventory_hostname | to_json }},
+  "alertmanager_url": {{ ('http://127.0.0.1:' ~ celestia_mon_ports.alertmanager) | to_json }},
+  "api_user": {{ celestia_mon_api_user | to_json }},
+  "listen": {{ celestia_mon_announcements_listen_address | to_json }},
+  "discord_api": {{ celestia_mon_announcements_discord_api | to_json }},
+  "interval_seconds": {{ celestia_mon_announcements_interval_seconds | int }},
+  "active_minutes": {{ celestia_mon_announcements_active_minutes | int }},
+  "state_file": {{ (celestia_mon_announcements_state_dir ~ '/state.json') | to_json }},
+  "channels": [
+{% for c in celestia_mon_announcements %}
+    {"id": {{ c.channel_id | string | to_json }}, "severity": {{ c.severity | default('page') | to_json }}}{{ ',' if not loop.last else '' }}
+{% endfor %}
+  ]
+}

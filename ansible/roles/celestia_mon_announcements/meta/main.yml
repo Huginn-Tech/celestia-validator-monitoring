@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: Huginn Tech
+  description: Celestia's announcements from Discord as Alertmanager alerts, on the monitor host
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies:
+  - role: celestia_mon
