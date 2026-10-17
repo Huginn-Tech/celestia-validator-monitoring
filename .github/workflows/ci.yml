@@ -842,6 +842,14 @@ jobs:
           printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' '00' >"$vault"
           chmod 0644 "$vault"
           refused "$INV" 'is readable by group or other'
+          # An encrypted vault.yml that only its owner reads passes the gate, and the dry run runs the
+          # install playbook (it stops there because no vault password was given), never the removal.
+          chmod 0600 "$vault"
+          sudo bash ./install.sh --inventory "$INV" --host ci --check >"$RUNNER_TEMP/gate.log" 2>&1 || true
+          if grep -qF 'PLAY [Remove celestia-mon]' "$RUNNER_TEMP/gate.log" ||
+             ! grep -qF 'PLAY [Check the inventory and this host]' "$RUNNER_TEMP/gate.log"; then
+            cat "$RUNNER_TEMP/gate.log"; echo "with a vault.yml in the inventory, the dry run did not run the install playbook"; exit 1
+          fi
           rm -r "$(dirname "$INV")/host_vars"
           test ! -e /var/tmp/celestia-mon-install
       - name: The dry run changes nothing and lists the ufw rules

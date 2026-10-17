@@ -22,8 +22,10 @@
         name: celestia_mon
         tasks_from: preflight
 
+# hosts: all, not a pattern of the groups: an inventory without backup nodes (or without a kms
+# host) would make Ansible warn about each group it does not define.
 - name: Collectors on Celestia hosts
-  hosts: validator:backup_node:fibre:kms
+  hosts: all
   become: true
   # Facts are gathered after the skip below, so a KMS host celestia-mon does not manage is never contacted.
   gather_facts: false
@@ -35,9 +37,11 @@
         name: celestia_mon
         public: true
 
-    - name: Skip hosts celestia-mon does not manage
+    - name: Skip hosts celestia-mon does not manage, and a host that is only the monitor
       ansible.builtin.meta: end_host
-      when: not (celestia_mon_host_managed | bool)
+      when: >-
+        not (celestia_mon_host_managed | bool)
+        or group_names | intersect(['validator', 'backup_node', 'fibre', 'kms']) | length == 0
 
     - name: Gather facts on the hosts celestia-mon manages
       ansible.builtin.setup:
