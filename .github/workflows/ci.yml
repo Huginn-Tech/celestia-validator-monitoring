@@ -453,8 +453,8 @@ jobs:
           assert first["labels"] == {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
                                      "source": "Celestia #mocha-announcements", "announcement": "1300000000000000101"}, first
           text = first["annotations"]["description"]
-          assert re.fullmatch(r"Mocha upgrades to v10.5.0 at d{4}-dd-dd dd:dd UTC. "
-                              r"Details: https://docs.celestia.org/upgrade?network=mocha&v=10.5.0", text), text
+          assert re.fullmatch(r"Mocha upgrades to v10\.5\.0 at \d{4}-\d\d-\d\d \d\d:\d\d UTC\. "
+                              r"Details: https://docs\.celestia\.org/upgrade\?network=mocha&v=10\.5\.0", text), text
           link = "https://discord.com/channels/638338779505229824/333333333333333333/5101"
           assert first["annotations"]["link"] == first["generatorURL"] == link, first
           assert second["labels"]["source"] == "Celestia #mainnet-announcements", second
