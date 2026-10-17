@@ -46,7 +46,7 @@
     celestia_mon_otelcol_present: >-
       {{ celestia_mon_otelcol_installed.stat.exists
          and (celestia_mon_otelcol_sums.content | default('') | b64decode)
-             == celestia_mon_otelcol_installed.stat.checksum | default('') ~ '  otelcol-contrib\n' }}
+             == (celestia_mon_otelcol_installed.stat.checksum | default('') ~ '  otelcol-contrib\n') }}
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
 # unit are skipped until the pinned version is installed. This task reports the
@@ -142,7 +142,8 @@
     - name: Record the checksum of the installed otelcol-contrib binary
       ansible.builtin.copy:
         dest: "{{ celestia_mon_otelcol_sums_file }}"
-        content: "{{ celestia_mon_otelcol_copied.stat.checksum }}  otelcol-contrib\n"
+        content: >-
+          {{ celestia_mon_otelcol_copied.stat.checksum ~ '  otelcol-contrib\n' }}
         owner: root
         group: root
         mode: "0644"
