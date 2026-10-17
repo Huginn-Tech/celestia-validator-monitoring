@@ -254,7 +254,7 @@
   ansible.builtin.copy:
     dest: "{{ celestia_mon_plan_file }}"
     content: |
-      Host:      {{ inventory_hostname }} ({{ ['validator', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(', ') }})
+      Host:      {{ inventory_hostname }} ({{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(', ') }})
       Services:  {{ celestia_mon_host_services | map('extract', celestia_mon_services, 'unit') | join(', ') }}
                  systemd units, each run by its own system user of the same name, with Nice={{ celestia_mon_nice }},
                  CPUWeight={{ celestia_mon_cpu_weight }}, IOWeight={{ celestia_mon_io_weight }} (no CPU quota) and in total
@@ -276,7 +276,12 @@
       Fibre:     {{ celestia_mon_units.fibre }}.service does not send its metrics to the collector yet ({{ celestia_mon_preflight_fibre_now }}).
                  Operator step, at a moment you choose (celestia-mon never edits or restarts Fibre):
                  {{ celestia_mon_preflight_fibre_change }}, then run
+      {% if celestia_mon_preflight_fibre_unit.status.ActiveState | default('') == 'active' %}
                  sudo systemctl daemon-reload && sudo systemctl restart {{ celestia_mon_units.fibre }}
+      {% else %}
+                 sudo systemctl daemon-reload
+                 and leave the unit stopped: it is not active here (a standby), and it uses the new endpoint when it next starts.
+      {% endif %}
       {% endif %}
       {% endif %}
       ufw:       {{ celestia_mon_preflight_ufw_text }}

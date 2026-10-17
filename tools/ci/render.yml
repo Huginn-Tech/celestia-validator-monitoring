@@ -22,11 +22,11 @@
       ansible.builtin.assert:
         that:
           - celestia_mon_ci_scenario is defined
-          - celestia_mon_ci_scenario in ['single', 'split']
-        fail_msg: Pass -e celestia_mon_ci_scenario=single or -e celestia_mon_ci_scenario=split, matching the inventory.
+          - celestia_mon_ci_scenario in ['single', 'split', 'mainnet']
+        fail_msg: Pass -e celestia_mon_ci_scenario=single, split or mainnet, matching the inventory (example-<scenario>).
         quiet: true
   # celestia_mon runs its inventory checks (signer, Fibre, units, one validator and
-  # one monitor, private address), so CI checks both example inventories with them.
+  # one monitor, private address), so CI checks every example inventory with them.
   # The other roles are loaded for their defaults and vars only, so the templates see
   # the same variables as on a real monitor host. Their tasks are skipped: they
   # change the machine they run on, which here is the CI runner.

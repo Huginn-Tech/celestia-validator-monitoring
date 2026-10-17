@@ -4,21 +4,29 @@
 celestia_mon_private_address_regex: "^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|\
   100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.|127\\.|::1$|f[cd][0-9a-fA-F]{2}:)"
 
+# The hosts that run celestia-appd: the validator node and the key-less backup nodes that can
+# take over signing when tmkms is pointed at them. Each one's metrics are scraped and watched
+# the same way; which node signs right now is read from the metrics, never from the inventory.
+celestia_mon_appd_hosts: "{{ (groups.get('validator', []) + groups.get('backup_node', [])) | unique }}"
+
 # Is this host one celestia-mon installs anything on? A kms host only when celestia_mon_kms_scrape is set.
 celestia_mon_host_managed: >-
-  {{ inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('monitor', []))
+  {{ inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('monitor', []))
      or (inventory_hostname in groups.get('kms', []) and (celestia_mon_kms_scrape | default(false) | bool)) }}
 
-# Celestia services running on this host, by systemd unit name (without .service).
+# Celestia services on this host, by systemd unit name (without .service). Every Fibre host
+# lists the Fibre unit, active or standby: systemd says which one runs.
 celestia_mon_host_units: >-
-  {{ ([celestia_mon_units.appd] if inventory_hostname in groups.get('validator', []) else [])
+  {{ ([celestia_mon_units.appd] if inventory_hostname in celestia_mon_appd_hosts else [])
      + ([celestia_mon_units.fibre] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
      + ([celestia_mon_units.tmkms] if (celestia_mon_signer == 'remote' and inventory_hostname in groups.get('kms', [])) else []) }}
 
-# The role label this host's node_exporter target carries.
+# The role label this host's node_exporter target carries: the first of its inventory groups
+# in this order. It names the inventory role, not the one the host holds after a failover.
 celestia_mon_host_role: >-
   {{ 'validator' if inventory_hostname in groups.get('validator', [])
      else 'fibre' if inventory_hostname in groups.get('fibre', [])
+     else 'backup_node' if inventory_hostname in groups.get('backup_node', [])
      else 'kms' if inventory_hostname in groups.get('kms', [])
      else 'monitor' }}
 
@@ -44,8 +52,9 @@ celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager]
 celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 
 # The services site.yml installs on this host (keys of celestia_mon_services): node_exporter
-# on Celestia hosts, the collector on Fibre hosts, the stack on the monitor.
+# on Celestia hosts, the collector on every Fibre host (the standby too, so Fibre's metrics
+# arrive the moment it is started), the stack on the monitor.
 celestia_mon_host_services: >-
-  {{ (['node_exporter'] if inventory_hostname in (groups.get('validator', []) + groups.get('fibre', []) + groups.get('kms', [])) else [])
+  {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) else [])
      + (['otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
      + (['prometheus', 'alertmanager', 'grafana'] if inventory_hostname in groups.get('monitor', []) else []) }}

@@ -22,7 +22,7 @@ The secrets (receiver tokens, the dead-man URL, Grafana's password) sit in one a
 
 When the hosts share a Tailscale tailnet, the tailnet policy is the firewall between them. In Tailscale's default netfilter mode on Linux, tailscaled puts its own chain first in `INPUT` and accepts everything that arrives on `tailscale0`, so ufw never sees tailnet traffic: neither your rules nor the ones celestia-validator-monitoring adds apply to it. ufw still filters the public interface and other private networks.
 
-Deny by default: a policy that holds only the grants below allows nothing else between the hosts. The policy file is HuJSON (JSON with comments), edited in the Tailscale admin console. Tag each server by its role; with one host in several roles, give it several tags.
+Deny by default: a policy that holds only the grants below allows nothing else between the hosts. The policy file is HuJSON (JSON with comments), edited in the Tailscale admin console. Tag each server by its role; with one host in several roles, give it several tags. Tag a backup node `tag:validator` too: the monitor scrapes it like the validator, and tmkms reaches it after a repoint.
 
 ```jsonc
 {
@@ -65,4 +65,4 @@ The machine you administer the hosts from can reach all of them. Keep it as tigh
 
 ## Where to run the monitor
 
-For mainnet, use a monitor host that is neither the validator nor the Fibre host. The monitor holds the alert channels' secrets and has a web login; on a host of its own, neither sits next to the validator's key, and monitoring keeps running and alerting when the validator or Fibre host goes down.
+The monitor holds the alert channels' secrets and has a web login. On a host of its own, neither sits next to the validator's key, and monitoring keeps running and alerting when the validator or Fibre host goes down. With a remote signer the key is on the KMS host only, so the monitor may share the Fibre host, as in the [mainnet layout](quickstart.md#mainnet-layout): when that host goes down, monitoring goes with it, and the dead-man service and an external check on Fibre's port are what tell you. Keep the monitor off the KMS host.

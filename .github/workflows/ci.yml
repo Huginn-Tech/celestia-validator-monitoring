@@ -249,9 +249,10 @@ jobs:
         if: failure()
         run: sudo journalctl -u celestia-mon-node-exporter -u celestia-mon-otelcol --no-pager -n 200
 
-  # Renders the rules, Alertmanager, Prometheus and dashboard settings for both example
-  # inventories and checks them with promtool and amtool from the pinned releases, whose
-  # tarballs are checked against the sha256 in versions.yml (no checksum file is fetched).
+  # Renders the rules, Alertmanager, Prometheus and dashboard settings for the three example
+  # inventories (single, split, and mainnet with a backup node and a standby Fibre) and checks
+  # them with promtool and amtool from the pinned releases, whose tarballs are checked against
+  # the sha256 in versions.yml (no checksum file is fetched).
   rules:
     runs-on: ubuntu-24.04
     steps:
@@ -266,9 +267,9 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
-      - name: Render both example inventories
+      - name: Render the example inventories
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Install promtool and amtool at the pinned versions
@@ -290,24 +291,40 @@ jobs:
         # Several rules share an alert name and severity on purpose (one per branch,
         # host or mount), which the duplicate-rules lint would report.
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             promtool check rules --lint=none "monitoring/rules/tests/$s/celestia-mon.rules.yml"
           done
       - name: promtool test rules
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             promtool test rules monitoring/rules/tests/"$s"/*.test.yml
           done
       - name: promtool check config
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             promtool check config --lint=none "build/$s/prometheus.yml"
           done
       - name: amtool check-config
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             amtool check-config "build/$s/alertmanager.yml"
           done
+      # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
+      # active or standby, in the otelcol job.
+      - name: The mainnet scrape targets follow the inventory groups
+        run: |
+          set -euo pipefail
+          python - build/mainnet/prometheus.yml <<'EOF'
+          import sys
+          import yaml
+          jobs = {j["job_name"]: j for j in yaml.safe_load(open(sys.argv[1]))["scrape_configs"]}
+          def hosts(job):
+              return sorted((c["labels"]["host"], c["labels"]["role"]) for c in jobs[job]["static_configs"])
+          assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
+          assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
+          assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
+          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol")})
+          EOF
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
@@ -331,7 +348,8 @@ jobs:
           render "$RUNNER_TEMP/receivers.yml"
           am=build/split/alertmanager.yml
           amtool check-config "$am"
-          amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page host=fibre-1
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
           python - "$am" <<'EOF'
@@ -382,28 +400,39 @@ jobs:
       # A throwaway Prometheus container that only parses the panel queries; it is not celestia-mon's.
       - name: Start a throwaway Prometheus at the version in versions.yml
         run: docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$PROMETHEUS_VERSION"
-      - name: Render the dashboard settings for both example inventories
+      - name: Render the dashboard settings for the example inventories
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
           done
       - name: Generate the dashboards
         run: |
-          for s in single split; do
+          for s in single split mainnet; do
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.again.json"
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
+      # mainnet: a backup node and a standby Fibre on top of split, so Node progress is a table
+      # with one row per node; the panel count stays at 16.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
+          kind() { jq -r '.panels[] | select(.id == 1) | .type' "build/$1/dashboard.json"; }
           test "$(count single)" = 10
           test "$(count split)" = 16
+          test "$(count mainnet)" = 16
+          test "$(kind single)" = stat
+          test "$(kind split)" = stat
+          test "$(kind mainnet)" = table
+          jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
+          jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
-        run: python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 build/single/dashboard.json build/split/dashboard.json
+        run: >-
+          python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
+          build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json
 
   doctor:
     runs-on: ubuntu-24.04
@@ -421,7 +450,7 @@ jobs:
               exit 1
             fi
           }
-          for roles in validator fibre kms monitor validator,fibre; do
+          for roles in validator backup_node fibre kms monitor validator,fibre backup_node,fibre,monitor; do
             echo "::group::roles=$roles (root)"
             run sudo bash tools/doctor.sh --config /dev/null --roles "$roles" --fibre-enabled true \
               --signer remote --data-mounts / --fibre-mount / --head-wait 2
@@ -436,6 +465,51 @@ jobs:
           cat "$RUNNER_TEMP/doctor.conf"
           run sudo bash tools/doctor.sh --config "$RUNNER_TEMP/doctor.conf" --head-wait 2
           echo "::endgroup::"
+
+  # doctor on the mainnet roles, on the runner: a stopped stand-in for a standby Fibre unit
+  # (loaded, inactive, signer named by host name) and a backup node's config.toml. With two
+  # fibre_hosts the stopped unit is a standby (OK 6), its signer must be an IP (FAIL 17) and
+  # the fix never starts it; with one it is down (FAIL 6). On a backup node check 2 is INFO.
+  doctor-standby:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: doctor on a standby Fibre host and a backup node
+        run: |
+          set -euo pipefail
+          run() {
+            rc=0
+            out=$("$@" 2>stderr.txt) || rc=$?
+            printf '%s\n' "$out"
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          printf '%s\n' '[Service]' 'ExecStart=/bin/true --signer-grpc-address localhost:26669 --otel-endpoint http://127.0.0.1:9915' \
+            | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
+          sudo systemctl daemon-reload
+
+          run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-fibre \
+            --fibre-hosts fibre-a,fibre-b --data-mounts / --head-wait 2
+          grep -Eq '^OK +6 +fibre service +standby: ci-fibre\.service is inactive and port 7980 is closed' <<<"$out"
+          grep -Eq '^FAIL +17 +fibre signer +--signer-grpc-address in ExecStart is localhost:26669, not an IP address' <<<"$out"
+          grep -Eq '^FAIL +17 .*leave the unit stopped' <<<"$out"
+
+          run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-fibre \
+            --fibre-hosts fibre-a --data-mounts / --head-wait 2
+          grep -Eq '^FAIL +6 +fibre service +ci-fibre\.service is inactive\.' <<<"$out"
+
+          home="$RUNNER_TEMP/backup-node"
+          mkdir -p "$home/config"
+          echo 'priv_validator_laddr = ""' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^INFO +2 +remote signer +backup node: priv_validator_laddr is empty' <<<"$out"
+          echo 'priv_validator_laddr = "tcp://127.0.0.1:26658"' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^INFO +2 +remote signer +backup node: priv_validator_laddr = tcp://127\.0\.0\.1:26658' <<<"$out"
+          if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
 
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings

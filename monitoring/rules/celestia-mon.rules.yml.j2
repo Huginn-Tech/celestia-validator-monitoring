@@ -1,28 +1,44 @@
 # celestia-mon alert rules, rendered by Ansible from monitoring/rules/celestia-mon.rules.yml.j2.
 # Change the template or the inventory, not the rendered file. See docs/alerts.md.
+{#
+  Roles can move between hosts: tmkms can be pointed at a backup node, and a standby Fibre can
+  be started on another host. The page alerts (NodeNotAdvancing, ValidatorNotSigning, FibreDown,
+  DiskLow) therefore read which node signs and which Fibre runs from the metrics, never from the
+  inventory, and ServiceDown is a message.
+#}
 {% set appd = celestia_mon_units.appd ~ '.service' %}
 {% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
 {% set tmkms = (celestia_mon_units.tmkms | default('')) ~ '.service' %}
 {% set remote = celestia_mon_signer == 'remote' %}
 {% set fibre_on = celestia_mon_fibre_enabled | bool %}
 {% set th = celestia_mon_thresholds %}
-{% set validators = groups.get('validator', []) %}
+{% set behind = th.node_behind_blocks | default(20) %}
+{# celestia-appd hosts: the validator and the backup nodes. #}
+{% set nodes = celestia_mon_appd_hosts %}
 {% set fibres = groups.get('fibre', []) if fibre_on else [] %}
 {% set kms = groups.get('kms', []) %}
-{% set vf = validators + groups.get('fibre', []) %}
-{% set units = [('appd', appd, 'page', validators)]
-   + ([('tmkms', tmkms, 'page', kms)] if remote else [])
-   + ([('fibre', fibre, 'message', fibres)] if fibre_on else []) %}
+{% set vf = nodes + groups.get('fibre', []) %}
+{# ServiceDown per unit: (key, unit, hosts it must be loaded on). A Fibre unit may be a stopped
+   standby, which systemd drops from its list once it is also disabled, so Fibre has only the
+   crash loop rule; FibreDown covers "no Fibre runs". #}
+{% set units = [('appd', appd, nodes)]
+   + ([('tmkms', tmkms, kms)] if remote else [])
+   + ([('fibre', fibre, [])] if fibre_on else []) %}
+{% set vns_text = ('Check journalctl -u ' ~ celestia_mon_units.tmkms ~ ' on the KMS host first. ' if remote else '')
+   ~ 'The chain moves but the validator has not signed for more than ' ~ th.not_signing_blocks ~ ' blocks.' %}
 {% set docs = 'https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
 groups:
   - name: celestia_mon
     rules:
-      # ServiceDown: celestia-appd, Fibre, tmkms or a collector is down, not loaded or crash looping.
+      # ServiceDown: celestia-appd, tmkms or a collector is down or not loaded, or a Celestia service
+      # is crash looping. Always a message: the pages come from the alerts below, which follow the
+      # roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a standby is
+      # stopped); FibreDown pages when no Fibre unit is active anywhere.
       - alert: ServiceDown
         expr: up{job="celestia-app"} == 0
         for: 3m
         labels:
-          severity: page
+          severity: message
           unit: celestia_app
         annotations:
           summary: "{% raw %}celestia-app metrics are unreachable on {{ $labels.host }}{% endraw %}"
@@ -50,22 +66,24 @@ groups:
           description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
           runbook: "{{ docs }}#servicedown"
 {% endif %}
-{% for key, name, severity, hosts in units %}
+{% for key, name, hosts in units %}
+{% if key != 'fibre' %}
       - alert: ServiceDown
         expr: node_systemd_unit_state{name="{{ name }}",state="active"} == 0
         for: 2m
         labels:
-          severity: {{ severity }}
+          severity: message
           unit: {{ key }}
         annotations:
           summary: "{% raw %}{{ $labels.name }} is not active on {{ $labels.host }}{% endraw %}"
           description: "systemd has not reported the unit as active for 2 minutes."
           runbook: "{{ docs }}#servicedown"
+{% endif %}
       - alert: ServiceDown
         # increase() extrapolates to the window edges (2 restarts can read as 2.07); floor() counts whole restarts.
         expr: floor(increase(node_systemd_service_restart_total{name="{{ name }}"}[30m])) > {{ th.crashloop_restarts }}
         labels:
-          severity: {{ severity }}
+          severity: message
           unit: {{ key }}
         annotations:
           summary: "{% raw %}{{ $labels.name }} is crash looping on {{ $labels.host }}{% endraw %}"
@@ -76,7 +94,7 @@ groups:
         expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ name }}"}) and on () up{job="node",host="{{ h }}"} == 1
         for: 2m
         labels:
-          severity: {{ severity }}
+          severity: message
           unit: {{ key }}
         annotations:
           summary: "{% raw %}{{ $labels.name }} is not loaded on {{ $labels.host }}{% endraw %}"
@@ -85,36 +103,66 @@ groups:
 {% endfor %}
 {% endfor %}
 
-      # NodeNotAdvancing: the node committed no new block for 3 minutes (2 minutes without a
-      # height change, held for 1 more). It shows the node is not advancing, not whether it is
-      # at the network's head.
+      # NodeNotAdvancing: no node of this install committed a new block for 3 minutes (the highest
+      # height of all nodes did not change in 2 minutes, and that held for 1 more), or Prometheus
+      # read no node's height for as long. It shows that nothing advances, not whether a node that
+      # advances is at the network's head.
       - alert: NodeNotAdvancing
-        expr: changes(cometbft_consensus_height{job="celestia-app"}[2m]) == 0
+        expr: >-
+          changes(max(cometbft_consensus_height{job="celestia-app"})[2m:]) == 0
+          or sum(absent_over_time(cometbft_consensus_height{job="celestia-app"}[2m]))
         for: 1m
         labels:
           severity: page
         annotations:
-          summary: "{% raw %}Node on {{ $labels.host }} is not advancing{% endraw %}"
-          description: "The node has committed no new block for 3 minutes. Check status.celestia.org or an explorer first: the whole chain may have halted."
+          summary: "No node is advancing"
+          description: "No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height. Check status.celestia.org or an explorer first: the whole chain may have halted."
           runbook: "{{ docs }}#nodenotadvancing"
 
-      # ValidatorNotSigning: the chain moves but the node's own key does not sign.
+      # NodeBehind: one node lags the others of this install: more than {{ behind }} blocks behind the
+      # highest node, or not advancing while another node advances, for 10 minutes. It catches a
+      # backup node that could not take over signing. With a single node it cannot fire.
+      - alert: NodeBehind
+        expr: >-
+          max(cometbft_consensus_height{job="celestia-app"}) - on () group_right cometbft_consensus_height{job="celestia-app"}
+          > {{ behind }}
+          or changes(cometbft_consensus_height{job="celestia-app"}[2m]) == 0
+          and on () changes(max(cometbft_consensus_height{job="celestia-app"})[2m:]) > 0
+        for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Node on {{ $labels.host }} is behind{% endraw %}"
+          description: "For 10 minutes the node has been more than {{ behind }} blocks behind the highest node of this install, or has not advanced while another node did. A node that lags cannot take over signing."
+          runbook: "{{ docs }}#nodebehind"
+
+      # ValidatorNotSigning: the chain moves but the validator's key signs no blocks, whichever node
+      # the signer is connected to. Only that node exports the last signed height, so the rule
+      # compares the highest height of all nodes with the highest last signed height. When the
+      # signing node goes away its series go with it, and the alert fires until a node signs again
+      # (for example after tmkms is pointed at a backup node).
       - alert: ValidatorNotSigning
         expr: >-
-          cometbft_consensus_height{job="celestia-app"}
-          - (max without (validator_address) (cometbft_consensus_validator_last_signed_height{job="celestia-app"})
-          or cometbft_consensus_height{job="celestia-app"} * 0) > {{ th.not_signing_blocks }}
-          and on (instance) changes(cometbft_consensus_height{job="celestia-app"}[5m]) > 0
+          max(cometbft_consensus_height{job="celestia-app"})
+          - (max(cometbft_consensus_validator_last_signed_height{job="celestia-app"})
+          or max(cometbft_consensus_height{job="celestia-app"}) * 0) > {{ th.not_signing_blocks }}
+          and on () changes(max(cometbft_consensus_height{job="celestia-app"})[5m:]) > 0
         for: 2m
         labels:
           severity: page
         annotations:
-          summary: "{% raw %}Validator on {{ $labels.host }} is not signing{% endraw %}"
-          description: "The chain moves but the validator has not signed for more than {{ th.not_signing_blocks }} blocks."
+          summary: "The validator is not signing"
+{% if nodes | length > 1 %}
+          # The node that exported the highest last signed height in the last hour: the one the signer used.
+          description: "{{ vns_text }}{% raw %}{{ range query `topk(1, max by (host) (last_over_time(cometbft_consensus_validator_last_signed_height{job='celestia-app'}[1h])))` }} Its last signature came through the node on {{ .Labels.host }}.{{ end }}{% endraw %}"
+{% else %}
+          description: "{{ vns_text }}"
+{% endif %}
           runbook: "{{ docs }}#validatornotsigning"
 {% if remote %}
 
-      # RemoteSignerProblem: the remote signer is too slow, or cannot sign proposals.
+      # RemoteSignerProblem: the remote signer is too slow, or cannot sign proposals. Per node: the
+      # series move with the signer.
       - alert: RemoteSignerProblem
         expr: cometbft_privval_signing_latency_median_seconds > {{ th.signer_median_seconds }}
         for: 15m
@@ -135,43 +183,37 @@ groups:
 {% endif %}
 {% if fibre_on %}
 
-      # FibreDown: the Fibre unit is not active or not loaded for 10 minutes, or the Fibre host's
-      # node_exporter is unreachable for 10 minutes while the monitor runs on another host. ServiceDown
-      # sends a message about the unit after 2 minutes; this pages if it stays down.
+      # FibreDown: no Fibre unit has been active on any Fibre host for 10 minutes. A stopped standby
+      # is normal; this pages only when none runs: Fibre stopped or crashed everywhere, the host of
+      # the active Fibre down (its node_exporter goes with it) and no standby started, or
+      # celestia_mon_units.fibre naming the wrong unit. A failover within 10 minutes pages nobody.
+      # celestia-mon does not probe Fibre's public port from outside.
       - alert: FibreDown
-        expr: node_systemd_unit_state{name="{{ fibre }}",state="active"} == 0
+        expr: (count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) or vector(0)) == 0
         for: 10m
         labels:
           severity: page
         annotations:
-          summary: "{% raw %}{{ $labels.name }} is down on {{ $labels.host }}{% endraw %}"
-          description: "systemd has not reported the Fibre unit as active for 10 minutes."
+          summary: "No Fibre unit is active"
+          description: "For 10 minutes no Fibre host ({{ fibres | sort | join(', ') }}) has reported {{ fibre }} as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit."
           runbook: "{{ docs }}#fibredown"
-{% for h in fibres %}
-      - alert: FibreDown
-        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ fibre }}"}) and on () up{job="node",host="{{ h }}"} == 1
-        for: 10m
+
+      # FibreBothActive: Fibre runs active-passive, but the Fibre unit has been active on more than
+      # one host for 5 minutes.
+      - alert: FibreBothActive
+        expr: count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) > 1
+        for: 5m
         labels:
-          severity: page
+          severity: message
         annotations:
-          summary: "{% raw %}{{ $labels.name }} is not loaded on {{ $labels.host }}{% endraw %}"
-          description: "For 10 minutes node_exporter has listed no Fibre unit: it is stopped and disabled, or the inventory names the wrong unit."
-          runbook: "{{ docs }}#fibredown"
-{% if h != celestia_mon_monitor_host %}
-      - alert: FibreDown
-        expr: up{job="node",host="{{ h }}"} == 0
-        for: 10m
-        labels:
-          severity: page
-        annotations:
-          summary: "{% raw %}Fibre host {{ $labels.host }} does not answer{% endraw %}"
-          description: "Prometheus has not reached node_exporter on the Fibre host for 10 minutes: the host, its network or node_exporter is down."
-          runbook: "{{ docs }}#fibredown"
-{% endif %}
-{% endfor %}
+          summary: "Fibre is active on more than one host"
+          description: "For 5 minutes {{ fibre }} has been active on {% raw %}{{ range $i, $s := query `node_systemd_unit_state{name='{% endraw %}{{ fibre }}{% raw %}',state='active'} == 1` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }}{{ end }}{% endraw %}. Fibre runs on one host at a time: stop the one that should be the standby."
+          runbook: "{{ docs }}#fibrebothactive"
 
       # FibreNotServing: Fibre runs but accepts no uploads, or sends no metrics. A quiet network
-      # also makes the time since the last accepted upload grow, so this stays a message.
+      # also makes the time since the last accepted upload grow, so this stays a message. Only the
+      # host whose Fibre unit is active can match: a stopped unit reports a start time of 0, and a
+      # standby sends no Fibre metrics.
       - alert: FibreNotServing
         expr: >-
           time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
@@ -202,11 +244,12 @@ groups:
 {% endfor %}
 {% endif %}
 
-      # DiskLow: a watched disk is filling up or turned read-only. Data mounts page on
-      # validator and kms hosts and send messages on Fibre hosts. The Fibre store has its
-      # own rules unless it is also a node data mount. Each mount gets one set of rules.
+      # DiskLow: a watched disk is filling up or turned read-only. Data mounts page on celestia-appd
+      # hosts (validator and backup nodes) and kms hosts, and send messages on Fibre-only hosts. The
+      # Fibre store has its own rules unless it is also a node data mount. Each mount gets one set of
+      # rules.
 {% for h in (vf + kms) | unique if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
-{% set node_host = h in validators or h in kms %}
+{% set node_host = h in nodes or h in kms %}
 {% set store = hostvars[h].celestia_mon_fibre_mount | default('') if h in fibres else '' %}
 {% for m in hostvars[h].celestia_mon_data_mounts | default([]) if node_host or m != store %}
 {% if node_host %}
@@ -249,7 +292,7 @@ groups:
 {% endfor %}
 {% for h in fibres if hostvars[h].celestia_mon_fibre_mount | default('') %}
 {% set m = hostvars[h].celestia_mon_fibre_mount %}
-{% if not ((h in validators or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default([])) %}
+{% if not ((h in nodes or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default([])) %}
       - alert: DiskLow
         expr: node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
         labels:

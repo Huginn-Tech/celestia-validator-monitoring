@@ -1,6 +1,6 @@
 ---
 # Lets the monitor host reach a port Prometheus scrapes (one of celestia-mon's, or
-# celestia-appd's metrics port on the validator host) through ufw, only when ufw
+# celestia-appd's metrics port on the validator and backup_node hosts) through ufw, only when ufw
 # is already active on this host. Never enables, resets or reorders the firewall:
 # each rule is appended with `ufw allow ... comment celestia-mon`. A source that already
 # has a rule for the port (ALLOW, DENY, REJECT or LIMIT, with or without a comment) is

@@ -9,10 +9,15 @@
       - (celestia_mon_signer == 'local') or (celestia_mon_units.tmkms | length > 0)
       - groups.get('validator', []) | length == 1
       - groups.get('monitor', []) | length == 1
+      - groups.get('backup_node', []) | intersect(groups.get('validator', [])) | length == 0
+      - (not celestia_mon_fibre_enabled) or (groups.get('fibre', []) | length > 0)
     fail_msg: >-
       celestia_mon_signer must be local or remote, celestia_mon_fibre_enabled must be a boolean,
       celestia_mon_units must name the services in use, and the inventory needs exactly one
-      validator host and one monitor host (one validator per celestia-mon install).
+      validator host and one monitor host (one validator per celestia-mon install). A
+      backup_node host is a second celestia-appd node, never the validator host itself, and
+      with celestia_mon_fibre_enabled the fibre group lists every host with a Fibre install,
+      active or standby.
     quiet: true
 
 - name: Check this host's private address

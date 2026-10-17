@@ -6,6 +6,8 @@
 Each panel target's expr and each annotation's expr goes to /api/v1/query as it
 is. An empty result is fine (the CI Prometheus has no Celestia data); a response
 other than status "success" (for example a PromQL parse error) fails the check.
+Table panels are also checked without Prometheus: their columns are named from
+Grafana's 'Value #<refId>' fields, so queries, column names and overrides must line up.
 Python 3 standard library only.
 """
 import argparse
@@ -23,6 +25,39 @@ def exprs(panels):
         for t in p.get("targets", []):
             if "expr" in t:
                 yield p.get("title", ""), t["expr"]
+
+
+def table_problems(panels):
+    """(panel title, problem) for table panels whose queries and columns do not line up.
+    Grafana calls the value column of query X 'Value #X' only when a table has more than one
+    query, and gen_dashboard.py renames those columns, so every query must be an instant table
+    query with a column name, every column name must belong to a query, and every override
+    by name must match a column."""
+    for p in panels:
+        yield from table_problems(p.get("panels", []))
+        if p.get("type") != "table":
+            continue
+        title = p.get("title", "")
+        targets = p.get("targets", [])
+        refids = {t.get("refId") for t in targets}
+        rename = {}
+        for tr in p.get("transformations", []):
+            if tr.get("id") == "organize":
+                rename = tr.get("options", {}).get("renameByName", {})
+        if len(refids) < 2:
+            yield title, "fewer than two queries: Grafana would call the value column 'Value'"
+        for t in targets:
+            if t.get("format") != "table" or not t.get("instant"):
+                yield title, "query %s is not an instant query in table format" % t.get("refId")
+            if "Value #%s" % t.get("refId") not in rename:
+                yield title, "query %s has no column name" % t.get("refId")
+        for key in rename:
+            if key.startswith("Value #") and key[len("Value #"):] not in refids:
+                yield title, "column name for %s, which is no query of the panel" % key
+        for o in p.get("fieldConfig", {}).get("overrides", []):
+            m = o.get("matcher", {})
+            if m.get("id") == "byName" and m.get("options") not in rename.values():
+                yield title, "override for %r matches no column" % m.get("options")
 
 
 def annotation_exprs(dashboard):
@@ -68,6 +103,9 @@ def main():
             if error:
                 failed += 1
                 print("FAIL %s [%s]\n  %s\n  %s" % (path, title, expr, error))
+        for title, problem in table_problems(dashboard.get("panels", [])):
+            failed += 1
+            print("FAIL %s [%s]\n  %s" % (path, title, problem))
         checked += len(found)
         print("%s: %d queries" % (path, len(found)))
     if checked == 0:

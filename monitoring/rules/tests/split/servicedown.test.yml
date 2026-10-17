@@ -1,5 +1,6 @@
 # ServiceDown on the example-split inventory (val-1, kms-1 scraped, fibre-1, mon-1;
-# remote signer, Fibre on). CI renders celestia-mon.rules.yml next to this file first.
+# remote signer, Fibre on). ServiceDown is always a message. CI renders celestia-mon.rules.yml
+# next to this file first.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -50,7 +51,7 @@ tests:
         alertname: ServiceDown
         exp_alerts: []
 
-  - name: celestia-appd stops; the unit pages after 2m, the metrics endpoint after 3m
+  - name: celestia-appd stops; a message about the unit after 2m and the metrics endpoint after 3m
     interval: 1m
     input_series:
       - series: >-
@@ -84,7 +85,7 @@ tests:
               name: celestia-appd.service
               state: active
               type: simple
-              severity: page
+              severity: message
               unit: appd
             exp_annotations:
               summary: "celestia-appd.service is not active on val-1"
@@ -101,7 +102,7 @@ tests:
               name: celestia-appd.service
               state: active
               type: simple
-              severity: page
+              severity: message
               unit: appd
             exp_annotations:
               summary: "celestia-appd.service is not active on val-1"
@@ -112,14 +113,16 @@ tests:
               instance: 10.10.0.1:26660
               host: val-1
               role: validator
-              severity: page
+              severity: message
               unit: celestia_app
             exp_annotations:
               summary: "celestia-app metrics are unreachable on val-1"
               description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
-  - name: Fibre unit stops; a message after 2m
+  # A stopped Fibre unit may be a standby, so it is no ServiceDown; FibreDown pages when no
+  # Fibre unit is active for 10 minutes (fibredown.test.yml).
+  - name: Fibre unit stops; no ServiceDown
     interval: 1m
     input_series:
       - series: >-
@@ -135,28 +138,14 @@ tests:
           node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
         values: '60x4 0x10'
     alert_rule_test:
-      - eval_time: 6m
-        alertname: ServiceDown
-        exp_alerts: []
       - eval_time: 7m
         alertname: ServiceDown
-        exp_alerts:
-          - exp_labels:
-              job: node
-              instance: 10.10.0.3:9910
-              host: fibre-1
-              role: fibre
-              name: fibre.service
-              state: active
-              type: simple
-              severity: message
-              unit: fibre
-            exp_annotations:
-              summary: "fibre.service is not active on fibre-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: ServiceDown
+        exp_alerts: []
 
-  - name: tmkms crash loop pages; the flapping unit state never holds for 2m
+  - name: tmkms crash loop sends a message; the flapping unit state never holds for 2m
     interval: 1m
     input_series:
       - series: >-
@@ -181,14 +170,16 @@ tests:
               host: kms-1
               role: kms
               name: tmkms.service
-              severity: page
+              severity: message
               unit: tmkms
             exp_annotations:
               summary: "tmkms.service is crash looping on kms-1"
               description: "systemd restarted the unit more than 2 times in 30 minutes."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
-  - name: Fibre unit stopped and disabled is unloaded; no series while node_exporter is up
+  # A standby Fibre is stopped and often disabled, and systemd then drops it from the units
+  # node_exporter lists, so a missing Fibre unit is no ServiceDown either.
+  - name: Fibre unit stopped and disabled is unloaded; no ServiceDown
     interval: 1m
     input_series:
       - series: >-
@@ -204,21 +195,12 @@ tests:
           node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="inactive",type="simple"}
         values: '0x4 stale'
     alert_rule_test:
-      - eval_time: 6m
-        alertname: ServiceDown
-        exp_alerts: []
       - eval_time: 7m
         alertname: ServiceDown
-        exp_alerts:
-          - exp_labels:
-              host: fibre-1
-              name: fibre.service
-              severity: message
-              unit: fibre
-            exp_annotations:
-              summary: "fibre.service is not loaded on fibre-1"
-              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: ServiceDown
+        exp_alerts: []
 
   - name: Wrong appd unit name in the inventory; node_exporter is up but has no such unit
     interval: 1m
@@ -236,7 +218,7 @@ tests:
           - exp_labels:
               host: val-1
               name: celestia-appd.service
-              severity: page
+              severity: message
               unit: appd
             exp_annotations:
               summary: "celestia-appd.service is not loaded on val-1"
