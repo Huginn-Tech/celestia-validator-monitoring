@@ -220,8 +220,8 @@ if [[ -n $inv_dir ]]; then
   while IFS= read -r -d '' vault_file; do
     [[ $(head -c 15 -- "$vault_file") == "\$ANSIBLE_VAULT;" ]] ||
       die "$vault_file is not encrypted: encrypt it with ansible-vault encrypt $vault_file, then run again with --ask-vault-pass"
-    mode=$(stat -L -c %a -- "$vault_file")
-    (((8#$mode & 8#044) == 0)) || die "$vault_file is readable by group or other: chmod 600 $vault_file"
+    vault_mode=$(stat -L -c %a -- "$vault_file")
+    (((8#$vault_mode & 8#044) == 0)) || die "$vault_file is readable by group or other: chmod 600 $vault_file"
   done < <(find -L "$inv_dir/host_vars" "$inv_dir/group_vars" -type f \( -name vault.yml -o -name vault.yaml \) -print0 2>/dev/null)
 fi
 
