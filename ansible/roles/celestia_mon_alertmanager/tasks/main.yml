@@ -217,6 +217,7 @@
     mode: "0640"
     validate: "{{ celestia_mon_alertmanager_home }}/amtool check-config %s"
   no_log: true
+  register: celestia_mon_alertmanager_config
   notify: Reload Alertmanager
 
 - name: Read or create the API password
@@ -292,6 +293,40 @@
     timeout: 60
     msg: celestia-mon-alertmanager does not listen on {{ celestia_mon_alertmanager_listen_address }}. See journalctl -u celestia-mon-alertmanager.
   when: not ansible_check_mode
+
+# One test message when this run changed Alertmanager's configuration (the first install, a
+# receiver added or changed), so a wrong token or chat id shows now and not at the first real
+# alert. It is a message alert: the chat channels and webhooks get it, PagerDuty does not.
+# Alertmanager resolves it after its resolve_timeout (5 minutes); a receiver that cannot
+# deliver it raises NotificationsFailing.
+- name: Send a test notification to the chat receivers
+  when: celestia_mon_alertmanager_config is changed and not ansible_check_mode
+  no_log: true
+  block:
+    - name: Read the API password for the test notification
+      ansible.builtin.slurp:
+        src: "{{ celestia_mon_api_password_file }}"
+      register: celestia_mon_alertmanager_test_login
+
+    - name: Post the test notification to Alertmanager
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}/api/v2/alerts"
+        method: POST
+        url_username: "{{ celestia_mon_api_user }}"
+        url_password: "{{ celestia_mon_alertmanager_test_login.content | b64decode | trim }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          - labels:
+              alertname: NotificationTest
+              severity: message
+              host: "{{ inventory_hostname }}"
+            annotations:
+              summary: "Test from celestia-mon on {{ inventory_hostname }}: notifications reach this channel"
+              description: >-
+                Sent once because the install changed Alertmanager's receivers. No action needed: it
+                resolves in about 5 minutes. PagerDuty gets no test message.
+        status_code: 200
 
 - name: Find older Alertmanager versions
   ansible.builtin.find:

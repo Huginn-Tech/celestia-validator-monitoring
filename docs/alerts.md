@@ -291,7 +291,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 **Check first.**
 
 1. On the monitor, `journalctl -u celestia-mon-alertmanager -n 100`: each failed notification names the receiver and the error, for example a rejected bot token, a removed chat, a deleted Discord or Slack webhook, or an invalid PagerDuty routing key. A Telegram send that failed on the network (DNS, a timeout, TLS) is not in the journal: Alertmanager would log it with the request URL, which holds the bot token, so journald drops such lines. For Telegram, read `alertmanager_notifications_failed_total{integration="telegram"}` in Prometheus (its `reason` label) and this alert instead. If a journal of the monitor was ever shared, revoke the bot token in BotFather and put the new one in the vault file.
-2. Fix the receiver in the vault file (`ansible-vault edit`) and run `install.sh` on the monitor again.
+2. Fix the receiver in the vault file (`sudo ./install.sh --edit-vault <file>` on the monitor) and run `install.sh` on the monitor again; it sends a test message to the chat receivers.
 3. Send a test alert of each severity ([quickstart step 10](quickstart.md#10-check-that-alerts-reach-you)) and check that it arrives everywhere you expect.
 
 ## DeadmanFailing

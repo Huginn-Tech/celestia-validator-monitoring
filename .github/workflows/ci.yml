@@ -862,13 +862,49 @@ jobs:
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "the dry run created units"; exit 1; fi
           if sudo ufw show added | grep -q 'from 10\.255\.255\.1 '; then echo "the dry run added ufw rules"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
+      # --edit-vault on a terminal (expect gives it one and types the password at each prompt): it
+      # creates an encrypted vault.yml that only its owner reads, and opens it again decrypted. The
+      # editor is a script: it writes the file the first time and copies what it is shown the second.
+      - name: --edit-vault creates and edits an encrypted vault.yml
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y -qq expect >/dev/null
+          dir="$RUNNER_TEMP/editvault/host_vars/mon"
+          mkdir -p "$dir"
+          printf '%s\n' '#!/bin/sh' \
+            'if grep -q celestia_mon_ci "$1"; then cp "$1" /tmp/ed-out; else echo "celestia_mon_ci: 1" >"$1"; fi' >/tmp/ed.sh
+          chmod 755 /tmp/ed.sh
+          cat >/tmp/ev.exp <<'EOF'
+          set timeout 300
+          spawn sudo EDITOR=/tmp/ed.sh bash ./install.sh --edit-vault [lindex $argv 0]
+          expect {
+            -re {Confirm New Vault password: ?$} { send "ci-vault-pw\r"; exp_continue }
+            -re {New Vault password: ?$} { send "ci-vault-pw\r"; exp_continue }
+            -re {Vault password[^:]*: ?$} { send "ci-vault-pw\r"; exp_continue }
+            eof
+          }
+          exit [lindex [wait] 3]
+          EOF
+          expect /tmp/ev.exp "$dir/vault.yml"
+          sudo head -c 15 "$dir/vault.yml" | grep -qF '$ANSIBLE_VAULT;'
+          test "$(sudo stat -c %a "$dir/vault.yml")" = 600
+          expect /tmp/ev.exp "$dir/vault.yml"
+          sudo grep -qx 'celestia_mon_ci: 1' /tmp/ed-out
+          test ! -e /var/tmp/celestia-mon-install
+          if sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>/dev/null; then
+            echo "--edit-vault accepted a file that is not a vault.yml"; exit 1
+          fi
+      # A first install sends one test message to the chat receivers; a run that changes nothing does not.
       - name: Install
-        run: sudo bash ./install.sh --inventory "$INV" --host ci --yes
+        run: |
+          sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/install.log"
+          grep -q '^A test message went to the chat receivers' "$RUNNER_TEMP/install.log"
       - name: A second run changes nothing
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/second.log"
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
           grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
+          if grep -q '^A test message went' "$RUNNER_TEMP/second.log"; then echo "a run that changed nothing sent a test message"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
       # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
       # collector) or 1000 (Grafana), and root runs some of them (promtool, amtool, the collector's
