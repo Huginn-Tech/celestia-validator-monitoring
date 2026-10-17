@@ -458,9 +458,7 @@ jobs:
           link = "https://discord.com/channels/638338779505229824/333333333333333333/5101"
           assert first["annotations"]["link"] == first["generatorURL"] == link, first
           assert second["labels"]["source"] == "Celestia #mainnet-announcements", second
-          assert second["annotations"]["description"] == "Mainnet notice
-
-Read #channel before the upgrade", second
+          assert second["annotations"]["description"] == "Mainnet notice\n\nRead #channel before the upgrade", second
           print("posted:", json.dumps(alerts, indent=1))
           EOF
           CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" 2>>"$d/log" &
