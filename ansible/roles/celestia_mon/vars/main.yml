@@ -47,6 +47,24 @@ celestia_mon_services:
 # on celestia_mon_private_ip.
 celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager]
 
+# HTTP basic auth of Prometheus's and Alertmanager's APIs on the monitor host (tasks/api_password.yml).
+# Each password is generated once on the monitor host, never kept in the repository or the vault;
+# Prometheus and Alertmanager hold only bcrypt hashes, in their web configs (--web.config.file).
+# celestia_mon_api_user opens both: Prometheus reads its password for its own scrapes and its
+# alerts to Alertmanager, and celestia-mon-doctor and amtool use it.
+celestia_mon_api_user: celestia-mon
+celestia_mon_api_password_file: /etc/celestia-mon/api-password
+# Grafana's datasource login opens Prometheus only, never Alertmanager, so a Grafana that is
+# taken over (a web app with a login) cannot silence alerts. Its file is root's only; Grafana's
+# datasource file holds a copy of the password.
+celestia_mon_api_grafana_user: grafana
+celestia_mon_api_grafana_password_file: /etc/celestia-mon/grafana-api-password
+celestia_mon_api_web_configs:
+  prometheus: /etc/celestia-mon/prometheus/web.yml
+  alertmanager: /etc/celestia-mon/alertmanager/web.yml
+# amtool's --http.config.file (root only): the user and the password file above.
+celestia_mon_api_amtool_config: /etc/celestia-mon/alertmanager/amtool-http.yml
+
 # The ufw rules firewall.yml added on this host, as a JSON list of {source, port, proto, comment}.
 # ansible/uninstall.yml deletes only these (and repeats the path, as it loads no role).
 celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json

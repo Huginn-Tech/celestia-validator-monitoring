@@ -12,7 +12,8 @@ Group=celestia-mon-prometheus
 ExecStart={{ celestia_mon_prometheus_home }}/prometheus \
   --config.file={{ celestia_mon_prometheus_config_dir }}/prometheus.yml \
   --storage.tsdb.path={{ celestia_mon_prometheus_data_dir }} \
-  --web.listen-address={{ celestia_mon_prometheus_listen_address }}
+  --web.listen-address={{ celestia_mon_prometheus_listen_address }} \
+  --web.config.file={{ celestia_mon_api_web_configs.prometheus }}
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -27,10 +28,29 @@ MemoryMax={{ celestia_mon_memory.prometheus.max }}
 # before the kernel starts slowing the service down. With GOMEMLIMIT set, Prometheus skips
 # its own limit, which it would take from MemoryMax.
 Environment=GOMEMLIMIT={{ (0.9 * (celestia_mon_memory.prometheus.high | ansible.builtin.human_to_bytes)) | int }}
+# When the whole host runs out of memory, the kernel ends this service before celestia-appd,
+# Fibre or tmkms.
+OOMScoreAdjust=500
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# of an ordinary service (a call outside the set fails with EPERM).
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 ReadWritePaths={{ celestia_mon_prometheus_data_dir }}
 
 [Install]

@@ -1,7 +1,8 @@
 ---
 # Secrets of the monitor host (Alertmanager receivers, the dead-man URL, the Grafana
 # password). Only mon-1 needs this file: keep it off the other hosts. Replace the
-# placeholders, then encrypt it: ansible-vault encrypt host_vars/mon-1/vault.yml
+# placeholders, then encrypt the whole file: ansible-vault encrypt host_vars/mon-1/vault.yml
+# (install.sh refuses a vault.yml that is not encrypted).
 # Receivers: one list. Page alerts go to every receiver, message alerts to every receiver
 # except PagerDuty. Types: telegram, discord, slack, pagerduty, webhook (docs/alerts.md).
 celestia_mon_receivers:
@@ -11,5 +12,7 @@ celestia_mon_receivers:
     bot_token: "000000000:REPLACE_ME"
     chat_id: -1000000000000
 
+# Required: the https ping URL of your dead-man check (docs/quickstart.md, step 8).
 celestia_mon_deadman_webhook_url: "https://deadman.example.invalid/ping/REPLACE_ME"
+# At least 16 characters, for example from: openssl rand -base64 18
 celestia_mon_grafana_admin_password: "REPLACE_ME"

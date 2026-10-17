@@ -16,6 +16,8 @@ celestia_mon_grafana_config_dir: /etc/celestia-mon/grafana
 celestia_mon_grafana_data_dir: /var/lib/celestia-mon/grafana
 celestia_mon_grafana_dashboard_dir: "{{ celestia_mon_grafana_config_dir }}/dashboards"
 celestia_mon_grafana_admin_password_file: "{{ celestia_mon_grafana_config_dir }}/admin-password"
+# Holds the password Grafana sends to Prometheus (celestia_mon_api_grafana_password_file).
+celestia_mon_grafana_datasource_file: "{{ celestia_mon_grafana_config_dir }}/provisioning/datasources/celestia-mon.yml"
 
 # The repository checkout on the control node (site.yml lives in ansible/).
 celestia_mon_grafana_repo_dir: "{{ playbook_dir }}/.."

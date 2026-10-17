@@ -1,0 +1,156 @@
+# SignaturesMissed on the example-mainnet inventory: val-1 is the validator node, fibre-1 a backup
+# node that tmkms can be pointed at. Each node that knows the validator's key counts the blocks
+# committed without its signature; a node that tmkms left keeps the key it last read and keeps
+# counting from the chain's commits. The rule takes the highest share of all nodes and names no host.
+# The chain makes 10 blocks per minute; samples are one minute apart.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Both nodes in sync and the validator signs every block; no SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x80'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x80'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: SignaturesMissed
+        exp_alerts: []
+
+  # The validator misses every other block from the start. tmkms is pointed at fibre-1 at 20m while
+  # val-1 keeps running: both nodes count the same misses from then on. One alert, no host.
+  - name: Misses every other block, tmkms pointed at the backup node while val-1 runs; one SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x40'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1+5x40'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x40'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '_x21 1+5x19'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SignaturesMissed
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+      - eval_time: 40m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+
+  # val-1 goes down at 20m and its series end; tmkms is pointed at fibre-1, which counts its first
+  # miss at 25m. The misses val-1 counted stay in the hour, so the alert keeps firing across the
+  # move, and fibre-1's own count carries it on.
+  - name: Validator host lost while the validator misses every other block; SignaturesMissed keeps firing on the backup node
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x19 stale'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1+5x19 stale'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x90'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '_x25 1+5x65'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+      - eval_time: 22m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+      - eval_time: 90m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+
+  # The misses stop at 20m (tmkms fixed). val-1's count stays at 101: 100 misses in the hour up to
+  # 20m. They leave the hour window step by step, and the share drops to 5% at about 74m.
+  - name: Misses stop; SignaturesMissed resolves once the misses leave the hour
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x90'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1+5x20 101x70'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x90'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                Check journalctl -u tmkms on the KMS host first.
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+      - eval_time: 80m
+        alertname: SignaturesMissed
+        exp_alerts: []

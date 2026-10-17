@@ -26,14 +26,28 @@
 - name: Look for the pinned Prometheus binaries
   ansible.builtin.stat:
     path: "{{ celestia_mon_prometheus_home }}/{{ item }}"
+    checksum_algorithm: sha256
+    get_mime: false
   loop: "{{ celestia_mon_prometheus_binaries }}"
   register: celestia_mon_prometheus_found
 
+# The install below records the sha256 of each binary it copied from the checked release. A
+# binary that differs from its record, or an install without one, is installed again.
+- name: Read the checksums recorded when Prometheus was installed
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_prometheus_sums_file }}"
+  register: celestia_mon_prometheus_sums
+  failed_when: false
+
 # In check mode nothing is downloaded, so tasks that need the binaries or the unit
 # are skipped until the pinned version is installed.
-- name: Note whether the pinned Prometheus binaries are installed
+- name: Note whether the pinned Prometheus binaries are installed and unchanged
   ansible.builtin.set_fact:
-    celestia_mon_prometheus_present: "{{ celestia_mon_prometheus_found.results | rejectattr('stat.exists') | list | length == 0 }}"
+    celestia_mon_prometheus_present: >-
+      {{ celestia_mon_prometheus_found.results | rejectattr('stat.exists') | list | length == 0
+         and (celestia_mon_prometheus_sums.content | default('') | b64decode)
+             == (celestia_mon_prometheus_found.results | map(attribute='stat.checksum', default='')
+                 | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join('\n')) ~ '\n' }}
 
 - name: Report the pending install of Prometheus {{ celestia_mon_prometheus_version }}
   ansible.builtin.debug:
@@ -92,28 +106,72 @@
       retries: 5
       delay: 10
 
-    - name: Unpack the Prometheus release
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the Prometheus staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_prometheus_staging }}"
+        state: absent
+
+    - name: Create the Prometheus staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_prometheus_staging }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # The release stores its files as uid 1001, and tar running as root keeps stored owners.
+    # --no-same-owner makes them root's, and the 0700 staging directory keeps every other
+    # account away from the binaries root runs (promtool checks the configs below).
+    - name: Unpack the Prometheus binaries
       ansible.builtin.unarchive:
         src: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
-        dest: /var/cache/celestia-mon
+        dest: "{{ celestia_mon_prometheus_staging }}"
+        include: "{{ celestia_mon_prometheus_binaries | map('regex_replace', '^', celestia_mon_prometheus_release ~ '/') | list }}"
+        extra_opts:
+          - --no-same-owner
         remote_src: true
 
     - name: Install the Prometheus binaries
       ansible.builtin.copy:
-        src: /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}/{{ item }}
+        src: "{{ celestia_mon_prometheus_staging }}/{{ celestia_mon_prometheus_release }}/{{ item }}"
         dest: "{{ celestia_mon_prometheus_home }}/{{ item }}"
         remote_src: true
         owner: root
         group: root
         mode: "0755"
       loop: "{{ celestia_mon_prometheus_binaries }}"
+      notify: Restart Prometheus
 
-    - name: Remove the downloaded Prometheus release
+    - name: Read the checksums of the installed Prometheus binaries
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_prometheus_home }}/{{ item }}"
+        checksum_algorithm: sha256
+        get_mime: false
+      loop: "{{ celestia_mon_prometheus_binaries }}"
+      register: celestia_mon_prometheus_installed
+
+    # In sha256sum's format: cd <dir> && sha256sum -c SHA256SUMS checks them by hand.
+    - name: Record the checksums of the installed Prometheus binaries
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_prometheus_sums_file }}"
+        content: >-
+          {{ (celestia_mon_prometheus_installed.results | map(attribute='stat.checksum')
+              | zip(celestia_mon_prometheus_binaries) | map('join', '  ') | join('\n')) ~ '\n' }}
+        owner: root
+        group: root
+        mode: "0644"
+
+  # Also after a failed step, so no unpacked release is left behind.
+  always:
+    - name: Remove the downloaded Prometheus release and the staging directory
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}.tar.gz
+        - "{{ celestia_mon_prometheus_staging }}"
+        # Where earlier versions of celestia-mon unpacked the release.
         - /var/cache/celestia-mon/{{ celestia_mon_prometheus_release }}
 
 - name: Render the celestia-mon alert rules
@@ -125,6 +183,31 @@
     mode: "0644"
     validate: "{{ celestia_mon_prometheus_home }}/promtool check rules %s"
   notify: Reload Prometheus
+
+# The password Prometheus sends to Alertmanager and with its scrapes of both.
+- name: Read or create the API password
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: api_password
+  when: celestia_mon_api_password_hash is not defined
+
+# Every request to Prometheus (API, UI, /metrics, /-/ready) needs an API password: celestia-mon's,
+# or Grafana's datasource login, which Alertmanager does not take. Prometheus reads this file at
+# each request, so a change needs no restart.
+- name: Write the Prometheus web configuration
+  ansible.builtin.copy:
+    dest: "{{ celestia_mon_api_web_configs.prometheus }}"
+    content: |
+      # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+      # Basic auth on every request; the passwords are in {{ celestia_mon_api_password_file }}
+      # and (Grafana's datasource) {{ celestia_mon_api_grafana_password_file }}.
+      basic_auth_users:
+        {{ celestia_mon_api_user }}: {{ celestia_mon_api_password_hash | to_json }}
+        {{ celestia_mon_api_grafana_user }}: {{ celestia_mon_api_grafana_password_hash | to_json }}
+    owner: root
+    group: celestia-mon-prometheus
+    mode: "0640"
+    validate: "{{ celestia_mon_prometheus_home }}/promtool check web-config %s"
 
 - name: Render the Prometheus configuration
   ansible.builtin.template:

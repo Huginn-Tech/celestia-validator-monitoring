@@ -15,8 +15,14 @@ celestia_mon_alertmanager_home: "/opt/celestia-mon/alertmanager-{{ celestia_mon_
 celestia_mon_alertmanager_binaries:
   - alertmanager
   - amtool
+# The sha256 of each binary, recorded at install from the checked release (sha256sum format).
+celestia_mon_alertmanager_sums_file: "{{ celestia_mon_alertmanager_home }}/SHA256SUMS"
+# A root-only directory the release is unpacked into, removed after the install.
+celestia_mon_alertmanager_staging: /var/cache/celestia-mon/alertmanager.staging
 
 celestia_mon_alertmanager_config_dir: /etc/celestia-mon/alertmanager
 celestia_mon_alertmanager_data_dir: /var/lib/celestia-mon/alertmanager
-# Loopback only: Prometheus runs on the same host, and Alertmanager has no login.
+# Loopback only: Prometheus runs on the same host. Every request also needs the API password
+# (celestia_mon_api_user, celestia_mon_api_password_file), because every account on the host
+# can reach loopback.
 celestia_mon_alertmanager_listen_address: "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"

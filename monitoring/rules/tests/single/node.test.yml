@@ -113,7 +113,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "The validator is not signing"
-              description: "The chain moves but the validator has not signed for more than 10 blocks."
+              description: "The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
 
   # The gap is 11 blocks for exactly one minute (6m), then the validator signs again.

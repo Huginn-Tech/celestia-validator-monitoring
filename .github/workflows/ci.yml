@@ -159,6 +159,10 @@ jobs:
           grep -q '^node_systemd_service_restart_total{name="systemd-logind.service"}' <<<"$node"
           units=$(grep '^node_systemd_unit_state{' <<<"$node" | grep -o 'name="[^"]*"' | sort -u | wc -l)
           if [ "$units" -ne 2 ]; then echo "systemd collector lists $units units, expected 2"; exit 1; fi
+          # The unit's sandbox (seccomp filter, address families, no devices) must not break a collector.
+          if grep -E '^node_scrape_collector_success\{collector="[^"]+"\} 0' <<<"$node"; then
+            echo "a node_exporter collector fails under the unit sandbox"; exit 1
+          fi
       - name: The collector sums Fibre's size attributes away and drops traces
         run: |
           sudo systemctl is-active celestia-mon-otelcol
@@ -328,8 +332,9 @@ jobs:
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
-      # every receiver but PagerDuty, Watchdog -> deadman), and checks that the receiver check
-      # refuses a PagerDuty-only list and the old page/message lists.
+      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, Watchdog ->
+      # deadman), and checks that the receiver check refuses a PagerDuty-only list and the old
+      # page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         run: |
           set -euo pipefail
@@ -351,6 +356,8 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
           amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
           python - "$am" <<'EOF'
           import sys
@@ -511,6 +518,83 @@ jobs:
           grep -Eq '^INFO +2 +remote signer +backup node: priv_validator_laddr = tcp://127\.0\.0\.1:26658' <<<"$out"
           if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
 
+  # doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
+  # (WARN 6), a standby whose plaintext loopback signer cannot reach the validator node's mTLS
+  # privval gRPC on a private address (WARN 17) next to a privval port on every interface
+  # (WARN 20), and a backup node whose /status (a static file served on 127.0.0.1:26657) gives
+  # its local key voting power (FAIL 2) or none (INFO 2).
+  doctor-signer:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: doctor on the signing path
+        run: |
+          set -euo pipefail
+          run() {
+            rc=0
+            out=$("$@" 2>stderr.txt) || rc=$?
+            printf '%s\n' "$out"
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          printf '%s\n' '[Service]' 'ExecStart=/bin/true --signer-grpc-address 127.0.0.1:26669 --otel-endpoint http://127.0.0.1:9915' \
+            '[Install]' 'WantedBy=multi-user.target' | sudo tee /etc/systemd/system/ci-standby.service >/dev/null
+          sudo systemctl daemon-reload
+          sudo systemctl enable ci-standby
+
+          run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-standby \
+            --fibre-hosts fibre-a,fibre-b --data-mounts / --head-wait 2
+          grep -Eq '^WARN +6 +fibre service +standby: ci-standby\.service is inactive, but its unit file is enabled' <<<"$out"
+          grep -Eq '^OK +17 +fibre signer +.* is 127\.0\.0\.1:26669, the loopback signer on this host' <<<"$out"
+
+          sudo systemctl disable ci-standby
+          home="$RUNNER_TEMP/val"
+          mkdir -p "$home/config"
+          cat >"$home/config/config.toml" <<'EOF'
+          priv_validator_laddr = "tcp://0.0.0.0:26658"
+          priv_validator_grpc_laddr = "10.255.0.1:26669"
+          priv_validator_grpc_cert_file = "config/grpc.crt"
+          priv_validator_grpc_key_file = "config/grpc.key"
+          priv_validator_grpc_client_ca_file = "config/ca.crt"
+          EOF
+          run sudo bash tools/doctor.sh --config /dev/null --roles validator,fibre --signer remote --fibre-enabled true \
+            --fibre-unit ci-standby --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^OK +6 +fibre service +standby: ci-standby\.service is inactive' <<<"$out"
+          grep -Eq '^WARN +17 +fibre signer +standby: .*, a plaintext loopback signer, but .* listens on 10\.255\.0\.1:26669 only' <<<"$out"
+          grep -Eq '^WARN +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 .* is on every interface' <<<"$out"
+
+          home="$RUNNER_TEMP/backup"
+          mkdir -p "$home/config" "$RUNNER_TEMP/rpc"
+          echo 'priv_validator_laddr = ""' >"$home/config/config.toml"
+          cat >"$RUNNER_TEMP/rpc/status" <<'EOF'
+          {"jsonrpc": "2.0", "id": -1, "result": {"sync_info": {"latest_block_height": "100", "catching_up": false},
+            "validator_info": {"address": "0123456789ABCDEF0123456789ABCDEF01234567", "voting_power": "10"}}}
+          EOF
+          python3 -m http.server 26657 --bind 127.0.0.1 --directory "$RUNNER_TEMP/rpc" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:26657/status
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^FAIL +2 +remote signer +backup node: .*/config/priv_validator_key\.json, which has voting power 10' <<<"$out"
+          sed -i 's/"voting_power": "10"/"voting_power": "0"/' "$RUNNER_TEMP/rpc/status"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^INFO +2 +remote signer +backup node: .* is not in the validator set \(voting power 0\)' <<<"$out"
+          grep -Eq '^OK +20 +signer binds +no signer port' <<<"$out"
+
+          # An mTLS standby Fibre on a host whose node serves its privval gRPC in plaintext on loopback.
+          exec_mtls='ExecStart=/bin/true --signer-grpc-address 127.0.0.1:26669 --signer-grpc-ca-file /ci/ca.crt'
+          exec_mtls+=' --signer-grpc-cert-file /ci/c.crt --signer-grpc-key-file /ci/c.key --otel-endpoint http://127.0.0.1:9915'
+          printf '%s\n' '[Service]' "$exec_mtls" | sudo tee /etc/systemd/system/ci-mtls.service >/dev/null
+          sudo systemctl daemon-reload
+          home="$RUNNER_TEMP/val-plain"
+          mkdir -p "$home/config"
+          echo 'priv_validator_grpc_laddr = "127.0.0.1:26669"' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles validator,fibre --signer remote --fibre-enabled true \
+            --fibre-unit ci-mtls --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
+          line=$(grep -E '^WARN +17 +fibre signer +standby: ' <<<"$out")
+          grep -qF 'an mTLS signer on this host, but the node serves its privval gRPC on 127.0.0.1:26669 in plaintext' <<<"$line"
+
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
   # with escaped quotes and braces, on/ignoring/group_left/by/without lists, bool, offset,
@@ -518,7 +602,8 @@ jobs:
   # http.server stands in for Alertmanager's /-/ready on 127.0.0.1:9913. The parser must
   # find exactly 8 names: up, prometheus_ready and prometheus_build_info have series; the
   # 5 ci_* names do not. A second scrape job points at a closed port, so check 11 must
-  # report it down with its error.
+  # report it down with its error. This Prometheus asks for no login, and the runner has no
+  # /etc/celestia-mon/api-password, so doctor sends none (the install job covers the login).
   doctor-monitor:
     runs-on: ubuntu-24.04
     steps:
@@ -582,6 +667,21 @@ jobs:
             if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up)' | grep -q '"value":[[0-9.]*,"2"]'; then break; fi
             sleep 1
           done
+          # Check 21 reads these through doctor's JSON reader: escaped quotes and braces, a regex
+          # matcher that admits the pages, a host silence that does not, and an expired silence.
+          mkdir -p am/api/v2
+          soon=$(date -u -d '+30 min' +%Y-%m-%dT%H:%M:%S.000Z)
+          cat > am/api/v2/silences <<EOF
+          [{"id":"00000000-0000-0000-0000-000000000001","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"ci","createdBy":"ci \"quoted\" {x}","endsAt":"2099-01-01T00:00:00.000Z",
+            "matchers":[{"isEqual":true,"isRegex":true,"name":"severity","value":"page|message"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+           {"id":"00000000-0000-0000-0000-000000000002","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"planned","createdBy":"op","endsAt":"$soon",
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"host","value":"val-1"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+           {"id":"00000000-0000-0000-0000-000000000003","status":{"state":"expired"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"old","createdBy":"op","endsAt":"2026-10-17T11:00:00.000Z",
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreDown"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+          EOF
 
           rc=0
           out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>stderr.txt) || rc=$?
@@ -604,14 +704,23 @@ jobs:
             if ! grep -qF " $m (" <<<"$line"; then echo "check 12 does not list $m"; exit 1; fi
           done
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
+          line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
+          for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
+                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow; ends in ' \
+                      ' hours); the others: {host="val-1"} by op'; do
+            grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
+          done
+          if grep -q '000000000003' <<<"$out"; then echo "check 21 listed an expired silence"; exit 1; fi
+          grep -Eq '^SKIP +22 +dead-man ' <<<"$out" || { echo "check 22 did not skip without an alertmanager job"; exit 1; }
       - name: Show the Prometheus log
         if: failure()
         run: cat "$RUNNER_TEMP/monitor/prometheus.log" || true
 
   # install.sh end to end on the runner, as an operator runs it on a host: a dry run that
-  # changes nothing, the install, a second run that changes nothing, doctor on the result, the
-  # units' memory against their MemoryHigh, then --uninstall, which must remove the units,
-  # binaries and recorded ufw rules and keep the data, settings and users, and
+  # changes nothing, the install, a second run that changes nothing, root-owned binaries that
+  # match their recorded sha256, Prometheus and Alertmanager behind the API password, doctor on
+  # the result, the units' memory against their MemoryHigh, then --uninstall, which must remove
+  # the units, binaries, secrets files and recorded ufw rules and keep the data, settings and users, and
   # --uninstall --purge, which must leave no celestia-mon unit, user, group, directory or ufw
   # rule; a second run of each changes nothing. ufw is enabled first with a rule of the
   # operator's (it even carries the comment celestia-mon) that must survive both, and the
@@ -690,7 +799,7 @@ jobs:
               celestia_mon_receivers:
                 - {type: webhook, url: "http://127.0.0.1:9/message"}
               celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
-              celestia_mon_grafana_admin_password: ci-test-only
+              celestia_mon_grafana_admin_password: ci-test-only-not-a-secret
           EOF
       # The rule for 10.255.255.2 is there before the install, even with celestia-mon's comment:
       # the install must not record it, and no uninstall may remove it.
@@ -700,6 +809,38 @@ jobs:
           sudo ufw allow from 10.255.255.2 to any port 9910 proto tcp comment celestia-mon
           sudo ufw --force enable
           sudo ufw status verbose
+      # Each gate stops install.sh before any change: a placeholder dead-man URL, a firewall
+      # source wider than its private block, a vault.yml in plain text or readable by others.
+      - name: The install refuses unsafe settings
+        run: |
+          set -euo pipefail
+          refused() {
+            local inv=$1 want=$2 rc=0
+            sudo bash ./install.sh --inventory "$inv" --host ci --check >"$RUNNER_TEMP/gate.log" 2>&1 || rc=$?
+            if [ "$rc" = 0 ] || ! grep -qF -- "$want" "$RUNNER_TEMP/gate.log"; then
+              cat "$RUNNER_TEMP/gate.log"; echo "install.sh did not stop with: $want"; exit 1
+            fi
+          }
+          gate() {
+            mkdir -p "$RUNNER_TEMP/gate-$1"
+            chmod 0755 "$RUNNER_TEMP/gate-$1"
+            sed -E "$2" "$INV" >"$RUNNER_TEMP/gate-$1/hosts.yml"
+            echo "$RUNNER_TEMP/gate-$1/hosts.yml"
+          }
+          placeholder=https://deadman.example.invalid/ping/REPLACE_ME
+          refused "$(gate deadman "s#celestia_mon_deadman_webhook_url: .*#celestia_mon_deadman_webhook_url: $placeholder#")" \
+            'Set celestia_mon_deadman_webhook_url'
+          refused "$(gate sources 's#celestia_mon_firewall_sources: .*#celestia_mon_firewall_sources: [192.168.0.0/8]#')" \
+            'must be a list of private addresses'
+          vault="$(dirname "$INV")/host_vars/ci/vault.yml"
+          mkdir -p "$(dirname "$vault")"
+          echo 'celestia_mon_grafana_admin_password: ci-test-only-not-a-secret' >"$vault"
+          refused "$INV" 'is not encrypted'
+          printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' '00' >"$vault"
+          chmod 0644 "$vault"
+          refused "$INV" 'is readable by group or other'
+          rm -r "$(dirname "$INV")/host_vars"
+          test ! -e /var/tmp/celestia-mon-install
       - name: The dry run changes nothing and lists the ufw rules
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --check | tee "$RUNNER_TEMP/check.log"
@@ -718,6 +859,52 @@ jobs:
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
           grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
           test ! -e /var/tmp/celestia-mon-install
+      # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
+      # collector) or 1000 (Grafana), and root runs some of them (promtool, amtool, the collector's
+      # validate): everything under /opt/celestia-mon must belong to root, and nothing there may be
+      # writable by every user. Each binary matches the sha256 the install recorded next to it, and
+      # no staging directory is left.
+      - name: Every file under /opt/celestia-mon belongs to root and matches its recorded sha256
+        run: |
+          set -euo pipefail
+          bad=$(sudo find /opt/celestia-mon \( ! -user 0 -o ! -group 0 -o \( ! -type l -perm -0002 \) \) -printf '%u:%g %m %p\n')
+          if [ -n "$bad" ]; then
+            printf '%s\n' "$bad" | head -n 20
+            echo "files under /opt/celestia-mon that root does not own, or that every user can write"
+            exit 1
+          fi
+          sums=0
+          for d in /opt/celestia-mon/node_exporter-* /opt/celestia-mon/otelcol-contrib-* /opt/celestia-mon/prometheus-* /opt/celestia-mon/alertmanager-*; do
+            (cd "$d" && sudo sha256sum --check --strict SHA256SUMS)
+            sums=$((sums + 1))
+          done
+          test "$sums" = 4
+          if sudo find /var/cache/celestia-mon /opt/celestia-mon -maxdepth 1 -name '*staging*' 2>/dev/null | grep .; then
+            echo "a staging directory was left behind"
+            exit 1
+          fi
+      # Every request to Prometheus and Alertmanager, /-/ready and /metrics included, needs the
+      # password the install generated (readable by root and the celestia-mon-prometheus group);
+      # amtool, as root, reads it through its --http.config.file.
+      - name: Prometheus and Alertmanager answer only with the API password
+        run: |
+          set -euo pipefail
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/api-password)" = "root:celestia-mon-prometheus 640"
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/alertmanager/amtool-http.yml)" = "root:root 600"
+          for url in http://127.0.0.1:9912/-/ready http://127.0.0.1:9912/metrics http://127.0.0.1:9912/api/v1/rules \
+                     http://127.0.0.1:9913/-/ready http://127.0.0.1:9913/metrics http://127.0.0.1:9913/api/v2/silences; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+            if [ "$code" != 401 ]; then echo "$url answered $code without the password, expected 401"; exit 1; fi
+            # curl reads the login from stdin (-K -), so the password never shows in its arguments.
+            sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"' | curl -fsS -o /dev/null -K - "$url"
+          done
+          amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
+          sudo "$amtool" --alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence query
+          # Grafana's own login is root-only; Prometheus takes it, Alertmanager refuses it.
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/grafana-api-password)" = "root:root 600"
+          grafana_login() { sudo sh -c 'printf "user = \"grafana:%s\"\n" "$(cat /etc/celestia-mon/grafana-api-password)"'; }
+          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9912/api/v1/status/buildinfo)" = 200
+          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9913/api/v2/silences)" = 401
       # The rules for 10.255.255.2 on the other scraped ports (the collector's, celestia-appd's)
       # are added and recorded; only its rule for 9910, there before the install, is not.
       - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
@@ -753,6 +940,9 @@ jobs:
           grep -Eq '^FAIL +13 +fibre pipeline +ci: Fibre is not pushing metrics ' <<<"$out"
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
+          grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
+          # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
+          grep -Eq '^(OK|NOT YET|WARN|FAIL) +22 +dead-man ' <<<"$out"
       # The defaults must leave headroom: each unit's peak memory since it started (memory.peak
       # of its cgroup, cgroup v2, kernel 5.19 or later) must stay at or below half its MemoryHigh.
       # Pages of the binaries that the install read stay charged to the installer; the
@@ -776,8 +966,12 @@ jobs:
           left=0
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
           if systemctl list-units --all 'celestia-mon-*' --no-legend | grep -q .; then echo "units left"; left=1; fi
+          # The settings files that hold secrets go on every uninstall; a reinstall writes them again.
           for p in /opt/celestia-mon /var/cache/celestia-mon /usr/local/bin/celestia-mon-doctor \
-                   /var/lib/celestia-mon/firewall-added.json /var/tmp/celestia-mon-install; do
+                   /var/lib/celestia-mon/firewall-added.json /var/tmp/celestia-mon-install \
+                   /etc/celestia-mon/alertmanager/alertmanager.yml /etc/celestia-mon/grafana/admin-password \
+                   /etc/celestia-mon/grafana/provisioning/datasources/celestia-mon.yml /etc/celestia-mon/api-password \
+                   /etc/celestia-mon/grafana-api-password; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
           for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon; do

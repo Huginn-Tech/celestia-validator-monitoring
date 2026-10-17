@@ -28,10 +28,25 @@
 - name: Look for otelcol-contrib {{ celestia_mon_otelcol_version }}
   ansible.builtin.stat:
     path: "{{ celestia_mon_otelcol_binary }}"
-    get_checksum: false
+    checksum_algorithm: sha256
     get_mime: false
     get_attributes: false
   register: celestia_mon_otelcol_installed
+
+# The install below records the sha256 of the binary it copied from the checked release. A
+# binary that differs from its record, or an install without one, is installed again.
+- name: Read the checksum recorded when otelcol-contrib was installed
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_otelcol_sums_file }}"
+  register: celestia_mon_otelcol_sums
+  failed_when: false
+
+- name: Note whether the pinned otelcol-contrib is installed and unchanged
+  ansible.builtin.set_fact:
+    celestia_mon_otelcol_present: >-
+      {{ celestia_mon_otelcol_installed.stat.exists
+         and (celestia_mon_otelcol_sums.content | default('') | b64decode)
+             == celestia_mon_otelcol_installed.stat.checksum | default('') ~ '  otelcol-contrib\n' }}
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
 # unit are skipped until the pinned version is installed. This task reports the
@@ -40,14 +55,14 @@
   ansible.builtin.debug:
     msg: Would install {{ celestia_mon_otelcol_binary }} and restart celestia-mon-otelcol.
   changed_when: true
-  when: ansible_check_mode and not celestia_mon_otelcol_installed.stat.exists
+  when: ansible_check_mode and not celestia_mon_otelcol_present
 
 - name: Install otelcol-contrib {{ celestia_mon_otelcol_version }}
-  when: not celestia_mon_otelcol_installed.stat.exists and not ansible_check_mode
+  when: not celestia_mon_otelcol_present and not ansible_check_mode
   block:
     - name: Create the download directory
       ansible.builtin.file:
-        path: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+        path: /var/cache/celestia-mon
         state: directory
         owner: root
         group: root
@@ -67,12 +82,31 @@
       retries: 5
       delay: 10
 
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the otelcol-contrib staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_otelcol_staging }}"
+        state: absent
+
+    - name: Create the otelcol-contrib staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_otelcol_staging }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # The release stores its files as uid 1001, and tar running as root keeps stored owners.
+    # --no-same-owner makes them root's, and the 0700 staging directory keeps every other
+    # account away from the binary root runs (it checks the configuration below).
     - name: Unpack otelcol-contrib
       ansible.builtin.unarchive:
         src: "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
-        dest: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
+        dest: "{{ celestia_mon_otelcol_staging }}"
         include:
           - otelcol-contrib
+        extra_opts:
+          - --no-same-owner
         remote_src: true
 
     - name: Create the install directory
@@ -88,19 +122,41 @@
 
     - name: Install the otelcol-contrib binary
       ansible.builtin.copy:
-        src: "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}/otelcol-contrib"
+        src: "{{ celestia_mon_otelcol_staging }}/otelcol-contrib"
         dest: "{{ celestia_mon_otelcol_binary }}"
         remote_src: true
         owner: root
         group: root
         mode: "0755"
+      notify: Restart celestia-mon-otelcol
 
-    - name: Remove the downloaded files
+    - name: Read the checksum of the installed otelcol-contrib binary
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_otelcol_binary }}"
+        checksum_algorithm: sha256
+        get_mime: false
+        get_attributes: false
+      register: celestia_mon_otelcol_copied
+
+    # In sha256sum's format: cd <dir> && sha256sum -c SHA256SUMS checks it by hand.
+    - name: Record the checksum of the installed otelcol-contrib binary
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_otelcol_sums_file }}"
+        content: "{{ celestia_mon_otelcol_copied.stat.checksum }}  otelcol-contrib\n"
+        owner: root
+        group: root
+        mode: "0644"
+
+  # Also after a failed step, so no unpacked release is left behind.
+  always:
+    - name: Remove the downloaded otelcol-contrib release and the staging directory
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - "/var/cache/celestia-mon/{{ celestia_mon_otelcol_tarball }}"
+        - "{{ celestia_mon_otelcol_staging }}"
+        # Where earlier versions of celestia-mon unpacked the release.
         - "/var/cache/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
 
 - name: Create the collector configuration directory
@@ -142,7 +198,7 @@
     enabled: true
     state: started
     daemon_reload: "{{ celestia_mon_otelcol_unit_file is changed }}"
-  when: celestia_mon_otelcol_installed.stat.exists or not ansible_check_mode
+  when: celestia_mon_otelcol_present or not ansible_check_mode
 
 - name: Apply a pending celestia-mon-otelcol restart
   ansible.builtin.meta: flush_handlers
@@ -171,7 +227,7 @@
     excludes: otelcol-contrib-{{ celestia_mon_otelcol_version }}
     file_type: directory
   register: celestia_mon_otelcol_old
-  when: celestia_mon_otelcol_installed.stat.exists or not ansible_check_mode
+  when: celestia_mon_otelcol_present or not ansible_check_mode
 
 - name: Remove older otelcol-contrib versions
   ansible.builtin.file:

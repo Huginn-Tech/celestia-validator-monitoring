@@ -196,18 +196,34 @@ esac
 "$python" -c 'import sys; sys.exit(sys.version_info < (3, 12))' || die "the Ansible lock needs Python 3.12 or later at $python"
 
 # Ansible runs everything in the repository and the inventory as root, so no other user may
-# change them: each file must belong to root or to the user who runs sudo, and none may be
-# writable by every user.
-checked=("$repo")
+# change them: each file must belong to root or to the user who runs sudo, none may be
+# writable by every user, and a group-writable one only by root's group or that user's group.
+# find -L follows symlinks, so the file or directory a link points to is checked the same way
+# (Ansible follows links in the inventory and the roles); a link that points nowhere is skipped.
+inv_dir=""
 if [[ -d $inventory ]]; then
-  checked+=("$inventory")
+  inv_dir=$inventory
 elif [[ -n $inventory ]]; then
-  checked+=("$(dirname -- "$inventory")")
+  inv_dir=$(dirname -- "$inventory")
 fi
-unsafe=$(find "${checked[@]}" -xdev ! -type l \( -perm -0002 -o \( ! -user 0 ! -user "${SUDO_UID:-0}" \) \) \
-  -print -quit 2>/dev/null || true)
+checked=("$repo")
+[[ -z $inv_dir ]] || checked+=("$inv_dir")
+unsafe=$(find -L "${checked[@]}" -xdev ! -type l \( -perm -0002 -o \( ! -user 0 ! -user "${SUDO_UID:-0}" \) \
+  -o \( -perm -0020 ! -group 0 ! -group "${SUDO_GID:-0}" \) \) -print -quit 2>/dev/null || true)
 [[ -z $unsafe ]] ||
-  die "$unsafe belongs to another user or is writable by every user: only root or the user running sudo may own these files (chown -R, chmod -R o-w)"
+  die "$unsafe belongs to another user, or another user or group can write to it: only root or the user running sudo" \
+    "may own these files and write to them (chown -R, chmod -R go-w)"
+
+# The secrets (receiver tokens, the dead-man URL, the Grafana password) live in the inventory's
+# vault.yml files, which must be encrypted with ansible-vault, never left in plain text.
+if [[ -n $inv_dir ]]; then
+  while IFS= read -r -d '' vault_file; do
+    [[ $(head -c 15 -- "$vault_file") == "\$ANSIBLE_VAULT;" ]] ||
+      die "$vault_file is not encrypted: encrypt it with ansible-vault encrypt $vault_file, then run again with --ask-vault-pass"
+    mode=$(stat -L -c %a -- "$vault_file")
+    (((8#$mode & 8#044) == 0)) || die "$vault_file is readable by group or other: chmod 600 $vault_file"
+  done < <(find -L "$inv_dir/host_vars" "$inv_dir/group_vars" -type f \( -name vault.yml -o -name vault.yaml \) -print0 2>/dev/null)
+fi
 
 uv_version=$(pin uv.version) || die "versions.yml has no uv.version"
 uv_sha256=$(pin "uv.sha256.$arch") || die "versions.yml has no uv.sha256.$arch"
@@ -345,7 +361,9 @@ if [[ $mode == uninstall ]]; then
     die "the removal stopped with an error (above). Fix the cause and run install.sh --uninstall again."
   step "celestia-mon is removed from $host ($(changes "$work/run.log") change(s))."
   if ! $purge; then
-    echo "Kept for a reinstall: /var/lib/celestia-mon (data), /etc/celestia-mon (settings) and the celestia-mon-* users."
+    echo "Removed with the services: the settings files that hold secrets (Alertmanager's config, Grafana's admin"
+    echo "password and datasource, the API passwords); a reinstall writes them again from the inventory."
+    echo "Kept for a reinstall: /var/lib/celestia-mon (data), /etc/celestia-mon (the other settings) and the celestia-mon-* users."
     printf 'To delete them too:\n  sudo %q --uninstall --purge --host %q\n' "$repo/install.sh" "$host"
   fi
   exit 0
@@ -362,10 +380,19 @@ else
 fi
 
 step "celestia-mon-doctor on $host"
-status=0
-/usr/local/bin/celestia-mon-doctor || status=$?
+# doctor exits 0 when no check failed, also with WARN lines, which are worth fixing too.
+set +e
+/usr/local/bin/celestia-mon-doctor | tee "$work/doctor.log"
+status=${PIPESTATUS[0]}
+set -e
 case $status in
-  0) echo "doctor: every check passed." ;;
+  0)
+    if grep -q '^WARN' "$work/doctor.log"; then
+      echo "doctor: no check failed, but read the WARN lines above (each ends with its fix)."
+    else
+      echo "doctor: every check passed."
+    fi
+    ;;
   1) echo "doctor: fix the FAIL lines above (each ends with the fix), then run: sudo celestia-mon-doctor" ;;
   *) echo "doctor exited with status $status." ;;
 esac

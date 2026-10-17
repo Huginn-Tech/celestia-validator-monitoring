@@ -1,8 +1,9 @@
-# NotificationsFailing on the example-split inventory (monitor mon-1): a notification through
-# Telegram, Discord, Slack or PagerDuty failed in the last 15 minutes. It sends one message per
-# integration, so a broken one is reported through the others, and the Watchdog stops for an hour
-# (watchdog.test.yml). Failed webhook calls do not count: the dead-man webhook shares
-# integration="webhook". Alertmanager starts every failure counter at 0.
+# NotificationsFailing on the example-split inventory (monitor mon-1): a page or message
+# notification through Telegram, Discord, Slack, PagerDuty or a webhook receiver failed in the last
+# 15 minutes. It sends one message per integration, so a broken one is reported through the others,
+# and the Watchdog stops for an hour (watchdog.test.yml). The dead-man receiver's failures
+# (receiver_name="deadman") are DeadmanFailing (deadman.test.yml). Alertmanager starts every
+# failure counter at 0, per integration and receiver.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -12,10 +13,10 @@ tests:
     interval: 1m
     input_series:
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="discord",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="discord",receiver_name="message",reason="serverError"}
         values: '0x9 1x80'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",receiver_name="message",reason="serverError"}
         values: '0x90'
     alert_rule_test:
       - eval_time: 9m
@@ -59,21 +60,21 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
-  - name: PagerDuty and Telegram fail; one message per integration, whatever the failure reasons
+  - name: PagerDuty and Telegram fail; one message per integration, whatever the receivers and failure reasons
     interval: 1m
     input_series:
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="pagerduty",reason="clientError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="pagerduty",receiver_name="page",reason="clientError"}
         values: '0x4 1x20'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",receiver_name="page",reason="serverError"}
         values: '0x4 1x20'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="other"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",receiver_name="message",reason="other"}
         values: '0x5 1x19'
     alert_rule_test:
       - eval_time: 6m
@@ -96,14 +97,36 @@ tests:
               description: "A telegram notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
 
-  - name: Failed webhook calls (dead-man or webhook receiver) raise no NotificationsFailing
+  - name: A webhook receiver fails; a message for it, though the dead-man webhook also fails
     interval: 1m
     input_series:
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="message",reason="serverError"}
+        values: '0x4 1x20'
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
+        values: '0x4 1+1x20'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: NotificationsFailing
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              integration: webhook
+              severity: message
+            exp_annotations:
+              summary: "Alertmanager on mon-1 cannot deliver webhook notifications"
+              description: "A webhook notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+
+  - name: Failed heartbeats (the dead-man receiver) raise no NotificationsFailing
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
         values: '0x4 1+1x25'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="slack",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="slack",receiver_name="message",reason="serverError"}
         values: '0x30'
     alert_rule_test:
       - eval_time: 20m

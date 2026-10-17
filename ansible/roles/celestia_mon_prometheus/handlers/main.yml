@@ -7,9 +7,10 @@
     state: reloaded
   when: celestia_mon_prometheus_present or not ansible_check_mode
 
+# A new binary restarts the service too; systemd is reloaded only when celestia-mon's unit changed.
 - name: Restart Prometheus
   ansible.builtin.systemd_service:
     name: celestia-mon-prometheus
     state: restarted
-    daemon_reload: true
+    daemon_reload: "{{ celestia_mon_prometheus_unit_file is defined and celestia_mon_prometheus_unit_file is changed }}"
   when: celestia_mon_prometheus_present or not ansible_check_mode

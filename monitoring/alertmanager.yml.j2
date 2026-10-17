@@ -2,7 +2,8 @@
   Alertmanager configuration for celestia-mon. Rendered by the celestia_mon_alertmanager role (with no_log,
   because receivers carry tokens) and by CI with dummy receivers.
   Inputs: celestia_mon_receivers, one list of {type: pagerduty|telegram|discord|slack|webhook, ...}
-  (checked by the role's tasks/receivers.yml), and celestia_mon_deadman_webhook_url.
+  (checked by the role's tasks/receivers.yml), and celestia_mon_deadman_webhook_url (checked by the
+  role's tasks/main.yml).
   Routing follows the type: page alerts go to every receiver, message alerts to every receiver
   except PagerDuty. Without PagerDuty, page alerts still reach the chat channels and webhooks.
 #}
@@ -65,7 +66,13 @@ inhibit_rules:
   - source_matchers:
       - 'alertname="NodeNotAdvancing"'
     target_matchers:
-      - 'alertname=~"ValidatorNotSigning|RemoteSignerProblem|FibreNotServing|NodeBehind"'
+      - 'alertname=~"ValidatorNotSigning|SignaturesMissed|RemoteSignerProblem|FibreNotServing|NodeBehind"'
+  # Signatures that stopped altogether page once, without a message about the missed share too.
+  # Neither alert names a host.
+  - source_matchers:
+      - 'alertname="ValidatorNotSigning"'
+    target_matchers:
+      - 'alertname="SignaturesMissed"'
   # No Fibre unit active anywhere explains FibreNotServing. FibreDown names no host.
   - source_matchers:
       - 'alertname="FibreDown"'
@@ -86,7 +93,9 @@ receivers:
   # message: every chat channel and webhook, never PagerDuty.
   - name: message
 {{ receiver_configs(chat) }}
-  # Without a dead-man URL the heartbeat goes to this receiver and is dropped.
+  # A receiver of its own, so Alertmanager's notification metrics tell its sends and failures
+  # apart (receiver_name="deadman", from --enable-feature=receiver-name-in-metrics). The install
+  # refuses an empty or placeholder URL on the monitor host.
   - name: deadman
 {% if celestia_mon_deadman_webhook_url | string | length > 0 %}
     webhook_configs:

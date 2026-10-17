@@ -1,0 +1,30 @@
+---
+# A systemd daemon-reload loads every unit file edited on disk since the last reload, not only
+# celestia-mon's: a staged change to celestia-appd's, Fibre's or tmkms's unit (a new MemoryMax at
+# once, a new ExecStart at its next restart) would take effect at a moment nobody chose.
+# celestia-mon reloads systemd only when one of its own unit files changes; this stops the run
+# before that while one of these units has unit-file changes systemd has not loaded. Read-only.
+#   celestia_mon_reload_check_units  unit names, with the .service suffix
+# With only a name the module just reads the unit; a unit systemd does not know has
+# LoadState not-found and NeedDaemonReload no.
+- name: Read whether systemd has loaded the Celestia services' unit files
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+  loop: "{{ celestia_mon_reload_check_units }}"
+  register: celestia_mon_reload_check_state
+
+- name: Check that systemd has loaded the Celestia services' unit files
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_reload_check_pending | length == 0
+    fail_msg: >-
+      {{ celestia_mon_reload_check_pending | join(', ') }}: the unit file changed on disk and systemd has not
+      loaded it yet (NeedDaemonReload=yes). celestia-mon would reload systemd, which loads that change too.
+      Review it, run "sudo systemctl daemon-reload" yourself at a moment you choose (a changed ExecStart
+      applies at the unit's next restart), then run install.sh again.
+    quiet: true
+  vars:
+    celestia_mon_reload_check_pending: >-
+      {{ celestia_mon_reload_check_state.results | default([]) | selectattr('status', 'defined')
+         | selectattr('status.NeedDaemonReload', 'defined') | selectattr('status.NeedDaemonReload', 'equalto', 'yes')
+         | map(attribute='item') | list }}

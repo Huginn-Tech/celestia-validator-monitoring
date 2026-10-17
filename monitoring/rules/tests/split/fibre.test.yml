@@ -187,3 +187,73 @@ tests:
               summary: "Fibre on fibre-1 sends no metrics"
               description: "The Fibre unit is active but no Fibre metrics have arrived for 30 minutes; set its OTLP endpoint."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # From 11m every upload fails (the signer behind signer_grpc_address cannot be reached) and none
+  # is accepted. The last accepted uploads leave the 5-minute window at 14m; 10 minutes later, at
+  # 24m, the message goes out.
+  - name: Every upload fails and none is accepted; uploads_failing after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '_ 60+60x9 600x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x10 330x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 23m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: uploads_failing
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 fails every upload"
+              description: >-
+                For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing.
+                Check the signer first: Fibre signs through the node at its signer_grpc_address,
+                so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # Some clients send uploads that fail their checks, while the others are accepted: no message.
+  - name: Some uploads fail while others are accepted; no uploads_failing
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '_ 60+60x39'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x40'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '1+1x40'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FibreNotServing
+        exp_alerts: []

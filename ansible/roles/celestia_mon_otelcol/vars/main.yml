@@ -13,6 +13,10 @@ celestia_mon_otelcol_sha256: "{{ celestia_mon_versions.otelcol_contrib.sha256[ce
 # (the official package uses otelcol-contrib and /usr/bin) is never replaced.
 celestia_mon_otelcol_dir: "/opt/celestia-mon/otelcol-contrib-{{ celestia_mon_otelcol_version }}"
 celestia_mon_otelcol_binary: "{{ celestia_mon_otelcol_dir }}/otelcol-contrib"
+# The binary's sha256, recorded at install from the checked release (sha256sum format).
+celestia_mon_otelcol_sums_file: "{{ celestia_mon_otelcol_dir }}/SHA256SUMS"
+# A root-only directory the release is unpacked into, removed after the install.
+celestia_mon_otelcol_staging: /var/cache/celestia-mon/otelcol-contrib.staging
 celestia_mon_otelcol_config: /etc/celestia-mon/otelcol/config.yaml
 
 # Fibre pushes metrics and traces here, on loopback only:
