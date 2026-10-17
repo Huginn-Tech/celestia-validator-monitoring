@@ -298,11 +298,11 @@ listeners() { # port -> local addresses of the TCP sockets listening on it
 }
 
 addr_host() { # local address as ss prints it -> the address without port, brackets, zone or ::ffff:
-  local h=${1%:*}
-  h=${h%%\%*}
-  h=${h#\[}
-  h=${h%\]}
-  printf '%s' "${h#::ffff:}"
+  local ah=${1%:*}
+  ah=${ah%%\%*}
+  ah=${ah#\[}
+  ah=${ah%\]}
+  printf '%s' "${ah#::ffff:}"
 }
 
 is_loopback() { # local address as ss prints it -> true for 127.0.0.0/8 and ::1
