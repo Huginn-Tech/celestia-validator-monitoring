@@ -157,10 +157,15 @@
       diff: false
       when: celestia_mon_plan_file is defined
       vars:
-        celestia_mon_uninstall_rules_text: "{% for r in celestia_mon_uninstall_rules %}allow from {{ r[0] }} to port {{ r[1] }}/{{ r[2] }} (comment {{ r[3] }}){{ '' if loop.last else '; ' }}{% else %}none{% endfor %}"
+        # Folded: the line break becomes the space before "(comment".
+        celestia_mon_uninstall_rules_text: >-
+          {% for r in celestia_mon_uninstall_rules %}allow from {{ r[0] }} to port {{ r[1] }}/{{ r[2] }}
+          (comment {{ r[3] }}){{ '' if loop.last else '; ' }}{% else %}none{% endfor %}
         # Recorded rules ufw no longer lists as recorded (deleted or changed by hand): left as they are.
         celestia_mon_uninstall_unmatched: "{{ celestia_mon_uninstall_recorded_rules | reject('in', celestia_mon_uninstall_live_rules) | list }}"
-        celestia_mon_uninstall_unmatched_text: "{% for r in celestia_mon_uninstall_unmatched %}allow from {{ r[0] }} to port {{ r[1] }}/{{ r[2] }}{{ '' if loop.last else '; ' }}{% endfor %}"
+        celestia_mon_uninstall_unmatched_text: >-
+          {% for r in celestia_mon_uninstall_unmatched %}allow from {{ r[0] }}
+          to port {{ r[1] }}/{{ r[2] }}{{ '' if loop.last else '; ' }}{% endfor %}
 
     - name: Stop and disable celestia-mon's units
       ansible.builtin.systemd_service:
