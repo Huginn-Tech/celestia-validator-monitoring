@@ -64,6 +64,9 @@
     gather_subset:
       - "!all"
 
+# Ubuntu 24.04 only. The API password's bcrypt hash comes from this python3's crypt module
+# (tasks/api_password.yml), which Python 3.13 removed: moving to a newer release means adding
+# bcrypt to ansible/requirements.lock and hashing in the venv.
 - name: Check the system
   ansible.builtin.assert:
     that:
@@ -77,6 +80,13 @@
       {{ ansible_facts.distribution }} {{ ansible_facts.distribution_version }} on {{ ansible_facts.architecture }}
       with {{ ansible_facts.service_mgr }}, and the play runs as uid {{ ansible_facts.effective_user_id }}.
     quiet: true
+
+# celestia-mon reloads systemd when one of its unit files changes, which would also load staged
+# edits to the Celestia services' units on this host. Stop first, so the operator reloads them.
+- name: Check that systemd has loaded the Celestia services' unit files
+  ansible.builtin.include_tasks: reload_check.yml
+  vars:
+    celestia_mon_reload_check_units: "{{ celestia_mon_host_units | map('regex_replace', '$', '.service') | list }}"
 
 - name: Check that celestia-mon's ports are free or held by its own services
   ansible.builtin.include_tasks: port_check.yml
@@ -319,7 +329,8 @@
          | regex_findall('--otel-endpoint(?:=| +)([^ ]+)') | last | default('') }}
     celestia_mon_preflight_fibre_file: >-
       {{ celestia_mon_preflight_fibre_envfiles.results | default([]) | selectattr('content', 'defined') | map(attribute='content')
-         | map('b64decode') | join('\n') | regex_findall('^[ ]*(?:export +)?FIBRE_OTEL_ENDPOINT=([^ ]*)', multiline=true) | last | default('') }}
+         | map('b64decode') | join(celestia_mon_newline)
+         | regex_findall('^[ ]*(?:export +)?FIBRE_OTEL_ENDPOINT=([^ ]*)', multiline=true) | last | default('') }}
     celestia_mon_preflight_fibre_env: >-
       {{ celestia_mon_preflight_fibre_status.Environment | default('') | regex_findall('(?:^| )"?FIBRE_OTEL_ENDPOINT=([^ "]*)')
          | last | default('') }}

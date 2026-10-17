@@ -1,4 +1,7 @@
 ---
+# A line break for Jinja expressions in tasks: Ansible doubles the backslashes inside {{ }} of a
+# task's strings, so '\n' there is a backslash and an n, not a line break.
+celestia_mon_newline: "\n"
 # Addresses celestia-mon accepts as private: RFC 1918, CGNAT (Tailscale), loopback, IPv6 ULA.
 # One string: in double quotes, a backslash at the end of a line joins the next line without a space.
 celestia_mon_private_address_regex: "^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|\
@@ -46,6 +49,24 @@ celestia_mon_services:
 # Ports that listen on 127.0.0.1; grafana listens on celestia_mon_grafana_listen, the others
 # on celestia_mon_private_ip.
 celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager]
+
+# HTTP basic auth of Prometheus's and Alertmanager's APIs on the monitor host (tasks/api_password.yml).
+# Each password is generated once on the monitor host, never kept in the repository or the vault;
+# Prometheus and Alertmanager hold only bcrypt hashes, in their web configs (--web.config.file).
+# celestia_mon_api_user opens both: Prometheus reads its password for its own scrapes and its
+# alerts to Alertmanager, and celestia-mon-doctor and amtool use it.
+celestia_mon_api_user: celestia-mon
+celestia_mon_api_password_file: /etc/celestia-mon/api-password
+# Grafana's datasource login opens Prometheus only, never Alertmanager, so a Grafana that is
+# taken over (a web app with a login) cannot silence alerts. Its file is root's only; Grafana's
+# datasource file holds a copy of the password.
+celestia_mon_api_grafana_user: grafana
+celestia_mon_api_grafana_password_file: /etc/celestia-mon/grafana-api-password
+celestia_mon_api_web_configs:
+  prometheus: /etc/celestia-mon/prometheus/web.yml
+  alertmanager: /etc/celestia-mon/alertmanager/web.yml
+# amtool's --http.config.file (root only): the user and the password file above.
+celestia_mon_api_amtool_config: /etc/celestia-mon/alertmanager/amtool-http.yml
 
 # The ufw rules firewall.yml added on this host, as a JSON list of {source, port, proto, comment}.
 # ansible/uninstall.yml deletes only these (and repeats the path, as it loads no role).

@@ -1,4 +1,11 @@
 # Managed by celestia-mon (role celestia_mon_grafana). Local changes are overwritten.
+{# The private block of celestia_mon_grafana_listen, which the role checks is a private address
+   of this host: none for loopback. #}
+{% set celestia_mon_grafana_unit_listen = celestia_mon_grafana_listen | string %}
+{% set celestia_mon_grafana_unit_block = ''
+   if (celestia_mon_grafana_unit_listen.startswith('127.') or celestia_mon_grafana_unit_listen == '::1')
+   else {'10': '10.0.0.0/8', '172': '172.16.0.0/12', '192': '192.168.0.0/16', '100': '100.64.0.0/10'}.get(
+     celestia_mon_grafana_unit_listen.split('.')[0], 'fc00::/7') %}
 [Unit]
 Description=Grafana (celestia-mon)
 Documentation=https://grafana.com/docs/grafana/latest/
@@ -22,10 +29,37 @@ CPUWeight={{ celestia_mon_cpu_weight }}
 IOWeight={{ celestia_mon_io_weight }}
 MemoryHigh={{ celestia_mon_memory.grafana.high }}
 MemoryMax={{ celestia_mon_memory.grafana.max }}
+# When the whole host runs out of memory, the kernel ends this service before celestia-appd,
+# Fibre or tmkms.
+OOMScoreAdjust=500
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# of an ordinary service (a call outside the set fails with EPERM).
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Network traffic only with 127.0.0.1 (Prometheus, an SSH tunnel, a local reverse proxy) and,
+# when Grafana listens on a private address, with that address's private block: a Grafana login
+# cannot reach other hosts through a datasource (the validator's gRPC ports, for example).
+IPAddressDeny=any
+IPAddressAllow=localhost
+{% if celestia_mon_grafana_unit_block %}
+IPAddressAllow={{ celestia_mon_grafana_unit_block }}
+{% endif %}
 ReadWritePaths={{ celestia_mon_grafana_data_dir }}
 
 [Install]

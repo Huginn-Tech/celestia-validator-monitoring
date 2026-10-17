@@ -31,9 +31,9 @@ provisioner:
         celestia_mon_signer: remote
         celestia_mon_fibre_enabled: true
         # Dummy receivers on a closed local port: nothing leaves the CI runner. Page and
-        # message alerts both go to every receiver that is not PagerDuty. Webhooks only:
-        # a failed Slack, Telegram, Discord or PagerDuty notification stops the Watchdog
-        # heartbeat by design, and the test alerts here can never be delivered.
+        # message alerts both go to every receiver that is not PagerDuty. The test alerts
+        # here can never be delivered, so the Watchdog heartbeat stops by design once one
+        # has failed; verify.yml does not wait for it.
         celestia_mon_receivers:
           - type: webhook
             url: http://127.0.0.1:9/message

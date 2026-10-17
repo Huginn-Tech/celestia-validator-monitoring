@@ -12,6 +12,10 @@ celestia_mon_node_exporter_sha256: "{{ celestia_mon_versions.node_exporter.sha25
 # nothing else on the host is overwritten. An upgrade is a new directory and a restart.
 celestia_mon_node_exporter_dir: "/opt/celestia-mon/node_exporter-{{ celestia_mon_node_exporter_version }}"
 celestia_mon_node_exporter_binary: "{{ celestia_mon_node_exporter_dir }}/node_exporter"
+# The binary's sha256, recorded at install from the checked release (sha256sum format).
+celestia_mon_node_exporter_sums_file: "{{ celestia_mon_node_exporter_dir }}/SHA256SUMS"
+# A root-only directory the release is unpacked into, removed after the install.
+celestia_mon_node_exporter_staging: /var/cache/celestia-mon/node_exporter.staging
 
 # host:port on the private address (IPv6 addresses go in brackets).
 celestia_mon_node_exporter_listen_address: >-

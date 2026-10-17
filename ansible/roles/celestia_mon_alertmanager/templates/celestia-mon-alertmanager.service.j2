@@ -9,11 +9,15 @@ After=network-online.target
 User=celestia-mon-alertmanager
 Group=celestia-mon-alertmanager
 # An empty --cluster.listen-address disables HA gossip, so port 9094 stays closed.
+# receiver-name-in-metrics adds the label receiver_name to the notification metrics, so the
+# dead-man receiver's failures can be told apart from the page and message receivers'.
 ExecStart={{ celestia_mon_alertmanager_home }}/alertmanager \
   --config.file={{ celestia_mon_alertmanager_config_dir }}/alertmanager.yml \
   --storage.path={{ celestia_mon_alertmanager_data_dir }} \
   --web.listen-address={{ celestia_mon_alertmanager_listen_address }} \
-  --cluster.listen-address=
+  --web.config.file={{ celestia_mon_api_web_configs.alertmanager }} \
+  --cluster.listen-address= \
+  --enable-feature=receiver-name-in-metrics
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=5s
@@ -27,11 +31,35 @@ MemoryMax={{ celestia_mon_memory.alertmanager.max }}
 # Go's garbage collector works harder as the process nears this limit (90% of MemoryHigh),
 # before the kernel starts slowing the service down. Alertmanager sets no limit of its own.
 Environment=GOMEMLIMIT={{ (0.9 * (celestia_mon_memory.alertmanager.high | ansible.builtin.human_to_bytes)) | int }}
+# When the whole host runs out of memory, the kernel ends this service before celestia-appd,
+# Fibre or tmkms.
+OOMScoreAdjust=500
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# of an ordinary service (a call outside the set fails with EPERM).
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
 ReadWritePaths={{ celestia_mon_alertmanager_data_dir }}
+# Alertmanager {{ celestia_mon_alertmanager_version }} logs a Telegram request that failed on the network
+# (DNS, timeout, TLS) with its URL, which holds the bot token (api.telegram.org/bot<token>/...).
+# journald drops such lines; the failures still count in alertmanager_notifications_failed_total
+# and raise NotificationsFailing.
+LogFilterPatterns=~bot[0-9]+:[A-Za-z0-9_-]{20,}
 
 [Install]
 WantedBy=multi-user.target

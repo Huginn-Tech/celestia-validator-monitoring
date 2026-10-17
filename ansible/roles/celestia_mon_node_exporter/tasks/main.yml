@@ -20,10 +20,25 @@
 - name: Look for node_exporter {{ celestia_mon_node_exporter_version }}
   ansible.builtin.stat:
     path: "{{ celestia_mon_node_exporter_binary }}"
-    get_checksum: false
+    checksum_algorithm: sha256
     get_mime: false
     get_attributes: false
   register: celestia_mon_node_exporter_installed
+
+# The install below records the sha256 of the binary it copied from the checked release. A
+# binary that differs from its record, or an install without one, is installed again.
+- name: Read the checksum recorded when node_exporter was installed
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_node_exporter_sums_file }}"
+  register: celestia_mon_node_exporter_sums
+  failed_when: false
+
+- name: Note whether the pinned node_exporter is installed and unchanged
+  ansible.builtin.set_fact:
+    celestia_mon_node_exporter_present: >-
+      {{ celestia_mon_node_exporter_installed.stat.exists
+         and (celestia_mon_node_exporter_sums.content | default('') | b64decode | trim)
+             == (celestia_mon_node_exporter_installed.stat.checksum | default('') ~ '  node_exporter') }}
 
 # In check mode nothing is downloaded, so the tasks that need the binary or the
 # unit are skipped until the pinned version is installed. This task reports the
@@ -32,10 +47,10 @@
   ansible.builtin.debug:
     msg: Would install {{ celestia_mon_node_exporter_binary }} and restart celestia-mon-node-exporter.
   changed_when: true
-  when: ansible_check_mode and not celestia_mon_node_exporter_installed.stat.exists
+  when: ansible_check_mode and not celestia_mon_node_exporter_present
 
 - name: Install node_exporter {{ celestia_mon_node_exporter_version }}
-  when: not celestia_mon_node_exporter_installed.stat.exists and not ansible_check_mode
+  when: not celestia_mon_node_exporter_present and not ansible_check_mode
   block:
     - name: Create the download directory
       ansible.builtin.file:
@@ -59,10 +74,31 @@
       retries: 5
       delay: 10
 
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the node_exporter staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_node_exporter_staging }}"
+        state: absent
+
+    - name: Create the node_exporter staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_node_exporter_staging }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # The release stores its files as uid 1001, and tar running as root keeps stored owners.
+    # --no-same-owner makes them root's, and the 0700 staging directory keeps every other
+    # account away from the binary until it is copied.
     - name: Unpack node_exporter
       ansible.builtin.unarchive:
         src: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
-        dest: /var/cache/celestia-mon
+        dest: "{{ celestia_mon_node_exporter_staging }}"
+        include:
+          - "{{ celestia_mon_node_exporter_release }}/node_exporter"
+        extra_opts:
+          - --no-same-owner
         remote_src: true
 
     - name: Create the install directory
@@ -78,19 +114,42 @@
 
     - name: Install the node_exporter binary
       ansible.builtin.copy:
-        src: "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}/node_exporter"
+        src: "{{ celestia_mon_node_exporter_staging }}/{{ celestia_mon_node_exporter_release }}/node_exporter"
         dest: "{{ celestia_mon_node_exporter_binary }}"
         remote_src: true
         owner: root
         group: root
         mode: "0755"
+      notify: Restart celestia-mon-node-exporter
 
-    - name: Remove the downloaded files
+    - name: Read the checksum of the installed node_exporter binary
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_node_exporter_binary }}"
+        checksum_algorithm: sha256
+        get_mime: false
+        get_attributes: false
+      register: celestia_mon_node_exporter_copied
+
+    # In sha256sum's format: cd <dir> && sha256sum -c SHA256SUMS checks it by hand.
+    - name: Record the checksum of the installed node_exporter binary
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_node_exporter_sums_file }}"
+        content: >-
+          {{ celestia_mon_node_exporter_copied.stat.checksum ~ '  node_exporter' ~ celestia_mon_newline }}
+        owner: root
+        group: root
+        mode: "0644"
+
+  # Also after a failed step, so no unpacked release is left behind.
+  always:
+    - name: Remove the downloaded node_exporter release and the staging directory
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}.tar.gz"
+        - "{{ celestia_mon_node_exporter_staging }}"
+        # Where earlier versions of celestia-mon unpacked the release.
         - "/var/cache/celestia-mon/{{ celestia_mon_node_exporter_release }}"
 
 - name: Write the celestia-mon-node-exporter service
@@ -111,7 +170,7 @@
     enabled: true
     state: started
     daemon_reload: "{{ celestia_mon_node_exporter_unit_file is changed }}"
-  when: celestia_mon_node_exporter_installed.stat.exists or not ansible_check_mode
+  when: celestia_mon_node_exporter_present or not ansible_check_mode
 
 - name: Apply a pending celestia-mon-node-exporter restart
   ansible.builtin.meta: flush_handlers
@@ -132,7 +191,7 @@
     excludes: node_exporter-{{ celestia_mon_node_exporter_version }}
     file_type: directory
   register: celestia_mon_node_exporter_old
-  when: celestia_mon_node_exporter_installed.stat.exists or not ansible_check_mode
+  when: celestia_mon_node_exporter_present or not ansible_check_mode
 
 - name: Remove older node_exporter versions
   ansible.builtin.file:

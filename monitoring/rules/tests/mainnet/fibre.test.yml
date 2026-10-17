@@ -205,3 +205,49 @@ tests:
               summary: "Fibre on val-1 sends no metrics"
               description: "The Fibre unit is active but no Fibre metrics have arrived for 30 minutes; set its OTLP endpoint."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # val-1 is lost at 10m and tmkms is pointed at fibre-1's node. fibre-1's Fibre still signs through
+  # val-1 (its signer_grpc_address), so from 11m every upload fails. Its unit stays active and its
+  # port answers, so FibreDown stays quiet; uploads_failing goes out at 24m.
+  - name: Fibre still signs through the lost validator node after a repoint; uploads_failing on fibre-1
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre"}
+        values: '_ 60+60x9 600x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x10 330x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 23m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: uploads_failing
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 fails every upload"
+              description: >-
+                For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing.
+                Check the signer first: Fibre signs through the node at its signer_grpc_address,
+                so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+      - eval_time: 24m
+        alertname: FibreDown
+        exp_alerts: []

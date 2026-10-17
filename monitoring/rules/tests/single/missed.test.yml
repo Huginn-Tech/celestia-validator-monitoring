@@ -1,0 +1,98 @@
+# SignaturesMissed on the example-single inventory (validator node-1, local key). The chain makes
+# 10 blocks per minute; samples are one minute apart. celestia-appd reports
+# cometbft_consensus_validator_missed_blocks from the first block committed without the
+# validator's signature on, and adds one for each further one.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Healthy validator signs every block; no missed-block series and no SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x80'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x80'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: SignaturesMissed
+        exp_alerts: []
+
+  # Every other block lacks the signature (5 of 10 a minute). The last signed height stays within
+  # one block of the height, so ValidatorNotSigning stays quiet. From 1m half of the blocks seen
+  # are missed, far above 5%, and after 10 minutes the message goes out.
+  - name: Validator misses every other block; SignaturesMissed after 10m, ValidatorNotSigning quiet
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x30'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x30'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1+5x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SignaturesMissed
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+      - eval_time: 30m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+
+  # One block in 50 lacks the signature (one every 5 minutes): 2%, below 5%.
+  - name: Validator misses 2% of the blocks; no SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x80'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1x4 2x4 3x4 4x4 5x4 6x4 7x4 8x4 9x4 10x4 11x4 12x4 13x4 14x4 15x4 16x4'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SignaturesMissed
+        exp_alerts: []
+      - eval_time: 79m
+        alertname: SignaturesMissed
+        exp_alerts: []
+
+  # A restart at 20m clears the count: the series goes stale and comes back at 1 with the next
+  # miss. increase() reads the drop as a reset, so the misses on both sides of the restart count.
+  - name: Node restarts while the validator misses every other block; SignaturesMissed stays firing
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x19 stale 1210+10x20'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1+5x19 stale 1+5x20'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: SignaturesMissed
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "The validator misses signatures"
+              description: >-
+                For 10 minutes more than 5% of the blocks of the last hour have been committed
+                without a signature from the validator.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"

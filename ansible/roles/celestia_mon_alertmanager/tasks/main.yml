@@ -3,6 +3,27 @@
 - name: Check the alert receivers
   ansible.builtin.import_tasks: receivers.yml
 
+# The Watchdog heartbeat is the only thing that reports a monitor host that is down, so a
+# missing, misspelled or placeholder URL stops the install instead of dropping the heartbeat.
+# https, or http to this host only (a local relay). Here and not in receivers.yml, which CI
+# also runs on the example inventories with their placeholder URL. The URL is a secret: the
+# message never shows it.
+- name: Check the dead-man URL
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_deadman_webhook_url is defined
+      - celestia_mon_deadman_webhook_url | string is match(celestia_mon_alertmanager_deadman_pattern)
+      - "'REPLACE_ME' not in celestia_mon_deadman_webhook_url | string"
+      - celestia_mon_deadman_webhook_url | string is not search(celestia_mon_alertmanager_deadman_placeholder)
+    fail_msg: >-
+      Set celestia_mon_deadman_webhook_url in the monitor host's vault to the ping URL of your dead-man check
+      (an https URL, such as a healthchecks.io check that alerts you when the pings stop). It is empty, misspelled,
+      not https, or still the example placeholder. Without it nothing tells you when this monitor host is down.
+    quiet: true
+  vars:
+    celestia_mon_alertmanager_deadman_pattern: '^(https://[^/\s]+|http://(127\.[0-9.]+|localhost|\[::1\])(:[0-9]+)?(/|$))'
+    celestia_mon_alertmanager_deadman_placeholder: '^https?://[^/]*\.invalid([:/]|$)'
+
 # celestia-mon's Alertmanager has its own unit, user, paths and port (celestia-mon-alertmanager), so it
 # installs next to any other Alertmanager on the host and leaves it alone.
 - name: Check that celestia-mon-alertmanager can use port {{ celestia_mon_ports.alertmanager }}
@@ -30,14 +51,28 @@
 - name: Look for the pinned Alertmanager binaries
   ansible.builtin.stat:
     path: "{{ celestia_mon_alertmanager_home }}/{{ item }}"
+    checksum_algorithm: sha256
+    get_mime: false
   loop: "{{ celestia_mon_alertmanager_binaries }}"
   register: celestia_mon_alertmanager_found
 
+# The install below records the sha256 of each binary it copied from the checked release. A
+# binary that differs from its record, or an install without one, is installed again.
+- name: Read the checksums recorded when Alertmanager was installed
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_alertmanager_sums_file }}"
+  register: celestia_mon_alertmanager_sums
+  failed_when: false
+
 # In check mode nothing is downloaded, so tasks that need the binaries or the unit
 # are skipped until the pinned version is installed.
-- name: Note whether the pinned Alertmanager binaries are installed
+- name: Note whether the pinned Alertmanager binaries are installed and unchanged
   ansible.builtin.set_fact:
-    celestia_mon_alertmanager_present: "{{ celestia_mon_alertmanager_found.results | rejectattr('stat.exists') | list | length == 0 }}"
+    celestia_mon_alertmanager_present: >-
+      {{ celestia_mon_alertmanager_found.results | rejectattr('stat.exists') | list | length == 0
+         and (celestia_mon_alertmanager_sums.content | default('') | b64decode | trim)
+             == (celestia_mon_alertmanager_found.results | map(attribute='stat.checksum', default='')
+                 | zip(celestia_mon_alertmanager_binaries) | map('join', '  ') | join(celestia_mon_newline)) }}
 
 - name: Report the pending install of Alertmanager {{ celestia_mon_alertmanager_version }}
   ansible.builtin.debug:
@@ -102,28 +137,72 @@
       retries: 5
       delay: 10
 
-    - name: Unpack the Alertmanager release
+    # The first step clears what an interrupted run left behind.
+    - name: Clear the Alertmanager staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_alertmanager_staging }}"
+        state: absent
+
+    - name: Create the Alertmanager staging directory
+      ansible.builtin.file:
+        path: "{{ celestia_mon_alertmanager_staging }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    # The release stores its files as uid 1001, and tar running as root keeps stored owners.
+    # --no-same-owner makes them root's, and the 0700 staging directory keeps every other
+    # account away from the binaries root runs (amtool checks the config below).
+    - name: Unpack the Alertmanager binaries
       ansible.builtin.unarchive:
         src: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
-        dest: /var/cache/celestia-mon
+        dest: "{{ celestia_mon_alertmanager_staging }}"
+        include: "{{ celestia_mon_alertmanager_binaries | map('regex_replace', '^', celestia_mon_alertmanager_release ~ '/') | list }}"
+        extra_opts:
+          - --no-same-owner
         remote_src: true
 
     - name: Install the Alertmanager binaries
       ansible.builtin.copy:
-        src: /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}/{{ item }}
+        src: "{{ celestia_mon_alertmanager_staging }}/{{ celestia_mon_alertmanager_release }}/{{ item }}"
         dest: "{{ celestia_mon_alertmanager_home }}/{{ item }}"
         remote_src: true
         owner: root
         group: root
         mode: "0755"
       loop: "{{ celestia_mon_alertmanager_binaries }}"
+      notify: Restart Alertmanager
 
-    - name: Remove the downloaded Alertmanager release
+    - name: Read the checksums of the installed Alertmanager binaries
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_alertmanager_home }}/{{ item }}"
+        checksum_algorithm: sha256
+        get_mime: false
+      loop: "{{ celestia_mon_alertmanager_binaries }}"
+      register: celestia_mon_alertmanager_installed
+
+    # In sha256sum's format: cd <dir> && sha256sum -c SHA256SUMS checks them by hand.
+    - name: Record the checksums of the installed Alertmanager binaries
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_alertmanager_sums_file }}"
+        content: >-
+          {{ (celestia_mon_alertmanager_installed.results | map(attribute='stat.checksum')
+              | zip(celestia_mon_alertmanager_binaries) | map('join', '  ') | join(celestia_mon_newline)) ~ celestia_mon_newline }}
+        owner: root
+        group: root
+        mode: "0644"
+
+  # Also after a failed step, so no unpacked release is left behind.
+  always:
+    - name: Remove the downloaded Alertmanager release and the staging directory
       ansible.builtin.file:
         path: "{{ item }}"
         state: absent
       loop:
         - /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}.tar.gz
+        - "{{ celestia_mon_alertmanager_staging }}"
+        # Where earlier versions of celestia-mon unpacked the release.
         - /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}
 
 # The rendered file holds receiver tokens: never show it or its diff. If this task
@@ -139,6 +218,44 @@
     validate: "{{ celestia_mon_alertmanager_home }}/amtool check-config %s"
   no_log: true
   notify: Reload Alertmanager
+
+- name: Read or create the API password
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: api_password
+  when: celestia_mon_api_password_hash is not defined
+
+# Every request to Alertmanager (API, UI, /metrics, /-/ready) needs the API password, so no
+# other account on this host can silence alerts. Grafana's datasource login is not listed: a
+# Grafana that is taken over cannot silence alerts either. Alertmanager reads this file at each
+# request.
+- name: Write the Alertmanager web configuration
+  ansible.builtin.copy:
+    dest: "{{ celestia_mon_api_web_configs.alertmanager }}"
+    content: |
+      # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+      # Basic auth on every request; the password is in {{ celestia_mon_api_password_file }}.
+      basic_auth_users:
+        {{ celestia_mon_api_user }}: {{ celestia_mon_api_password_hash | to_json }}
+    owner: root
+    group: celestia-mon-alertmanager
+    mode: "0640"
+    validate: "/opt/celestia-mon/prometheus-{{ celestia_mon_versions.prometheus.version }}/promtool check web-config %s"
+
+# For amtool as root, for example (9913 is the default celestia_mon_ports.alertmanager):
+#   sudo /opt/celestia-mon/alertmanager-<version>/amtool --alertmanager.url=http://127.0.0.1:9913 \
+#     --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence query
+- name: Write amtool's HTTP settings
+  ansible.builtin.copy:
+    dest: "{{ celestia_mon_api_amtool_config }}"
+    content: |
+      # Managed by celestia-mon. amtool --http.config.file: the API user and password file.
+      basic_auth:
+        username: {{ celestia_mon_api_user | to_json }}
+        password_file: {{ celestia_mon_api_password_file | to_json }}
+    owner: root
+    group: root
+    mode: "0600"
 
 # The unit names the versioned binary, so a new version changes it and restarts the service.
 - name: Install the celestia-mon-alertmanager systemd unit

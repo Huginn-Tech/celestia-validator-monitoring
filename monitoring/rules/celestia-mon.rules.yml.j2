@@ -24,8 +24,10 @@
 {% set units = [('appd', appd, nodes)]
    + ([('tmkms', tmkms, kms)] if remote else [])
    + ([('fibre', fibre, [])] if fibre_on else []) %}
-{% set vns_text = ('Check journalctl -u ' ~ celestia_mon_units.tmkms ~ ' on the KMS host first. ' if remote else '')
-   ~ 'The chain moves but the validator has not signed for more than ' ~ th.not_signing_blocks ~ ' blocks.' %}
+{% set tmkms_first = 'Check journalctl -u ' ~ celestia_mon_units.tmkms ~ ' on the KMS host first. ' if remote else '' %}
+{% set vns_text = tmkms_first ~ 'The chain moves but no node of this install has seen a signature from the validator for more than '
+   ~ th.not_signing_blocks ~ ' blocks.' %}
+{% set missed_ratio = th.signatures_missed_ratio | default(0.05) %}
 {% set docs = 'https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
 groups:
   - name: celestia_mon
@@ -136,11 +138,14 @@ groups:
           description: "For 10 minutes the node has been more than {{ behind }} blocks behind the highest node of this install, or has not advanced while another node did. A node that lags cannot take over signing."
           runbook: "{{ docs }}#nodebehind"
 
-      # ValidatorNotSigning: the chain moves but the validator's key signs no blocks, whichever node
-      # the signer is connected to. Only that node exports the last signed height, so the rule
-      # compares the highest height of all nodes with the highest last signed height. When the
-      # signing node goes away its series go with it, and the alert fires until a node signs again
-      # (for example after tmkms is pointed at a backup node).
+      # ValidatorNotSigning: the chain moves but no node of this install sees the validator's key
+      # sign, whichever node the signer is connected to. Only nodes that know the validator's key
+      # export the last signed height, so the rule compares the highest height of all nodes with
+      # the highest last signed height. When the signing node goes away or cannot be scraped, its
+      # series go with it, and the alert fires until a node shows a signature again (for example
+      # after tmkms is pointed at a backup node). A node that tmkms left keeps the key it last read
+      # and reports the same signatures, so the description never guesses which node signs: it
+      # names only the nodes Prometheus cannot reach, which may still be signing unseen.
       - alert: ValidatorNotSigning
         expr: >-
           max(cometbft_consensus_height{job="celestia-app"})
@@ -153,12 +158,32 @@ groups:
         annotations:
           summary: "The validator is not signing"
 {% if nodes | length > 1 %}
-          # The node that exported the highest last signed height in the last hour: the one the signer used.
-          description: "{{ vns_text }}{% raw %}{{ range query `topk(1, max by (host) (last_over_time(cometbft_consensus_validator_last_signed_height{job='celestia-app'}[1h])))` }} Its last signature came through the node on {{ .Labels.host }}.{{ end }}{% endraw %}"
+          description: "{{ vns_text }}{% raw %}{{ range query `up{job='celestia-app'} == 0` | sortByLabel `host` }} Prometheus cannot reach the node on {{ .Labels.host }}, so signatures made through it are not seen; an explorer shows whether blocks are missed.{{ end }}{% endraw %}"
 {% else %}
           description: "{{ vns_text }}"
 {% endif %}
           runbook: "{{ docs }}#validatornotsigning"
+
+      # SignaturesMissed: the validator signs, but not every block, for example when signatures
+      # time out now and then. Each node that knows the validator's key counts the committed blocks
+      # that carry no signature of the validator (validator_missed_blocks, celestia-core
+      # consensus/state.go recordMetrics); it reads them from the chain's commits, so a node that
+      # tmkms left keeps counting. Per node, the misses of the last hour are compared with the blocks
+      # it committed in that hour, and the highest share counts: the alert follows the signer between
+      # nodes and names no host. The count appears at the first miss and restarts with the node;
+      # increase() treats the restart as a reset. It reports a share of blocks, never how far the
+      # validator is from being jailed.
+      - alert: SignaturesMissed
+        expr: >-
+          max(max by (host) (increase(cometbft_consensus_validator_missed_blocks{job="celestia-app"}[1h]))
+          > on (host) {{ missed_ratio }} * max by (host) (delta(cometbft_consensus_height{job="celestia-app"}[1h])))
+        for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "The validator misses signatures"
+          description: "{{ tmkms_first }}For 10 minutes more than {{ '%g' | format(missed_ratio * 100) }}% of the blocks of the last hour have been committed without a signature from the validator."
+          runbook: "{{ docs }}#signaturesmissed"
 {% if remote %}
 
       # RemoteSignerProblem: the remote signer is too slow, or cannot sign proposals. Per node: the
@@ -210,10 +235,10 @@ groups:
           description: "For 5 minutes {{ fibre }} has been active on {% raw %}{{ range $i, $s := query `node_systemd_unit_state{name='{% endraw %}{{ fibre }}{% raw %}',state='active'} == 1` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }}{{ end }}{% endraw %}. Fibre runs on one host at a time: stop the one that should be the standby."
           runbook: "{{ docs }}#fibrebothactive"
 
-      # FibreNotServing: Fibre runs but accepts no uploads, or sends no metrics. A quiet network
-      # also makes the time since the last accepted upload grow, so this stays a message. Only the
-      # host whose Fibre unit is active can match: a stopped unit reports a start time of 0, and a
-      # standby sends no Fibre metrics.
+      # FibreNotServing: Fibre runs but accepts no uploads, fails every upload, or sends no metrics.
+      # A quiet network also makes the time since the last accepted upload grow, so this stays a
+      # message. Only the host whose Fibre unit is active can match: a stopped unit reports a start
+      # time of 0, and a standby sends no Fibre metrics.
       - alert: FibreNotServing
         expr: >-
           time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
@@ -227,6 +252,23 @@ groups:
         annotations:
           summary: "{% raw %}Fibre on {{ $labels.host }} has no recent accepted upload{% endraw %}"
           description: "No upload has been accepted for longer than {{ th.fibre_stale_uploads }} uploads take at the 7-day average rate, and for over {{ '%g' | format(th.fibre_stale_min_seconds / 60) }} minutes."
+          runbook: "{{ docs }}#fibrenotserving"
+      # Every upload fails and none is accepted. Fibre fetches the validator's public key for each
+      # upload and then signs through the node at its signer_grpc_address (celestia-app v10.4.0
+      # fibre/server_upload.go). An unreachable signer fails the upload before the signature is
+      # tried, so fibre.server.sign.duration does not count it; the upload count with success
+      # "false" counts both. Uploads that clients get wrong fail too, but next to accepted ones.
+      - alert: FibreNotServing
+        expr: >-
+          sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[5m])) > 0
+          unless on (host) sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="true"}[5m])) > 0
+        for: 10m
+        labels:
+          severity: message
+          reason: uploads_failing
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} fails every upload{% endraw %}"
+          description: "For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing. Check the signer first: Fibre signs through the node at its signer_grpc_address, so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error."
           runbook: "{{ docs }}#fibrenotserving"
 {% for h in fibres %}
       - alert: FibreNotServing
@@ -340,12 +382,13 @@ groups:
           description: "Rule evaluation failed in the last 10 minutes, so some alerts may not fire. The Prometheus log names the rule and the error."
           runbook: "{{ docs }}#monitoringbroken"
 
-      # NotificationsFailing: Alertmanager could not deliver a notification through one integration
-      # (Telegram, Discord, Slack or PagerDuty). One alert per integration, sent to the chat channels,
-      # so a broken one is reported through the others. Webhook failures are left out: the dead-man
-      # webhook and webhook receivers share integration="webhook".
+      # NotificationsFailing: Alertmanager could not deliver a page or message notification through one
+      # integration (Telegram, Discord, Slack, PagerDuty or a webhook receiver). One alert per integration,
+      # sent to the chat channels, so a broken one is reported through the others. Alertmanager labels
+      # each failure with its receiver (receiver_name, from --enable-feature=receiver-name-in-metrics);
+      # the dead-man receiver's failures are DeadmanFailing.
       - alert: NotificationsFailing
-        expr: sum by (host, integration) (increase(alertmanager_notifications_failed_total{integration!="webhook"}[15m])) > 0
+        expr: sum by (host, integration) (increase(alertmanager_notifications_failed_total{receiver_name!="deadman"}[15m])) > 0
         labels:
           severity: message
         annotations:
@@ -353,17 +396,28 @@ groups:
           description: "{% raw %}A {{ $labels.integration }} notification failed in the last 15 minutes. Alerts reach you through your other receivers only.{% endraw %}"
           runbook: "{{ docs }}#notificationsfailing"
 
+      # DeadmanFailing: Alertmanager could not deliver the heartbeat to the dead-man service: a wrong
+      # URL, or no route to the service. A dead-man check that never got a heartbeat may never alert,
+      # so this is the only signal of a URL that was wrong from the start.
+      - alert: DeadmanFailing
+        expr: sum by (host) (increase(alertmanager_notifications_failed_total{receiver_name="deadman"}[15m])) > 0
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Alertmanager on {{ $labels.host }} cannot reach the dead-man service{% endraw %}"
+          description: "A heartbeat to the dead-man service failed in the last 15 minutes. Until it gets through, the dead-man service cannot tell you that monitoring is down."
+          runbook: "{{ docs }}#deadmanfailing"
+
       # Watchdog: the heartbeat for the dead-man service. It stops when monitoring is down, and for an
-      # hour after a page or message notification through any integration other than webhook (Telegram,
-      # Discord, Slack, PagerDuty) failed, so the dead-man service reports a broken alert channel through
-      # its own channel, also when no other receiver can carry NotificationsFailing. Failed webhook calls
-      # do not stop it: Alertmanager labels the dead-man webhook and webhook receivers alike
-      # (integration="webhook"), so a broken webhook receiver gets no dead-man signal.
+      # hour after a page or message notification failed through any receiver (Telegram, Discord, Slack,
+      # PagerDuty or a webhook), so the dead-man service reports a broken alert channel through its own
+      # channel, also when no other receiver can carry NotificationsFailing. Failed heartbeats
+      # (receiver_name="deadman") do not stop it; DeadmanFailing reports them.
       - alert: Watchdog
-        expr: vector(1) unless on () (sum(increase(alertmanager_notifications_failed_total{integration!="webhook"}[1h])) > 0)
+        expr: vector(1) unless on () (sum(increase(alertmanager_notifications_failed_total{receiver_name!="deadman"}[1h])) > 0)
         labels:
           severity: heartbeat
         annotations:
           summary: "celestia-mon heartbeat"
-          description: "Fires while monitoring runs and no page or message notification failed in the last hour; failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop."
+          description: "Fires while monitoring runs and no page or message notification failed in the last hour. Only the dead-man service receives it, and it alerts when the heartbeats stop."
           runbook: "{{ docs }}#watchdog"

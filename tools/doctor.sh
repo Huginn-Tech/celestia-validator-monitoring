@@ -22,7 +22,8 @@
 # <node home>/bin, as the node itself does at every start.
 #
 # Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15,
-# 16, 18 and 19 run on the monitor host and ask them there.
+# 16, 18, 19, 21 and 22 run on the monitor host and ask them there, with the API
+# password that only root can read (api_password_file).
 #
 # signer and fibre_enabled tell doctor the install type: with signer=local it
 # never expects the remote signer's metrics, with fibre_enabled=false never
@@ -34,8 +35,8 @@
 # active is read from systemd, never from the settings: with two or more
 # fibre_hosts, a stopped Fibre unit is a standby.
 #
-# Needs only bash, coreutils, util-linux (runuser), curl, ss, systemctl, grep,
-# sed and awk.
+# Needs only bash, coreutils, util-linux (runuser, setsid), curl, ss and ip
+# (iproute2), systemctl, grep, sed and awk.
 
 set -u
 
@@ -59,6 +60,8 @@ declare -A C=(
   [node_hosts]=""
   [prometheus_url]="http://127.0.0.1:9912"
   [alertmanager_url]="http://127.0.0.1:9913"
+  [api_user]="celestia-mon"
+  [api_password_file]="/etc/celestia-mon/api-password"
   [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
   [prometheus_retention_size]=""
   [signer_median_max]="0.010"
@@ -114,6 +117,9 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          (default http://127.0.0.1:9912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
                          (default http://127.0.0.1:9913)
+  api_user, api_password_file  HTTP basic auth for those two (default
+                         celestia-mon and /etc/celestia-mon/api-password,
+                         readable by root; none when the file is missing)
   prometheus_data_dir    default /var/lib/celestia-mon/prometheus
   prometheus_retention_size  Prometheus's retention size, such as 8GB
                          (default: not compared)
@@ -190,10 +196,38 @@ last_line() {
   printf '%s' "${l:0:200}"
 }
 ms() { awk -v s="$1" 'BEGIN { printf "%.1f", s * 1000 }'; }
+
+# celestia-mon's Prometheus and Alertmanager ask for HTTP basic auth: user api_user, the
+# password in api_password_file (root only). curl reads it from a config on a file
+# descriptor, so it never shows in the process list, and gets it only for their URLs.
+API_AUTH=""
+api_auth_load() {
+  local f=${C[api_password_file]} pw
+  [[ -n $f && -r $f ]] || return 0
+  pw=$(tr -d '\r\n' <"$f")
+  [[ -n $pw ]] || return 0
+  pw=${pw//\\/\\\\}
+  pw=${pw//\"/\\\"}
+  API_AUTH="user = \"${C[api_user]}:$pw\""
+}
+api_url() { # URL -> true for celestia-mon's Prometheus or Alertmanager
+  local p=${C[prometheus_url]%/} a=${C[alertmanager_url]%/}
+  [[ (-n $p && $1 == "$p"*) || (-n $a && $1 == "$a"*) ]]
+}
+mon_curl() { # URL, curl options -> curl's output, with the basic auth for celestia-mon's API URLs
+  local url=$1
+  shift
+  if [[ -n $API_AUTH ]] && api_url "$url"; then
+    curl -K <(printf '%s\n' "$API_AUTH") "$@" "$url"
+  else
+    curl "$@" "$url"
+  fi
+}
+
 # The API answers end without a newline; add one so `while read` loops see the last line.
 http_get() {
   local rc=0
-  curl -fsS -g --max-time 5 "$1" 2>/dev/null || rc=$?
+  mon_curl "$1" -fsS -g --max-time 5 2>/dev/null || rc=$?
   echo
   return "$rc"
 }
@@ -311,6 +345,10 @@ is_loopback() { # local address as ss prints it -> true for 127.0.0.0/8 and ::1
   [[ $h == 127.* || $h == ::1 ]]
 }
 
+host_address() { # IP address -> true when it is one of this host's own addresses
+  ip -o addr show 2>/dev/null | awk -v a="$1" '{ sub(/\/.*/, "", $4); if ($4 == a) f = 1 } END { exit !f }'
+}
+
 addr_class() { # local address as ss prints it -> wildcard, private or public
   local h
   h=$(addr_host "$1")
@@ -363,12 +401,15 @@ find_node() { # sets NODE_HOME, NODE_USER and APPD from the settings or the cele
 # Runs celestia-appd as the node's service user when doctor runs as root: the
 # binary usually belongs to that user, and anything it writes into the node
 # home stays owned by it. It starts from / so doctor's working directory does
-# not matter.
+# not matter. Its stdin is /dev/null and setsid gives it a session of its own
+# without a controlling terminal, so the binary never gets the terminal doctor
+# runs on (no keystrokes to read, no prompt to fake); the callers capture its
+# output.
 as_node() {
   if [[ $(id -u) -eq 0 && -n $NODE_USER && $NODE_USER != root ]]; then
-    (cd / && runuser -u "$NODE_USER" -- "$@")
+    (cd / && runuser -u "$NODE_USER" -- setsid -w "$@" </dev/null)
   else
-    "$@"
+    setsid -w "$@" </dev/null
   fi
 }
 
@@ -385,16 +426,20 @@ home_ok() {
 
 METRICS=""
 check_metrics() {
-  local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind
+  local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
   local -a bad=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
+  # The address the monitor scrapes, which is where the metrics belong: this host's
+  # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660").
+  bind=$(url_hostport "$url")
+  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then bind="<private address>:$(url_port "$url")"; fi
   cfg=$NODE_HOME/config/config.toml
   if [[ -r $cfg ]]; then
     prom=$(toml_get "$cfg" instrumentation prometheus)
     laddr=$(toml_get "$cfg" instrumentation prometheus_listen_addr)
     ns=$(toml_get "$cfg" instrumentation namespace)
     if [[ $prom != true ]]; then
-      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
+      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" and prometheus_listen_addr = \"$bind\" (this host's private address, never 0.0.0.0 or an empty host) under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
       return
     fi
   else
@@ -403,7 +448,7 @@ check_metrics() {
   fi
   METRICS=$(http_get "$url")
   if [[ -z $METRICS ]]; then
-    report FAIL 1 "$name" "no answer from $url$note. Fix: set prometheus = true and prometheus_listen_addr (now ${laddr:-unknown}) under [instrumentation] in $cfg so the node serves $url, then restart celestia-appd at a moment you choose"
+    report FAIL 1 "$name" "no answer from $url$note. Fix: set prometheus = true and prometheus_listen_addr = \"$bind\" (now ${laddr:-unknown}) under [instrumentation] in $cfg so the node serves $url, then restart celestia-appd at a moment you choose"
     return
   fi
   if ! grep -qE '^(cometbft|celestia)_consensus_height' <<<"$METRICS"; then
@@ -427,12 +472,13 @@ check_metrics() {
       public) bad+=("$a") ;;
     esac
   done <<<"$(listeners "$(url_port "$url")")"
-  bind=$(url_hostport "$url")
-  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then bind="<private address>:$(url_port "$url")"; fi
+  # With no firewall active, nothing but the bind keeps the port off the networks of this host.
+  fw=$(firewall_state)
+  if [[ $fw == none* ]]; then sev=FAIL; fi
   if [[ -n $wild ]]; then
-    report WARN 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, and whether they can be reached from outside depends on the firewall (firewall: $(firewall_state)). Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose; celestia-mon-doctor never edits the config"
+    report "$sev" 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, a Tailscale interface included, which ufw does not filter (firewall: $fw). Whoever reaches the port can read the node's metrics and hold its few connections (max_open_connections, 3 by default), which blinds the signing alerts. Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (never 0.0.0.0 or an empty host), then restart celestia-appd at a moment you choose; celestia-mon-doctor never edits the config"
   elif ((${#bad[@]} > 0)); then
-    report WARN 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address. Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or block the port in a firewall), then restart celestia-appd at a moment you choose"
+    report "$sev" 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address (firewall: $fw). Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or block the port in a firewall), then restart celestia-appd at a moment you choose"
   else
     report OK 1 "$name" "enabled at $url$note"
   fi
@@ -442,8 +488,33 @@ signer_median() { # -> the node's median signing latency in seconds from METRICS
   awk '$1 ~ /^(cometbft|celestia)_privval_signing_latency_median_seconds($|[{])/ { print $NF; exit }' <<<"$METRICS"
 }
 
+STATUS=""
+status_value() { # key -> value of "key":"value" or "key":value in the flattened /status reply
+  sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p' <<<"$STATUS" | head -n 1
+}
+
+# The node's /status, read once before check 2, which needs the voting power of the
+# key the node signs with (validator_info), and check 3, which starts from its height.
+read_status() {
+  STATUS=$(http_get "${C[node_rpc_url]%/}/status" | tr -d ' \t\r\n')
+  [[ $(status_value latest_block_height) =~ ^[0-9]+$ ]] || STATUS=""
+}
+status_address() { # -> the hex address of the key the node signs with (validator_info.address), empty when absent
+  sed -n 's/.*"validator_info":{"address":"\([0-9A-Fa-f]*\)".*/\1/p' <<<"$STATUS"
+}
+
+# On a backup node that is also the monitor: true when Prometheus saw this hex address as the
+# validator's in the last 30 days. celestia-core exports cometbft_consensus_validator_power only
+# for the node's own key while that key is in the validator set, so the series names the
+# validator's consensus key, also while the validator is jailed and its power reads 0.
+validator_key_seen() { # hex address
+  if [[ -z $1 ]] || ! has_role monitor; then return 1; fi
+  prom_vector 'group by (validator_address) (last_over_time(cometbft_consensus_validator_power{job="celestia-app"}[30d]))' validator_address |
+    cut -d ' ' -f 1 | grep -qixF -- "$1"
+}
+
 check_signer() {
-  local name="remote signer" cfg laddr median signer=${C[signer]} max=${C[signer_median_max]}
+  local name="remote signer" cfg laddr median signer=${C[signer]} max=${C[signer_median_max]} power key own hex
   if ! node_host; then report SKIP 2 "$name" "not a validator or backup node host"; return; fi
   cfg=$NODE_HOME/config/config.toml
   if [[ ! -r $cfg ]]; then
@@ -451,12 +522,31 @@ check_signer() {
     return
   fi
   laddr=$(toml_get "$cfg" "" priv_validator_laddr)
-  # A backup node is key-less while priv_validator_laddr is empty. With it set, celestia-appd
-  # waits for a remote signer at start and exits when none connects, so only the node tmkms
-  # points at has it. Information only, never a failure.
+  # With priv_validator_laddr empty, celestia-appd signs with its local key file
+  # (priv_validator_key_file, relative to the home; it creates a new key when the file is
+  # missing). /status shows that key's voting power: above 0, this node signs for the
+  # validator, and next to tmkms or another node with the same key that is a double sign.
+  power=$(status_value voting_power)
+  [[ $power =~ ^[0-9]+$ ]] || power=""
+  key=$(toml_get "$cfg" "" priv_validator_key_file)
+  key=${key:-config/priv_validator_key.json}
+  [[ $key == /* ]] || key=$NODE_HOME/$key
+  own="so this node signs with its local key file $key"
+  hex=$(status_address)
+  # A backup node is key-less while priv_validator_laddr is empty and its key file is not the
+  # validator's. With priv_validator_laddr set, celestia-appd waits for a remote signer at
+  # start and exits when none connects, so only the node tmkms points at has it. Voting power
+  # 0 does not prove the key is not the validator's: a jailed or unbonded validator's key also
+  # has none, and signs again after unjail.
   if ! has_role validator; then
-    if [[ -z $laddr ]]; then
-      report INFO 2 "$name" "backup node: priv_validator_laddr is empty, so this node needs no signer to run and signs nothing (with it set, celestia-appd exits at start when no signer connects)"
+    if [[ -z $laddr && -n $power && $power != 0 ]]; then
+      report FAIL 2 "$name" "backup node: priv_validator_laddr is empty, $own, which has voting power $power: it is the validator's key, and two signers of one validator double-sign. Fix: stop celestia-appd here now (\"systemctl stop ${C[appd_unit]}\"), move $key off this host, and start it again only after that (it then creates a new key that is not in the validator set)"
+    elif [[ -z $laddr && $power == 0 ]] && validator_key_seen "$hex"; then
+      report FAIL 2 "$name" "backup node: priv_validator_laddr is empty, $own (address $hex). Its voting power is 0 now, but Prometheus saw this address as the validator's in the last 30 days (cometbft_consensus_validator_power), so it is the validator's consensus key and the validator is jailed or unbonded: after unjail, this node and tmkms double-sign. Fix: stop celestia-appd here now (\"systemctl stop ${C[appd_unit]}\"), move $key off this host, and start it again only after that (it then creates a new key that is not in the validator set)"
+    elif [[ -z $laddr && $power == 0 ]]; then
+      report INFO 2 "$name" "backup node: priv_validator_laddr is empty, so this node needs no signer to run; its local key file $key${hex:+ (address $hex)} is not in the validator set (voting power 0) now. That key must not be your validator's consensus key (compare the address with the hex that check 4 shows on the validator): a jailed or unbonded validator's key also has voting power 0, and signs again after unjail, next to tmkms (with priv_validator_laddr set, celestia-appd exits at start when no signer connects)"
+    elif [[ -z $laddr ]]; then
+      report INFO 2 "$name" "backup node: priv_validator_laddr is empty, $own; its voting power is unknown until the node RPC answers (check 3), and must be 0, or the node double-signs next to tmkms (with priv_validator_laddr set, celestia-appd exits at start when no signer connects)"
     else
       median=$(signer_median)
       report INFO 2 "$name" "backup node: priv_validator_laddr = $laddr, so this node signs through a remote signer, as after a tmkms repoint to it, and exits at its next start when no signer connects${median:+; median signing latency $(ms "$median") ms}"
@@ -464,8 +554,10 @@ check_signer() {
     return
   fi
   if [[ -z $laddr ]]; then
-    if [[ $signer == remote ]]; then
-      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, but celestia-mon is set to signer: remote. Fix: set celestia_mon_signer: local in the inventory and re-run install.sh on each host (or finish the remote signer setup)"
+    if [[ $signer == remote && -n $power && $power != 0 ]]; then
+      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, $own, which has voting power $power, but celestia-mon is set to signer: remote: if tmkms signs for this validator through another node, the two double-sign. Fix: if tmkms runs, stop celestia-appd here now (\"systemctl stop ${C[appd_unit]}\") and set priv_validator_laddr to the private address tmkms dials before you start it again; if this host signs with its key file on purpose, set celestia_mon_signer: local in the inventory and re-run install.sh on each host"
+    elif [[ $signer == remote ]]; then
+      report FAIL 2 "$name" "priv_validator_laddr is empty in $cfg, $own (voting power ${power:-unknown: check 3}), not through tmkms, but celestia-mon is set to signer: remote. Fix: finish the remote signer setup: set priv_validator_laddr to the private address tmkms dials and restart celestia-appd at a moment you choose, with tmkms already running (the node exits at start when no signer connects); if this validator signs with a local key file, set celestia_mon_signer: local in the inventory and re-run install.sh on each host"
     else
       report SKIP 2 "$name" "local key (priv_validator_laddr is empty)"
     fi
@@ -491,9 +583,87 @@ check_signer() {
   fi
 }
 
-STATUS=""
-status_value() { # key -> value of "key":"value" or "key":value in the flattened /status reply
-  sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p' <<<"$STATUS" | head -n 1
+signer_port_state() { # address from config.toml -> "ok|wildcard|public TEXT": its listeners now, else the address itself
+  local a=$1 hp h l where="" worst=ok
+  if [[ $a == unix://* ]]; then
+    echo "ok $a (a unix socket)"
+    return
+  fi
+  hp=${a#tcp://}
+  h=${hp%:*}
+  h=${h#\[}
+  h=${h%\]}
+  while read -r l; do
+    [[ -n $l ]] || continue
+    where+="${where:+, }$l"
+    case $(addr_class "$l") in
+      public) worst=public ;;
+      wildcard) [[ $worst == public ]] || worst=wildcard ;;
+    esac
+  done <<<"$(listeners "${hp##*:}")"
+  if [[ -z $where ]]; then
+    where="nothing listens on it now"
+    case $h in
+      '' | 0.0.0.0 | :: | '*') worst=wildcard ;;
+      localhost) ;;
+      *) [[ $h =~ ${C[private_address_regex]} ]] || worst=public ;;
+    esac
+  fi
+  echo "$worst $a ($where)"
+}
+
+# Where the node's two signer ports listen, read from config.toml and ss: doctor never
+# connects to them. celestia-appd does not authenticate the remote signer that connects to
+# priv_validator_laddr, so whoever reaches that port while tmkms reconnects can take the
+# signer's place (missed blocks, then jailing); ufw does not filter a Tailscale interface.
+# priv_validator_grpc_laddr serves Fibre; celestia-appd refuses it beyond loopback without
+# mTLS unless priv_validator_grpc_allow_insecure = true.
+check_signer_binds() {
+  local name="signer binds" cfg laddr g gh s note=""
+  local -a fails=() warns=() oks=()
+  if ! node_host; then report SKIP 20 "$name" "not a validator or backup node host"; return; fi
+  cfg=$NODE_HOME/config/config.toml
+  if [[ ! -r $cfg ]]; then
+    report SKIP 20 "$name" "$cfg not readable (run as root or pass --node-home)"
+    return
+  fi
+  laddr=$(toml_get "$cfg" "" priv_validator_laddr)
+  g=$(toml_get "$cfg" "" priv_validator_grpc_laddr)
+  if [[ -n $laddr ]]; then
+    s=$(signer_port_state "$laddr")
+    case ${s%% *} in
+      public) fails+=("priv_validator_laddr = ${s#* } is on a public address") ;;
+      wildcard) warns+=("priv_validator_laddr = ${s#* } is on every interface: celestia-appd does not authenticate the signer that connects, so whoever reaches the port while tmkms reconnects can take its place, and ufw does not filter a Tailscale interface") ;;
+      *) oks+=("priv_validator_laddr = ${s#* }") ;;
+    esac
+  fi
+  if [[ -n $g ]]; then
+    s=$(signer_port_state "$g")
+    gh=${g%:*}
+    gh=${gh#\[}
+    gh=${gh%\]}
+    if [[ $(toml_get "$cfg" "" priv_validator_grpc_allow_insecure) == true && $gh != 127.* && $gh != ::1 ]]; then
+      fails+=("priv_validator_grpc_laddr = ${s#* } with priv_validator_grpc_allow_insecure = true: whoever reaches it can ask for raw-bytes signatures with the validator key, no client certificate needed")
+    else
+      case ${s%% *} in
+        public) warns+=("priv_validator_grpc_laddr = ${s#* } is on a public address (mTLS guards the signatures)") ;;
+        wildcard) warns+=("priv_validator_grpc_laddr = ${s#* } is on every interface (mTLS guards the signatures)") ;;
+        *) oks+=("priv_validator_grpc_laddr = ${s#* }") ;;
+      esac
+    fi
+  elif ! has_role validator; then
+    note="; priv_validator_grpc_laddr is empty: after a tmkms repoint to this node, a Fibre can sign through it only once that is set"
+  fi
+  if ((${#fails[@]} + ${#warns[@]} == 0)); then
+    if ((${#oks[@]} == 0)); then
+      report OK 20 "$name" "no signer port: priv_validator_laddr and priv_validator_grpc_laddr are empty$note"
+    else
+      report OK 20 "$name" "$(join "${oks[@]}")$note"
+    fi
+    return
+  fi
+  s="$(join "${fails[@]}" "${warns[@]}")${oks[*]:+; ok: $(join "${oks[@]}")}$note. Fix: in $cfg, set each to 127.0.0.1 or this host's private address that tmkms (priv_validator_laddr) or Fibre (priv_validator_grpc_laddr, with mTLS beyond loopback and priv_validator_grpc_allow_insecure = false) dials, never 0.0.0.0, an empty host or a public address, then restart celestia-appd at a moment you choose, with tmkms running"
+  if ((${#fails[@]} > 0)); then report FAIL 20 "$name" "$s"; else report WARN 20 "$name" "$s"; fi
 }
 
 block_age() { # RFC 3339 UTC time such as 2026-10-17T10:00:00.123456789Z -> whole seconds since then, empty when unreadable
@@ -512,10 +682,9 @@ block_age() { # RFC 3339 UTC time such as 2026-10-17T10:00:00.123456789Z -> whol
 check_head() {
   local name="node progress" rpc=${C[node_rpc_url]%/} limit=${C[head_wait]} h0 h1 catching end s="" age
   if ! node_host; then report SKIP 3 "$name" "not a validator or backup node host"; return; fi
-  STATUS=$(http_get "$rpc/status" | tr -d ' \t\r\n')
+  # read_status fetched /status before check 2.
   h0=$(status_value latest_block_height)
   if [[ ! $h0 =~ ^[0-9]+$ ]]; then
-    STATUS=""
     report FAIL 3 "$name" "no answer from $rpc/status. Fix: check \"systemctl status ${C[appd_unit]}\" and \"journalctl -u ${C[appd_unit]} -n 100\"; the URL must match [rpc] laddr in config.toml"
     return
   fi
@@ -548,7 +717,7 @@ check_address() {
   local name="validator addr" hex power out
   if ! has_role validator; then report SKIP 4 "$name" "not a validator host"; return; fi
   if [[ -z $STATUS ]]; then report SKIP 4 "$name" "node RPC not answering (check 3)"; return; fi
-  hex=$(sed -n 's/.*"validator_info":{"address":"\([0-9A-Fa-f]*\)".*/\1/p' <<<"$STATUS")
+  hex=$(status_address)
   power=$(status_value voting_power)
   if [[ -z $hex ]]; then
     report FAIL 4 "$name" "/status has no validator_info.address. Fix: check that ${C[appd_unit]} runs as the validator (key file or priv_validator_laddr) and read \"journalctl -u ${C[appd_unit]} -n 100\""
@@ -571,6 +740,14 @@ check_address() {
     return
   fi
   report OK 4 "$name" "$VALCONS (hex $hex, voting power ${power:-unknown})"
+}
+
+# The fix for a missing or wrong x/valaddr registration. set-host is signed by the validator's
+# account key, which also controls the validator's staking settings: it belongs on the
+# operator's workstation (a Ledger), never on a server. An ops key with an authz grant for
+# MsgSetFibreProviderInfo can send it instead (docs/quickstart.md, Mainnet layout).
+set_host_fix() { # host:port -> the fix, for a report line
+  printf '%s' "register $1 from your workstation, never with a key on this server: celestia-appd tx valaddr set-host $1 --from <validator account key, on a Ledger> --node <RPC of a synced node>; with an authz grant for set-host to an ops key, add --generate-only and --from <validator account address>, and send the file with \"celestia-appd tx authz exec <file> --from <ops key>\""
 }
 
 check_registration() {
@@ -614,7 +791,7 @@ check_registration() {
     return
   fi
   if [[ $found != true || -z $host ]]; then
-    report FAIL 5 "$name" "no Fibre host registered for $VALCONS. Fix: celestia-appd tx valaddr set-host $suggest --from <validator-account-key>${list:+ (configured: $list)}"
+    report FAIL 5 "$name" "no Fibre host registered for $VALCONS. Fix: $(set_host_fix "$suggest")${list:+ (configured: $list)}"
     return
   fi
   # This host also has a Fibre install (active or standby): the registration must name it
@@ -622,11 +799,11 @@ check_registration() {
   if [[ -n $own ]] && has_role fibre && fibre_standby_layout; then
     here=$(unit_prop "${C[fibre_unit]}" ActiveState)
     if [[ $here == active && $host != "$own" ]]; then
-      report FAIL 5 "$name" "Fibre is active on this host, but x/valaddr registers $host${match_name:+ ($match_name)}. Fix: celestia-appd tx valaddr set-host $own --from <validator-account-key>, or stop Fibre here if the other host is the active one (check 19 on the monitor)"
+      report FAIL 5 "$name" "Fibre is active on this host, but x/valaddr registers $host${match_name:+ ($match_name)}. Fix: $(set_host_fix "$own"); or stop Fibre here if the other host is the active one (check 19 on the monitor)"
       return
     fi
     if [[ $here != active && $host == "$own" ]]; then
-      report FAIL 5 "$name" "x/valaddr registers this host's endpoint $own, but Fibre is ${here:-not active} here (standby). Fix: celestia-appd tx valaddr set-host <host:port of the active Fibre host> --from <validator-account-key> (check 19 on the monitor shows which host is active; configured: $list)"
+      report FAIL 5 "$name" "x/valaddr registers this host's endpoint $own, but Fibre is ${here:-not active} here (standby). Fix: $(set_host_fix "<host:port of the active Fibre host>") (check 19 on the monitor shows which host is active; configured: $list)"
       return
     fi
   fi
@@ -635,9 +812,9 @@ check_registration() {
   elif [[ $matched == true ]]; then
     report OK 5 "$name" "registered $host, as configured${match_name:+ for $match_name}"
   elif ((count == 1)); then
-    report FAIL 5 "$name" "registered $host, but the configured endpoint is $first. Fix: celestia-appd tx valaddr set-host $first --from <validator-account-key> (or correct celestia_mon_fibre_public_endpoint if $host is right)"
+    report FAIL 5 "$name" "registered $host, but the configured endpoint is $first. Fix: $(set_host_fix "$first") (or correct celestia_mon_fibre_public_endpoint if $host is right)"
   else
-    report FAIL 5 "$name" "registered $host, which is none of the configured endpoints ($list). Fix: celestia-appd tx valaddr set-host $suggest --from <validator-account-key> (or correct celestia_mon_fibre_public_endpoint of that host if $host is right)"
+    report FAIL 5 "$name" "registered $host, which is none of the configured endpoints ($list). Fix: $(set_host_fix "$suggest") (or correct celestia_mon_fibre_public_endpoint of that host if $host is right)"
   fi
 }
 
@@ -671,7 +848,7 @@ fibre_home() { # unit, argv -> Fibre's home: --home, else FIBRE_HOME, else ~/.ce
 # stopped standby: an inactive unit with a closed port is then expected, and the
 # monitor (check 19) tells which host is active.
 check_fibre_service() {
-  local name="fibre service" unit=${C[fibre_unit]} state port=${C[fibre_port]} argv addr="" cfg note="" l="" closed
+  local name="fibre service" unit=${C[fibre_unit]} state port=${C[fibre_port]} argv addr="" cfg note="" l="" closed boot off
   if fibre_skip 6 "$name"; then return; fi
   if ! unit_loaded "$unit"; then
     report FAIL 6 "$name" "$unit.service not found. Fix: set celestia_mon_units.fibre (or --fibre-unit) to the name of Fibre's systemd unit"
@@ -698,8 +875,14 @@ check_fibre_service() {
   if [[ $port =~ ^[0-9]+$ ]]; then l=$(listeners "$port"); fi
   if [[ $state != active ]]; then
     if fibre_standby_layout && [[ $state == inactive || $state == failed ]]; then
+      # An enabled standby starts at the next boot of this host, next to the active Fibre.
+      boot=$(unit_prop "$unit" UnitFileState)
       if [[ -n $l ]]; then
         report WARN 6 "$name" "standby: $unit.service is $state, but port $port listens on ${l//$'\n'/, }, so a Fibre may run outside the unit; two Fibre instances must never be live at the same time. Fix: find the process with \"ss -tlnp | grep :$port\" and stop it"
+      elif [[ $boot =~ ^(enabled|enabled-runtime|linked|linked-runtime|alias)$ ]]; then
+        off="systemctl disable $unit"
+        if [[ $boot == *-runtime ]]; then off="systemctl disable --runtime $unit"; fi
+        report WARN 6 "$name" "standby: $unit.service is $state, but its unit file is $boot, so a reboot of this host starts it next to the active Fibre; two Fibre instances must never be live at the same time. Fix: \"$off\" (it neither starts nor stops the unit)"
       elif [[ $state == failed ]]; then
         report WARN 6 "$name" "standby: $unit.service is failed, so it last stopped with an error. Fix: read \"journalctl -u $unit -n 100\" so it starts cleanly when promoted, then \"systemctl reset-failed $unit\" (which does not start it)"
       else
@@ -783,15 +966,33 @@ check_fibre_otel() {
 # (celestia-app fibre/server_config.go). Fibre resolves a host name at every dial, and
 # without mTLS it accepts only a loopback IP literal, not "localhost", so the address
 # must be an IP: the validator's private address, or 127.0.0.1 for a signer on this
-# host (the loopback signer of a standby next to the validator node).
+# host. Fibre uses mTLS only when all three signer_grpc_* files are set (a flag in
+# ExecStart over the config file), and plaintext otherwise.
+#
+# celestia-appd has one privval gRPC listener (priv_validator_grpc_laddr), mTLS or
+# plaintext. On a host with a celestia-appd node, a Fibre signer on this host (loopback, or
+# with mTLS this host's own address) works only while that listener is at the same address
+# (or a wildcard) and port, in the same mode: a plaintext loopback signer needs a plaintext
+# listener, and then a Fibre on another host cannot sign through this node; an mTLS signer
+# needs the node's mTLS listener. So a standby Fibre next to the validator node needs its own
+# client certificate for the node's mTLS address, or the listener switched at its promotion.
+# The check reads both configs and never connects to the port.
 check_fibre_signer() {
-  local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply
+  local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply home f v kf tls=false ncfg g gh gp target problem=""
+  local mode when loop=false port ncert kind fix
+  local -a files=()
   local re4='^([0-9]{1,3}(\.[0-9]{1,3}){3}):[0-9]+$' re6='^\[([0-9A-Fa-f:.]+)\]:[0-9]+$'
   if fibre_skip 17 "$name"; then return; fi
   if ! unit_loaded "$unit"; then report SKIP 17 "$name" "$unit.service not found (check 6)"; return; fi
   apply="then restart Fibre at a moment you choose"
-  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then apply="and leave the unit stopped: it uses the new value when it next starts"; fi
+  when="now"
+  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then
+    apply="and leave the unit stopped: it uses the new value when it next starts"
+    when="once it starts"
+  fi
   argv=$(unit_argv "$unit")
+  home=$(fibre_home "$unit" "$argv")
+  cfg=$home/config/server_config.toml
   if addr=$(flag_value "$argv" signer-grpc-address); then
     src="--signer-grpc-address in ExecStart"
     if ! unit_expand "$unit" "$addr"; then
@@ -800,7 +1001,6 @@ check_fibre_signer() {
     fi
     addr=$EXPANDED
   else
-    cfg=$(fibre_home "$unit" "$argv")/config/server_config.toml
     if [[ ! -r $cfg ]]; then
       report SKIP 17 "$name" "no --signer-grpc-address in ExecStart, and $cfg is not readable (run as root)"
       return
@@ -815,11 +1015,81 @@ check_fibre_signer() {
   ip=""
   if [[ $addr =~ $re4 || $addr =~ $re6 ]]; then ip=${BASH_REMATCH[1]}; fi
   if [[ -z $ip ]]; then
-    report FAIL 17 "$name" "$src is $addr, not an IP address and port: Fibre resolves a host name at every dial, and without mTLS it accepts only a loopback IP such as 127.0.0.1, not \"localhost\". Fix: set it to the signer's IP and port (127.0.0.1:26669 for a signer on this host), run \"systemctl daemon-reload\" if you changed the unit, $apply"
-  elif [[ $ip == 127.* || $ip == ::1 ]]; then
-    report OK 17 "$name" "$src is $addr, the loopback signer on this host"
+    report FAIL 17 "$name" "$src is $addr, not an IP address and port: Fibre resolves a host name at every dial, and without mTLS it accepts only a loopback IP such as 127.0.0.1, not \"localhost\". Fix: set it to the signer's IP and port (the validator node's private address with mTLS, or 127.0.0.1:26669 for a plaintext signer on this host), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+    return
+  fi
+  for f in ca cert key; do
+    if v=$(flag_value "$argv" "signer-grpc-$f-file"); then
+      if unit_expand "$unit" "$v"; then v=$EXPANDED; fi
+    elif [[ -r $cfg ]]; then
+      v=$(toml_get "$cfg" "" "signer_grpc_${f}_file")
+    fi
+    files+=("$v")
+  done
+  if [[ -n ${files[0]} && -n ${files[1]} && -n ${files[2]} ]]; then tls=true; fi
+  if [[ $ip == 127.* || $ip == ::1 ]]; then loop=true; fi
+  port=${addr##*:}
+  if node_host && [[ -r $NODE_HOME/config/config.toml ]] && { [[ $loop == true ]] || { [[ $tls == true ]] && host_address "$ip"; }; }; then
+    ncfg=$NODE_HOME/config/config.toml
+    g=$(toml_get "$ncfg" "" priv_validator_grpc_laddr)
+    g=${g#tcp://}
+    gp=${g##*:}
+    gh=${g%:*}
+    gh=${gh#\[}
+    gh=${gh%\]}
+    ncert=$(toml_get "$ncfg" "" priv_validator_grpc_cert_file)
+    target="<this host's private address>:$gp"
+    # The fix for an mTLS signer; a plaintext loopback signer gets its own below.
+    fix="set --signer-grpc-address in ExecStart (or signer_grpc_address in $cfg) to the node's privval gRPC"
+    if [[ -z $g ]]; then
+      problem="this node serves no privval gRPC (priv_validator_grpc_laddr is empty in $ncfg)"
+      target="<this host's private address>:$port"
+      if [[ $tls == true ]]; then target=$addr; fi
+      fix="set priv_validator_grpc_laddr = \"$target\" in $ncfg with priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file (the CA that issued this Fibre's client certificate), then restart celestia-appd at a moment you choose, with tmkms running"
+    elif [[ $gp != "$port" ]]; then
+      problem="the node's privval gRPC is $g (priv_validator_grpc_laddr in $ncfg), another port"
+      # A wildcard listener: the same address this Fibre dials now, on the node's port.
+      v=$gh
+      if [[ -z $v || $v == 0.0.0.0 || $v == :: ]]; then v=$ip; fi
+      if [[ $v == *:* ]]; then v="[$v]"; fi
+      fix+=" $v:$gp, $apply"
+    elif [[ -n $gh && $gh != 0.0.0.0 && $gh != :: && $gh != "$ip" ]] &&
+      ! [[ $loop == true && ($gh == 127.* || $gh == ::1 || $gh == localhost) ]]; then
+      problem="the node's privval gRPC listens on $g only (priv_validator_grpc_laddr in $ncfg), not on $ip"
+      target=$g
+      fix+=" $g, $apply"
+    elif [[ $tls == false && -n $ncert ]]; then
+      problem="the node serves its privval gRPC on $g with mTLS (priv_validator_grpc_cert_file and the other two TLS files in $ncfg), so a plaintext dial fails"
+    elif [[ $tls == true && -z $ncert ]]; then
+      problem="the node serves its privval gRPC on $g in plaintext (no priv_validator_grpc_cert_file in $ncfg), so this Fibre's mTLS handshake fails"
+      fix="either serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in $ncfg, the client CA being the one that issued this Fibre's certificate) and restart celestia-appd at a moment you choose, with tmkms running; or, for a plaintext signer on 127.0.0.1:$gp, remove the three signer_grpc_* files from this Fibre, $apply"
+    fi
+  fi
+  if [[ -n $problem ]]; then
+    kind="an mTLS signer on this host"
+    if [[ $tls == false ]]; then
+      kind="a plaintext loopback signer"
+      fix="either give this Fibre a client certificate of its own from the CA the node trusts and point it at the node's mTLS address $target (--signer-grpc-address with --signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), $apply; or, when this Fibre takes over, set the node's priv_validator_grpc_laddr to 127.0.0.1:$port without the TLS files and restart celestia-appd before Fibre starts"
+    fi
+    v="$src is $addr, $kind, but $problem: $when, every signature of this Fibre fails. celestia-appd has one privval gRPC listener, plaintext on loopback or mTLS on an address a Fibre on another host can reach, never both. Fix: $fix (check 20 shows where the node's signer ports listen)"
+    if [[ $when == now ]]; then report FAIL 17 "$name" "$v"; else report WARN 17 "$name" "standby: $v"; fi
+    return
+  fi
+  # The client key lets whoever reads it ask the node for raw-bytes signatures with the
+  # validator key: payment promises, not votes (celestia-core prefixes them).
+  kf=${files[2]}
+  if [[ $tls == true && $kf != /* ]]; then kf=$home/$kf; fi
+  if [[ $tls == true && -f $kf ]]; then
+    mode=$(stat -c '%a' "$kf" 2>/dev/null)
+    if [[ $mode =~ ^[0-7]+$ ]] && ((8#$mode & 8#044)); then
+      report WARN 17 "$name" "$src is $addr with mTLS, but the client key $kf is readable by group or other (mode $mode, owner $(stat -c '%U:%G' "$kf" 2>/dev/null)): whoever reads it can ask the validator node for raw-bytes signatures. Fix: \"chmod 600 $kf\", owned by Fibre's user ($(unit_prop "$unit" User | grep . || echo root))"
+      return
+    fi
+  fi
+  if [[ $ip == 127.* || $ip == ::1 ]]; then
+    report OK 17 "$name" "$src is $addr, the loopback signer on this host$([[ $tls == true ]] && printf ', mTLS')"
   else
-    report OK 17 "$name" "$src is $addr, an IP address"
+    report OK 17 "$name" "$src is $addr, an IP address$([[ $tls == true ]] && printf ', mTLS')"
   fi
 }
 
@@ -1005,7 +1275,7 @@ check_memory() {
 
 # --------------------------------------------------------- monitor checks
 
-http_code() { curl -s -g -o /dev/null --max-time 5 -w '%{http_code}' "$1" 2>/dev/null; }
+http_code() { mon_curl "$1" -s -g -o /dev/null --max-time 5 -w '%{http_code}' 2>/dev/null; }
 answer() { # HTTP status from http_code -> words for a report line
   if [[ $1 == 000 ]]; then printf 'no connection'; else printf 'HTTP %s' "$1"; fi
 }
@@ -1062,6 +1332,13 @@ check_stack() {
     sleep 2
     code=$(http_code "$prom/-/ready")
   done
+  if [[ $code == 401 && -z $API_AUTH ]]; then
+    report FAIL 11 "$name" "Prometheus at $prom asks for a login (HTTP 401), and doctor cannot read the API password in ${C[api_password_file]}. Fix: run it as root on the monitor host (sudo celestia-mon-doctor)"
+    return
+  elif [[ $code == 401 ]]; then
+    report FAIL 11 "$name" "Prometheus at $prom rejects the API password in ${C[api_password_file]} (HTTP 401). Fix: re-run install.sh on this host, which writes that password's hash into Prometheus's web config"
+    return
+  fi
   if [[ $code != 200 ]]; then
     report FAIL 11 "$name" "Prometheus is not ready at $prom ($(answer "$code")). Fix: read \"systemctl status celestia-mon-prometheus\" and \"journalctl -u celestia-mon-prometheus -n 100\"; it listens on 127.0.0.1 only, so run doctor on the monitor host"
     return
@@ -1139,7 +1416,7 @@ rule_metrics() {
 
 prom_query() { # PromQL -> JSON reply of an instant query to Prometheus (newline-terminated), empty on error
   local rc=0
-  curl -fsS -g --max-time 10 -G --data-urlencode "query=$1" "${C[prometheus_url]%/}/api/v1/query" 2>/dev/null || rc=$?
+  mon_curl "${C[prometheus_url]%/}/api/v1/query" -fsS -g --max-time 10 -G --data-urlencode "query=$1" 2>/dev/null || rc=$?
   echo
   return "$rc"
 }
@@ -1173,7 +1450,7 @@ metric_expected() {
 }
 
 # The event after which a metric first appears, for the metrics that do not exist
-# until it happens (celestia-core privval/metrics.go, celestia-app
+# until it happens (celestia-core privval/metrics.go and consensus/state.go, celestia-app
 # fibre/server_metrics.go, Alertmanager notify/metrics.go); empty for the others.
 metric_event() {
   case $1 in
@@ -1181,6 +1458,7 @@ metric_event() {
     cometbft_privval_signing_latency_median_seconds) echo "50 remote signatures since the node started" ;;
     cometbft_privval_signing_latency_*) echo "the first remote signature" ;;
     cometbft_consensus_validator_last_signed_height) echo "the validator's first own signature in a block; it must be bonded and in the active set" ;;
+    cometbft_consensus_validator_missed_blocks) echo "the first block committed without the validator's signature since the node started" ;;
     fibre_server_upload_shard_rejected_total) echo "the first upload the storage limiter rejects" ;;
     fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
@@ -1533,11 +1811,193 @@ check_fibre_active() {
   elif ((${#on[@]} + ${#off[@]} == 0)); then
     report FAIL 19 "$name" "cannot tell which Fibre host is active${extra}. Fix: apply check 11's fix for those node_exporter targets"
   elif ((${#on[@]} == 0)); then
-    report FAIL 19 "$name" "no Fibre unit ($unit.service) is active on any Fibre host${extra}; the FibreDown alert pages after 10 minutes. Fix: start Fibre on one Fibre host (read \"journalctl -u $unit -n 100\" there, then \"systemctl start $unit\"), and if x/valaddr registers another host, point it at the one you started with celestia-appd tx valaddr set-host <its public host:port> --from <validator-account-key> (check 5 on the validator shows the registration)"
+    report FAIL 19 "$name" "no Fibre unit ($unit.service) is active on any Fibre host${extra}; the FibreDown alert pages after 10 minutes. Fix: start Fibre on one Fibre host (read \"journalctl -u $unit -n 100\" there, then \"systemctl start $unit\"), and if x/valaddr registers another host, point it at the one you started: $(set_host_fix "<its public host:port>") (check 5 on the validator shows the registration)"
   elif ((${#on[@]} > 1)); then
     report WARN 19 "$name" "Fibre is active on $(join "${on[@]}")${extra}: two Fibre instances must never be live at the same time. Fix: stop Fibre (\"systemctl stop $unit\") on every host but the one x/valaddr registers (check 5 on the validator shows it)"
   else
     report OK 19 "$name" "Fibre is active on ${on[0]}${extra}"
+  fi
+}
+
+# The alerts of the rules with severity page (DiskLow also has message rules).
+PAGE_ALERTS=(NodeNotAdvancing ValidatorNotSigning FibreDown DiskLow)
+
+# Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
+# endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
+# name \037 operator \037 value. A small JSON reader, so values may hold any character.
+silences_active() {
+  awk '
+    function value(v) {
+      if (d == 2 && key[2] == "id") id = v
+      else if (d == 2 && key[2] == "createdBy") by = v
+      else if (d == 2 && key[2] == "endsAt") ends = v
+      else if (d == 3 && key[2] == "status" && key[3] == "state") state = v
+      else if (d == 4 && key[2] == "matchers") m[key[4]] = v
+    }
+    function opened() {
+      if (d == 2 && obj[2]) { id = ""; by = ""; ends = ""; state = ""; ms = "" }
+      if (d == 4 && obj[4] && key[2] == "matchers") { m["name"] = ""; m["value"] = ""; m["isRegex"] = "false"; m["isEqual"] = "true" }
+    }
+    function closed(op) {
+      if (d == 4 && obj[4] && key[2] == "matchers") {
+        op = (m["isEqual"] == "false") ? "!" : "="
+        op = op ((m["isRegex"] == "true") ? "~" : ((op == "!") ? "=" : ""))
+        ms = ms ((ms == "") ? "" : "\036") m["name"] "\037" op "\037" m["value"]
+      }
+      if (d == 2 && obj[2] && state == "active") print id "\034" ends "\034" by "\034" ms
+    }
+    { s = s $0 " " }
+    END {
+      n = length(s)
+      for (i = 1; i <= n; i++) {
+        c = substr(s, i, 1)
+        if (q) {
+          if (c == "\\") {
+            i++
+            e = substr(s, i, 1)
+            t = t ((e == "\"" || e == "\\" || e == "/") ? e : "\\" e)
+          } else if (c == "\"") {
+            q = 0
+            if (obj[d] && want) { key[d] = t; want = 0 } else value(t)
+          } else t = t c
+        } else if (c == "\"") { q = 1; t = "" }
+        else if (c == "{" || c == "[") { d++; obj[d] = (c == "{"); key[d] = ""; want = obj[d]; opened() }
+        else if (c == "}" || c == "]") { closed(); d--; want = 0 }
+        else if (c == ",") want = obj[d]
+        else if (c == ":") want = 0
+        else if (c ~ /[-+.0-9a-zA-Z]/) {
+          t = c
+          while (i < n && substr(s, i + 1, 1) ~ /[-+.0-9a-zA-Z]/) { i++; t = t substr(s, i, 1) }
+          value(t)
+        }
+      }
+    }'
+}
+
+matcher_admits() { # operator, pattern, label value -> true when the matcher matches that value (absent label: "")
+  local re="^($2)$"
+  case $1 in
+    '=') [[ $3 == "$2" ]] ;;
+    '!=') [[ $3 != "$2" ]] ;;
+    '=~') [[ $3 =~ $re ]] ;;
+    '!~') ! [[ $3 =~ $re ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning and FibreDown
+# carry only alertname and severity, so each other matcher must match an absent label. DiskLow
+# also carries host, mountpoint and the node_exporter labels, whose values are not known here:
+# it counts when the silence names alertname or severity, so a host silence for planned work
+# is listed only when it runs long.
+silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
+  local -a ms=()
+  local a m n o v hit named=false out=""
+  IFS=$'\036' read -r -a ms <<<"$1"
+  for m in "${ms[@]}"; do
+    n=${m%%$'\037'*}
+    if [[ $n == alertname || $n == severity ]]; then named=true; fi
+  done
+  for a in "${PAGE_ALERTS[@]}"; do
+    if [[ $a == DiskLow && $named == false ]]; then continue; fi
+    hit=true
+    for m in "${ms[@]}"; do
+      IFS=$'\037' read -r n o v <<<"$m"
+      case $n in
+        alertname) matcher_admits "$o" "$v" "$a" || hit=false ;;
+        severity) matcher_admits "$o" "$v" page || hit=false ;;
+        *) [[ $a == DiskLow ]] || matcher_admits "$o" "$v" "" || hit=false ;;
+      esac
+    done
+    if [[ $hit == true ]]; then out+="${out:+, }$a"; fi
+  done
+  printf '%s' "$out"
+}
+
+silence_text() { # matchers as silences_active prints them -> {name="value", ...}, as amtool shows them
+  local -a ms=() parts=()
+  local m n o v
+  IFS=$'\036' read -r -a ms <<<"$1"
+  for m in "${ms[@]}"; do
+    IFS=$'\037' read -r n o v <<<"$m"
+    parts+=("$n$o\"$v\"")
+  done
+  printf '{%s}' "$(join "${parts[@]}")"
+}
+
+# Active silences, on the monitor. A silence holds back every alert it matches until it ends,
+# and the dead-man heartbeat stays green meanwhile, so a mistyped matcher or a forgotten end
+# hides the next outage. Warns on a silence that holds back a page alert or runs for more than
+# 4 hours more, with its matchers, author and end. Reads GET /api/v2/silences; changes nothing.
+check_silences() {
+  local name="silences" am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
+  local -a held=() other=()
+  if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
+  reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
+  code=${reply##*$'\n'}
+  reply=${reply%$'\n'*}
+  if [[ $code != 200 ]]; then
+    report SKIP 21 "$name" "Alertmanager at $am answers $(answer "$code") for its silences (check 11)"
+    return
+  fi
+  now=$(date +%s)
+  while IFS=$'\034' read -r id ends by ms; do
+    [[ -n $id ]] || continue
+    t="$(silence_text "$ms") by ${by:-(no author)} until $ends"
+    why=$(silence_pages "$ms")
+    if [[ -n $why ]]; then why="holds back $why"; fi
+    # Alertmanager writes the end in UTC, such as 2026-10-17T10:00:00.000Z.
+    end=""
+    if [[ $ends =~ ^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2})(\.[0-9]+)?Z$ ]]; then
+      end=$(date -u -d "${BASH_REMATCH[1]} ${BASH_REMATCH[2]}" +%s 2>/dev/null)
+    fi
+    if [[ $end =~ ^[0-9]+$ ]] && ((end - now > 14400)); then
+      why+="${why:+; }ends in $(( (end - now) / 3600 )) hours"
+    fi
+    if [[ -n $why ]]; then held+=("$t (ID $id: $why)"); else other+=("$t"); fi
+  done < <(silences_active <<<"$reply")
+  if ((${#held[@]} > 0)); then
+    amtool=$(compgen -G '/opt/celestia-mon/alertmanager-*/amtool' | head -n 1)
+    t="${#held[@]} of $((${#held[@]} + ${#other[@]})) active silences hold back a page alert or end more than 4 hours from now: $(join "${held[@]}")"
+    if ((${#other[@]} > 0)); then t+="; the others: $(join "${other[@]}")"; fi
+    report WARN 21 "$name" "$t. While a silence holds an alert back, nothing is sent for it, and the dead-man heartbeat stays green. Fix: end each one that is not for planned work now, as root: ${amtool:-<amtool>} --alertmanager.url=$am --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence expire <ID>; for planned work, silence for as long as the work takes (docs/alerts.md, Before planned restarts and upgrades)"
+  elif ((${#other[@]} > 0)); then
+    report OK 21 "$name" "${#other[@]} active silences, none on a page alert or ending more than 4 hours from now: $(join "${other[@]}")"
+  else
+    report OK 21 "$name" "no active silence"
+  fi
+}
+
+num() { awk -v v="$1" 'BEGIN { printf "%.0f", v }'; }
+
+# The dead-man heartbeat, on the monitor, from Alertmanager's own metrics in Prometheus
+# (receiver_name, from --enable-feature=receiver-name-in-metrics; Alertmanager creates the
+# series at start). While the Watchdog fires, the dead-man receiver sends every 1-2 minutes,
+# so it must have sent in the last 10 minutes, and none of those sends may have failed.
+check_deadman() {
+  local name="dead-man" sent failed age
+  if ! has_role monitor; then report SKIP 22 "$name" "not the monitor host"; return; fi
+  if ((!PROM_OK)); then report SKIP 22 "$name" "Prometheus not answering (check 11)"; return; fi
+  if [[ $(prom_value 'max(up{job="alertmanager"})') != 1 ]]; then
+    report SKIP 22 "$name" "Prometheus has no Alertmanager target that is up (check 11)"
+    return
+  fi
+  sent=$(prom_value 'sum(increase(alertmanager_notifications_total{job="alertmanager",receiver_name="deadman"}[10m]))')
+  failed=$(prom_value 'sum(increase(alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"}[10m]))')
+  if [[ -z $sent ]]; then
+    report WARN 22 "$name" "Prometheus has no notification metrics of Alertmanager's dead-man receiver (alertmanager_notifications_total{receiver_name=\"deadman\"}), so doctor cannot tell whether heartbeats go out. Fix: re-run install.sh on this host: it writes the dead-man receiver from celestia_mon_deadman_webhook_url and starts Alertmanager with --enable-feature=receiver-name-in-metrics"
+  elif awk -v f="$failed" 'BEGIN { exit !(f + 0 > 0) }'; then
+    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's vault and that this host reaches the service, then re-run install.sh on this host"
+  elif awk -v s="$sent" 'BEGIN { exit !(s + 0 > 0) }'; then
+    report OK 22 "$name" "about $(num "$sent") heartbeats sent to the dead-man service in the last 10 minutes, none failed"
+  else
+    age=$(prom_value 'time() - max(process_start_time_seconds{job=~"prometheus|alertmanager"})')
+    age=${age%%.*}
+    if [[ $age =~ ^[0-9]+$ ]] && ((age < 600)); then
+      report "NOT YET" 22 "$name" "no heartbeat sent yet: Prometheus or Alertmanager started ${age}s ago; the first heartbeat follows the Watchdog's first evaluation, then one every 1-2 minutes"
+    else
+      report WARN 22 "$name" "no heartbeat sent to the dead-man service in the last 10 minutes, so it alerts you once its period runs out: the Watchdog stops for an hour after a page or message notification failed (NotificationsFailing), or it does not reach the dead-man receiver. Fix: look for Watchdog and NotificationsFailing on Prometheus's alerts page (${C[prometheus_url]%/}/alerts, through an SSH tunnel), and read \"journalctl -u celestia-mon-alertmanager -n 100\""
+    fi
   fi
 }
 
@@ -1604,7 +2064,11 @@ fi
 
 printf 'celestia-mon-doctor on %s (roles: %s; signer: %s; fibre_enabled: %s)\n' "${HOSTNAME:-$(uname -n)}" \
   "${C[roles]:-none}" "${C[signer]:-not set}" "${C[fibre_enabled]}"
-if node_host; then find_node; fi
+if node_host; then
+  find_node
+  read_status
+fi
+if has_role monitor; then api_auth_load; fi
 
 check_metrics
 check_signer
@@ -1625,6 +2089,9 @@ check_compaction
 check_fibre_signer
 check_node_lag
 check_fibre_active
+check_signer_binds
+check_silences
+check_deadman
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

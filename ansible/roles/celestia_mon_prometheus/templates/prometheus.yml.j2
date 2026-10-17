@@ -25,10 +25,14 @@ storage:
 rule_files:
   - "{{ celestia_mon_prometheus_rules_dir }}/*.yml"
 
-# Alertmanager runs on this host and listens on loopback only.
+# Alertmanager runs on this host and listens on loopback only. It and Prometheus take only
+# requests with the API password (their --web.config.file); Prometheus reads it from this file.
 alerting:
   alertmanagers:
-    - static_configs:
+    - basic_auth:
+        username: {{ celestia_mon_api_user | to_json }}
+        password_file: {{ celestia_mon_api_password_file | to_json }}
+      static_configs:
         - targets:
             - "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"
 
@@ -36,6 +40,9 @@ scrape_configs:
   # Prometheus and Alertmanager themselves, on loopback: failing rule evaluations
   # and failed notifications must be visible to the alert rules.
   - job_name: prometheus
+    basic_auth:
+      username: {{ celestia_mon_api_user | to_json }}
+      password_file: {{ celestia_mon_api_password_file | to_json }}
     static_configs:
       - targets:
           - "127.0.0.1:{{ celestia_mon_ports.prometheus }}"
@@ -44,6 +51,9 @@ scrape_configs:
           role: monitor
 
   - job_name: alertmanager
+    basic_auth:
+      username: {{ celestia_mon_api_user | to_json }}
+      password_file: {{ celestia_mon_api_password_file | to_json }}
     static_configs:
       - targets:
           - "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"

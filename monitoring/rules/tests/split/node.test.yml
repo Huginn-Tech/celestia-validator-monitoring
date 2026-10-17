@@ -94,7 +94,7 @@ tests:
               summary: "The validator is not signing"
               description: >-
                 Check journalctl -u tmkms on the KMS host first.
-                The chain moves but the validator has not signed for more than 10 blocks.
+                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 8m
         alertname: NodeNotAdvancing
@@ -143,5 +143,5 @@ tests:
               summary: "The validator is not signing"
               description: >-
                 Check journalctl -u tmkms on the KMS host first.
-                The chain moves but the validator has not signed for more than 10 blocks.
+                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"

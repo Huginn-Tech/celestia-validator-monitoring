@@ -33,6 +33,9 @@ fibre_hosts={{ fibre_hosts | join(',') }}
 {% if inventory_hostname in groups.get('monitor', []) %}
 prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
 alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
+{# The login of Prometheus's and Alertmanager's APIs (role celestia_mon's api_password.yml). #}
+api_user={{ celestia_mon_api_user }}
+api_password_file={{ celestia_mon_api_password_file }}
 node_hosts={{ node_hosts | join(',') }}
 {# The data directory of role celestia_mon_prometheus (celestia_mon_prometheus_data_dir), as in the preflight. #}
 prometheus_data_dir=/var/lib/celestia-mon/prometheus

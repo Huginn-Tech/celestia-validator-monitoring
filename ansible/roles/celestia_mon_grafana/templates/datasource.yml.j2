@@ -1,5 +1,7 @@
 # Managed by celestia-mon (Ansible role celestia_mon_grafana). Local changes are overwritten.
-# Prometheus runs on this host and listens on loopback only.
+# Prometheus runs on this host, listens on loopback only and takes only requests with an API
+# password. Grafana has a login of its own ({{ celestia_mon_api_grafana_user }}, the password in
+# {{ celestia_mon_api_grafana_password_file }}), which Alertmanager does not take.
 apiVersion: 1
 datasources:
   - name: Prometheus
@@ -7,5 +9,9 @@ datasources:
     type: prometheus
     access: proxy
     url: "http://127.0.0.1:{{ celestia_mon_ports.prometheus }}"
+    basicAuth: true
+    basicAuthUser: {{ celestia_mon_api_grafana_user | to_json }}
+    secureJsonData:
+      basicAuthPassword: {{ celestia_mon_api_grafana_password | to_json }}
     isDefault: true
     editable: false

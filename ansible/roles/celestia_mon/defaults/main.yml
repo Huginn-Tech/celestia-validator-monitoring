@@ -40,12 +40,16 @@ celestia_mon_ports:
 # You may set a private address of the monitor host instead (Tailscale, WireGuard, a LAN),
 # or keep 127.0.0.1 and put a reverse proxy on the monitor host in front of it. The install
 # stops when the address is not one of this machine's; Grafana never listens on 0.0.0.0.
+# Grafana's unit allows network traffic only with 127.0.0.1 and, for a private address, with
+# that address's private block (100.64.0.0/10 for a Tailscale address, for example), so a
+# Grafana login cannot reach other networks through a datasource.
 celestia_mon_grafana_listen: 127.0.0.1
 
 # Alert thresholds (see docs/alerts.md). The durations (for example ValidatorNotSigning's 2
 # minutes, FibreDown's 10) are fixed in the rules.
 celestia_mon_thresholds:
   not_signing_blocks: 10
+  signatures_missed_ratio: 0.05
   node_behind_blocks: 20
   signer_median_seconds: 0.010
   fibre_stale_uploads: 10
@@ -66,8 +70,11 @@ celestia_mon_thresholds:
 # versions are refused.
 celestia_mon_receivers: []
 
-# Heartbeat URL of an external dead-man service. The Watchdog alert pings it
-# every 1-2 minutes; the service alerts you when the pings stop.
+# Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog
+# alert pings it every 1-2 minutes; the service alerts you when the pings stop. It must be an
+# https URL (http only to this host itself, such as a local relay); an empty value or the
+# example placeholder stops the install. Keep it in ansible-vault: anyone with it can keep
+# the heartbeat green.
 celestia_mon_deadman_webhook_url: ""
 
 # How long and how much data Prometheus keeps on the monitor host. Prometheus drops
@@ -117,7 +124,9 @@ celestia_mon_memory:
 #   celestia_mon_kms_scrape             install node_exporter on a kms host (default false)
 #   celestia_mon_firewall_sources       optional list of addresses ufw lets reach this host's scraped
 #                                       ports, when ufw is active (default: the monitor's
-#                                       celestia_mon_private_ip)
+#                                       celestia_mon_private_ip). Private addresses or ranges only,
+#                                       a range no wider than its private block (10.0.0.0/8,
+#                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7)
 #   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
 #                                       Link load panel (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one

@@ -1,7 +1,8 @@
-# Watchdog fires while no page or message notification failed in the last hour,
-# whatever the other series say, also before Alertmanager's own metrics arrive.
-# Failed webhook calls do not stop it: Alertmanager labels the dead-man webhook and
-# webhook receivers alike (integration="webhook"). notifications.test.yml covers NotificationsFailing.
+# Watchdog fires while no page or message notification failed in the last hour, whatever the
+# other series say, also before Alertmanager's own metrics arrive. A failed notification of any
+# page or message receiver stops it, a webhook receiver's too; failed heartbeats of the dead-man
+# receiver (receiver_name="deadman") do not. notifications.test.yml covers NotificationsFailing,
+# deadman.test.yml DeadmanFailing.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -22,8 +23,8 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 60m
         alertname: Watchdog
@@ -33,8 +34,8 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
   - name: A failed page or message notification stops the Watchdog for an hour
@@ -42,10 +43,10 @@ tests:
     input_series:
       # Alertmanager starts every failure counter at 0; a Telegram message fails at 10m.
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",receiver_name="message",reason="serverError"}
         values: '0x9 1x80'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
         values: '0x90'
     alert_rule_test:
       - eval_time: 9m
@@ -56,8 +57,8 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 11m
         alertname: Watchdog
@@ -73,18 +74,40 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
-  - name: A failed webhook call (dead-man or webhook receiver) keeps the Watchdog firing
+  - name: A failed webhook receiver stops the Watchdog too
     interval: 1m
     input_series:
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="page",reason="serverError"}
+        values: '0x9 1x60'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: Watchdog
+        exp_alerts:
+          - exp_labels:
+              severity: heartbeat
+            exp_annotations:
+              summary: "celestia-mon heartbeat"
+              description: >-
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
+      - eval_time: 11m
+        alertname: Watchdog
+        exp_alerts: []
+
+  - name: A failed heartbeat (the dead-man receiver) keeps the Watchdog firing
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="telegram",receiver_name="message",reason="serverError"}
         values: '0x60'
       - series: >-
-          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",reason="serverError"}
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
         values: '0x9 1+1x50'
     alert_rule_test:
       - eval_time: 30m
@@ -95,6 +118,6 @@ tests:
             exp_annotations:
               summary: "celestia-mon heartbeat"
               description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour;
-                failed webhook calls do not count. Only the dead-man service receives it, and it alerts when the heartbeats stop.
+                Fires while monitoring runs and no page or message notification failed in the last hour.
+                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"

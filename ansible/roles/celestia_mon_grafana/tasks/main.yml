@@ -1,13 +1,15 @@
 ---
+# The admin account sees and changes everything; its user name is always admin.
 - name: Check the Grafana admin password
   ansible.builtin.assert:
     that:
       - celestia_mon_grafana_admin_password is defined
-      - celestia_mon_grafana_admin_password | length > 0
-      - celestia_mon_grafana_admin_password != 'REPLACE_ME'
+      - celestia_mon_grafana_admin_password | string | length >= 16
+      - "'REPLACE_ME' not in celestia_mon_grafana_admin_password | string"
     fail_msg: >-
-      Set celestia_mon_grafana_admin_password in the inventory to a real password and keep it
-      in ansible-vault (Grafana reads it only on its first start).
+      Set celestia_mon_grafana_admin_password in the inventory to a password of at least 16 characters
+      (for example the output of: openssl rand -base64 18) and keep it in ansible-vault. Grafana reads it
+      only on its first start.
     quiet: true
 
 # An empty or wildcard address would make Grafana listen on every interface; the
@@ -135,6 +137,8 @@
           - "{{ celestia_mon_grafana_home }}"
       changed_when: true
 
+  # Also after a failed step, so no unpacked release is left behind.
+  always:
     - name: Remove the downloaded Grafana release and the staging directory
       ansible.builtin.file:
         path: "{{ item }}"
@@ -201,13 +205,23 @@
     mode: "0640"
   notify: Restart celestia-mon-grafana
 
+- name: Read or create the API passwords
+  ansible.builtin.include_role:
+    name: celestia_mon
+    tasks_from: api_password
+  when: celestia_mon_api_grafana_password is not defined
+
+# The file holds the password of Grafana's own login to Prometheus (which Alertmanager does not
+# take): never show it or its diff.
 - name: Provision the Prometheus datasource
   ansible.builtin.template:
     src: datasource.yml.j2
-    dest: "{{ celestia_mon_grafana_config_dir }}/provisioning/datasources/celestia-mon.yml"
+    dest: "{{ celestia_mon_grafana_datasource_file }}"
     owner: root
     group: celestia-mon-grafana
     mode: "0640"
+  no_log: true
+  diff: false
   notify: Restart celestia-mon-grafana
 
 - name: Provision the dashboard folder

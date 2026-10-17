@@ -72,6 +72,12 @@
         role: fibre
     celestia_mon_verify_prometheus: "http://127.0.0.1:{{ celestia_mon_verify_ports.prometheus }}"
     celestia_mon_verify_alertmanager: "http://127.0.0.1:{{ celestia_mon_verify_ports.alertmanager }}"
+    # Prometheus and Alertmanager take only requests with the API password, which the install
+    # generated on the host (celestia_mon_api_user, celestia_mon_api_password_file).
+    celestia_mon_verify_api_user: celestia-mon
+    celestia_mon_verify_api_password_file: /etc/celestia-mon/api-password
+    # Alertmanager labels its notification metrics with the receiver (receiver-name-in-metrics).
+    celestia_mon_verify_deadman_query: 'alertmanager_notifications_total{job="alertmanager",receiver_name="deadman"}'
     # molecule.yml sets celestia_mon_prometheus_retention_size: 1GB; Prometheus counts 1GB as 1024^3 bytes.
     celestia_mon_verify_retention_query: 'prometheus_tsdb_retention_limit_bytes{job="prometheus"}'
     celestia_mon_verify_retention_bytes: 1073741824
@@ -132,10 +138,12 @@
           - item.status.IOWeight | int == 20
           - item.status.MemoryHigh | int == celestia_mon_verify_units[item.item].memory_high
           - item.status.MemoryMax | int == celestia_mon_verify_units[item.item].memory_max
+          - item.status.OOMScoreAdjust | int == 500
         fail_msg: >-
           {{ item.item }} has Nice={{ item.status.Nice }} CPUWeight={{ item.status.CPUWeight }} IOWeight={{ item.status.IOWeight }}
-          MemoryHigh={{ item.status.MemoryHigh }} MemoryMax={{ item.status.MemoryMax }}; expected Nice=10 CPUWeight=20 IOWeight=20
-          MemoryHigh={{ celestia_mon_verify_units[item.item].memory_high }} MemoryMax={{ celestia_mon_verify_units[item.item].memory_max }}.
+          MemoryHigh={{ item.status.MemoryHigh }} MemoryMax={{ item.status.MemoryMax }} OOMScoreAdjust={{ item.status.OOMScoreAdjust }};
+          expected Nice=10 CPUWeight=20 IOWeight=20 MemoryHigh={{ celestia_mon_verify_units[item.item].memory_high }}
+          MemoryMax={{ celestia_mon_verify_units[item.item].memory_max }} OOMScoreAdjust=500.
         quiet: true
       loop: "{{ celestia_mon_verify_caps.results }}"
       loop_control:
@@ -168,9 +176,52 @@
         - "{{ celestia_mon_verify_ports.grafana }}"
         - 9094
 
+    - name: Read the API password
+      ansible.builtin.slurp:
+        src: "{{ celestia_mon_verify_api_password_file }}"
+      register: celestia_mon_verify_api_password_file_content
+      no_log: true
+
+    - name: Note the API password
+      ansible.builtin.set_fact:
+        celestia_mon_verify_api_password: "{{ celestia_mon_verify_api_password_file_content.content | b64decode | trim }}"
+      no_log: true
+
+    # Every account on the host can reach loopback, so the password is what keeps others out.
+    - name: Check that Prometheus and Alertmanager refuse requests without the API password
+      ansible.builtin.uri:
+        url: "{{ item }}"
+        status_code: 401
+      loop:
+        - "{{ celestia_mon_verify_prometheus }}/api/v1/status/buildinfo"
+        - "{{ celestia_mon_verify_prometheus }}/metrics"
+        - "{{ celestia_mon_verify_alertmanager }}/api/v2/silences"
+        - "{{ celestia_mon_verify_alertmanager }}/metrics"
+
+    - name: Read the owner and mode of the API password file
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_verify_api_password_file }}"
+        get_checksum: false
+      register: celestia_mon_verify_api_password_stat
+
+    - name: Check the owner and mode of the API password file
+      ansible.builtin.assert:
+        that:
+          - celestia_mon_verify_api_password_stat.stat.pw_name == 'root'
+          - celestia_mon_verify_api_password_stat.stat.gr_name == 'celestia-mon-prometheus'
+          - celestia_mon_verify_api_password_stat.stat.mode == '0640'
+        fail_msg: >-
+          {{ celestia_mon_verify_api_password_file }} has owner {{ celestia_mon_verify_api_password_stat.stat.pw_name }},
+          group {{ celestia_mon_verify_api_password_stat.stat.gr_name }} and mode {{ celestia_mon_verify_api_password_stat.stat.mode }};
+          expected root, celestia-mon-prometheus and 0640.
+        quiet: true
+
     - name: Wait until Prometheus has scraped itself and Alertmanager
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_prometheus }}/api/v1/targets?state=active"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
         return_content: true
       register: celestia_mon_verify_targets
       until: >-
@@ -207,6 +258,9 @@
     - name: Read the retention size Prometheus applies
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_prometheus }}/api/v1/query?query={{ celestia_mon_verify_retention_query | urlencode }}"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
         return_content: true
       register: celestia_mon_verify_retention
       until: celestia_mon_verify_retention.json.data.result | default([]) | length == 1
@@ -226,6 +280,9 @@
     - name: Read the Go memory limit of Prometheus and Alertmanager
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_prometheus }}/api/v1/query?query={{ celestia_mon_verify_gomemlimit_query | urlencode }}"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
         return_content: true
       register: celestia_mon_verify_gomemlimit_result
       until: celestia_mon_verify_gomemlimit_result.json.data.result | default([]) | length == 2
@@ -247,6 +304,9 @@
     - name: Read the loaded Alertmanager configuration
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_alertmanager }}/api/v2/status"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
         return_content: true
       register: celestia_mon_verify_am_status
 
@@ -261,14 +321,36 @@
         fail_msg: The page receiver lacks the two webhook configs of celestia_mon_receivers.
         quiet: true
 
-    - name: Wait for the Watchdog alert to reach Alertmanager
+    # Prometheus sends its alerts to Alertmanager with the API password. The Watchdog is not
+    # waited for: it stops once a notification to the test receivers (a closed port) has failed,
+    # while the alerts of this node-less host (NodeNotAdvancing, ServiceDown) keep firing.
+    - name: Wait for Prometheus's alerts to reach Alertmanager
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_alertmanager }}/api/v2/alerts"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
         return_content: true
       register: celestia_mon_verify_alerts
-      until: celestia_mon_verify_alerts.json | default([]) | selectattr('labels.alertname', 'equalto', 'Watchdog') | list | length > 0
+      until: celestia_mon_verify_alerts.json | default([]) | selectattr('labels.alertname', 'in', celestia_mon_verify_alertnames) | list | length > 0
       retries: 18
       delay: 10
+      vars:
+        celestia_mon_verify_alertnames: [Watchdog, NodeNotAdvancing, ServiceDown]
+
+    # The dead-man receiver's notifications carry receiver_name="deadman", so the rules can
+    # tell its failures apart from the page and message receivers'.
+    - name: Check that Prometheus has the dead-man receiver's notification metrics
+      ansible.builtin.uri:
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/query?query={{ celestia_mon_verify_deadman_query | urlencode }}"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: celestia_mon_verify_deadman
+      until: celestia_mon_verify_deadman.json.data.result | default([]) | length > 0
+      retries: 6
+      delay: 5
 
     # Grafana reaches Prometheus on 127.0.0.1, and listens there itself (celestia_mon_grafana_listen).
     - name: Check that Grafana's Prometheus datasource answers
@@ -283,6 +365,28 @@
       retries: 6
       delay: 5
 
+    # Grafana's datasource has a login of its own: Prometheus takes it, Alertmanager does not, so a
+    # Grafana that is taken over cannot silence alerts.
+    - name: Read Grafana's API password
+      ansible.builtin.slurp:
+        src: /etc/celestia-mon/grafana-api-password
+      register: celestia_mon_verify_grafana_api_password
+      no_log: true
+
+    - name: Check that Prometheus takes Grafana's login and Alertmanager refuses it
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        url_username: grafana
+        url_password: "{{ celestia_mon_verify_grafana_api_password.content | b64decode | trim }}"
+        force_basic_auth: true
+        status_code: "{{ item.status }}"
+      loop:
+        - {url: "{{ celestia_mon_verify_prometheus }}/api/v1/status/buildinfo", status: 200}
+        - {url: "{{ celestia_mon_verify_alertmanager }}/api/v2/silences", status: 401}
+      loop_control:
+        label: "{{ item.url }}"
+      no_log: true
+
     - name: Read Grafana's snapshot sharing options
       ansible.builtin.uri:
         url: "{{ celestia_mon_verify_grafana }}/api/snapshot/shared-options/"
@@ -292,11 +396,13 @@
         return_content: true
       register: celestia_mon_verify_snapshots
 
-    - name: Check that Grafana cannot publish snapshots outside this host
+    # A snapshot link opens without a login, so snapshots are off altogether.
+    - name: Check that Grafana has snapshots off
       ansible.builtin.assert:
         that:
+          - not (celestia_mon_verify_snapshots.json.snapshotEnabled | bool)
           - not (celestia_mon_verify_snapshots.json.externalEnabled | bool)
-        fail_msg: Grafana offers external snapshots; grafana.ini must set [snapshots] external_enabled = false.
+        fail_msg: Grafana offers snapshots; grafana.ini must set [snapshots] enabled = false and external_enabled = false.
         quiet: true
 
     # Anonymous access is off, so the dashboard needs a login.
