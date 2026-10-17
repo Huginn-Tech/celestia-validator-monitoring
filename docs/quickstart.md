@@ -129,14 +129,14 @@ Each receiver is one of the types below. List any number, several of one type if
 
 `page` alerts need someone now; `message` alerts can wait for working hours. Page alerts go to every receiver, message alerts to every receiver except PagerDuty, so list at least one receiver that is not PagerDuty. Without PagerDuty, page alerts still reach your chat channels. The separate `page` and `message` lists of earlier versions are refused. [alerts.md](alerts.md#where-alerts-go) has an example.
 
-Replace the placeholders, then encrypt the file on your workstation with [ansible-vault](https://docs.ansible.com/ansible/latest/vault_guide/vault_encrypting_content.html), from any Ansible install, or without one through uv:
+Replace the placeholders, then encrypt the file with [ansible-vault](https://docs.ansible.com/ansible/latest/vault_guide/vault_encrypting_content.html). On the monitor host, `install.sh` does it with the same checked Ansible it installs with, and removes that Ansible again afterwards: `sudo ./install.sh --edit-vault <inventory>/host_vars/mon-1/vault.yml` encrypts a plain file, opens an encrypted one for editing, and creates a missing one. On your workstation, use any Ansible install, or none through uv:
 
 ```sh
 ansible-vault encrypt ~/celestia-mon-inventory/host_vars/mon-1/vault.yml
 uvx --from ansible-core ansible-vault encrypt ~/celestia-mon-inventory/host_vars/mon-1/vault.yml   # the same, without installing Ansible
 ```
 
-Encrypt the whole file, not single values in it: `install.sh` refuses to run while a `vault.yml` in the inventory's `host_vars` or `group_vars` is not an encrypted file, or while group or others can read it (`chmod 600` it after you copy it to the host). `ansible-vault edit` changes it later. Only the monitor host gets this file (step 4): the other hosts need none of its values, and an encrypted file they cannot open would stop their install.
+Encrypt the whole file, not single values in it: `install.sh` refuses to run while a `vault.yml` in the inventory's `host_vars` or `group_vars` is not an encrypted file, or while group or others can read it (`chmod 600` it after you copy it to the host). `sudo ./install.sh --edit-vault <file>` (or `ansible-vault edit`) changes it later. Only the monitor host gets this file (step 4): the other hosts need none of its values, and an encrypted file they cannot open would stop their install.
 
 ## 4. Copy the repository to each host
 
@@ -320,7 +320,7 @@ The first gives T, the second the average write latency per disk, the third the 
 
 ## 10. Check that alerts reach you
 
-On the monitor, send a test alert of each severity and check that it arrives where you expect: the page alert at every receiver, PagerDuty included, the message alert at every receiver except PagerDuty. Alertmanager's `amtool` is in `/opt/celestia-mon/alertmanager-<version>/`, with the Alertmanager version from `versions.yml`. Run it as root (`sudo -i`): its login to Alertmanager is in a file only root can read.
+The first install on the monitor, and every later run that changes Alertmanager's receivers, sends one test message (`NotificationTest`) to the chat channels and webhooks; `install.sh` says so at the end. It does not reach PagerDuty, and it resolves after 5 minutes. To test both severities, PagerDuty included, send a test alert of each on the monitor and check that it arrives where you expect: the page alert at every receiver, PagerDuty included, the message alert at every receiver except PagerDuty. Alertmanager's `amtool` is in `/opt/celestia-mon/alertmanager-<version>/`, with the Alertmanager version from `versions.yml`. Run it as root (`sudo -i`): its login to Alertmanager is in a file only root can read.
 
 ```sh
 amtool=/opt/celestia-mon/alertmanager-<version>/amtool

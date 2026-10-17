@@ -3,6 +3,7 @@
 #
 #   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
 #   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
+#   sudo ./install.sh --edit-vault FILE
 #
 # Run it on each host, from a copy of this repository, with the inventory all hosts share.
 # Every install is pre-checked and reversible. Steps: preflight checks and a dry run of
@@ -20,6 +21,10 @@
 # binaries and the ufw rules the install added, and keeps the data, the settings and the
 # system users, so a reinstall picks up where it left off. --uninstall --purge deletes
 # those too, after a confirmation of its own that names them.
+#
+# --edit-vault opens an inventory's vault.yml in ansible-vault from the same throwaway
+# virtualenv: it creates the file when it is missing, encrypts it when it is still plain text,
+# and edits it when it is encrypted. Nothing is installed.
 
 set -euo pipefail
 export LC_ALL=C.UTF-8
@@ -34,6 +39,7 @@ usage() {
 Usage:
   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
+  sudo ./install.sh --edit-vault FILE
 
 Installs celestia-validator-monitoring on this machine as inventory host NAME, or
 removes it with --uninstall. Run it on each host in turn. Every install is pre-checked
@@ -52,6 +58,8 @@ removes it again.
   --purge            with --uninstall: also delete the data (/var/lib/celestia-mon),
                      the settings (/etc/celestia-mon) and the celestia-mon-* users
                      and groups, after a second confirmation
+  --edit-vault FILE  create, encrypt or edit a vault.yml with ansible-vault (asks for
+                     its password; the editor is $EDITOR, else nano or vi), then exit
 EOF
 }
 
@@ -151,6 +159,12 @@ while (($# > 0)); do
       mode=uninstall
       shift
       ;;
+    --edit-vault)
+      (($# >= 2)) || die "--edit-vault needs a vault.yml file"
+      mode=edit-vault
+      vault_target=$2
+      shift 2
+      ;;
     --purge)
       purge=true
       shift
@@ -165,7 +179,11 @@ while (($# > 0)); do
       ;;
   esac
 done
-if [[ -z $host || ($mode == install && -z $inventory) ]]; then
+if [[ $mode == edit-vault ]]; then
+  if [[ -n $host || -n $inventory ]] || $yes || $check || $ask_vault || $purge; then
+    die "--edit-vault takes only the vault file"
+  fi
+elif [[ -z $host || ($mode == install && -z $inventory) ]]; then
   usage >&2
   exit 2
 fi
@@ -174,6 +192,14 @@ if $purge && [[ $mode != uninstall ]]; then
 fi
 
 ((EUID == 0)) || die "run it as root: sudo ./install.sh ..."
+if [[ $mode == edit-vault ]]; then
+  [[ -t 0 ]] || die "--edit-vault needs a terminal"
+  [[ $(basename -- "$vault_target") =~ ^vault\.ya?ml$ ]] ||
+    die "--edit-vault edits an inventory's vault.yml (host_vars/<monitor>/vault.yml): $vault_target"
+  [[ -d $(dirname -- "$vault_target") ]] || die "no such directory: $(dirname -- "$vault_target")"
+  vault_target=$(realpath -m -- "$vault_target")
+  host=edit-vault
+fi
 [[ $host =~ ^[A-Za-z0-9._-]+$ ]] || die "--host takes one inventory host name: $host"
 # uninstall.yml reads no inventory settings, so --uninstall runs with this host's name as the
 # whole inventory: it needs neither the inventory file nor the vault password.
@@ -296,6 +322,29 @@ if $ask_vault; then
 fi
 unset vault_pass
 
+# ansible-vault asks for the password itself. sudo resets EDITOR unless it is kept, so nano
+# or vi stands in. The file stays readable by its owner only.
+if [[ $mode == edit-vault ]]; then
+  editor=${EDITOR:-${VISUAL:-}}
+  [[ -n $editor ]] || editor=$(command -v nano || command -v vi || true)
+  [[ -n $editor ]] || die "no editor found: set EDITOR"
+  if [[ ! -e $vault_target ]]; then
+    action=create
+  elif [[ $(head -c 15 -- "$vault_target") == "\$ANSIBLE_VAULT;" ]]; then
+    action=edit
+  else
+    action=encrypt
+  fi
+  step "ansible-vault $action $vault_target"
+  (umask 077 && EDITOR=$editor "$work/venv/bin/ansible-vault" "$action" -- "$vault_target") ||
+    die "ansible-vault $action stopped; $vault_target is as it was"
+  chmod 0600 -- "$vault_target"
+  if [[ $action == encrypt ]]; then
+    printf 'Encrypted. Change it later with: sudo %q --edit-vault %q\n' "$repo/install.sh" "$vault_target"
+  fi
+  exit 0
+fi
+
 book=site.yml
 [[ $mode == install ]] || book=uninstall.yml
 # uninstall.yml keeps the data, settings and users unless it is told to purge them.
@@ -377,6 +426,12 @@ if ((made == 0)); then
   echo "No changes: $host already matches the inventory."
 else
   echo "$made change(s) made."
+fi
+# The Alertmanager role sends it when the run changed the receivers.
+if awk '/^TASK \[celestia_mon_alertmanager : Post the test notification/ { t = 1; next }
+        t && /^ok:/ { found = 1 } t && /^TASK / { t = 0 } END { exit !found }' "$work/run.log"; then
+  echo "A test message went to the chat receivers (Telegram, Discord, Slack, webhooks; not PagerDuty)."
+  echo "If it does not arrive within a minute, check their settings in the vault."
 fi
 
 step "celestia-mon-doctor on $host"
