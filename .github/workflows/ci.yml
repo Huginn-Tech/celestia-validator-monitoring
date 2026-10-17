@@ -159,10 +159,13 @@ jobs:
           grep -q '^node_systemd_service_restart_total{name="systemd-logind.service"}' <<<"$node"
           units=$(grep '^node_systemd_unit_state{' <<<"$node" | grep -o 'name="[^"]*"' | sort -u | wc -l)
           if [ "$units" -ne 2 ]; then echo "systemd collector lists $units units, expected 2"; exit 1; fi
-          # The unit's sandbox (seccomp filter, address families, no devices) must not break a collector.
-          if grep -E '^node_scrape_collector_success\{collector="[^"]+"\} 0' <<<"$node"; then
-            echo "a node_exporter collector fails under the unit sandbox"; exit 1
-          fi
+          # The unit's sandbox (seccomp filter, address families, no devices) must not break a
+          # collector that the panels and rules read. Others (zfs, nfs, bonding) fail on any host
+          # without that kernel feature.
+          for c in cpu diskstats filesystem meminfo netclass netdev systemd vmstat; do
+            grep -qx "node_scrape_collector_success{collector=\"$c\"} 1" <<<"$node" ||
+              { echo "node_exporter's $c collector fails under the unit sandbox"; exit 1; }
+          done
       - name: The collector sums Fibre's size attributes away and drops traces
         run: |
           sudo systemctl is-active celestia-mon-otelcol
