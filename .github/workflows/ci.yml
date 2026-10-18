@@ -427,7 +427,11 @@ jobs:
           def resolved(name):
               return {c["send_resolved"] for k, v in receivers[name].items() if k.endswith("_configs") for c in v}
           assert resolved("page") == resolved("message") == {True}, (resolved("page"), resolved("message"))
-          assert resolved("announcement-page") == resolved("announcement-message") == {False}
+          assert resolved("announcement-message") == {False}, resolved("announcement-message")
+          # PagerDuty closes its incident when the announcement ends; the chats get no "resolved".
+          ann = receivers["announcement-page"]
+          assert {c["send_resolved"] for c in ann["pagerduty_configs"]} == {True}, ann
+          assert {c["send_resolved"] for k, v in ann.items() if k.endswith("_configs") and k != "pagerduty_configs" for c in v} == {False}
           print("page:", count("page"), "message:", count("message"))
           EOF
           cat > "$RUNNER_TEMP/pagerduty-only.yml" <<'EOF'
