@@ -1144,6 +1144,8 @@ jobs:
           grep -Eq '^FAIL +12 +rule metrics .*fibre_server_upload_shard_budget_bytes \(Fibre is not pushing metrics: check 13\)' <<<"$out"
           grep -Eq '^FAIL +13 +fibre pipeline +ci: Fibre is not pushing metrics ' <<<"$out"
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-announcements 127\.0\.0\.1:9916' <<<"$out"
+          grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-announcements [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
