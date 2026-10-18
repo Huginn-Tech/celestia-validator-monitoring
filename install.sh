@@ -129,8 +129,9 @@ logs=/var/log/celestia-mon
 log_file=$logs/install.log
 save_logs() {
   [[ $mode == install && -s $work/plan.log ]] || return 0
-  mkdir -p -m 0700 -- "$logs" && chmod 0700 -- "$logs" &&
+  if mkdir -p -- "$logs" && chmod 0700 -- "$logs"; then
     (umask 077 && cat -- "$work"/plan.log "$work"/run.log "$work"/doctor.log >"$log_file" 2>/dev/null) || true
+  fi
 }
 
 # Stops after a failed playbook run. The progress view showed the failed task and its error; an
