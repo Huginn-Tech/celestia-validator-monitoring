@@ -20,8 +20,11 @@
 {%       elif type == 'telegram' %}
       - bot_token: {{ r.bot_token | string | to_json }}
         chat_id: {{ r.chat_id | string | int }}
+        message: '{% raw %}{{ template "celestia.telegram.message" . }}{% endraw %}'
 {%       elif type == 'discord' %}
       - webhook_url: {{ r.webhook_url | string | to_json }}
+        title: '{% raw %}{{ template "celestia.discord.title" . }}{% endraw %}'
+        message: '{% raw %}{{ template "celestia.discord.message" . }}{% endraw %}'
 {%       elif type == 'slack' %}
       - api_url: {{ r.api_url | string | to_json }}
 {%         if r.channel is defined %}
@@ -36,6 +39,10 @@
 {% endfor %}
 {% endmacro %}
 # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+# Telegram and Discord messages use celestia-mon's text (monitoring/alertmanager-templates.tmpl).
+templates:
+  - {{ (celestia_mon_alertmanager_templates_file | default('/etc/celestia-mon/alertmanager/celestia-mon.tmpl')) | to_json }}
+
 route:
   receiver: message
   group_by: [alertname, host]
@@ -59,7 +66,9 @@ route:
       group_by: ['...']
       group_wait: 0s
       group_interval: 1m
-      repeat_interval: 8760h
+      # Within the 120 hours Alertmanager keeps its notification log (a longer interval can repeat
+      # sooner); an announcement is active for 30 minutes, so it is never sent twice.
+      repeat_interval: 96h
       routes:
         - receiver: announcement-page
           matchers:

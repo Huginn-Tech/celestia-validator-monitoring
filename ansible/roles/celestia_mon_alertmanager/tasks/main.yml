@@ -205,6 +205,16 @@
         # Where earlier versions of celestia-mon unpacked the release.
         - /var/cache/celestia-mon/{{ celestia_mon_alertmanager_release }}
 
+# Written before the configuration, which names it, so amtool's check of that finds it.
+- name: Write the notification templates
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../monitoring/alertmanager-templates.tmpl"
+    dest: "{{ celestia_mon_alertmanager_templates_file }}"
+    owner: root
+    group: celestia-mon-alertmanager
+    mode: "0640"
+  notify: Reload Alertmanager
+
 # The rendered file holds receiver tokens: never show it or its diff. If this task
 # fails, amtool rejected the new file and the old one stays in place: check the
 # receivers in celestia_mon_receivers against the keys Alertmanager expects.

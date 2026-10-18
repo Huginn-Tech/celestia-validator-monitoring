@@ -21,6 +21,8 @@ celestia_mon_alertmanager_sums_file: "{{ celestia_mon_alertmanager_home }}/SHA25
 celestia_mon_alertmanager_staging: /var/cache/celestia-mon/alertmanager.staging
 
 celestia_mon_alertmanager_config_dir: /etc/celestia-mon/alertmanager
+# The text of Telegram and Discord messages (monitoring/alertmanager-templates.tmpl).
+celestia_mon_alertmanager_templates_file: "{{ celestia_mon_alertmanager_config_dir }}/celestia-mon.tmpl"
 celestia_mon_alertmanager_data_dir: /var/lib/celestia-mon/alertmanager
 # Loopback only: Prometheus runs on the same host. Every request also needs the API password
 # (celestia_mon_api_user, celestia_mon_api_password_file), because every account on the host

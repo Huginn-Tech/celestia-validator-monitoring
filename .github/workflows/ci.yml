@@ -322,6 +322,45 @@ jobs:
           for s in single split mainnet; do
             amtool check-config "build/$s/alertmanager.yml"
           done
+      # Telegram (parse mode HTML) and Discord get celestia-mon's text: an announcement as its own
+      # text under the channel it came from, an alert as one line with its summary and description;
+      # never the list of labels, never the link.
+      - name: Telegram and Discord messages read as text
+        run: |
+          set -euo pipefail
+          t=monitoring/alertmanager-templates.tmpl
+          render() { amtool template render --template.glob="$t" --template.data="$1" --template.type="$2" --template.text="$3"; }
+          cat >"$RUNNER_TEMP/announcement.json" <<'EOF'
+          {"receiver": "announcement-page", "status": "firing", "alerts": [{"status": "firing",
+            "labels": {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
+                       "source": "Celestia #mainnet-announcements", "announcement": "1"},
+            "annotations": {"summary": "Celestia announcement from Celestia #mainnet-announcements",
+                            "description": "Mainnet upgrades at height 100 <b>&", "link": "https://discord.com/channels/1/2/3"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
+          EOF
+          out=$(render "$RUNNER_TEMP/announcement.json" html '{{ template "celestia.telegram.message" . }}')
+          printf '%s\n---\n' "$out"
+          test "$out" = "$(printf '📣 <b>Celestia #mainnet-announcements</b>\n\nMainnet upgrades at height 100 &lt;b&gt;&amp;')"
+          test "$(render "$RUNNER_TEMP/announcement.json" text '{{ template "celestia.discord.title" . }}')" = "📣 Celestia #mainnet-announcements"
+          test "$(render "$RUNNER_TEMP/announcement.json" text '{{ template "celestia.discord.message" . }}')" = "Mainnet upgrades at height 100 <b>&"
+          cat >"$RUNNER_TEMP/alerts.json" <<'EOF'
+          {"receiver": "page", "status": "firing", "alerts": [
+            {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
+             "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free."}},
+            {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
+             "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
+          EOF
+          out=$(render "$RUNNER_TEMP/alerts.json" html '{{ template "celestia.telegram.message" . }}')
+          printf '%s\n---\n' "$out"
+          want='🔴 PAGE · <b>DiskLow</b> · val-1\nDisk / on val-1 is almost full\nLess than 5%% free.\n\n'
+          want+='✅ RESOLVED · <b>DiskLow</b> · val-1\nDisk /data on val-1 is almost full'
+          test "$out" = "$(printf "$want")"
+          test "$(render "$RUNNER_TEMP/alerts.json" text '{{ template "celestia.discord.title" . }}')" = "🔴 PAGE · DiskLow · val-1"
+          out=$(render "$RUNNER_TEMP/alerts.json" text '{{ template "celestia.discord.message" . }}')
+          printf '%s\n' "$out"
+          grep -qx '\*\*Disk / on val-1 is almost full\*\*' <<<"$out"
+          grep -qx '✅ RESOLVED · DiskLow · val-1' <<<"$out"
       # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
       # active or standby, in the otelcol job.
       - name: The mainnet scrape targets follow the inventory groups
@@ -445,6 +484,8 @@ jobs:
           once
           once
           test "$(wc -l <"$d/posts.jsonl")" = 1
+          # ...103 is an alert a webhook posted into the channel, not an announcement.
+          grep -q '^channel 111111111111111111: passed over 1 message(s) not posted by a followed channel' "$d/log"
           python3 - "$d/posts.jsonl" <<'EOF'
           import json, re, sys
           alerts = json.loads(open(sys.argv[1]).readline())

@@ -39,7 +39,7 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | `slack` | `api_url`, optional `channel` | yes | yes |
 | `webhook` | `url` | yes | yes |
 
-Page alerts go to every receiver; message alerts go to every receiver except PagerDuty. Without a PagerDuty receiver, page alerts still reach your chat channels. The list needs at least one receiver that is not PagerDuty, or message alerts would go nowhere; the install refuses such a list, and it also refuses the separate `page` and `message` lists of earlier versions. The heartbeat goes only to the dead-man service in `celestia_mon_deadman_webhook_url`.
+In Telegram and Discord each notification reads as text: the state (🔴 PAGE, 🟡 MESSAGE or ✅ RESOLVED), the alert and its host on the first line, then its summary and description (`monitoring/alertmanager-templates.tmpl`). Page alerts go to every receiver; message alerts go to every receiver except PagerDuty. Without a PagerDuty receiver, page alerts still reach your chat channels. The list needs at least one receiver that is not PagerDuty, or message alerts would go nowhere; the install refuses such a list, and it also refuses the separate `page` and `message` lists of earlier versions. The heartbeat goes only to the dead-man service in `celestia_mon_deadman_webhook_url`.
 
 ```yaml
 celestia_mon_receivers:
@@ -310,11 +310,11 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 ## CelestiaAnnouncement
 
-**What it means.** Celestia posted a new message in one of its announcement channels on Discord: usually a network upgrade with its height and time, or an incident. The notification carries the message as text (role pings and Discord markup removed), the channel it came from (for example `Celestia #mainnet-announcements`) and a link to the original. Each announcement is sent once, as soon as it is read (within a minute), and sends no "resolved" message.
+**What it means.** Celestia posted a new message in one of its announcement channels on Discord: usually a network upgrade with its height and time, or an incident. In Telegram and Discord the notification is the announcement itself: the channel it came from (for example `Celestia #mainnet-announcements`) as its title, then the message as text, role pings and Discord markup removed (up to 3500 characters). PagerDuty and webhooks also get a link to the original. Each announcement is sent once, as soon as it is read (within a minute), and sends no "resolved" message.
 
-It is optional. celestia-mon-announcements, a small service on the monitor host, reads one or more channels on your own Discord server that follow Celestia's announcement channels ("Follow" on the channel in Celestia's Discord), with a bot of yours, and posts each new message to Alertmanager. The first read of a channel only notes its newest message, so nothing older is sent. Set it up on the monitor:
+It is optional. celestia-mon-announcements, a small service on the monitor host, reads one or more channels on your own Discord server that follow Celestia's announcement channels ("Follow" on the channel in Celestia's Discord), with a bot of yours, and posts each new message to Alertmanager. Only what a followed channel posted counts: messages that people, bots or webhooks write into that channel are passed over. The first read of a channel only notes its newest message, so nothing older is sent. Set it up on the monitor:
 
-1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several).
+1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several). Keep your alert receivers out of it: a `discord` receiver posts into a channel of its own.
 2. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) (or reuse one): turn on **Message Content Intent**, invite it to your server, and give it **View Channel** and **Read Message History** in that channel. Copy its token.
 3. In the inventory, on the monitor host: `celestia_mon_announcements: [{channel_id: "<channel ID>", severity: page}]` (Developer Mode, then right-click the channel, Copy Channel ID). `page` reaches PagerDuty and every chat channel, `message` the chat channels only.
 4. In the monitor's vault (`sudo ./install.sh --edit-vault <file>`): `celestia_mon_discord_bot_token: "<token>"`. Then run `install.sh` on the monitor.
