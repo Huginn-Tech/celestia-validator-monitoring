@@ -938,7 +938,7 @@ jobs:
           # An encrypted vault.yml that only its owner reads passes the gate, and the dry run runs the
           # install playbook (it stops there because no vault password was given), never the removal.
           chmod 0600 "$vault"
-          sudo bash ./install.sh --inventory "$INV" --host ci --check >"$RUNNER_TEMP/gate.log" 2>&1 || true
+          sudo bash ./install.sh --inventory "$INV" --host ci --check --verbose >"$RUNNER_TEMP/gate.log" 2>&1 || true
           if grep -qF 'PLAY [Remove celestia-mon]' "$RUNNER_TEMP/gate.log" ||
              ! grep -qF 'PLAY [Check the inventory and this host]' "$RUNNER_TEMP/gate.log"; then
             cat "$RUNNER_TEMP/gate.log"; echo "with a vault.yml in the inventory, the dry run did not run the install playbook"; exit 1
@@ -992,11 +992,17 @@ jobs:
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/install.log"
           grep -q '^A test message went to the chat receivers' "$RUNNER_TEMP/install.log"
+          # One line per part on the terminal; Ansible's whole output in the log, root's only.
+          grep -Eq '^  Prometheus +[0-9]+ changes?$' "$RUNNER_TEMP/install.log"
+          if grep -q '^TASK \[' "$RUNNER_TEMP/install.log"; then echo "the progress view shows Ansible's tasks"; exit 1; fi
+          sudo grep -q '^TASK \[celestia_mon_prometheus' /var/log/celestia-mon/install.log
+          test "$(sudo stat -c '%U %a' /var/log/celestia-mon) $(sudo stat -c '%a' /var/log/celestia-mon/install.log)" = "root 700 600"
       - name: A second run changes nothing
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/second.log"
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
           grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
+          grep -Eq '^  Prometheus +no change$' "$RUNNER_TEMP/second.log"
           if grep -q '^A test message went' "$RUNNER_TEMP/second.log"; then echo "a run that changed nothing sent a test message"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
       # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
@@ -1158,7 +1164,7 @@ jobs:
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
           if getent passwd | grep -q '^celestia-mon-'; then echo "users left"; left=1; fi
           if getent group | grep -q '^celestia-mon-'; then echo "groups left"; left=1; fi
-          for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon \
+          for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon /var/log/celestia-mon \
                    /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done

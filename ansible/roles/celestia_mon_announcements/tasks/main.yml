@@ -86,6 +86,8 @@
         owner: root
         group: root
         mode: "0755"
+      # The script is code, not a setting: no diff of it in the dry run.
+      diff: false
       notify: Restart celestia-mon-announcements
 
     - name: Write the announcements settings
