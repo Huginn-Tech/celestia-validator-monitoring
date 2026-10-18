@@ -27,8 +27,10 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER_AGENT = "DiscordBot (https://github.com/s0urledd/celestia-validator-monitoring, 1)"
-# Telegram takes 4096 characters per message; the rest of an alert's text needs some.
-MAX_TEXT = 1500
+# Telegram takes 4096 characters per message; the channel's name above the text needs some.
+MAX_TEXT = 3500
+# Discord's flag on a message posted from a channel this one follows (IS_CROSSPOST).
+CROSSPOST = 2
 
 
 def log(msg):
@@ -175,7 +177,7 @@ def message_text(msg):
 def message_link(msg, guild, channel):
     # A message from a followed channel (flag IS_CROSSPOST) links to the original.
     ref = msg.get("message_reference") or {}
-    if msg.get("flags", 0) & 2 and ref.get("guild_id") and ref.get("channel_id") and ref.get("message_id"):
+    if msg.get("flags", 0) & CROSSPOST and ref.get("guild_id") and ref.get("channel_id") and ref.get("message_id"):
         return f"https://discord.com/channels/{ref['guild_id']}/{ref['channel_id']}/{ref['message_id']}"
     return f"https://discord.com/channels/{guild}/{channel}/{msg['id']}"
 
@@ -256,17 +258,24 @@ def poll(cfg, token, password, state, guilds, metrics):
                 continue
             msgs = discord_get(cfg["discord_api"], token, f"/channels/{cid}/messages?after={last}&limit=50")
             msgs = sorted(msgs, key=lambda m: int(m["id"]))
-            if msgs:
+            # Only what a followed channel posted is an announcement. Anything else in the channel
+            # (people, bots, a webhook, such as an alert receiver that posts there) is passed over,
+            # or alerts posted to this channel would come back as announcements.
+            news = [m for m in msgs if m.get("flags", 0) & CROSSPOST]
+            if news:
                 try:
-                    post_alerts(cfg, password, [alert(cfg, channel, guilds[cid], m) for m in msgs])
+                    post_alerts(cfg, password, [alert(cfg, channel, guilds[cid], m) for m in news])
                 except (urllib.error.URLError, OSError) as e:
                     metrics.error(cid, "alertmanager")
-                    log(f"channel {cid}: Alertmanager did not take {len(msgs)} announcement(s), retrying: {e}")
+                    log(f"channel {cid}: Alertmanager did not take {len(news)} announcement(s), retrying: {e}")
                     continue
+                log(f"channel {cid}: sent {len(news)} announcement(s) to Alertmanager")
+            if len(msgs) > len(news):
+                log(f"channel {cid}: passed over {len(msgs) - len(news)} message(s) not posted by a followed channel")
+            if msgs:
                 state[cid] = msgs[-1]["id"]
                 save_state(cfg["state_file"], state)
-                log(f"channel {cid}: sent {len(msgs)} announcement(s) to Alertmanager")
-            metrics.success(cid, len(msgs))
+            metrics.success(cid, len(news))
         except DiscordError as e:
             metrics.error(cid, e.reason)
             log(f"channel {cid}: {e}")

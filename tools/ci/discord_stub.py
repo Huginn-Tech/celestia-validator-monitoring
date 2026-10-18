@@ -3,9 +3,11 @@
   STUB_TOKEN=<bot token> python3 tools/ci/discord_stub.py PORT POSTS_FILE
 
 Channel 111111111111111111 follows two announcement channels: message ...100 was there before;
-...101 and ...102 appear once the newest message has been asked for (the reader's first look).
-Channel 222222222222222222 is one the bot may not read (403). Any other token gets 401. POST /api/v2/alerts appends the posted alerts to POSTS_FILE, one JSON
-list per line, as Alertmanager would take them.
+...101 and ...102 (and ...103, an alert a webhook posted there) appear once the newest message has
+been asked for (the reader's first look).
+Channel 222222222222222222 is one the bot may not read (403). Any other token gets 401.
+POST /api/v2/alerts appends the posted alerts to POSTS_FILE, one JSON list per line, as
+Alertmanager would take them.
 """
 
 import json
@@ -40,6 +42,9 @@ MESSAGES = [
                       "Details: <https://docs.celestia.org/upgrade?network=mocha&v=10.5.0>"),
     crosspost(102, "Celestia #mainnet-announcements", "444444444444444444",
               embeds=[{"title": "Mainnet notice", "description": "Read <#555555555555555555> before the upgrade @everyone"}]),
+    # An alert that a Discord receiver posted into the same channel: not an announcement.
+    {"id": "1300000000000000103", "content": "", "author": {"username": "Spidey Bot", "bot": True},
+     "webhook_id": "777777777777777777", "flags": 0, "embeds": [{"title": "[FIRING:1] NotificationTest mfnode"}]},
 ]
 
 

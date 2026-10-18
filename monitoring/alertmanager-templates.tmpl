@@ -1,0 +1,46 @@
+{{/*
+  Notification text of celestia-mon for Telegram and Discord, in place of Alertmanager's list
+  of every label and annotation. A Celestia announcement is its own text under the channel it
+  came from; an alert is one line (state, alert, host) with its summary and description.
+  Telegram uses parse mode HTML, so Alertmanager escapes the values and the tags below stay.
+*/}}
+
+{{ define "celestia.state" }}{{ if eq .Status "resolved" }}✅ RESOLVED{{ else if eq .Labels.severity "page" }}🔴 PAGE{{ else }}🟡 MESSAGE{{ end }}{{ end }}
+
+{{ define "celestia.telegram.message" }}
+{{- range $i, $a := .Alerts }}{{ if $i }}
+
+{{ end }}
+{{- if eq $a.Labels.alertname "CelestiaAnnouncement" -}}
+📣 <b>{{ $a.Labels.source }}</b>
+
+{{ $a.Annotations.description }}
+{{- else -}}
+{{ template "celestia.state" $a }} · <b>{{ $a.Labels.alertname }}</b>{{ with $a.Labels.host }} · {{ . }}{{ end }}
+{{ $a.Annotations.summary }}
+{{- with $a.Annotations.description }}
+{{ . }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "celestia.discord.title" }}
+{{- with index .Alerts 0 }}
+{{- if eq .Labels.alertname "CelestiaAnnouncement" }}📣 {{ .Labels.source }}
+{{- else }}{{ template "celestia.state" . }} · {{ .Labels.alertname }}{{ with .Labels.host }} · {{ . }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
+
+{{ define "celestia.discord.message" }}
+{{- range $i, $a := .Alerts }}{{ if $i }}
+
+{{ end }}
+{{- if eq $a.Labels.alertname "CelestiaAnnouncement" }}{{ $a.Annotations.description }}
+{{- else }}{{ if $i }}{{ template "celestia.state" $a }} · {{ $a.Labels.alertname }}{{ with $a.Labels.host }} · {{ . }}{{ end }}
+{{ end }}**{{ $a.Annotations.summary }}**
+{{- with $a.Annotations.description }}
+{{ . }}{{ end }}
+{{- end }}
+{{- end }}
+{{- end }}
