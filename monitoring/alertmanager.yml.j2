@@ -33,7 +33,7 @@
 {%       else %}
       - url: {{ r.url | string | to_json }}
 {%       endif %}
-        send_resolved: {{ resolved | to_json }}
+        send_resolved: {{ (resolved or type == 'pagerduty') | to_json }}
 {%     endfor %}
 {%   endif %}
 {% endfor %}
@@ -60,7 +60,8 @@ route:
       repeat_interval: 1m
       continue: false
     # Celestia's announcements (celestia-mon-announcements): one notification per announcement,
-    # sent at once and once only, through receivers that send no "resolved" message.
+    # sent at once and once only. The chat channels and webhooks get no "resolved" message for it;
+    # PagerDuty does, so its incident closes when the announcement ends (active_minutes, 30).
     - matchers:
         - 'alertname="CelestiaAnnouncement"'
       group_by: ['...']
