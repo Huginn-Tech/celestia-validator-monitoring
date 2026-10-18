@@ -327,7 +327,7 @@
     celestia_mon_preflight_fibre_want: "http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}"
     celestia_mon_preflight_fibre_status: "{{ celestia_mon_preflight_fibre_unit.status | default({}) }}"
     celestia_mon_preflight_fibre_flag: >-
-      {{ celestia_mon_preflight_fibre_status.ExecStart | default('') | regex_findall('argv[[][]]=(.*?) ; ignore_errors=') | first | default('')
+      {{ celestia_mon_preflight_fibre_status.ExecStart | default('') | regex_findall('argv..=(.*?) ; ignore_errors=') | first | default('')
          | regex_findall('--otel-endpoint(?:=| +)([^ ]+)') | last | default('') }}
     celestia_mon_preflight_fibre_file: >-
       {{ celestia_mon_preflight_fibre_envfiles.results | default([]) | selectattr('content', 'defined') | map(attribute='content')

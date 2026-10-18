@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # install.sh: installs celestia-validator-monitoring on this host, or removes it.
 #
-#   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
-#   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
+#   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check] [--verbose]
+#   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check] [--verbose]
 #   sudo ./install.sh --edit-vault FILE
 #
 # Run it on each host, from a copy of this repository, with the inventory all hosts share.
@@ -37,8 +37,8 @@ python=/usr/bin/python3
 usage() {
   cat <<'EOF'
 Usage:
-  sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check]
-  sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check]
+  sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check] [--verbose]
+  sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check] [--verbose]
   sudo ./install.sh --edit-vault FILE
 
 Installs celestia-validator-monitoring on this machine as inventory host NAME, or
@@ -58,6 +58,8 @@ removes it again.
   --purge            with --uninstall: also delete the data (/var/lib/celestia-mon),
                      the settings (/etc/celestia-mon) and the celestia-mon-* users
                      and groups, after a second confirmation
+  --verbose          show Ansible's whole output (every task, result and diff) instead of
+                     one line per part; an install keeps it in /var/log/celestia-mon either way
   --edit-vault FILE  create, encrypt or edit a vault.yml with ansible-vault (asks for
                      its password; the editor is $EDITOR, else nano or vi), then exit
 EOF
@@ -106,14 +108,40 @@ fetch() { # URL FILE
   fi
 }
 
-# Runs a playbook from ansible/ for this host only, on this machine, and keeps its output in a log.
-# celestia_mon_install_host lets the playbook refuse a group name given as --host.
+# Runs a playbook from ansible/ for this host only, on this machine, and keeps its full output in
+# a log. The terminal shows the progress view of tools/install-output.awk (one line per part with
+# what it changed, warnings and errors), or everything with --verbose. celestia_mon_install_host lets the playbook
+# refuse a group name given as --host.
 run_playbook() { # LOG PLAYBOOK [ansible-playbook arguments]
-  local log=$1 book=$2
+  local log=$1 book=$2 dry=0 arg
   shift 2
+  for arg in "$@"; do [[ $arg != --check ]] || dry=1; done
   (cd "$repo/ansible" && "$work/venv/bin/ansible-playbook" "${inv_args[@]}" --limit "$host" \
     -e ansible_connection=local -e ansible_become=false -e "celestia_mon_install_host=$host" \
-    "${vault[@]}" "$@" "$book") 2>&1 | tee "$log"
+    "${vault[@]}" "$@" "$book") 2>&1 | tee "$log" |
+    if $verbose; then cat; else awk -v dry="$dry" -f "$repo/tools/install-output.awk"; fi
+}
+
+# Keeps the full output of an install's dry run, run and doctor in /var/log/celestia-mon (root
+# only), also when it failed: install.log, or check.log for --check; the next one replaces it.
+# --uninstall keeps none, and --purge removes that directory.
+logs=/var/log/celestia-mon
+log_file=$logs/install.log
+save_logs() {
+  [[ $mode == install && -s $work/plan.log ]] || return 0
+  if mkdir -p -- "$logs" && chmod 0700 -- "$logs"; then
+    (umask 077 && cat -- "$work"/plan.log "$work"/run.log "$work"/doctor.log >"$log_file" 2>/dev/null) || true
+  fi
+}
+
+# Stops after a failed playbook run. The progress view showed the failed task and its error; an
+# install keeps the whole output in $logs, and a removal shows its last lines here.
+run_failed() { # LOG MESSAGE
+  if [[ $mode == install ]]; then
+    die "$2 The whole output is in $log_file."
+  fi
+  $verbose || tail -n 40 -- "$1" >&2
+  die "$2"
 }
 
 # Prints the changed= count of this host from a playbook log's recap.
@@ -131,6 +159,7 @@ purge=false
 ask_vault=false
 yes=false
 check=false
+verbose=false
 while (($# > 0)); do
   case $1 in
     --inventory)
@@ -153,6 +182,10 @@ while (($# > 0)); do
       ;;
     --check)
       check=true
+      shift
+      ;;
+    --verbose)
+      verbose=true
       shift
       ;;
     --uninstall)
@@ -187,6 +220,7 @@ elif [[ -z $host || ($mode == install && -z $inventory) ]]; then
   usage >&2
   exit 2
 fi
+! $check || log_file=$logs/check.log
 if $purge && [[ $mode != uninstall ]]; then
   die "--purge works only with --uninstall"
 fi
@@ -278,7 +312,7 @@ if [[ -e $work || -L $work ]]; then
   die "$work exists: another install.sh may be running. If none is, remove it (sudo rm -rf $work) and run again."
 fi
 mkdir -m 0700 -- "$work" || die "cannot create $work"
-trap 'rm -rf -- "$work"' EXIT
+trap 'save_logs; rm -rf -- "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 mount_options=$(findmnt -n -o OPTIONS --target "$work" || true)
@@ -355,7 +389,7 @@ fi
 
 step "Checking $host and planning the changes (dry run: nothing is changed)"
 run_playbook "$work/plan.log" "$book" --check --diff -e "celestia_mon_plan_file=$work/plan.txt" "${purge_args[@]}" ||
-  die "the checks or the dry run failed, and nothing was changed. The reason is above."
+  run_failed "$work/plan.log" "the checks or the dry run failed, and nothing was changed. The reason is above."
 
 step "Plan for $host"
 if [[ ! -s $work/plan.txt ]]; then
@@ -407,7 +441,7 @@ fi
 if [[ $mode == uninstall ]]; then
   step "Removing celestia-mon from $host"
   run_playbook "$work/run.log" uninstall.yml "${purge_args[@]}" ||
-    die "the removal stopped with an error (above). Fix the cause and run install.sh --uninstall again."
+    run_failed "$work/run.log" "the removal stopped with an error (above). Fix the cause and run install.sh --uninstall again."
   step "celestia-mon is removed from $host ($(changes "$work/run.log") change(s))."
   if ! $purge; then
     echo "Removed with the services: the settings files that hold secrets (Alertmanager's config, Grafana's admin"
@@ -420,7 +454,7 @@ fi
 
 step "Installing celestia-mon on $host"
 run_playbook "$work/run.log" site.yml ||
-  die "the install stopped with an error (above). Fix the cause and run install.sh again; it continues where it stopped."
+  run_failed "$work/run.log" "the install stopped with an error (above). Fix the cause and run install.sh again; it continues where it stopped."
 made=$(changes "$work/run.log")
 if ((made == 0)); then
   echo "No changes: $host already matches the inventory."
@@ -451,6 +485,8 @@ case $status in
   1) echo "doctor: fix the FAIL lines above (each ends with the fix), then run: sudo celestia-mon-doctor" ;;
   *) echo "doctor exited with status $status." ;;
 esac
+
+echo "The whole output of this install: $log_file"
 
 step "To remove celestia-mon from $host again"
 # The removal needs no inventory and no vault password.
