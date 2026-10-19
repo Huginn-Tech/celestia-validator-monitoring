@@ -124,17 +124,22 @@ TABLE_ROW_PX = 42     # cellHeight "md": each table row
 # scrollbar. Set it to the measured height to keep the band under the last row as small as can be.
 TABLE_HEADER_PX = 40
 
-# Text checks, at 1440 px wide with Grafana's menu docked (Grafana 12 docks it from 1200 px). A
-# character is taken as 0.52 em: Grafana's Inter at weight 500, measured in the rendered dashboard,
-# runs 0.475-0.52 em a character in words of 13 characters or more, the words that set the sizes.
-# Each strip pins one text size; a pinned size is never shrunk by Grafana, so the generator makes
-# sure the longest text fits.
-CHAR_EM = 0.52
-NAME_PX, NAME_CHARS = 24, 20             # the validator's name in the header
-HEADER_LABEL_PX, HEADER_VALUE_PX = 12, 18
-BANNER_PX, BANNER_SMALL_PX, BANNER_CHARS, BANNER_SLOT = 22, 20, 44, 540   # two items side by side
+# Text checks, at 1440 px wide with Grafana's menu docked (Grafana 12 docks it from 1200 px), with
+# widths measured in the rendered dashboard (Grafana's Inter at weight 500): a letter 0.52 em, a
+# digit 0.60 em, a separator (. ,) 0.30 em. Each strip pins one text size; a pinned size is never
+# shrunk by Grafana, so the generator makes sure the longest text fits.
+CHAR_EM, DIGIT_EM, SEP_EM = 0.52, 0.60, 0.30
+LINE_EM = 1.2                            # a line of text is 1.2 times its size high
+STACK_GAP_PX = 7                         # between label and value in a centred value_and_name stack
+HEADER_ROWS = 3                          # the header: untitled panels, label over value
+KEY_ROWS, KEY_PX = 2, 12                 # the colour key: one 12 px line, centred in an untitled h2
+NAME_PX, NAME_CHARS = 28, 20             # the validator's name in the header
+HEADER_LABEL_PX, HEADER_VALUE_PX = 14, 28
+HEADER_NUMBER = "99.999.999"             # the widest number a header fact shows (a block height)
+BANNER_PX, BANNER_SMALL_PX, BANNER_CHARS, BANNER_SLOT = 24, 22, 43, 540   # two items side by side
 TILE_SIZES = (22, 20, 18, 16)            # the answer tiles: the largest at which every word fits its tile
-FACT_PX, FACT_SMALL_PX = 18, 16          # facts lines inside the rows, never larger than the answers
+# Facts inside the rows: an untitled h2 with the label over the value, never larger than the answers.
+FACT_ROWS, FACT_LABEL_PX, FACT_PX, FACT_SMALL_PX = 2, 12, 18, 16
 # The table's 14 px text. Its columns are sized by short words ("no data", "Peers"), which run up to
 # 0.56 em, so it keeps 0.55 em.
 TABLE_CHAR = 0.55 * 14
@@ -144,7 +149,7 @@ GAUGE_MIN, GAUGE_FLOOR = 90, 60          # the gauge columns' minimum width, and
 
 # Block height of every celestia-appd node: the validator and the backup nodes.
 H = 'cometbft_consensus_height{job="celestia-app"}'
-LSH ='cometbft_consensus_validator_last_signed_height{job="celestia-app"}'
+LSH = 'cometbft_consensus_validator_last_signed_height{job="celestia-app"}'
 MISSED = 'cometbft_consensus_validator_missed_blocks{job="celestia-app"}'
 POWER = 'cometbft_consensus_validator_power{job="celestia-app"}'
 TOTAL = 'cometbft_consensus_validators_power{job="celestia-app"}'
@@ -178,6 +183,21 @@ UP_LOST = 'or on () (max(up{job="prometheus"}) * 0 - 1)'
 # that runs now: W reads that block, WS reads it as a subquery of 1-minute steps.
 W = "[$__interval] offset -$__interval"
 WS = "[$__interval:1m] offset -$__interval"
+# The newest block has only just begun when a bar is drawn: its window runs ahead of the data, so
+# for its first seconds it holds no sample, or too few for increase(), and every line would read
+# grey (no data) or amber (no heartbeat). in_block() therefore falls back to the 2 minutes before
+# the block until the block holds three of Prometheus's scrapes of itself, 30 s at the 15 s scrape
+# and evaluation interval: by then every target has been scraped twice and the alert rules have run
+# twice. A completed block holds them whenever monitoring ran, so there the fallback changes
+# nothing. It reads the 2 minutes before a completed block only when monitoring had less than 30 s
+# of data in it, and those 2 minutes hold data only if monitoring stopped within them: then the bar
+# shows the state just before the outage instead of grey.
+STARTED = '(count_over_time(up{job="prometheus"}%s) >= 3)' % W
+# A subquery step of the newest block can lie in the future, where every selector repeats its last
+# sample for up to 5 minutes (and a node would look stalled): in_block() leaves out the steps more
+# than a minute after Prometheus's last scrape of itself, which also leaves out the steps of a
+# monitoring outage.
+LIVE = '(time() - max(timestamp(up{job="prometheus"})) < 60)'
 BOARD_PANELS = {20, 21, 22, 23, 25}
 
 # How long after a check stopped the alert that reports it fires, on top of its hold time: the
@@ -425,17 +445,19 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     return panel(pid, "timeseries", title, desc, targets, defaults, overrides, options)
 
 
-def bargauge(pid, title, desc, targets, unit, thresholds, decimals=0, no_value=None):
-    """One horizontal bar of a share, from 0 to 1, with its value as text."""
-    defaults = {"color": {"mode": "thresholds"}, "decimals": decimals, "max": 1, "min": 0,
+def bargauge(pid, label, desc, targets, unit, thresholds, decimals=0, no_value=None):
+    """One horizontal bar of a share, from 0 to 1, with its value as text, in the row facts' form:
+    untitled, the label (FACT_LABEL_PX) above the bar and the value (FACT_PX)."""
+    defaults = {"color": {"mode": "thresholds"}, "decimals": decimals, "displayName": label, "max": 1, "min": 0,
                 "thresholds": thresholds, "unit": unit}
     if no_value is not None:
         defaults["noValue"] = no_value
-    options = {"displayMode": "basic", "maxVizHeight": 20, "minVizHeight": 16, "namePlacement": "hidden",
+    options = {"displayMode": "basic", "maxVizHeight": 20, "minVizHeight": 16, "namePlacement": "top",
                "orientation": "horizontal",
                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-               "showUnfilled": True, "sizing": "manual", "text": {"valueSize": FACT_PX}, "valueMode": "text"}
-    return panel(pid, "bargauge", title, desc, targets, defaults, (), options)
+               "showUnfilled": True, "sizing": "manual",
+               "text": {"titleSize": FACT_LABEL_PX, "valueSize": FACT_PX}, "valueMode": "text"}
+    return panel(pid, "bargauge", "", desc, targets, defaults, (), options)
 
 
 def grid_px(height):
@@ -454,8 +476,22 @@ def inner_px(width):
 
 
 def text_px(text, size):
-    """Estimated width in px of text at size px."""
-    return len(text) * CHAR_EM * size
+    """Estimated width in px of text at size px: digits DIGIT_EM, separators SEP_EM, the rest CHAR_EM."""
+    return size * sum(DIGIT_EM if c.isdigit() else SEP_EM if c in ".," else CHAR_EM for c in text)
+
+
+def stack_px(label_size, value_size, centred):
+    """Height in px of a label over a value (a stat's value_and_name stack, or a bar gauge's name over
+    its bar); a centred stack adds a gap between them."""
+    return LINE_EM * (label_size + value_size) + (STACK_GAP_PX if centred else 0)
+
+
+def check_fit(what, texts, size, width):
+    """Stops unless every text fits width px of content at size px."""
+    for t in texts:
+        if text_px(t, size) > inner_px(width):
+            raise SystemExit("%s: %r needs %d px at %d px, and its panel has %d" % (what, t, text_px(t, size), size,
+                                                                                      inner_px(width)))
 
 
 def strip_widths(n):
@@ -463,12 +499,17 @@ def strip_widths(n):
     return {1: [24], 2: [12, 12], 3: [8, 8, 8], 4: [6, 6, 6, 6], 5: [8, 4, 4, 4, 4], 6: [4] * 6}[n]
 
 
-def flow(panels, height):
-    """Lines of three panels at width 8; a last line with fewer panels shares the 24 columns."""
-    lines = []
-    for i in range(0, len(panels), 3):
-        part = panels[i:i + 3]
-        lines.append((height, [(p, 24 // len(part)) for p in part]))
+def flow(panels):
+    """Chart lines: three charts at width 8 and height 8; a line of two at width 12, or one at 24, at
+    height 7. One chart left over after lines of three makes the last four two lines of two."""
+    n = len(panels)
+    sizes = [3] * (n // 3) + ([n % 3] if n % 3 else [])
+    if n % 3 == 1 and n >= 4:
+        sizes = [3] * ((n - 4) // 3) + [2, 2]
+    lines, i = [], 0
+    for k in sizes:
+        lines.append((8 if k == 3 else 7, [(p, 24 // k) for p in panels[i:i + k]]))
+        i += k
     return lines
 
 
@@ -627,7 +668,7 @@ def missed_in(window):
 
 def missed_in_block():
     """missed_in() for a status bar's time block: its last sample minus its lowest one."""
-    return "(last_over_time(%s%s) - min_over_time(%s%s))" % (MISSED, W, MISSED, W)
+    return "(%s - %s)" % (in_block("last_over_time", MISSED), in_block("min_over_time", MISSED))
 
 
 def blocks_since_signature(cap):
@@ -703,19 +744,30 @@ def free_share(mounts):
 
 # The status board reads Prometheus's own alert states per time block.
 
+def in_block(fn, x, sub=False):
+    """fn (an _over_time function, increase or changes) over x in the bar's time block, per series:
+    x a series selector, or with sub an expression read in 1-minute steps (a subquery) without the
+    steps past the data (LIVE). Until the block has started (STARTED), the 2 minutes before it count
+    too, so the newest bar is never grey or amber only because its block has just begun."""
+    if sub:
+        x = "(%s and on () %s)" % (x, LIVE)
+        return "(%s(%s%s) or (%s(%s[2m:1m]) unless on () %s))" % (fn, x, WS, fn, x, STARTED)
+    return "(%s(%s%s) or (%s(%s[2m]) unless on () %s))" % (fn, x, W, fn, x, STARTED)
+
+
 def firing(sel):
     """An alert matching sel fired at some moment of the bar's time block."""
-    return '(max(max_over_time(ALERTS{alertstate="firing",%s}%s)))' % (sel, W)
+    return "(max(%s))" % in_block("max_over_time", 'ALERTS{alertstate="firing",%s}' % sel)
 
 
 def active(sel):
     """An alert matching sel was pending or firing at some moment of the bar's time block."""
-    return "(max(max_over_time(ALERTS{%s}%s)))" % (sel, W)
+    return "(max(%s))" % in_block("max_over_time", "ALERTS{%s}" % sel)
 
 
 def seen(selector):
     """The highest value of a series in the bar's time block."""
-    return "(max(max_over_time(%s%s)))" % (selector, W)
+    return "(max(%s))" % in_block("max_over_time", selector)
 
 
 def nodata():
@@ -725,8 +777,8 @@ def nodata():
 
 def evaluated():
     """Prometheus ran and evaluated the alert rules in the time block: monitoring had data."""
-    return ('(max(increase(prometheus_rule_group_iterations_total{job="prometheus",rule_group=~".*;celestia_mon"}%s)) > 0)'
-            % W)
+    return "(max(%s) > 0)" % in_block(
+        "increase", 'prometheus_rule_group_iterations_total{job="prometheus",rule_group=~".*;celestia_mon"}')
 
 
 def rules_ran():
@@ -736,12 +788,12 @@ def rules_ran():
 
 def stale(metric, secs):
     """A check's timestamp was older than secs at some minute of the time block."""
-    return "(max(max_over_time((time() - max(%s))%s)) > %s)" % (metric, WS, num(secs))
+    return "(max(%s) > %s)" % (in_block("max_over_time", "(time() - max(%s))" % metric, sub=True), num(secs))
 
 
 def down(job):
     """A scrape target of job did not answer at some moment of the time block."""
-    return "(min(min_over_time(up{job=%s}%s)) == 0)" % (q(job), W)
+    return "(min(%s) == 0)" % in_block("min_over_time", "up{job=%s}" % q(job))
 
 
 def uptime(inner):
@@ -892,13 +944,13 @@ def banner_size(s):
         if s.has(need):
             texts += [sentence.replace("$1", h) for h in (s.hosts(which) if which else [""])]
     longest = max(texts, key=len)
-    if len(longest) <= BANNER_CHARS:
+    if len(longest) <= BANNER_CHARS and text_px(longest, BANNER_PX) <= BANNER_SLOT:
         return BANNER_PX
-    if text_px(longest, BANNER_SMALL_PX) <= BANNER_SLOT:
+    widest = max(texts, key=lambda t: text_px(t, BANNER_SMALL_PX))
+    if text_px(widest, BANNER_SMALL_PX) <= BANNER_SLOT:
         return BANNER_SMALL_PX
-    raise SystemExit("The banner sentence %r has %d characters; at most %d fit its slot at %d px. Shorten the host "
-                     "name in it in the inventory." % (longest, len(longest),
-                                                       int(BANNER_SLOT // (CHAR_EM * BANNER_SMALL_PX)), BANNER_SMALL_PX))
+    raise SystemExit("The banner sentence %r needs %d px at %d px; a slot has %d. Shorten the host name in it in the "
+                     "inventory." % (widest, text_px(widest, BANNER_SMALL_PX), BANNER_SMALL_PX, BANNER_SLOT))
 
 
 def panel_texts(p):
@@ -916,15 +968,25 @@ def panel_texts(p):
     return [t for t in texts if t]
 
 
-def fit_strip(items, size, small, what):
-    """Pins one value size on a strip of (panel, width) items: size when every text fits its panel,
-    else small; stops when a text does not fit even then."""
-    texts = [(t, w) for p, w in items for t in panel_texts(p)]
+def fit_strip(items, height, what, samples=None):
+    """Pins one value size on a strip of row facts, (panel, width) items height grid rows tall: FACT_PX
+    when every value fits its panel, else FACT_SMALL_PX; stops when a value does not fit even then,
+    when a label (FACT_LABEL_PX) does not fit, or when label over value is taller than the panel.
+    samples: {panel id: [texts]} a panel shows that its mappings do not name, such as "a few
+    seconds ago" of a time-ago value."""
+    samples = samples or {}
+    for p, w in items:
+        check_fit(what, [p["fieldConfig"]["defaults"]["displayName"]], FACT_LABEL_PX, w)
+    texts = [(t, w) for p, w in items for t in panel_texts(p) + samples.get(p["id"], [])]
+    size = FACT_PX
     if any(text_px(t, size) > inner_px(w) for t, w in texts):
-        bad = [t for t, w in texts if text_px(t, small) > inner_px(w)]
-        if bad:
-            raise SystemExit("%s: %r does not fit its panel even at %d px" % (what, bad[0], small))
-        size = small
+        size = FACT_SMALL_PX
+        for t, w in texts:
+            check_fit(what, [t], size, w)
+    content = grid_px(height) - CHROME_UNTITLED
+    if stack_px(FACT_LABEL_PX, size, True) > content:
+        raise SystemExit("%s: a label over a value needs %d px; an untitled h%d panel has %d"
+                         % (what, stack_px(FACT_LABEL_PX, size, True), height, content))
     for p, _ in items:
         p["options"]["text"]["valueSize"] = size
     return items
@@ -948,7 +1010,7 @@ def header(s):
         "is celestia_mon_validator_name in the inventory." % (" and Fibre" if s.fibre else ""),
         [target("A", net, "{{net}}", instant=True)], mappings=mapping((1, name, "text")),
         no_value="No node reporting", size=NAME_PX, text_mode="value_and_name", color_mode="none",
-        justify="auto", wide=False, title_size=13)
+        justify="auto", wide=False, title_size=HEADER_LABEL_PX)
     blocks = "Blocks signed, %d d" % s.days
     facts = [
         (2, "Latest block",
@@ -963,7 +1025,7 @@ def header(s):
          'max(rate(cometbft_consensus_block_interval_seconds_sum{job="celestia-app"}[5m]) / '
          'rate(cometbft_consensus_block_interval_seconds_count{job="celestia-app"}[5m]))',
          dict(unit="s", decimals=2, color_mode="value", no_value="No data",
-              mappings=special_map("nan", "No new blocks", "orange"))),
+              mappings=special_map("nan", "Stalled", "orange"))),
         (4, "Share of voting power",
          "This validator's share of all voting power in the active set. It sets how often the validator proposes "
          "blocks and how much Fibre data it stores. A drop means delegations left or the validator was slashed. "
@@ -973,7 +1035,7 @@ def header(s):
          chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
                "((max(%s) / max(%s)) and on () %s)" % (POWER, TOTAL, IN_SET), "(max(%s) * 0 - 3)" % H),
          dict(unit="percentunit", decimals=2, no_value="No data",
-              mappings=mapping((-1, "No node reporting", GREY), (-2, "No new blocks", GREY), (-3, "Out of set", GREY)))),
+              mappings=mapping((-1, "No data", GREY), (-2, "Stalled", GREY), (-3, "Out of set", GREY)))),
         (5, blocks,
          "Share of the blocks committed over the last %d days that carry this validator's signature. Blocks committed "
          "while it was not signing at all (jailed, out of the set, signer or node down) count as unsigned; time without "
@@ -984,13 +1046,24 @@ def header(s):
          dict(unit="percentunit", decimals=2, no_value="No data",
               mappings=range_map(0.99995, 1, "100%") + special_map("nan", "No data"))),
     ]
+    # Every text must fit as pinned: the name and the network over it in the w8 identity, each fact's
+    # label, words and widest number in its w4 panel, and label over value in the untitled panel
+    # (left-aligned, so no gap between them).
+    check_fit("The header's name", panel_texts(identity), NAME_PX, 8)
+    check_fit("The header's network", ["Mocha testnet (mocha-5)", "Celestia mainnet"], HEADER_LABEL_PX, 8)
+    content = grid_px(HEADER_ROWS) - CHROME_UNTITLED
+    for label_size, value_size in [(HEADER_LABEL_PX, NAME_PX), (HEADER_LABEL_PX, HEADER_VALUE_PX)]:
+        if stack_px(label_size, value_size, False) > content:
+            raise SystemExit("The header: a label over a value needs %d px; an untitled h%d panel has %d"
+                             % (stack_px(label_size, value_size, False), HEADER_ROWS, content))
     panels = [(identity, 8)]
     for pid, lbl, desc, expr, kw in facts:
-        if text_px(lbl, HEADER_LABEL_PX) > inner_px(4):
-            raise SystemExit("The header label %r does not fit its panel at %d px" % (lbl, HEADER_LABEL_PX))
         kw.setdefault("color_mode", "none")
-        panels.append((stat(pid, "", desc, [target("A", expr, lbl, instant=True)], size=HEADER_VALUE_PX,
-                            text_mode="value_and_name", wide=False, title_size=HEADER_LABEL_PX, **kw), 4))
+        p = stat(pid, "", desc, [target("A", expr, lbl, instant=True)], size=HEADER_VALUE_PX,
+                 text_mode="value_and_name", justify="auto", wide=False, title_size=HEADER_LABEL_PX, **kw)
+        check_fit("The header label", [lbl], HEADER_LABEL_PX, 4)
+        check_fit("The header fact %r" % lbl, panel_texts(p) + [HEADER_NUMBER], HEADER_VALUE_PX, 4)
+        panels.append((p, 4))
     for p, _ in panels:
         p["transparent"] = True
     return panels
@@ -1240,8 +1313,8 @@ def answer_tiles(s):
         tiles.append(outside_tile(s))
     if s.signal:
         tiles.append(upgrade_tile(s))
-    # Five tiles leave one wide slot: it goes to Signing through, whose words are host names.
-    widths = [4, 8, 4, 4, 4] if len(tiles) == 5 else strip_widths(len(tiles))
+    # Five tiles: Validator and Signing through (whose words are host names) share the wider slots.
+    widths = [6, 6, 4, 4, 4] if len(tiles) == 5 else strip_widths(len(tiles))
     items = [(stat(pid, title, desc, [target("A", expr, "", instant=True)], mappings=mapping(*words),
                    no_value="No data"), w)
              for (pid, title, desc, expr, words), w in zip(tiles, widths)]
@@ -1258,12 +1331,14 @@ def answer_tiles(s):
 
 
 CHECK_DESC = ("One line per check, one bar per time block: 10 minutes on a 24-hour range, 1 hour on 7 days, 6 hours on "
-              "30 days. The newest bar on the right is the current block and fills in as its minutes pass. A bar shows "
+              "30 days. The newest bar on the right is the current block and fills in as its minutes pass; in its first "
+              "30 seconds it shows the 2 minutes before it. A bar shows "
               "the worst moment of its block, read from the alert states Prometheus evaluated at the time, so the bars "
               "always agree with the alerts you received. Green: fine, and the alert rules ran. Amber: a warning alert "
               "fired, or an urgent alert's problem was true for a moment and cleared before it paged. Red: an urgent "
               "alert fired. Grey: no data (before the install, monitoring down, the alert rules not running, or nothing "
-              "to check). Each alert colours exactly one line.")
+              "to check). Each alert colours one line; NodeBehind colours Node in sync and the line of the server that "
+              "lags. Network upgrades have no line: the Network upgrade tile and the banner show them.")
 
 
 def check_lanes(s):
@@ -1273,14 +1348,19 @@ def check_lanes(s):
     have run in the block, so a bar is never green when no rule checked it."""
     gate = rules_ran()
     rsp = 'max(ALERTS{alertname="RemoteSignerProblem",alertstate="firing"})'
+    behind = 'max(ALERTS{alertname="NodeBehind",alertstate="firing"})'
     lanes = [
-        ("A", "New blocks",
+        # The nodes advance and none lags: NodeNotAdvancing, and NodeBehind for any node.
+        ("A", "Node in sync",
          chain("%s * 0 + 3" % firing('alertname="NodeNotAdvancing"'),
                "%s * 0 + 2" % active('alertname="NodeNotAdvancing"'),
+               "%s * 0 + 4" % firing('alertname="NodeBehind"'),
                "((%s == 1) and on () %s) * 0 + 1" % (seen('up{job="celestia-app"}'), gate),
                nodata()),
-         uptime("((max(changes(%s[1m])) > bool 0) or on () (%s * 0)) and on () %s" % (H, PROM, PROM)),
-         [(1, "Advancing", OK), (2, "Stalled briefly", WARN), (3, "Stalled", ALERT), (0, "No data", NODATA)]),
+         uptime("(((max(changes(%s[1m])) > bool 0) unless on () %s) or on () (%s * 0)) and on () %s"
+                % (H, behind, PROM, PROM)),
+         [(1, "In sync", OK), (2, "Stalled briefly", WARN), (3, "Stalled", ALERT), (4, "Node behind", WARN),
+          (0, "No data", NODATA)]),
         # While the nodes are stalled, ValidatorNotSigning is inhibited: grey, not a second red line for one cause.
         ("B", "Validator signing",
          chain("(%s unless on () %s) * 0 + 3" % (firing('alertname="ValidatorNotSigning"'),
@@ -1300,7 +1380,7 @@ def check_lanes(s):
         lanes.append(
             ("C", "Remote signer",
              chain("%s * 0 + 2" % firing('alertname="RemoteSignerProblem"'),
-                   "((sum(increase(%s%s)) > 0) and on () %s) * 0 + 1" % (PV, W, gate),
+                   "((sum(%s) > 0) and on () %s) * 0 + 1" % (in_block("increase", PV), gate),
                    "(sum(%s) > 0) * 0 + 4" % missed_in_block(),
                    nodata()),
              uptime("((((sum(increase(%s[1m])) > bool 0) unless on () %s) or on () (%s * 0)) and on () "
@@ -1308,24 +1388,6 @@ def check_lanes(s):
                     % (PV, rsp, rsp, PV, missed_in("1m"), PROM)),
              [(1, "Signing, fast enough", OK), (2, "Slow or failing", WARN), (4, "No signatures", WARN),
               (0, "Not asked to sign, or no data", NODATA)]))
-    if s.signal:
-        # The collector exports its timestamp as 0 before its first read and keeps the old one while
-        # reads fail, so green needs a read under 15 minutes old at every minute of the block.
-        ts = "celestia_mon_signal_last_success_timestamp_seconds"
-        lanes.append(
-            ("U", "Network upgrade",
-             chain("%s * 0 + 3" % firing('alertname="UpgradeSignalMissing"'),
-                   "%s * 0 + 2" % active('alertname="UpgradeSignalMissing"'),
-                   "%s * 0 + 6" % firing('alertname="SignalUnreadable"'),
-                   "%s * 0 + 4" % firing('alertname="UpgradeSoon"'),
-                   "(%s or %s) * 0 + 7" % (stale(ts, 900), down("signal")),
-                   "(%s and on () %s) * 0 + 8" % (firing('alertname="UpgradeScheduled"'), gate),
-                   "((%s > 0) and on () %s) * 0 + 1" % (seen(ts), gate),
-                   nodata()),
-             "vector(-9)",
-             [(1, "No action needed", OK), (8, "Upgrade scheduled", OK), (2, "Signal missing briefly", WARN),
-              (3, "Signal missing", ALERT), (4, "Upgrade within 24 h", WARN), (6, "Check stopped", WARN),
-              (7, "Not checked", NODATA), (0, "No data", NODATA)]))
     if s.fibre:
         not_failing = 'max(ALERTS{alertname="FibreNotServing",reason="uploads_failing",alertstate="firing"})'
         lanes.append(
@@ -1370,10 +1432,10 @@ def check_lanes(s):
          chain("%s * 0 + 4" % firing('alertname="MonitoringBroken"'),
                "%s * 0 + 5" % firing('alertname=~"NotificationsFailing|DeadmanFailing"'),
                "%s * 0 + 6" % down("alertmanager"),
-               '((sum(increase(prometheus_notifications_errors_total{job="prometheus"}%s)) > 0) '
-               'or (sum(increase(prometheus_notifications_dropped_total{job="prometheus"}%s)) > 0) '
-               'or (max(min_over_time(prometheus_notifications_alertmanagers_discovered{job="prometheus"}%s)) == 0)) '
-               "* 0 + 9" % (W, W, W),
+               "((sum(%s) > 0) or (sum(%s) > 0) or (max(%s) == 0)) * 0 + 9"
+               % (in_block("increase", 'prometheus_notifications_errors_total{job="prometheus"}'),
+                  in_block("increase", 'prometheus_notifications_dropped_total{job="prometheus"}'),
+                  in_block("min_over_time", 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}')),
                "%s * 0 + 7" % firing('alertname="AnnouncementsUnreadable"') if s.announcements else None,
                "(%s * 0 + 8 unless on () %s)" % (seen('up{job="prometheus"}'),
                                                  seen('ALERTS{alertname="Watchdog",alertstate="firing"}')),
@@ -1390,8 +1452,9 @@ def check_lanes(s):
 
 def server_lanes(s):
     """One status line per server, in servers order: (refId, label, bars, uptime, words). The alerts
-    excluded from the generic warning colour lines Remote signer, Network upgrade, Fibre serving,
-    Fibre from outside and Monitoring instead, so each alert colours exactly one line."""
+    excluded from the generic warning colour lines Remote signer, Fibre serving, Fibre from outside
+    and Monitoring instead; the upgrade alerts colour no line (the Network upgrade tile shows them).
+    NodeBehind colours its server's line and Node in sync."""
     others = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|NotificationsFailing|DeadmanFailing|"
               "TensileUnreadable|AnnouncementsUnreadable|SignalUnreadable|UpgradeSignalMissing|UpgradeScheduled|UpgradeSoon")
     words = [(1, "OK", OK), (2, "Warning", WARN), (3, "Disk full or read-only", ALERT), (4, "Not reporting", WARN),
@@ -1458,8 +1521,7 @@ def uptime_column(pid, title, lanes, height):
     defaults = {"color": {"fixedColor": "transparent", "mode": "fixed"}, "decimals": 2, "unit": "percentunit",
                 "thresholds": steps(("text", None)),
                 "custom": {"axisPlacement": "hidden", "fillOpacity": 0, "lineWidth": 0},
-                "mappings": range_map(0.99995, 1, "100%") + mapping((-1, "No data", GREY), (-9, "–", GREY))
-                + special_map("nan", "No data")}
+                "mappings": range_map(0.99995, 1, "100%") + mapping((-1, "No data", GREY)) + special_map("nan", "No data")}
     options = {"alignValue": "center", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
                "mergeValues": True, "rowHeight": board_row_height(title, height, lanes), "showValue": "always",
                "tooltip": {"mode": "none", "sort": "none"}}
@@ -1474,8 +1536,8 @@ def role_lanes(s):
     at 7 or 30 days a repoint or an outage shorter than a step still shows: a step shows its worst
     moment, as the board does."""
     sig = signing_nodes(s)
-    moved = ("sum by (host) (increase(%s%s)) > 0" % (PV, W) if s.remote else
-             "max by (host) (changes(%s%s)) > 0" % (LSH, W))
+    moved = ("sum by (host) (%s) > 0" % in_block("increase", PV) if s.remote else
+             "max by (host) (%s) > 0" % in_block("changes", LSH))
 
     def gated(expr):
         """A lane reads grey "No data" (-99) wherever monitoring had no data, as the board's lines do:
@@ -1486,11 +1548,13 @@ def role_lanes(s):
     lanes = [("A", "Signing through", gated(chain(
         "(%s unless on () %s) * 0 - 4" % (firing('alertname="ValidatorNotSigning"'),
                                           firing('alertname="NodeNotAdvancing"')),
-        "(max(max_over_time((changes(max(%s)[2m:]) == bool 0)%s)) == 1) * 0 - 3" % (H, WS),
+        "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "(changes(max(%s)[2m:]) == bool 0)" % H, sub=True),
         "((max(%s) * 0 - 2) unless on () %s)" % (POWER, IN_SET),
-        "(max(max_over_time(%s%s)) == 1) * 0 - 5" % (two_signers(s), WS) if s.remote and not s.multi else None,
-        "(max(max_over_time(((count(%s) or vector(0)) > bool 1)%s)) == 1) * 0 - 1" % (sig, WS) if s.remote else None,
-        "(min(min_over_time((count(%s) or vector(0))%s)) == 0) * 0" % (sig, WS),
+        "(max(%s) == 1) * 0 - 5" % in_block("max_over_time", two_signers(s), sub=True)
+        if s.remote and not s.multi else None,
+        "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "((count(%s) or vector(0)) > bool 1)" % sig, sub=True)
+        if s.remote else None,
+        "(min(%s) == 0) * 0" % in_block("min_over_time", "(count(%s) or vector(0))" % sig, sub=True),
         "max(%s and on (host) (%s))" % (lookup(s.nodes), moved),
         "max(%s) * 0" % H)),
         [(i + 1, h, s.tint(h)) for i, h in enumerate(s.nodes)]
@@ -1502,7 +1566,7 @@ def role_lanes(s):
         seen_f = fibre_seen(s)
         lanes.append(("B", "Fibre active on", gated(chain(
             "%s * 0 - 4" % firing('alertname="FibreDown",check=""'),
-            "(max(max_over_time((count(%s) > bool 1)%s)) == 1) * 0 - 1" % (seen_f, WS),
+            "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "(count(%s) > bool 1)" % seen_f, sub=True),
             "max(%s and on (host) %s)" % (lookup(s.fibre_hosts), seen_f),
             "(count(%s) > 0) * 0 - 5" % fibre_lost(s),
             '(((count(%s) or vector(0)) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))' % seen_f)),
@@ -1558,13 +1622,18 @@ def role_band(s, lanes, height, axis):
 
 
 def key_line(axis):
-    """The colour key under the role band: the one rule for every colour on the screen."""
-    swatch = ('<span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;'
-              'background-color:%s;margin-right:4px"></span>%s</span>')
-    content = ('<div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;'
-               'color:#8e8e8e;padding-left:%dpx"><span>Times in UTC</span>'
+    """The colour key under the role band: the one rule for every colour on the screen. It is one
+    line of KEY_PX in an untitled h2, moved down to the middle of the panel's content by a top
+    padding; the line and its padding stay well inside the content, so no scrollbar appears (an h1
+    leaves exactly KEY_PX, and Grafana scrolled it). The swatches are flex items, so they never make
+    the line taller than its line height."""
+    top = (grid_px(KEY_ROWS) - CHROME_UNTITLED - KEY_PX) // 2
+    swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:10px;height:10px;'
+              'border-radius:2px;background-color:%s;margin-right:4px"></span>%s</span>')
+    content = ('<div style="display:flex;justify-content:space-between;align-items:center;height:%dpx;font-size:%dpx;'
+               'line-height:%dpx;color:#8e8e8e;padding-top:%dpx;padding-left:%dpx"><span>Times in UTC</span>'
                '<span style="display:flex;align-items:center;gap:14px">%s</span></div>'
-               % (axis + 24, "".join(swatch % (c, t) for c, t in [
+               % (KEY_PX, KEY_PX, KEY_PX, top, axis + 24, "".join(swatch % (c, t) for c, t in [
                    (OK, "Fine (green or plain text)"), (WARN, "Look soon"), (ALERT, "Urgent alert"),
                    (NODATA, "No data or not in use")])))
     return {"id": 24, "type": "text", "title": "", "transparent": True,
@@ -1818,13 +1887,12 @@ def first_screen(s):
              "to the left of the charts below." % (" and Celestia's announcements" if s.announcements else "",
                                                      s.retention))
     # The uptime columns beside the bars have no description of their own: it is here.
-    desc += (" Uptime, the value at the right of each line, over the selected time: New blocks, minutes in which a "
-             "node committed a block; Validator signing, the share of blocks that carry the validator's signature "
-             "(blocks while it was not signing at all count as unsigned)")
+    desc += (" Node in sync: the nodes advance (NodeNotAdvancing) and none lags behind the others (NodeBehind). "
+             "Uptime, the value at the right of each line, over the selected time: Node in sync, minutes in which "
+             "the nodes advanced and none was behind; Validator signing, the share of blocks that carry the "
+             "validator's signature (blocks while it was not signing at all count as unsigned)")
     if s.remote:
         desc += "; Remote signer, minutes in which it signed without a signer alert"
-    if s.signal:
-        desc += "; Network upgrade, none: it is about an event, not a service"
     if s.fibre:
         desc += "; Fibre serving, minutes with a Fibre server running and not failing every upload"
     if s.tensile:
@@ -1837,7 +1905,7 @@ def first_screen(s):
                    "full or read-only." + more(["ServiceDown", "DiskLow", "NodeBehind"]))
     table, h_table = servers_table(s)
     return [
-        (2, header(s)),
+        (HEADER_ROWS, header(s)),
         (2, [(banner(s), 24)]),
         (3, answer_tiles(s)),
         (h_check, [(status_history(20, "Status", desc, check, h_check, axis), 22),
@@ -1845,17 +1913,22 @@ def first_screen(s):
         (h_servers, [(status_history(22, "", server_desc, servers, h_servers, axis), 22),
                      (uptime_column(23, "", servers, h_servers), 2)]),
         (h_roles, [(role_band(s, roles, h_roles, axis), 22)]),
-        (2, [(key_line(axis), 22)]),
+        (KEY_ROWS, [(key_line(axis), 22)]),
         (h_table, [(table, 24)]),
     ]
 
 
 # The rows below the first screen.
 
-def fact(pid, title, desc, targets, **kw):
-    """A neutral fact inside a row: the value in FACT_PX (or the strip's size) in the text colour."""
+def fact(pid, label, desc, targets, **kw):
+    """A neutral fact inside a row, in a framed, untitled panel: the label (FACT_LABEL_PX) centred over
+    the value (FACT_PX, or the strip's size) in the text colour. The label is the field's display name,
+    so the panel's title bar stays empty and its (i) shows on hover."""
     kw.setdefault("color_mode", "none")
-    return stat(pid, title, desc, targets, size=FACT_PX, **kw)
+    p = stat(pid, "", desc, targets, size=FACT_PX, text_mode="value_and_name", wide=False,
+             title_size=FACT_LABEL_PX, **kw)
+    p["fieldConfig"]["defaults"]["displayName"] = label
+    return p
 
 
 def one(expr):
@@ -1921,7 +1994,7 @@ def validator_row(s):
                  one(last(s, "celestia_mon_signal_validator_version")), unit="prefix:v",
                  mappings=mapping((0, "None", "text")), no_value="Not checked"),
         ]
-    strip = fit_strip(list(zip(facts, strip_widths(len(facts)))), FACT_PX, FACT_SMALL_PX, "Validator facts")
+    strip = fit_strip(list(zip(facts, strip_widths(len(facts)))), FACT_ROWS, "Validator facts")
 
     n = s.N
     charts = [timeseries(
@@ -1997,12 +2070,13 @@ def validator_row(s):
         {"id": "renameByRegex", "options": {"regex": "(.*) process_proposal", "renamePattern": "$1 checking a block"}},
         {"id": "renameByRegex", "options": {"regex": "(.*) finalize_block", "renamePattern": "$1 applying a block"}}]
     charts.append(handling)
-    return [(4, strip)] + flow(charts, 8)
+    return [(FACT_ROWS, strip)] + flow(charts)
 
 
 def fibre_row(s):
-    """The Fibre row: facts, then the charts that explain the Fibre answer. The facts carry no
-    sparkline: in a short tile it runs under the number, and the charts below hold the history."""
+    """The Fibre row: one strip of six facts, then the charts that explain the Fibre answer, two by
+    two. The facts carry no sparkline: in a short tile it runs under the number, and the charts below
+    hold the history."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
     active = 'node_systemd_unit_state{name=%s,state="active"} == 1' % q(s.units["fibre"])
@@ -2020,29 +2094,27 @@ def fibre_row(s):
                   instant=True)],
         unit="percentunit", decimals=1, no_value="No active Fibre",
         overrides=[override("byFrameRefID", "B", unit="none", mappings=mapping((0, "No limit", "text")))])
-    facts = [
-        fact(202, "Uploads accepted, 1 h",
-             "Uploads the active Fibre server accepted and signed in the last hour; Uploads and downloads below shows "
-             "them over the selected time. A low number on a quiet network is normal."
-             + more(pages=[FIBRE_DASHBOARD, TENSILE]),
-             refs([("round(sum(increase(%s[1h])))" % ok, "")]), no_value="No Fibre metrics"),
-        fact(203, "Upload success, 1 h",
-             "Share of upload requests accepted in the last hour. Failures include clients' invalid payment promises and "
-             "uploads refused because the storage budget is full, so a few are not this setup's fault. Every upload "
-             "failing for %s is FibreNotServing." % s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
-             + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
-             refs([("sum(rate(%s[1h])) / (sum(rate(%s[1h])) > 0)" % (ok, count), "")]), unit="percentunit",
-             decimals=1, no_value="No uploads"),
-        budget,
-        fact(205, "Upload time",
-             "How long an accepted upload took for 95 of 100 uploads over 15 minutes: checking the payment promise, "
-             "storing the shard and signing it through the validator's signer. Failed uploads are left out, so quick "
-             "rejections cannot hide slowness." + more(pages=[FIBRE_DASHBOARD]),
-             refs([('histogram_quantile(0.95, sum by (le) (rate(fibre_server_upload_shard_duration_seconds_bucket'
-                    '{success="true"}[15m])))', "")]), unit="s", decimals=None,
-             mappings=special_map("nan", "No uploads")),
-    ]
-    strip = fit_strip([(p, 6) for p in facts], FACT_PX, FACT_SMALL_PX, "Fibre facts")
+    uploads = fact(
+        202, "Uploads accepted, 1 h",
+        "Uploads the active Fibre server accepted and signed in the last hour; Uploads and downloads below shows them "
+        "over the selected time. A low number on a quiet network is normal." + more(pages=[FIBRE_DASHBOARD, TENSILE]),
+        refs([("round(sum(increase(%s[1h])))" % ok, "")]), no_value="No Fibre metrics")
+    success = fact(
+        203, "Upload success, 1 h",
+        "Share of upload requests accepted in the last hour. Failures include clients' invalid payment promises and "
+        "uploads refused because the storage budget is full, so a few are not this setup's fault. Every upload "
+        "failing for %s is FibreNotServing." % s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
+        + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
+        refs([("sum(rate(%s[1h])) / (sum(rate(%s[1h])) > 0)" % (ok, count), "")]), unit="percentunit",
+        decimals=1, no_value="No uploads")
+    upload_time = fact(
+        205, "Upload time",
+        "How long an accepted upload took for 95 of 100 uploads over 15 minutes: checking the payment promise, "
+        "storing the shard and signing it through the validator's signer. Failed uploads are left out, so quick "
+        "rejections cannot hide slowness." + more(pages=[FIBRE_DASHBOARD]),
+        refs([('histogram_quantile(0.95, sum by (le) (rate(fibre_server_upload_shard_duration_seconds_bucket'
+               '{success="true"}[15m])))', "")]), unit="s", decimals=None,
+        mappings=special_map("nan", "No uploads"))
 
     last_ok = "max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds)"
     since = timeseries(
@@ -2072,12 +2144,12 @@ def fibre_row(s):
     last_upload = fact(
         201, "Last accepted upload",
         "When the active Fibre server last accepted an upload. Fibre reports once a minute, so this can be up to about 2 "
-        "minutes late. None since Fibre start: Fibre sends metrics but has accepted no upload since it started. No Fibre "
+        "minutes late. None since start: Fibre sends metrics but has accepted no upload since it started. No Fibre "
         "metrics: no Fibre metrics arrive at all (the Fibre tile reads No metrics or Not running)."
         + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
         one("max(fibre_server_upload_shard_last_success_timestamp_seconds) * 1000 or on () "
             "((count(fibre_server_upload_shard_budget_bytes) > 0) * 0 - 1)"),
-        unit="dateTimeFromNow", mappings=mapping((-1, "None since Fibre start", "text")), no_value="No Fibre metrics")
+        unit="dateTimeFromNow", mappings=mapping((-1, "None since start", "text")), no_value="No Fibre metrics")
     shards = timeseries(
         211, "Uploads and downloads",
         "Requests per minute by outcome, averaged over 30 minutes so a quiet network still draws a readable line. "
@@ -2141,9 +2213,11 @@ def fibre_row(s):
         "failure after a Fibre start counts too (the series appears with it). Fibre's log names the error."
         + more(["DiskLow"], [FIBRE_DASHBOARD]),
         refs([("sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (prune, prune, prune), "")]))
-    fit_strip([(last_upload, 6), (cleanups, 6)], FACT_PX, FACT_SMALL_PX, "Fibre stats")
-    return [(4, strip), (8, [(since, 18), (last_upload, 6)]), (8, [(shards, 12), (store, 12)]),
-            (8, [(response, 18), (cleanups, 6)])]
+    facts = [uploads, success, upload_time, last_upload, budget, cleanups]
+    # The longest text a time-ago value shows, which no mapping names.
+    strip = fit_strip(list(zip(facts, strip_widths(len(facts)))), FACT_ROWS, "Fibre facts",
+                      samples={201: ["a few seconds ago"]})
+    return [(FACT_ROWS, strip)] + [(7, [(since, 12), (shards, 12)]), (7, [(response, 12), (store, 12)])]
 
 
 def upgrade_row(s):
@@ -2175,8 +2249,10 @@ def upgrade_row(s):
                            "((%s == 1) * 0 - 2)" % pending, "((%s == 0) * 0 - 1)" % pending), "", instant=True)],
         unit="dtdurations", color_mode="value", thresholds=steps(("orange", None), ("text", 86400)),
         mappings=mapping((-1, "None pending", "text"), (-2, "Unknown", "text")), no_value="Not checked")
-    fit_strip([(height, 8), (eta, 8)], FACT_PX, FACT_SMALL_PX, "Network upgrade facts")
-    return [(4, [(support, 8), (height, 8), (eta, 8)])]
+    # A duration as Grafana writes it, which no mapping names.
+    strip = fit_strip([(support, 8), (height, 8), (eta, 8)], FACT_ROWS, "Network upgrade facts",
+                      samples={108: ["6 days, 23 hours"]})
+    return [(FACT_ROWS, strip)]
 
 
 def alerts_row(s):
@@ -2298,7 +2374,8 @@ def servers_row(s):
         + more(pages=[NODE_EXPORTER_FULL]),
         refs([("max by (host) (node_timex_offset_seconds)", "{{host}}")]), "s", soft_min=-0.05, soft_max=0.05,
         centered=True)
-    return [(8, [(network, 12), (cpu, 12)]), (8, [(p, 24 // len(middle)) for p in middle]), (8, [(rw, 12), (clock, 12)])]
+    # Two charts a line are h7, three h8, as flow() lays them out.
+    return [(7, [(network, 12), (cpu, 12)])] + flow(middle) + [(7, [(rw, 12), (clock, 12)])]
 
 
 def place(lines, y):

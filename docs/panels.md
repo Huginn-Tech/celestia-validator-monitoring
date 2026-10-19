@@ -17,12 +17,12 @@ Amber and red appear only where an alert rule in [alerts.md](alerts.md) watches 
 
 ### Header
 
-No title bar; the facts sit on the page.
+No title bar: each fact is a small label over a large value, set on the page from the left. A fact that cannot be read says "No data".
 
-- **Name and network**: `celestia_mon_validator_name` (or "Celestia validator") under the network, read from the nodes' own metrics (`chain_id`): "Celestia mainnet" or "Mocha testnet (mocha-5)". A Mocha and a mainnet dashboard cannot be confused.
+- **Name and network**: `celestia_mon_validator_name` (or "Celestia validator") under the network, read from the nodes' own metrics (`chain_id`): "Celestia mainnet" or "Mocha testnet (mocha-5)". A Mocha and a mainnet dashboard cannot be confused. "No node reporting" while no node answers.
 - **Latest block**: the newest block any node of this setup committed. It grows by about 20 a minute; compare it with an explorer or [status.celestia.org](https://status.celestia.org/).
-- **Block time**: the average time between blocks over 5 minutes, from the blocks' own timestamps. About 2.9 s is normal today; slower blocks affect every validator.
-- **Share of voting power**: this validator's share of the active set's voting power. "Out of set" while the chain moves but no node records blocks for the validator's key (jailed, unbonded, outside the set).
+- **Block time**: the average time between blocks over 5 minutes, from the blocks' own timestamps. About 2.9 s is normal today; slower blocks affect every validator. Amber "Stalled" when no block arrived in those 5 minutes.
+- **Share of voting power**: this validator's share of the active set's voting power. "Out of set" while the chain moves but no node records blocks for the validator's key (jailed, unbonded, outside the set); "Stalled" while no block arrives, when the share cannot be read.
 - **Blocks signed, 30 d**: the share of the blocks committed over the last 30 days (or the retention, if shorter) that carry the validator's signature. Blocks while it was not signing at all count as unsigned, and so does the jump of a node that catches up after an outage; time without monitoring is left out. Explorers count over the chain's slashing window, so their number can differ.
 
 ### Verdict
@@ -42,20 +42,19 @@ One word each, amber while the problem an alert watches is true, red once its pa
 
 ### Status board
 
-One line per check and one per server, one bar per time block: 10 minutes on the default 24 hours (144 bars), 1 hour on 7 days, 6 hours on 30 days. The bars follow the time picker and line up with the charts below. The newest bar on the right is the current block and fills in as its minutes pass. A bar shows the worst moment of its block, read from the alert states Prometheus evaluated at the time, so each alert colours exactly one line. A bar is green only while the alert rules ran in its block; grey means no data: before the install, monitoring down, the rules not running, or nothing to check. Hover a bar to see every line at that moment. Each bar is drawn centred on the start of its block, half a block left of the charts below.
+One line per check and one per server, one bar per time block: 10 minutes on the default 24 hours (144 bars), 1 hour on 7 days, 6 hours on 30 days. The bars follow the time picker and line up with the charts below. The newest bar on the right is the current block and fills in as its minutes pass; in its first 30 seconds it shows the 2 minutes before it. A bar shows the worst moment of its block, read from the alert states Prometheus evaluated at the time, so each alert colours one line; NodeBehind colours Node in sync and the line of the server that lags. Network upgrades have no line: the Network upgrade answer and the verdict show them. A bar is green only while the alert rules ran in its block; grey means no data: before the install, monitoring down, the rules not running, or nothing to check. Hover a bar to see every line at that moment. Each bar is drawn centred on the start of its block, half a block left of the charts below.
 
 | Line | Shown | Amber | Red | Uptime % |
 |---|---|---|---|---|
-| New blocks | always | NodeNotAdvancing pending | NodeNotAdvancing fired | minutes in which a node committed a block |
+| Node in sync | always | NodeNotAdvancing pending, NodeBehind fired for any node | NodeNotAdvancing fired | minutes in which the nodes advanced and none was behind |
 | Validator signing | always | ValidatorNotSigning pending, SignaturesMissed fired | ValidatorNotSigning fired | share of the blocks that carry the validator's signature, counted as in Blocks signed |
 | Remote signer | remote signer | RemoteSignerProblem fired; "No signatures" while the chain records misses and no node signs | | minutes in which it signed without a signer alert, among the minutes it was asked to sign |
-| Network upgrade | `celestia_mon_signal` | UpgradeSignalMissing pending, UpgradeSoon, SignalUnreadable | UpgradeSignalMissing fired | none: it marks events |
 | Fibre serving | Fibre on | FibreDown pending, FibreNotServing, FibreBothActive | FibreDown fired (no Fibre unit active) | minutes with a Fibre unit active and uploads not all failing |
 | Fibre from outside | `celestia_mon_tensile` | FibreDown's outside branches pending, TensileUnreadable | FibreDown (unreachable, or not registered or wrong host) fired | minutes in which a check under 15 minutes old reached the registered endpoint |
 | Monitoring | always | MonitoringBroken, NotificationsFailing, DeadmanFailing, AnnouncementsUnreadable; Alertmanager down or not reached; the heartbeat stopped | | minutes with the heartbeat running, Alertmanager up and no monitoring alert |
 | one line per server | always | not reporting, a service down, disk low or read-only, node behind | DiskLow paged (disk full or read-only) | minutes in which all the server's metrics endpoints answered and its disk was not full or read-only |
 
-Green on Remote signer needs real signatures in the block (the median latency freezes when tmkms stops), and green on Network upgrade and Fibre from outside needs a reading under 15 minutes old. While the nodes are stalled, Validator signing turns grey ("Nodes stalled"): ValidatorNotSigning is held back then. Every % leaves out the minutes in which Prometheus did not scrape itself. Prometheus keeps 30 days (`celestia_mon_prometheus_retention`) or 8 GB; older bars are grey.
+Green on Remote signer needs real signatures in the block (the median latency freezes when tmkms stops), and green on Fibre from outside needs a reading under 15 minutes old. While the nodes are stalled, Validator signing turns grey ("Nodes stalled"): ValidatorNotSigning is held back then. Every % leaves out the minutes in which Prometheus did not scrape itself. Prometheus keeps 30 days (`celestia_mon_prometheus_retention`) or 8 GB; older bars are grey.
 
 ### Role band
 
@@ -76,7 +75,7 @@ One row per server, in inventory order, even when nothing is read from it: "no d
 
 ## Validator
 
-Facts first, then one chart per alert, with the alert's threshold drawn on it.
+Facts first, in one strip of small labels over their values, then one chart per alert, with the alert's threshold drawn on it. Charts sit three to a line, or two to a line in wider panels; with four charts, two lines of two.
 
 - **Proposals signed, 24 h**: with a remote signer, the proposals tmkms signed; with a local key, the proposals the node built. **Expected, 24 h**: the blocks of the day times the validator's share of voting power; proposers take turns by stake, so the two should be close. **Missed proposals, 24 h**: times it was the validator's turn and no proposal arrived in time. **Signing failures, 24 h** (remote signer): failed signing requests of every kind; 0 on a healthy setup, and every retry counts. With `celestia_mon_signal`, **App version** and **Our signal**, the version the validator signalled ("None" until it signals). Counts start over when a node restarts.
 - **Blocks since last signature** (ValidatorNotSigning): blocks since the validator's last signature on any node, so the line carries on after a repoint. It turns amber above the dashed line (10 blocks); ValidatorNotSigning pages 2 minutes later. The line stops at 10 times the threshold; right after a node start it reads that until the first signature.
@@ -87,18 +86,17 @@ Facts first, then one chart per alert, with the alert's threshold drawn on it.
 
 ## Fibre
 
-Only with `celestia_mon_fibre_enabled: true`. Only the active Fibre sends Fibre metrics, so the panels follow it after a failover.
+Only with `celestia_mon_fibre_enabled: true`. Only the active Fibre sends Fibre metrics, so the panels follow it after a failover. One strip of six facts, then four charts, two to a line.
 
-- **Uploads accepted, 1 h**, **Upload success, 1 h**, **Storage budget used** and **Upload time** (95 of 100 accepted uploads, 15 minutes), as plain numbers; the charts below hold their history. The storage budget follows the whole network's Fibre data over the 4-hour retention window: near 100% usually means network load; at 100% Fibre refuses uploads. "No limit": the budget is unlimited, or the validator was out of the active set when Fibre started.
-- **Since last accepted upload** (FibreNotServing, stale) with **Last accepted upload** ("3 minutes ago") beside it: a sawtooth that drops with each upload is healthy. The dashed amber line is the alert level: the time 10 uploads take at the server's 7-day average, never under 1 hour (`fibre_stale_uploads`, `fibre_stale_min_seconds`). The axis stops at 3 times that minimum; in the first days of upload data the 7-day average is still young, and the alert level can sit above the chart. A quiet network also makes the time grow: [Tensile](https://tensile.huginn.tech) shows whether the network carries Fibre uploads.
+- **Uploads accepted, 1 h**, **Upload success, 1 h**, **Upload time** (95 of 100 accepted uploads, 15 minutes), **Last accepted upload** ("3 minutes ago"; "None since start" while Fibre reports but has accepted no upload since it started), **Storage budget used** and **Failed clean-ups, 24 h**, as plain numbers; the charts below hold their history. The storage budget follows the whole network's Fibre data over the 4-hour retention window: near 100% usually means network load; at 100% Fibre refuses uploads. "No limit": the budget is unlimited, or the validator was out of the active set when Fibre started. Failed clean-ups are failed runs of Fibre's removal of old shards; 0 on a healthy server. Failed runs fill the store.
+- **Since last accepted upload** (FibreNotServing, stale): a sawtooth that drops with each upload is healthy. The dashed amber line is the alert level: the time 10 uploads take at the server's 7-day average, never under 1 hour (`fibre_stale_uploads`, `fibre_stale_min_seconds`). The axis stops at 3 times that minimum; in the first days of upload data the 7-day average is still young, and the alert level can sit above the chart. A quiet network also makes the time grow: [Tensile](https://tensile.huginn.tech) shows whether the network carries Fibre uploads.
 - **Uploads and downloads** (FibreNotServing, uploads failing): requests per minute by outcome, averaged over 30 minutes, with uploads refused because the budget is full (dashed) apart from the ones that failed.
-- **Fibre disk and budget** (DiskLow, Fibre store): free space on each Fibre store (solid, the standby's too) against the room the active Fibre's budget may still fill (dashed). The dashed line must stay below the solid one.
 - **Fibre response time**: 95 of 100 requests over the last hour for the whole upload, the disk write and the signing through the node and its signer. A rising disk write points at the Fibre disk, a rising signing time at the signer or the link to it.
-- **Failed clean-ups, 24 h**: failed runs of Fibre's removal of old shards; 0 on a healthy server. Failed runs fill the store.
+- **Fibre disk and budget** (DiskLow, Fibre store): free space on each Fibre store (solid, the standby's too) against the room the active Fibre's budget may still fill (dashed). The dashed line must stay below the solid one.
 
 ## Network upgrade
 
-Closed; with `celestia_mon_signal`. **Support for next version**: the share of all voting power that signalled the next version (an upgrade can be scheduled at 5/6). **Upgrade height** and **Time to upgrade** at the measured block time, amber under 24 hours, while an upgrade is scheduled. They read the last value of the past 7 days, as the upgrade alerts do.
+Closed; with `celestia_mon_signal`. One strip of three facts. **Support for next version**, as a bar: the share of all voting power that signalled the next version (an upgrade can be scheduled at 5/6). **Upgrade height** and **Time to upgrade** at the measured block time, amber under 24 hours, while an upgrade is scheduled. They read the last value of the past 7 days, as the upgrade alerts do.
 
 ## All firing alerts
 
