@@ -128,10 +128,13 @@ groups:
       # NodeNotAdvancing: no node of this install committed a new block for 3 minutes (the highest
       # height of all nodes did not change in 2 minutes, and that held for 1 more), or Prometheus
       # read no node's height for as long. It shows that nothing advances, not whether a node that
-      # advances is at the network's head.
+      # advances is at the network's head. A window with a single height (the first evaluation
+      # after Prometheus starts, or the last height of a node that just stopped) shows no change
+      # either way, so it needs two; a node that stopped is caught when its height leaves the window.
       - alert: NodeNotAdvancing
         expr: >-
-          changes(max(cometbft_consensus_height{job="celestia-app"})[2m:]) == 0
+          (changes(max(cometbft_consensus_height{job="celestia-app"})[2m:]) == 0
+            and on () count_over_time(max(cometbft_consensus_height{job="celestia-app"})[2m:]) > 1)
           or sum(absent_over_time(cometbft_consensus_height{job="celestia-app"}[2m]))
         for: 1m
         labels:

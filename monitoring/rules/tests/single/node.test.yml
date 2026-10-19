@@ -52,9 +52,11 @@ tests:
         alertname: ValidatorNotSigning
         exp_alerts: []
 
-  # celestia-appd stops at 5m and its series end. At 5m the 2-minute window holds one height
-  # (no change); from 6m it holds none, so no node reports a height and the alert fires.
-  # ServiceDown sends the messages (servicedown.test.yml).
+  # celestia-appd stops at 5m and its series end. At 5m the 2-minute window holds one height,
+  # which shows no change but is too little to tell; from 6m it holds none, so no node reports a
+  # height: the alert is pending from 6m and fires at 7m. (At the real 15 s evaluation interval the
+  # single-height step lasts 15 s, not a minute.) ServiceDown sends the messages
+  # (servicedown.test.yml).
   - name: celestia-appd down; no node reports a height and NodeNotAdvancing pages
     interval: 1m
     input_series:
@@ -65,10 +67,10 @@ tests:
           cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
         values: '999+10x4 stale'
     alert_rule_test:
-      - eval_time: 5m
+      - eval_time: 6m
         alertname: NodeNotAdvancing
         exp_alerts: []
-      - eval_time: 6m
+      - eval_time: 7m
         alertname: NodeNotAdvancing
         exp_alerts:
           - exp_labels:
@@ -90,6 +92,23 @@ tests:
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+
+  # Prometheus has just started: at 0m the 2-minute window holds the height's first sample only.
+  # One sample shows no change, which must not count as a stall: not even a pending alert.
+  - name: Fresh start; a single height sample is no stall
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x10'
+    promql_expr_test:
+      - expr: ALERTS{alertname="NodeNotAdvancing"}
+        eval_time: 0m
+        exp_samples: []
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
 
   # The last own signature is at 5m (height 1049). From 6m the gap is above 10 blocks,
   # and after 2 more minutes the alert fires.

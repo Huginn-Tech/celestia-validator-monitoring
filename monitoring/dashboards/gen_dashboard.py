@@ -172,12 +172,26 @@ RAW = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message
 # The misses are counted as in missed_in() below.
 IN_SET = ("(max(changes(%s[2m])) > 0 or max(%s - min_over_time(%s[2m])) > 0)"
           % (LSH, MISSED, MISSED))
-# NodeNotAdvancing's own pending condition: no node committed a block in 2 minutes.
-STALL = "(changes(max(%s)[2m:]) == 0)" % H
+# IN_SET, or too new to tell: the last signed height has fewer than two samples in the 2 minutes
+# (right after Prometheus or the node starts). Readings that would say "Out of set" use this, so a
+# start never reads as out of the set.
+IN_SET_OR_NEW = "(%s or max(count_over_time(%s[2m])) < 2)" % (IN_SET, LSH)
+# NodeNotAdvancing's own pending condition: no node committed a block in 2 minutes. A window with
+# a single height (right after Prometheus starts) shows no change either way, so it needs two.
+STALL_SEEN = "(count_over_time(max(%s)[2m:]) > 1)" % H
+STALL = "((changes(max(%s)[2m:]) == 0) and on () %s)" % (H, STALL_SEEN)
 # Blocks since the validator's last signature on any node, uncapped, as ValidatorNotSigning.
 BLOCKS_SINCE = "(max(%s) - (max(%s) or max(%s) * 0))" % (H, LSH, H)
-# Prometheus scraped itself in this minute: minutes without monitoring leave every share.
-PROM = '(max(count_over_time(up{job="prometheus"}[1m])) > 0)'
+# Prometheus scraped itself through this minute (three of its four 15 s scrapes): minutes without
+# monitoring leave every share, and so does the minute in which Prometheus starts, whose rules have
+# not run yet.
+PROM = '(max(count_over_time(up{job="prometheus"}[1m])) >= 3)'
+# Prometheus handing alerts to Alertmanager. In the pinned Prometheus (notifier/sendloop.go), sent
+# counts alerts only when a send succeeds, errors only when it fails.
+NOTIFY_ERRORS = 'prometheus_notifications_errors_total{job="prometheus"}'
+NOTIFY_DROPPED = 'prometheus_notifications_dropped_total{job="prometheus"}'
+NOTIFY_SENT = 'prometheus_notifications_sent_total{job="prometheus"}'
+AM_DISCOVERED = 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}'
 NNA = 'max(ALERTS{alertname="NodeNotAdvancing"})'
 # 10 while the page alert fires, else 0: added to a code, it turns the amber word red.
 VNS10 = '(max(ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}) * 10 or vector(0))'
@@ -675,6 +689,17 @@ def missed_in(window):
     return "(%s - min_over_time(%s[%s]))" % (MISSED, MISSED, window)
 
 
+def count_24h(expr, agg, job="celestia-app"):
+    """How much a counter (expr) of job's targets grew over the last 24 hours, or since monitoring
+    started when that is less, as a whole number. Each target is read once a minute, combined per host
+    with agg (sum or max); a target that is up but has not counted yet reads 0, so a counter that
+    appears with its first increment counts from 0, and a restart counts as a reset, never as a drop.
+    A plain "now minus 24 hours ago" would count from the process start when Prometheus holds less
+    than a day, and lose the count before a restart."""
+    return ("round(%s(increase((%s by (host) (%s) or on (host) (max by (host) (up{job=%s} == 1) * 0))"
+            "[24h:1m]))) or on () vector(0)" % (agg, agg, expr, q(job)))
+
+
 def missed_in_block():
     """missed_in() for a status bar's time block: its last sample minus its lowest one."""
     return "(%s - %s)" % (in_block("last_over_time", MISSED), in_block("min_over_time", MISSED))
@@ -810,6 +835,15 @@ def uptime(inner):
     return "avg_over_time((%s)[$__range:1m])" % inner
 
 
+def unsent(window):
+    """Prometheus failed to hand alerts to Alertmanager in the last window and handed none over, or
+    knows no Alertmanager. A send that succeeds clears it at once, so it does not linger after
+    Alertmanager recovers."""
+    return ("((((sum(increase(%s[%s])) > 0) or (sum(increase(%s[%s])) > 0)) unless on () "
+            "(sum(increase(%s[%s])) > 0)) or (max(%s) == 0))"
+            % (NOTIFY_ERRORS, window, NOTIFY_DROPPED, window, NOTIFY_SENT, window, AM_DISCOVERED))
+
+
 def signed_share(s, rng, step, cap):
     """The share of the blocks committed over rng that carry the validator's signature, from exact
     differences per step: a step in which the validator was not signing at all (more than
@@ -913,10 +947,9 @@ def synth_items(s):
         (2.95, "Alert rules are not running", "Rules stopped", "(time() - max(%s) > 120)" % evaluated),
         (2.95, "Alert rules are not running", "Rules stopped", "max(absent(%s))" % evaluated),
         (2.9, "Alertmanager down, alerts not sent", "Alerting down", '(min(up{job="alertmanager"}) == 0)'),
+        # Not while Alertmanager is down: "Alerting down" already says so, as one item.
         (2.85, "Alerts not reaching Alertmanager", "Alerts unsent",
-         '((sum(increase(prometheus_notifications_errors_total{job="prometheus"}[10m])) > 0) '
-         'or (sum(increase(prometheus_notifications_dropped_total{job="prometheus"}[10m])) > 0) '
-         'or (max(prometheus_notifications_alertmanagers_discovered{job="prometheus"}) == 0))'),
+         '(%s unless on () (min(up{job="alertmanager"}) == 0))' % unsent("3m")),
         # A failed notification stops the Watchdog for an hour, also after NotificationsFailing cleared.
         (2.8, "A notification failed in the last hour", "No heartbeat",
          '(((((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 1) '
@@ -1099,11 +1132,11 @@ def intro(s):
         (4, "Voting power",
          "This validator's share of all voting power in the active set. It sets how often the validator proposes "
          "blocks and how much Fibre data it stores. A drop means delegations left or the validator was slashed. "
-         "'Inactive': the chain moves but no node records blocks for the validator's key (jailed, unbonded or "
-         "outside the active set). While no node reports or no block arrives, the share cannot be read, and the "
-         "words say so.",
+         "'Out of set': the chain moves but no node records blocks for the validator's key (jailed, unbonded or "
+         "outside the active set); never in the first 2 minutes after a start, which are too short to tell. While "
+         "no node reports or no block arrives, the share cannot be read, and the words say so.",
          chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
-               "((max(%s) / max(%s)) and on () %s)" % (POWER, TOTAL, IN_SET), "(max(%s) * 0 - 3)" % H),
+               "((max(%s) / max(%s)) and on () %s)" % (POWER, TOTAL, IN_SET_OR_NEW), "(max(%s) * 0 - 3)" % H),
          dict(unit="percentunit", decimals=2, no_value="No data",
               mappings=mapping((-1, "No data", GREY), (-2, "Stalled", GREY), (-3, "Out of set", GREY)))),
         (5, signed,
@@ -1147,7 +1180,7 @@ def validator_tile(s):
         "(max(absent(%s)) * 0 + 7) + on () %s" % (H, NNA10),
         "(%s * 0 + 5) + on () %s" % (STALL, NNA10),
         '((((%s > %s) * 0 + 6 and on () (min(up{job="celestia-app"}) == 0)) or ((max(%s) * 0 + 4) unless on () %s) '
-        "or (%s > %s) * 0 + 3) + on () %s)" % (BLOCKS_SINCE, n, POWER, IN_SET, BLOCKS_SINCE, n, VNS10),
+        "or (%s > %s) * 0 + 3) + on () %s)" % (BLOCKS_SINCE, n, POWER, IN_SET_OR_NEW, BLOCKS_SINCE, n, VNS10),
         "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
         % (missed_in("1h"), num(s.R), H),
         "max(%s) * 0 + 1" % H)
@@ -1180,7 +1213,7 @@ def signing_tile(s):
         "(count(%s) > 1) * 0 + 30" % sig if s.remote else None,
         "max(%s and on (host) %s)" % (lookup(s.nodes), sig),
         '((min(up{job="celestia-app"}) == 0) * 0 + 32) + on () %s' % VNS10,
-        "((max(%s) * 0 + 34) unless on () %s)" % (POWER, IN_SET),
+        "((max(%s) * 0 + 34) unless on () %s)" % (POWER, IN_SET_OR_NEW),
         "(max(%s) * 0 + 33) + on () %s" % (H, VNS10))
     words = [(i + 1, h, "text") for i, h in enumerate(s.nodes)]
     if s.remote:
@@ -1475,6 +1508,11 @@ def check_lanes(s):
         lanes.append(
             ("C", "Remote signer",
              chain("%s * 0 + 2" % firing('alertname="RemoteSignerProblem"'),
+                   # A minute of the block with misses and no signature: one signature elsewhere in
+                   # the block does not make it green.
+                   "max(%s) * 0 + 4" % in_block(
+                       "max_over_time", "(((sum(increase(%s[1m])) or on () vector(0)) == 0) and on () (sum(%s) > 0))"
+                       % (PV, missed_in("1m")), sub=True),
                    "((sum(%s) > 0) and on () %s) * 0 + 1" % (in_block("increase", PV), gate),
                    "(sum(%s) > 0) * 0 + 4" % missed_in_block(),
                    nodata()),
@@ -1527,21 +1565,25 @@ def check_lanes(s):
          chain("%s * 0 + 4" % firing('alertname="MonitoringBroken"'),
                "%s * 0 + 5" % firing('alertname=~"NotificationsFailing|DeadmanFailing"'),
                "%s * 0 + 6" % down("alertmanager"),
-               "((sum(%s) > 0) or (sum(%s) > 0) or (max(%s) == 0)) * 0 + 9"
-               % (in_block("increase", 'prometheus_notifications_errors_total{job="prometheus"}'),
-                  in_block("increase", 'prometheus_notifications_dropped_total{job="prometheus"}'),
-                  in_block("min_over_time", 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}')),
+               # Alerts not handed over in the block and none handed over, as unsent().
+               "((((sum(%s) > 0) or (sum(%s) > 0)) unless on () (sum(%s) > 0)) or (max(%s) == 0)) * 0 + 9"
+               % (in_block("increase", NOTIFY_ERRORS), in_block("increase", NOTIFY_DROPPED),
+                  in_block("increase", NOTIFY_SENT), in_block("min_over_time", AM_DISCOVERED)),
                "%s * 0 + 7" % firing('alertname="AnnouncementsUnreadable"') if s.announcements else None,
-               "(%s * 0 + 8 unless on () %s)" % (seen('up{job="prometheus"}'),
-                                                 seen('ALERTS{alertname="Watchdog",alertstate="firing"}')),
-               "%s * 0 + 1" % seen('up{job="prometheus"}')),
+               # No heartbeat in the block, except the block in which Prometheus started: its rules
+               # have not run yet.
+               "((%s * 0 + 8 unless on () %s) unless on () (max(%s) > time()))"
+               % (seen('up{job="prometheus"}'), seen('ALERTS{alertname="Watchdog",alertstate="firing"}'),
+                  in_block("max_over_time", 'process_start_time_seconds{job="prometheus"}')),
+               "%s * 0 + 1" % seen('ALERTS{alertname="Watchdog",alertstate="firing"}'),
+               "%s * 0" % seen('up{job="prometheus"}')),
          uptime('(((max(ALERTS{alertname="Watchdog",alertstate="firing"}) * 0 + 1) unless on () '
                 'max(ALERTS{alertname=~"MonitoringBroken|NotificationsFailing|DeadmanFailing|AnnouncementsUnreadable",'
-                'alertstate="firing"}) unless on () (min(up{job="alertmanager"}) == 0)) or on () (%s * 0)) and on () %s'
-                % (PROM, PROM)),
+                'alertstate="firing"}) unless on () (min(up{job="alertmanager"}) == 0) unless on () %s) '
+                "or on () (%s * 0)) and on () %s" % (unsent("2m"), PROM, PROM)),
          [(1, "Working", OK), (4, "Alert rules failing", WARN), (5, "Alerts not delivered", WARN),
           (6, "Alertmanager down", WARN), (9, "Alertmanager not reached", WARN), (7, "Announcements not read", WARN),
-          (8, "Heartbeat stopped", WARN)]))
+          (8, "Heartbeat stopped", WARN), (0, "No data", NODATA)]))
     return lanes
 
 
@@ -1642,8 +1684,11 @@ def role_lanes(s):
     lanes = [("A", "Signing through", gated(chain(
         "(%s unless on () %s) * 0 - 4" % (firing('alertname="ValidatorNotSigning"'),
                                           firing('alertname="NodeNotAdvancing"')),
-        "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "(changes(max(%s)[2m:]) == bool 0)" % H, sub=True),
-        "((max(%s) * 0 - 2) unless on () %s)" % (POWER, IN_SET),
+        "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "((changes(max(%s)[2m:]) == bool 0) and on () %s)"
+                                            % (H, STALL_SEEN), sub=True),
+        # Out of the set at some step of the block, as the board reads every line: never from one reading.
+        "(max(%s) == 1) * 0 - 2" % in_block("max_over_time", "((max(%s) * 0 + 1) unless on () %s)"
+                                            % (POWER, IN_SET_OR_NEW), sub=True),
         "(max(%s) == 1) * 0 - 5" % in_block("max_over_time", two_signers(s), sub=True)
         if s.remote and not s.multi else None,
         "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "((count(%s) or vector(0)) > bool 1)" % sig, sub=True)
@@ -1661,6 +1706,9 @@ def role_lanes(s):
         lanes.append(("B", "Fibre active on", gated(chain(
             "%s * 0 - 4" % firing('alertname="FibreDown",check=""'),
             "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "(count(%s) > bool 1)" % seen_f, sub=True),
+            # No Fibre at some step of the block, so a short outage still shows on long ranges.
+            '((min(%s) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))'
+            % in_block("min_over_time", "(count(%s) or vector(0))" % seen_f, sub=True),
             "max(%s and on (host) %s)" % (lookup(s.fibre_hosts), seen_f),
             "(count(%s) > 0) * 0 - 5" % fibre_lost(s),
             '(((count(%s) or vector(0)) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))' % seen_f)),
@@ -1672,8 +1720,11 @@ def role_lanes(s):
         raw = ["max(%s and on (host) (sum by (host) (increase(%s[%s])) > 0))" % (lookup(s.nodes), RAW, w)
                for w in ("15m", "1h")]
         fsv = "(%s or %s)" % tuple(raw)
+        # Amber only while a node signs for the validator and Fibre's node is another: while no node
+        # signs (tmkms down), that is the signer's outage, not Fibre's setup.
         lanes.append(("C", "Fibre signs through", gated(chain(
-            "(%s + 100 unless on () (%s == on () max(%s and on (host) %s)))" % (fsv, fsv, lookup(s.nodes), sig),
+            "((%s + 100 unless on () (%s == on () max(%s and on (host) %s))) unless on () absent(%s))"
+            % (fsv, fsv, lookup(s.nodes), sig, sig),
             fsv,
             "(count(%s) * 0 - 1)" % fibre_seen(s))),
             [(i + 1, h, s.tint(h)) for i, h in enumerate(s.nodes)]
@@ -1815,7 +1866,9 @@ def servers_table(s):
     for link in s.links:
         sel = "{host=%s,device!~%s}" % (q(link["host"]), q(VIRT))
         cap = link_capacity(link, sel)
-        rates = ["max_over_time((sum by (host) (rate(node_network_%s_bytes_total%s[1m])))[1h:1m])" % (m, sel)
+        # A 75 s window holds a full minute of 15 s scrapes; [1m] would hold 45 s of them and read
+        # the busiest 45 seconds instead of the busiest minute.
+        rates = ["max_over_time((sum by (host) (rate(node_network_%s_bytes_total%s[75s])))[1h:1m])" % (m, sel)
                  for m in ("receive", "transmit")]
         peaks.append('(max by (host) (%s or %s) or ((max by (host) (up{job="node",host=%s}) == 1) * 0 - 4))'
                      % (label("%s / %s" % (rates[0], cap), "dir", "in"), label("%s / %s" % (rates[1], cap), "dir", "out"),
@@ -1991,8 +2044,8 @@ def first_screen(s):
         desc += "; Fibre serving, minutes with a Fibre server running and not failing every upload"
     if s.tensile:
         desc += "; Fibre from outside, minutes in which a recent outside check reached the right endpoint"
-    desc += ("; Monitoring, minutes with alert rules running, Alertmanager up and the heartbeat flowing. Time without "
-             "monitoring data is left out." + more(pages=[("Alert reference", DOCS)]))
+    desc += ("; Monitoring, minutes with alert rules running, Alertmanager up and reached, and the heartbeat flowing. "
+             "Time without monitoring data is left out, the minute Prometheus starts included." + more(pages=[("Alert reference", DOCS)]))
     server_desc = ("One line per server: red when its disk is full or read-only (DiskLow pages), amber when it is not "
                    "reporting, a service is down, its disk runs low or turns read-only, or its node falls behind. "
                    "Uptime at the right: minutes in which all of the server's metrics answered and its disk was not "
@@ -2032,49 +2085,46 @@ def one(expr):
 def validator_row(s):
     """The Validator row: facts, then the charts that explain the Validator and Signing through answers,
     each the home of one alert with its threshold drawn."""
+    span = "over the last 24 hours, or since monitoring started when that is less"
     if s.remote:
         pvp = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="proposal"}'
-        proposals = "sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (pvp, pvp, pvp)
+        proposals = count_24h(pvp, "sum")
         proposals_desc = "remote signer: proposals tmkms actually signed"
     else:
-        pcc = 'cometbft_consensus_proposal_create_count{job="celestia-app"}'
-        proposals = "max(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (pcc, pcc, pcc)
+        proposals = count_24h('cometbft_consensus_proposal_create_count{job="celestia-app"}', "sum")
         proposals_desc = "local key: proposals the node built"
     mpp = 'cometbft_consensus_proposer_missed_proposals{job="celestia-app"}'
+    own = ('label_replace(max by (validator_address) (%s), "proposer_address", "$1", "validator_address", "(.+)")'
+           % POWER)
     facts = [
         fact(101, "Proposals signed, 24 h",
-             "Block proposals the validator signed in the last 24 hours (%s). Compare with Expected: a signer that signs "
-             "votes but not proposals shows here as far fewer. A node restart starts its count again." % proposals_desc,
+             "Block proposals the validator signed %s (%s), across node restarts. Compare with Expected: a signer that "
+             "signs votes but not proposals shows here as far fewer." % (span, proposals_desc),
              one(proposals)),
         fact(102, "Expected, 24 h",
-             "Proposals the validator's share of voting power should bring in 24 hours: blocks in 24 hours times that "
-             "share. Proposers take turns by stake, so Proposals signed should be close. Assumes the share was the same "
-             "all day. 'Needs 24 h': Prometheus has less than a day of data.",
+             "Proposals the validator's share of voting power should bring %s: the blocks in that time times that "
+             "share. Proposers take turns by stake, so Proposals signed should be close. Assumes the share stayed the "
+             "same." % span,
              one(chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
-                       "(round((max(%s) - max(%s offset 24h)) * max(%s) / max(%s)) and on () %s)"
-                       % (H, H, POWER, TOTAL, IN_SET),
-                       "((max(%s) * 0 - 4) unless on () max(%s offset 24h))" % (H, H), "(max(%s) * 0 - 3)" % H)),
-             mappings=mapping((-1, "No node", GREY), (-2, "No new blocks", GREY), (-3, "Out of set", GREY),
-                              (-4, "Needs 24 h", GREY))),
+                       "(round((max(%s) - max(min_over_time(%s[24h]))) * max(%s) / max(%s)) and on () %s)"
+                       % (H, H, POWER, TOTAL, IN_SET_OR_NEW), "(max(%s) * 0 - 3)" % H)),
+             mappings=mapping((-1, "No node", GREY), (-2, "No new blocks", GREY), (-3, "Out of set", GREY))),
         fact(103, "Missed proposals, 24 h",
-             "Times in the last 24 hours when it was this validator's turn to propose and no proposal reached the nodes "
-             "in time, so the block went to another round. Causes: the remote signer could not sign the proposal, the "
-             "node built the block too slowly, or the upload to peers was too slow. Occasional misses on a busy network "
-             "are normal; several a day are not.",
-             one('max((((%s - %s offset 24h) >= 0) or %s) and on (proposer_address) label_replace(max by '
-                 '(validator_address) (%s), "proposer_address", "$1", "validator_address", "(.+)")) or on () vector(0)'
-                 % (mpp, mpp, mpp, POWER))),
+             "Times %s when it was this validator's turn to propose and no proposal reached the nodes in time, so the "
+             "block went to another round. Causes: the remote signer could not sign the proposal, the node built the "
+             "block too slowly, or the upload to peers was too slow. Occasional misses on a busy network are normal; "
+             "several a day are not." % span,
+             one(count_24h("%s and on (proposer_address) %s" % (mpp, own), "max"))),
     ]
     if s.remote:
-        sf = 'cometbft_privval_signing_failures_total{job="celestia-app"}'
         facts.append(fact(
             113, "Signing failures, 24 h",
-            "Failed signing requests in the last 24 hours, every kind and reason (votes, proposals, Fibre's raw bytes; "
-            "timeout, no_connection and others); 0 on a healthy setup. Every retry counts, so a short KMS outage shows "
-            "as many. Proposals that fail for another reason than a timeout are RemoteSignerProblem: the Servers now "
-            "table shows 'Proposals fail' on that node. raw_bytes failures only: tmkms is too old for Fibre. The first "
-            "failure of each kind after a node start is counted too." + more(["RemoteSignerProblem"]),
-            one("sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (sf, sf, sf))))
+            "Failed signing requests %s, every kind and reason (votes, proposals, Fibre's raw bytes; timeout, "
+            "no_connection and others); 0 on a healthy setup. Every retry counts, so a short KMS outage shows as many. "
+            "Proposals that fail for another reason than a timeout are RemoteSignerProblem: the Servers now table shows "
+            "'Proposals fail' on that node. raw_bytes failures only: tmkms is too old for Fibre. The first failure of "
+            "each kind after a node start is counted too." % span + more(["RemoteSignerProblem"]),
+            one(count_24h('cometbft_privval_signing_failures_total{job="celestia-app"}', "sum"))))
     if s.signal:
         facts += [
             fact(104, "App version",
@@ -2236,8 +2286,8 @@ def fibre_row(s):
                             custom__lineWidth=1)])
     last_upload = fact(
         201, "Last accepted upload",
-        "When the active Fibre server last accepted an upload. Fibre reports once a minute, so this can be up to about 2 "
-        "minutes late. None since start: Fibre sends metrics but has accepted no upload since it started. No Fibre "
+        "When the active Fibre server last accepted an upload. Fibre pushes its metrics at its OTLP export interval "
+        "(up to a minute by default), so this can be up to a minute late. None since start: Fibre sends metrics but has accepted no upload since it started. No Fibre "
         "metrics: no Fibre metrics arrive at all (the Fibre tile reads No metrics or Not running)."
         + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
         one("max(fibre_server_upload_shard_last_success_timestamp_seconds) * 1000 or on () "
@@ -2301,11 +2351,12 @@ def fibre_row(s):
     prune = 'fibre_server_prune_duration_seconds_count{job="otelcol",success="false"}'
     cleanups = fact(
         214, "Failed clean-ups, 24 h",
-        "Fibre removes shards older than the retention window (4 hours by default) about once a minute. A failed run "
+        "Fibre removes shards older than the retention window (4 hours by default) about once a minute. Failed runs "
+        "over the last 24 hours, or since monitoring started when that is less, across Fibre restarts. A failed run "
         "means old shards stay on disk, so the store fills and DiskLow fires later. 0 on a healthy server; the first "
         "failure after a Fibre start counts too (the series appears with it). Fibre's log names the error."
         + more(["DiskLow"], [FIBRE_DASHBOARD]),
-        refs([("sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (prune, prune, prune), "")]))
+        one(count_24h(prune, "sum", "otelcol")))
     facts = [uploads, success, upload_time, last_upload, budget, cleanups]
     # The longest text a time-ago value shows, which no mapping names.
     strip = fit_strip(list(zip(facts, strip_widths(len(facts)))), FACT_ROWS, "Fibre facts",
@@ -2403,7 +2454,8 @@ def servers_row(s):
     if s.fibre:
         traffic += [("sum by (host) (rate(fibre_server_upload_shard_bytes_total[5m])) * 8", "{{host}} Fibre shards accepted"),
                     ("sum by (host) (rate(fibre_server_download_shard_bytes_total[5m])) * 8", "{{host}} Fibre shards served")]
-        desc += (" Fibre reports once a minute, so every line uses the same 5-minute window. The dashed Fibre lines count "
+        desc += (" Fibre pushes its metrics up to a minute apart, so every line uses the same 5-minute window. The dashed "
+                 "Fibre lines count "
                  "shard row data that was signed, including re-uploads of a shard already held, without proofs, RLC or "
                  "rejected uploads. They are drawn over the NIC line, not subtracted from it; the gap covers consensus "
                  "P2P, RPC, row proofs and RLC, TLS, and rejected uploads.")

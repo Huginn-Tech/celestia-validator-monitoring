@@ -276,7 +276,8 @@ tests:
         alertname: NodeBehind
         exp_alerts: []
 
-  # Both nodes' series end at 5m: from 6m Prometheus reads no height at all.
+  # Both nodes' series end at 5m: from 6m Prometheus reads no height at all, so the alert is
+  # pending from 6m and fires at 7m (a window with a single height at 5m is no stall).
   - name: No node reports a height; NodeNotAdvancing pages
     interval: 1m
     input_series:
@@ -287,10 +288,10 @@ tests:
           cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
         values: '1000+10x4 stale'
     alert_rule_test:
-      - eval_time: 5m
+      - eval_time: 6m
         alertname: NodeNotAdvancing
         exp_alerts: []
-      - eval_time: 6m
+      - eval_time: 7m
         alertname: NodeNotAdvancing
         exp_alerts:
           - exp_labels:
