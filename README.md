@@ -4,8 +4,8 @@ Ready-made monitoring for Celestia validators running Fibre.
 
 It watches a consensus validator, its Fibre server and its remote signer (tmkms), on one host or split across validator, KMS, Fibre and monitor hosts, with optional backup nodes and a standby Fibre; when tmkms moves to a backup node or a standby Fibre takes over, the alerts and the dashboard follow. It ships:
 
-- one Grafana dashboard of up to 16 panels (10 with a local signer and Fibre off): is the node advancing, is the validator signing, is the remote signer within Celestia's 10 ms requirement, is Fibre serving, how full the links and the Fibre storage budget are, and are the hosts healthy;
-- fourteen alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
+- one Grafana dashboard of up to 19 panels (11 with a local signer, Fibre off and one node): is the node advancing, is the validator signing, is the remote signer within Celestia's 10 ms requirement, is Fibre serving, how full the links and the Fibre storage budget are, and are the hosts healthy;
+- fifteen alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
 - optionally, Celestia's announcements from its Discord (upgrades, incidents) through the same receivers, PagerDuty included;
 - `celestia-mon-doctor`, a read-only check of each host's setup.
 

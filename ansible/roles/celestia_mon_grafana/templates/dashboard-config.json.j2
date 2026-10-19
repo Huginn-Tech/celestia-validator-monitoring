@@ -2,13 +2,16 @@
     Uses only the shared celestia_mon_* settings and vars, groups and hostvars, so tools/ci/render.yml
     can render it too. Per-host values come from hostvars with defaults, because
     role defaults are not part of other hosts' hostvars. -#}
-{%- set ns = namespace(fibre=[], data=[], links=[]) -%}
+{%- set ns = namespace(fibre=[], endpoints=[], data=[], links=[]) -%}
 {#- nodes: the celestia-appd hosts, the validator first, then the backup nodes. -#}
 {%- set nodes = celestia_mon_appd_hosts | list -%}
-{#- Every fibre host, the active one and the standbys: which one is active is read from systemd at runtime. -#}
+{#- Every fibre host, the active one and the standbys: which one is active is read from systemd at runtime.
+    fibre_endpoints: each one's celestia_mon_fibre_public_endpoint ('' when not set), which the
+    registration must name while that host's Fibre is the active one. -#}
 {%- if celestia_mon_fibre_enabled | bool -%}
 {%-   for h in groups.get('fibre', []) -%}
 {%-     set ns.fibre = ns.fibre + [{'host': h, 'mount': hostvars[h].celestia_mon_fibre_mount | default('')}] -%}
+{%-     set ns.endpoints = ns.endpoints + [{'host': h, 'endpoint': hostvars[h].celestia_mon_fibre_public_endpoint | default('') | trim}] -%}
 {%-   endfor -%}
 {%- endif -%}
 {#- The hosts node_exporter runs on: validator, backup_node, fibre, and kms hosts with
@@ -30,6 +33,7 @@
   'thresholds': celestia_mon_thresholds,
   'nodes': nodes,
   'fibre_mounts': ns.fibre,
+  'fibre_endpoints': ns.endpoints,
   'data_mounts': ns.data,
   'links': ns.links,
 } | to_nice_json }}

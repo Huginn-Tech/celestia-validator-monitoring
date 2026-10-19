@@ -70,6 +70,7 @@
     - role: celestia_mon_prometheus
     - role: celestia_mon_alertmanager
     - role: celestia_mon_announcements
+    - role: celestia_mon_tensile
     - role: celestia_mon_grafana
   tasks:
     - name: Install doctor

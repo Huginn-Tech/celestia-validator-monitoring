@@ -1,0 +1,4 @@
+---
+# How often Tensile is read. Its own checks of the endpoint run less often; FibreDown
+# compares their time with now.
+celestia_mon_tensile_interval_seconds: 60

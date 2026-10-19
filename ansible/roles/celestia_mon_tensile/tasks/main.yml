@@ -1,0 +1,148 @@
+---
+# The validator's Fibre endpoint seen from outside, on the monitor host. celestia-mon-tensile
+# (tools/celestia-mon-tensile) reads the validator's status from Tensile's API and serves the
+# registered endpoint, its reachability from outside and the time of Tensile's last check as
+# metrics for FibreDown. Off while celestia_mon_tensile names no validator; turned off after it
+# ran, it is removed again.
+- name: Check the Tensile settings
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_tensile is mapping
+      - celestia_mon_tensile.validator | default('') | string is match('^(celestiavalcons1[0-9a-z]+|celestiavaloper1[0-9a-z]+|[0-9A-Fa-f]{40})$')
+      - >-
+        celestia_mon_tensile.api | default('') | string is match('^https://[^/]+/')
+        or celestia_mon_tensile.api | default('') | string is match('^http://127[.]0[.]0[.]1[:/]')
+    fail_msg: >-
+      celestia_mon_tensile must be {api: "<Tensile API base for your network>", validator: "<validator address>"}: the API
+      base such as https://tensile-mocha.huginn.tech/api/v1 for Mocha, and the validator's consensus address
+      (celestiavalcons1...), operator address (celestiavaloper1...) or 40-hex consensus address.
+    quiet: true
+  when: celestia_mon_tensile.validator | default('') | length > 0
+
+- name: Install celestia-mon-tensile
+  when: celestia_mon_tensile.validator | default('') | length > 0
+  block:
+    - name: Check that nothing else listens on the Tensile port
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: port_check
+      vars:
+        celestia_mon_port_check_port: "{{ celestia_mon_ports.tensile }}"
+        celestia_mon_port_check_unit: celestia-mon-tensile
+
+    - name: Create the celestia-mon-tensile user
+      ansible.builtin.user:
+        name: celestia-mon-tensile
+        system: true
+        shell: /usr/sbin/nologin
+        home: /nonexistent
+        create_home: false
+
+    - name: Look for the celestia-mon-tensile unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-tensile.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_tensile_unit
+
+    - name: Note whether celestia-mon-tensile is installed
+      ansible.builtin.set_fact:
+        celestia_mon_tensile_present: "{{ celestia_mon_tensile_unit.stat.exists }}"
+
+    - name: Create the Tensile directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /opt/celestia-mon
+        - "{{ celestia_mon_tensile_dir }}"
+        - /etc/celestia-mon
+        - "{{ celestia_mon_tensile_config_dir }}"
+
+    - name: Install the Tensile script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../tools/celestia-mon-tensile"
+        dest: "{{ celestia_mon_tensile_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      # The script is code, not a setting: no diff of it in the dry run.
+      diff: false
+      notify: Restart celestia-mon-tensile
+
+    - name: Write the Tensile settings
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ celestia_mon_tensile_config }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart celestia-mon-tensile
+
+    - name: Install the celestia-mon-tensile systemd unit
+      ansible.builtin.template:
+        src: celestia-mon-tensile.service.j2
+        dest: /etc/systemd/system/celestia-mon-tensile.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: celestia_mon_tensile_unit_file
+      notify: Restart celestia-mon-tensile
+
+    # Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+    # that someone else edited on disk and has not reloaded yet.
+    - name: Start celestia-mon-tensile and enable it at boot
+      ansible.builtin.systemd_service:
+        name: celestia-mon-tensile
+        enabled: true
+        state: started
+        daemon_reload: "{{ celestia_mon_tensile_unit_file is changed }}"
+      when: celestia_mon_tensile_present or not ansible_check_mode
+
+    - name: Apply a pending celestia-mon-tensile restart
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for celestia-mon-tensile on {{ celestia_mon_tensile_listen_address }}
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ celestia_mon_ports.tensile }}"
+        timeout: 60
+        msg: >-
+          celestia-mon-tensile does not listen on {{ celestia_mon_tensile_listen_address }}.
+          See journalctl -u celestia-mon-tensile.
+      when: not ansible_check_mode
+
+# Turned off after it ran: stop it and remove its unit, script and settings.
+- name: Remove celestia-mon-tensile
+  when: celestia_mon_tensile.validator | default('') | length == 0
+  block:
+    - name: Look for an earlier celestia-mon-tensile
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-tensile.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_tensile_old_unit
+
+    - name: Stop and disable celestia-mon-tensile
+      ansible.builtin.systemd_service:
+        name: celestia-mon-tensile
+        state: stopped
+        enabled: false
+      when: celestia_mon_tensile_old_unit.stat.exists
+
+    - name: Remove celestia-mon-tensile's unit, script and settings
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/celestia-mon-tensile.service
+        - "{{ celestia_mon_tensile_dir }}"
+        - "{{ celestia_mon_tensile_config_dir }}"
+
+    - name: Reload systemd after removing the unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: celestia_mon_tensile_old_unit.stat.exists and not ansible_check_mode

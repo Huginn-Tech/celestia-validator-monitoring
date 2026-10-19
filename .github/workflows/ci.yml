@@ -274,14 +274,16 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
-      # The mainnet example also reads one announcement channel, so its rules and scrape jobs
-      # include AnnouncementsUnreadable and the announcements job.
+      # The mainnet example also reads one announcement channel and has the outside check of its
+      # Fibre endpoint, so its rules and scrape jobs include AnnouncementsUnreadable, FibreDown's
+      # outside branches, TensileUnreadable and the announcements and tensile jobs.
       - name: Render the example inventories
         run: |
           for s in single split mainnet; do
             extra=()
             if [ "$s" = mainnet ]; then
-              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}]}')
+              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
+                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"}}')
             fi
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
@@ -376,6 +378,7 @@ jobs:
           assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
           assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
+          assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
           print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements")})
           EOF
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
@@ -518,6 +521,53 @@ jobs:
           grep -q 'Discord refused the bot token (401)' "$d/log"
           if grep -qF "$token" "$d/log"; then echo "the log holds the token"; exit 1; fi
 
+  # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
+  # files): a reachable endpoint, a validator with no Fibre host registered, an unknown validator
+  # (404) and an unreachable API.
+  tensile:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: celestia-mon-tensile serves Tensile's verdict as metrics
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/tensile"
+          v="$d/api/api/v1/validators"
+          mkdir -p "$v/celestiavalcons1ok" "$v/celestiavalcons1none"
+          cat >"$v/celestiavalcons1ok/status" <<'EOF'
+          {"host": "203.0.113.7:7980", "jailed": false, "bond_status": "BOND_STATUS_BONDED", "endpoint_state": "reachable",
+           "reachable": true, "identity_status": "verified", "last_reachable_at": "2026-10-18T06:25:11.680342473Z",
+           "last_endpoint_check": {"at": "2026-10-18T06:25:11.680342473Z", "outcome": "REACHABLE"}}
+          EOF
+          cat >"$v/celestiavalcons1none/status" <<'EOF'
+          {"host": "", "jailed": false, "reachable": null, "identity_status": "", "last_endpoint_check": null}
+          EOF
+          python3 -m http.server 8766 --bind 127.0.0.1 --directory "$d/api" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null \
+            http://127.0.0.1:8766/api/v1/validators/celestiavalcons1ok/status
+          run() {
+            printf '{"api": "%s", "validator": "%s", "listen": "127.0.0.1:9917", "interval_seconds": 60}' "$1" "$2" >"$d/config.json"
+            python3 -I tools/celestia-mon-tensile --config "$d/config.json" --once 2>"$d/err"
+          }
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1ok)
+          printf '%s\n' "$m"
+          grep -qx 'celestia_mon_fibre_registered{endpoint="203.0.113.7:7980"} 1' <<<"$m"
+          grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980"} 1' <<<"$m"
+          grep -qx 'celestia_mon_fibre_identity_verified{endpoint="203.0.113.7:7980"} 1' <<<"$m"
+          grep -Eq '^celestia_mon_fibre_last_check_timestamp_seconds\{endpoint="203\.0\.113\.7:7980"\} 1792304711\.68' <<<"$m"
+          grep -qx 'celestia_mon_fibre_last_check_info{endpoint="203.0.113.7:7980",outcome="REACHABLE"} 1' <<<"$m"
+          grep -Eq '^celestia_mon_tensile_last_success_timestamp_seconds [1-9]' <<<"$m"
+          if grep -q 'jailed\|bonded' <<<"$m"; then echo "Tensile is used for the outside check only"; exit 1; fi
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1none)
+          grep -qx 'celestia_mon_fibre_registered{endpoint=""} 0' <<<"$m"
+          if grep -q '^celestia_mon_fibre_reachable' <<<"$m"; then echo "reachability without a registered host"; exit 1; fi
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1unknown)
+          grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
+          grep -qx 'celestia_mon_tensile_errors_total{reason="not_found"} 1' <<<"$m"
+          grep -q 'check celestia_mon_tensile.validator' "$d/err"
+          m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
+          grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
+
   dashboard:
     runs-on: ubuntu-24.04
     steps:
@@ -549,19 +599,21 @@ jobs:
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
       # mainnet: a backup node and a standby Fibre on top of split, so Node progress is a table
-      # with one row per node; the panel count stays at 16.
+      # with one row per node, and Blocks behind the highest node is added (19 panels).
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           kind() { jq -r '.panels[] | select(.id == 1) | .type' "build/$1/dashboard.json"; }
-          test "$(count single)" = 10
-          test "$(count split)" = 16
-          test "$(count mainnet)" = 16
+          test "$(count single)" = 11
+          test "$(count split)" = 18
+          test "$(count mainnet)" = 19
           test "$(kind single)" = stat
           test "$(kind split)" = stat
           test "$(kind mainnet)" = table
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
+          want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
+          jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
@@ -933,7 +985,15 @@ jobs:
               celestia_mon_announcements_discord_api: http://127.0.0.1:8765/api/v10
               celestia_mon_announcements_interval_seconds: 5
               celestia_mon_discord_bot_token: ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+              celestia_mon_tensile: {api: "http://127.0.0.1:8766/api/v1", validator: "celestiavalcons1ci"}
           EOF
+          # A stand-in of Tensile's API for celestia-mon-tensile.
+          v="$RUNNER_TEMP/tensile-api/api/v1/validators/celestiavalcons1ci"
+          mkdir -p "$v"
+          printf '{"host": "203.0.113.7:7980", "reachable": true, "identity_status": "verified", %s}' \
+            "\"last_endpoint_check\": {\"at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\", \"outcome\": \"REACHABLE\"}" >"$v/status"
+          nohup python3 -m http.server 8766 --bind 127.0.0.1 --directory "$RUNNER_TEMP/tensile-api" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8766/api/v1/validators/celestiavalcons1ci/status
           # tools/ci/discord_stub.py stands in for Discord for celestia-mon-announcements.
           STUB_TOKEN=ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
             nohup python3 tools/ci/discord_stub.py 8765 "$RUNNER_TEMP/stub-posts.jsonl" >"$RUNNER_TEMP/stub.log" 2>&1 &
@@ -1096,6 +1156,19 @@ jobs:
       # are added and recorded; only its rule for 9910, there before the install, is not.
       # The first read only notes the newest message; the stand-in then shows two new ones, which
       # reach Alertmanager as two CelestiaAnnouncement alerts. Prometheus scrapes the reader.
+      # celestia-mon-tensile reads the stand-in and Prometheus scrapes it.
+      - name: The outside check of the Fibre endpoint is read
+        run: |
+          set -euo pipefail
+          systemctl is-active celestia-mon-tensile
+          curl -fsS http://127.0.0.1:9917/metrics | grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980"} 1'
+          login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          for _ in $(seq 30); do
+            if login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="tensile"}' |
+              jq -e '.data.result[0].value[1] == "1"' >/dev/null; then exit 0; fi
+            sleep 2
+          done
+          echo "Prometheus does not scrape celestia-mon-tensile"; exit 1
       - name: Celestia announcements reach Alertmanager
         run: |
           set -euo pipefail
@@ -1134,7 +1207,7 @@ jobs:
         run: |
           out=$(sudo celestia-mon-doctor || true)
           printf '%s\n' "$out"
-          grep -Eq '^FAIL +11 +monitor stack +1 of 6 scrape targets down: celestia-app ' <<<"$out"
+          grep -Eq '^FAIL +11 +monitor stack +1 of 7 scrape targets down: celestia-app ' <<<"$out"
           line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
           for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
             # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".

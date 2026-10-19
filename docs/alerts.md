@@ -1,10 +1,12 @@
 # Alerts
 
-celestia-validator-monitoring has fourteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has fifteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
 - **heartbeat**: the Watchdog, sent only to your dead-man service.
+
+Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
 The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, FibreDown and FibreBothActive name no host, and neither does the Watchdog. Every other alert names the host it is about.
 
@@ -16,13 +18,14 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [ValidatorNotSigning](#validatornotsigning) | page | The chain moves but the validator's key signs on no node |
 | [SignaturesMissed](#signaturesmissed) | message | The validator signs, but misses more than 5% of the blocks of the last hour |
 | [RemoteSignerProblem](#remotesignerproblem) | message | Remote signer too slow, or unable to sign proposals |
-| [FibreDown](#fibredown) | page | No Fibre unit active on any Fibre host for 10 minutes |
+| [FibreDown](#fibredown) | page | No Fibre unit active on any Fibre host for 10 minutes; with the outside check, also the registered endpoint unreachable from outside, not registered, or not the host where Fibre runs |
 | [FibreBothActive](#fibrebothactive) | message | Fibre active on more than one host for 5 minutes |
 | [FibreNotServing](#fibrenotserving) | message | Fibre running but accepting no uploads, failing every upload (often its signer), or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
 | [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
 | [NotificationsFailing](#notificationsfailing) | message | Alertmanager unable to deliver through one of your receivers |
 | [DeadmanFailing](#deadmanfailing) | message | Alertmanager unable to deliver the heartbeat to your dead-man service |
+| [TensileUnreadable](#tensileunreadable) | message | The outside check of the Fibre endpoint stopped (only with the outside check on) |
 | [AnnouncementsUnreadable](#announcementsunreadable) | message | Celestia's announcements no longer read (only with [CelestiaAnnouncement](#celestiaannouncement) on) |
 | [CelestiaAnnouncement](#celestiaannouncement) | page or message, your choice | A new message in Celestia's announcement channels on Discord (optional) |
 | [Watchdog](#watchdog) | heartbeat | Monitoring itself down, or an alert that could not be delivered (through the dead-man service) |
@@ -111,7 +114,7 @@ $amtool $am silence expire $($amtool $am silence query -q host=<host>)   # ends 
 | systemd restarted celestia-appd, Fibre or tmkms more than 2 times in 30 minutes (crash loop) | at once |
 | The celestia-appd unit (validator or backup node) or the tmkms unit is not loaded at all | 2 min |
 
-A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped is the normal state. [FibreDown](#fibredown) pages when no Fibre unit is active anywhere, and [FibreBothActive](#fibrebothactive) tells you when more than one is. tmkms is watched only when its host has `celestia_mon_kms_scrape: true`. The crash loop rule counts only the restarts systemd makes under `Restart=`. While node_exporter is unreachable, the service and disk alerts for that host cannot fire.
+A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped is the normal state. [FibreDown](#fibredown) pages when no Fibre unit is active anywhere, and [FibreBothActive](#fibrebothactive) tells you when more than one is. tmkms is watched as a unit only when its host has `celestia_mon_kms_scrape: true`; without it nothing runs on the KMS host, and a tmkms that stopped shows on the validator side: [ValidatorNotSigning](#validatornotsigning) pages, and the signer's failures (`no_connection`) show on the dashboard. The crash loop rule counts only the restarts systemd makes under `Restart=`. While node_exporter is unreachable, the service and disk alerts for that host cannot fire.
 
 **Check first.**
 
@@ -198,7 +201,13 @@ Only with `celestia_mon_fibre_enabled: true`.
 
 **What it means.** No Fibre runs anywhere: for 10 minutes no Fibre host (every host in the `fibre` group, active or standby) has reported the Fibre unit as active. Fibre is stopped or crashed on every host, the host of the active Fibre is down (its node_exporter goes with it) and no standby was started, or `celestia_mon_units.fibre` names the wrong unit. A stopped standby is normal, and a failover within 10 minutes pages nobody, so a short restart pages nobody either. The alert names no host; its description lists the Fibre hosts. When the monitor runs on the Fibre host and that host dies, the dead-man service tells you ([Watchdog](#watchdog)).
 
-celestia-validator-monitoring does not probe Fibre's public port from outside. For that, run a TCP check on the registered `host:port` (7980 by default) in an external uptime service, wired to PagerDuty and set to alert after it has failed for 10 minutes, the same delay as FibreDown. It catches what the hosts cannot see from inside: a closed firewall, a routing or DNS fault, or a registration that points at the wrong host. [Tensile](https://tensile.huginn.tech) shows your server from outside as well.
+**From outside.** A running unit is not enough when nobody can reach it. With `celestia_mon_tensile` set on the monitor, FibreDown also pages, after 10 minutes, when:
+
+- the endpoint registered on chain (`x/valaddr`) cannot be reached from outside: [Tensile](https://tensile.huginn.tech), a Fibre observer, dials it from outside your networks and needs TCP, TLS and your validator's identity to pass. This catches a closed port or firewall, an inbound outage at the provider, a routing or DNS fault, and a certificate your consensus key does not endorse. Only Tensile checks of the last 15 minutes count;
+- Fibre runs on a host whose `celestia_mon_fibre_public_endpoint` is not the endpoint registered on chain: after a failover, `set-host` was not sent, and clients dial the old host;
+- no Fibre host is registered on chain at all.
+
+celestia-mon-tensile on the monitor reads Tensile's verdict for your validator every minute and serves it as metrics; Tensile is used only for this check. Set it up in the inventory, on the monitor host: `celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "<celestiavalcons1...>"}` (Tensile's API for your network; check 4 of `celestia-mon-doctor` on the validator prints the consensus address), and set `celestia_mon_fibre_public_endpoint` on every Fibre host. [TensileUnreadable](#tensileunreadable) tells you when the outside check stops.
 
 **Severity.** page. While it fires, FibreNotServing is held back.
 
@@ -209,6 +218,16 @@ celestia-validator-monitoring does not probe Fibre's public port from outside. F
 3. For a planned Fibre stop with no standby started in its place, silence the alert by name first ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)): a host silence does not cover it.
 
 **Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#troubleshooting).
+
+## TensileUnreadable
+
+Only with `celestia_mon_tensile` set and Fibre on.
+
+**What it means.** For 30 minutes, then 10 more, celestia-mon-tensile has not read Tensile's API, Tensile has not checked your Fibre endpoint, or the service is down. Meanwhile FibreDown cannot see an endpoint that is unreachable from outside; the unit check still works.
+
+**Severity.** message.
+
+**Check first.** On the monitor, `journalctl -u celestia-mon-tensile -n 50`: a 404 means the validator address or the API's network is wrong in `celestia_mon_tensile`; a network error means the monitor cannot reach Tensile. If the service reads Tensile but its last check is old, Tensile itself is behind: look at its [status page](https://tensile.huginn.tech).
 
 ## FibreBothActive
 
