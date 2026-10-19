@@ -220,8 +220,9 @@ class ReadError(Exception):
         self.reason = reason
 
 
-def get(rpc, path, **params):
-    """The result of a CometBFT RPC call."""
+def get(rpc, path, /, **params):
+    """The result of a CometBFT RPC call. path is positional only: /abci_query has a parameter
+    named path too."""
     url = rpc.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
