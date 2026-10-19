@@ -34,6 +34,7 @@
       - /var/cache/celestia-mon
       - /usr/local/bin/celestia-mon-doctor
       - /etc/celestia-mon/alertmanager/alertmanager.yml
+      - /etc/celestia-mon/alertmanager/receivers.sha256
       - /etc/celestia-mon/grafana/admin-password
       - /etc/celestia-mon/grafana/provisioning/datasources/celestia-mon.yml
       - /etc/celestia-mon/api-password
