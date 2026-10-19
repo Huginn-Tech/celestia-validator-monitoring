@@ -1,0 +1,8 @@
+---
+# Paths of celestia-mon-signal on the monitor host. The setting itself is celestia_mon_signal
+# (celestia_mon role defaults).
+celestia_mon_signal_dir: /opt/celestia-mon/signal
+celestia_mon_signal_script: "{{ celestia_mon_signal_dir }}/celestia-mon-signal"
+celestia_mon_signal_config_dir: /etc/celestia-mon/signal
+celestia_mon_signal_config: "{{ celestia_mon_signal_config_dir }}/config.json"
+celestia_mon_signal_listen_address: "127.0.0.1:{{ celestia_mon_ports.signal }}"

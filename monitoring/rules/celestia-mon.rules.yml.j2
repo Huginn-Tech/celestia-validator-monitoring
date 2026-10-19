@@ -4,7 +4,8 @@
   Roles can move between hosts: tmkms can be pointed at a backup node, and a standby Fibre can
   be started on another host. The page alerts (NodeNotAdvancing, ValidatorNotSigning, FibreDown,
   DiskLow) therefore read which node signs and which Fibre runs from the metrics, never from the
-  inventory, and ServiceDown is a message.
+  inventory, and ServiceDown is a message. The page of upgrade signalling, UpgradeSignalMissing,
+  reads the chain through celestia-mon-signal and names no host either.
 #}
 {% set appd = celestia_mon_units.appd ~ '.service' %}
 {% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
@@ -27,6 +28,15 @@
 {%   endif %}
 {% endfor %}
 {% set tensile_on = fibre_on and celestia_mon_tensile.validator | default('') | length > 0 %}
+{% set signal_on = celestia_mon_signal | default({}, true) | length > 0 %}
+{# The upgrade rules read the last value of each celestia-mon-signal metric in the past 7 days, as
+   one sample without labels: a collector or RPC outage, or a scrape that stops, keeps the last
+   reading instead of resolving an alert; SignalUnreadable reports the outage. Only the series of
+   the current target count, so one left by an earlier host name cannot outweigh it. The quotes are
+   PromQL's single ones, which the alert texts can hold. #}
+{% macro last(m) %}max(last_over_time({{ m }}{job='signal',host='{{ celestia_mon_monitor_host }}'}[7d])){% endmacro %}
+{# Alert template text that prints that value as a whole number (a version or a height). #}
+{% macro number(m) %}{{ '{{' }} with query `{{ last(m) }}` }}{{ '{{' }} . | first | value | printf `%.0f` }}{{ '{{' }} end }}{% endmacro %}
 {% set vf = nodes + groups.get('fibre', []) %}
 {# ServiceDown per unit: (key, unit, hosts it must be loaded on). A Fibre unit may be a stopped
    standby, which systemd drops from its list once it is also disabled, so Fibre has only the
@@ -466,6 +476,77 @@ groups:
           summary: "Fibre is not checked from outside"
           description: "For 30 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre endpoint, or the service is down, so an endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on the monitor: it names the cause."
           runbook: "{{ docs }}#tensileunreadable"
+
+{% endif %}
+{% if signal_on %}
+      # UpgradeSignalMissing: a signalling round is open (voting power has signalled the next app
+      # version, x/signal) but the validator's entry in the signal store is not that version, and no
+      # upgrade is scheduled yet. Once one is, x/signal refuses signals (keeper.go SignalVersion), so
+      # the page ends and UpgradeScheduled says whether the validator signalled. The version the
+      # validator signalled is read from state, whoever sent the transaction (authz included). It
+      # holds for 10 minutes, Prometheus's --rules.alert.for-grace-period: a shorter hold is not
+      # restored after a restart of Prometheus, and the page would resolve and fire again.
+      - alert: UpgradeSignalMissing
+        expr: >-
+          {{ last('celestia_mon_signal_tally_power') }} / {{ last('celestia_mon_signal_total_power') }} > 0
+          and {{ last('celestia_mon_signal_validator_version') }} != {{ last('celestia_mon_signal_next_version') }}
+          and {{ last('celestia_mon_upgrade_pending') }} == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "The validator has not signalled v{{ number('celestia_mon_signal_next_version') }}"
+          description: "{% raw %}{{ $value | humanizePercentage }}{% endraw %} of the voting power has signalled app version {{ number('celestia_mon_signal_next_version') }}, the next one, and the validator has {{ '{{' }} with query `{{ last('celestia_mon_signal_validator_version') }} > 0` }}signalled v{% raw %}{{ . | first | value | printf `%.0f` }} instead{{ else }}not signalled it{{ end }}{% endraw %}. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade, and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release that supports v{{ number('celestia_mon_signal_next_version') }}, then signal from the validator's account: celestia-appd tx signal signal {{ number('celestia_mon_signal_next_version') }} --from <validator account key>. If this alert resolves before you signal, the upgrade was scheduled: see UpgradeScheduled."
+          runbook: "{{ docs }}#upgradesignalmissing"
+
+      # UpgradeScheduled: 5/6 of the voting power signalled, and the upgrade is scheduled at a height
+      # (GetUpgrade, which already counts the network's delay). Sent at once on its own route in
+      # Alertmanager, and again after 4 days while it lasts (mainnet's delay is about a week); it
+      # resolves when the chain has switched, as x/signal then clears the upgrade.
+      - alert: UpgradeScheduled
+        expr: >-
+          {{ last('celestia_mon_upgrade_version') }}
+          and {{ last('celestia_mon_upgrade_pending') }} == 1
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Network upgrade to v{{ $value | printf `%.0f` }} scheduled{% endraw %}"
+          description: "{% raw %}At least 5/6 of the voting power signalled app version {{ $value | printf `%.0f` }}, and the upgrade is scheduled at height {% endraw %}{{ number('celestia_mon_upgrade_height') }}{{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}, in about {% raw %}{{ . | first | value | humanizeDuration }}{% endraw %}{{ '{{' }} with query `{{ last('celestia_mon_chain_block_time_seconds') }}` }} at the measured {% raw %}{{ . | first | value | printf `%.2f` }} s per block{{ end }}{{ end }}{% endraw %}. {{ '{{' }} with query `{{ last('celestia_mon_signal_validator_version') }} == {{ last('celestia_mon_upgrade_version') }}` }}{% raw %}Your validator signalled it.{{ else }}Your validator did not signal it, and signals are no longer accepted.{{ end }} Every node of this install must run a celestia-app release that supports v{{ $value | printf `%.0f` }} by then, or it stops at that height. This alert resolves when the chain has switched to v{{ $value | printf `%.0f` }}.{% endraw %}"
+          runbook: "{{ docs }}#upgradescheduled"
+
+      # UpgradeSoon: the scheduled upgrade is less than a day away at the measured block time. Sent
+      # once, on UpgradeScheduled's route. The ETA follows the block time, which a few slow blocks
+      # raise, so once the alert fires it stays (its own ALERTS series) until the chain has switched:
+      # an ETA back above a day would otherwise resolve it and send it again.
+      - alert: UpgradeSoon
+        expr: >-
+          (
+            {{ last('celestia_mon_upgrade_eta_seconds') }} < 86400
+            or max(ALERTS{alertname="UpgradeSoon",alertstate="firing"})
+          )
+          and {{ last('celestia_mon_upgrade_pending') }} == 1
+        labels:
+          severity: message
+        annotations:
+          summary: "Network upgrade to v{{ number('celestia_mon_upgrade_version') }} in less than a day"
+          description: "The upgrade to app version {{ number('celestia_mon_upgrade_version') }} is scheduled at height {{ number('celestia_mon_upgrade_height') }}, in about {{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}{% raw %}{{ . | first | value | humanizeDuration }}{{ end }}{% endraw %}. Check now that every node of this install ({{ nodes | join(', ') }}) runs a celestia-app release that supports v{{ number('celestia_mon_upgrade_version') }}: a node without one stops at that height. This alert resolves when the chain has switched to v{{ number('celestia_mon_upgrade_version') }}."
+          runbook: "{{ docs }}#upgradesoon"
+
+      # SignalUnreadable: for 15 minutes celestia-mon-signal has read none of its RPCs (each one down,
+      # refused, behind, or serving another network), or the service is down, for 10 minutes more.
+      # The upgrade alerts keep their last reading meanwhile; a new signalling round would not page.
+      - alert: SignalUnreadable
+        expr: >-
+          time() - celestia_mon_signal_last_success_timestamp_seconds > 900
+          or up{job="signal"} == 0
+        for: 10m
+        labels:
+          severity: message
+          host: {{ celestia_mon_monitor_host | to_json }}
+        annotations:
+          summary: "The upgrade signal is not being read on {{ celestia_mon_monitor_host }}"
+          description: "For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new signalling round would not page, and the upgrade alerts keep their last reading. Run journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why."
+          runbook: "{{ docs }}#signalunreadable"
 
 {% endif %}
       # MonitoringBroken: Prometheus failed to evaluate alert rules, so some alerts cannot fire.

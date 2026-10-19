@@ -116,6 +116,17 @@ scrape_configs:
           host: {{ inventory_hostname | to_json }}
           role: monitor
 {% endif %}
+{% if celestia_mon_signal | default({}, true) | length > 0 %}
+
+  # celestia-mon-signal on this host: the network's upgrade signalling and the validator's signal.
+  - job_name: signal
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ celestia_mon_ports.signal }}"
+        labels:
+          host: {{ inventory_hostname | to_json }}
+          role: monitor
+{% endif %}
 {% if celestia_mon_announcements | default([]) | length > 0 %}
 
   # celestia-mon-announcements on this host: whether it still reads Celestia's announcements.

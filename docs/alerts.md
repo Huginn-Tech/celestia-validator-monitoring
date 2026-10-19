@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has fifteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has nineteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -8,7 +8,7 @@ celestia-validator-monitoring has fifteen alerts and a heartbeat, and can pass C
 
 Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, FibreDown and FibreBothActive name no host, and neither does the Watchdog. Every other alert names the host it is about.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, FibreDown and FibreBothActive name no host, and neither do the Watchdog and the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon). Every other alert names the host it is about.
 
 | Alert | Severity | Catches |
 |---|---|---|
@@ -22,10 +22,14 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [FibreBothActive](#fibrebothactive) | message | Fibre active on more than one host for 5 minutes |
 | [FibreNotServing](#fibrenotserving) | message | Fibre running but accepting no uploads, failing every upload (often its signer), or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
+| [UpgradeSignalMissing](#upgradesignalmissing) | page | Validators signal the next app version, and yours has not (only with upgrade signalling on) |
+| [UpgradeScheduled](#upgradescheduled) | message, when scheduled (again after 4 days while it waits) | A network upgrade scheduled: version, height, when, and whether yours signalled (only with upgrade signalling on) |
+| [UpgradeSoon](#upgradesoon) | message, sent once | The scheduled upgrade less than a day away (only with upgrade signalling on) |
 | [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
 | [NotificationsFailing](#notificationsfailing) | message | Alertmanager unable to deliver through one of your receivers |
 | [DeadmanFailing](#deadmanfailing) | message | Alertmanager unable to deliver the heartbeat to your dead-man service |
 | [TensileUnreadable](#tensileunreadable) | message | The outside check of the Fibre endpoint stopped (only with the outside check on) |
+| [SignalUnreadable](#signalunreadable) | message | Upgrade signalling no longer read (only with upgrade signalling on) |
 | [AnnouncementsUnreadable](#announcementsunreadable) | message | Celestia's announcements no longer read (only with [CelestiaAnnouncement](#celestiaannouncement) on) |
 | [CelestiaAnnouncement](#celestiaannouncement) | page or message, your choice | A new message in Celestia's announcement channels on Discord (optional) |
 | [Watchdog](#watchdog) | heartbeat | Monitoring itself down, or an alert that could not be delivered (through the dead-man service) |
@@ -290,6 +294,56 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 3. Fibre store: the "Fibre disk" panel shows budget, occupancy, used and free space. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
+
+## UpgradeSignalMissing
+
+Only with `celestia_mon_signal` set.
+
+**What it means.** Celestia moves to a new app version through x/signal: validators signal the next version, and once 5/6 of the voting power has signalled it, anyone can schedule the upgrade, which then happens a fixed number of blocks later (about a week on mainnet). This alert says that such a round is open, some voting power has signalled the next version, and for 10 minutes your validator has not signalled it, or has signalled another version. Once the upgrade is scheduled, x/signal accepts no more signals: the page ends, and [UpgradeScheduled](#upgradescheduled) says that your validator did not signal. Your validator's signal is read from chain state, so a signal sent through an authz grant counts too. The alert names no host.
+
+celestia-mon-signal on the monitor reads x/signal every minute through a node's CometBFT RPC and serves it as metrics: the app version, the voting power that signalled the next version against the 5/6 threshold, the scheduled upgrade with its height and the time until it at the measured block time, and the version your validator signalled. It sends no transaction and needs no key. Set it up in the inventory, on the monitor host ([quickstart](quickstart.md#upgrade-signalling)): `celestia_mon_signal: {chain_id: "celestia", rpc: ["<CometBFT RPC URL>", ...], validator: "<celestiavaloper1...>"}`. The RPCs are tried in order, and one that serves another network than `chain_id`, or whose node is catching up or has made no block for 2 minutes, is skipped. A collector or RPC outage of up to 7 days does not end the page: the upgrade alerts use the last reading of the past 7 days, and [SignalUnreadable](#signalunreadable) reports the outage.
+
+**Severity.** page. Until your signal is on chain, PagerDuty keeps the incident open and the chat channels get the alert again every 4 hours.
+
+**Check first.**
+
+1. Upgrade celestia-appd on every node, the validator and each backup node, to a release that supports the version in the alert, at a moment you choose: Celestia asks validators to upgrade the binary before they signal. The release notes and Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)) name the release.
+2. Signal with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([mainnet layout](quickstart.md#mainnet-layout)): `celestia-appd tx signal signal <version> --from <validator account key> --node <RPC of a synced node>`. An ops key can send it through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/celestia.signal.v1.MsgSignalVersion`, then `celestia-appd tx signal signal <version> --from <validator account address> --generate-only > signal.json` and `celestia-appd tx authz exec signal.json --from <ops key>`.
+3. `celestia-appd query signal tally <version> --node <RPC of a synced node>` shows the voting power that has signalled. The alert resolves a few minutes after your signal is in a block.
+
+x/signal accepts a signal for any version at or above the current one, so one validator that signals early opens a round before a release exists. If Celestia's announcements name no release for the version yet, silence UpgradeSignalMissing until they do (`doctor` check 21 lists that silence while it holds the page back).
+
+**Links.** [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/), [x/signal](https://github.com/celestiaorg/celestia-app/tree/v10.4.0/x/signal).
+
+## UpgradeScheduled
+
+Only with `celestia_mon_signal` set.
+
+**What it means.** At least 5/6 of the voting power signalled the next app version, and the upgrade is scheduled at a height. The message names the version, the height, the time until it at the block time measured over the last 1000 blocks, and whether your validator signalled. Every node of this install must run a celestia-app release that supports that version before the height, or it stops there. It names no host.
+
+**Severity.** message, sent when the upgrade is scheduled. Its "resolved" message means the chain has switched to the new version. On mainnet an upgrade is scheduled about a week ahead, so a message still firing after 4 days is sent once more, with the time left then.
+
+**Check first.** Plan the binary upgrade of every node before the height, and the restart of each one with a host silence ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)). If the message says your validator did not signal, nothing can be signalled for this version any more; upgrade the nodes all the same. [UpgradeSoon](#upgradesoon) reminds you a day ahead.
+
+## UpgradeSoon
+
+Only with `celestia_mon_signal` set.
+
+**What it means.** The scheduled upgrade is less than 24 hours away at the measured block time. A node that does not run a celestia-app release that supports the new version stops at the upgrade height, and with the validator node the validator stops signing. It names no host.
+
+**Severity.** message, sent once. Once sent, it stays until the chain has switched, also when slower blocks move the time left back above 24 hours; its "resolved" message means the chain has switched to the new version.
+
+**Check first.** On every node of this install, the validator and each backup node, confirm that the celestia-app release it runs supports the target version (`celestia-appd version`, and the release notes). After the height, the "Node progress" panel and NodeNotAdvancing show whether the nodes moved on.
+
+## SignalUnreadable
+
+Only with `celestia_mon_signal` set.
+
+**What it means.** For 15 minutes, then 10 more, celestia-mon-signal has read none of the RPCs in `celestia_mon_signal.rpc`, or the service is down. The upgrade alerts keep their last reading meanwhile: a page that fires stays, but a new signalling round would not page, and a scheduled upgrade would not be announced.
+
+**Severity.** message.
+
+**Check first.** On the monitor, `journalctl -u celestia-mon-signal -n 50`: each line names the RPC that failed and why. An RPC that serves another network than `celestia_mon_signal.chain_id` is skipped (a Mocha RPC in a mainnet setting, or the reverse), and so is one whose node is catching up, has made no block for 2 minutes, or answers `/abci_info` at an older height than `/status` (`behind`: a node that is syncing, stalled, or halted at an upgrade height without the new release, or a stalled node among those behind a provider's URL). A `query` error is an x/signal query the node refused, or a signal store that does not hold the height of the read (behind a provider's URL, a node a block behind the one that gave the height): that read is skipped, never taken for a validator that has not signalled. A network error means the monitor cannot reach the RPC. A failed measurement of the block time (`block_time`) does not stop the reads: the one measured last stays. A service that does not start names its setting there too. Add a second RPC to the list so one outage does not stop the reads, and run `install.sh` on the monitor again.
 
 ## MonitoringBroken
 

@@ -32,6 +32,19 @@
     quiet: true
   when: celestia_mon_host_managed | bool
 
+# celestia-mon-signal runs on the monitor host only; set anywhere else, the setting would be
+# ignored and nothing would watch the validator's signal.
+- name: Check that upgrade signalling is set on the monitor host
+  ansible.builtin.assert:
+    that:
+      - inventory_hostname in groups.get('monitor', [])
+    fail_msg: >-
+      celestia_mon_signal is set for {{ inventory_hostname }}, but upgrade signalling runs on the monitor host
+      ({{ groups.get('monitor', []) | join(', ') }}). Move celestia_mon_signal to the monitor host's entry in the
+      inventory (or its host_vars).
+    quiet: true
+  when: celestia_mon_signal | default({}, true) | length > 0
+
 # Each source becomes "ufw allow from <source> to any port <port>", so a public address, any or
 # 0.0.0.0/0 would open the scraped ports to the internet. The private-address pattern matches the
 # start of a value only, so the prefix length is bounded too, per private block: ufw turns a range

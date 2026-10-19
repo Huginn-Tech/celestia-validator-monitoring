@@ -1,0 +1,501 @@
+#!/usr/bin/python3 -I
+"""celestia-mon-signal: the network's upgrade signalling (x/signal) and the validator's own signal.
+
+Celestia moves to a new app version through x/signal: validators signal the next version, and
+once 5/6 of the voting power has signalled, anyone can schedule the upgrade at a height. This
+service reads, every interval, through a node's CometBFT RPC: the app version and height
+(/abci_info), then at that height the voting power that signalled the next version
+(VersionTally), the scheduled upgrade (GetUpgrade) and the version the validator signalled (its
+entry in the signal store), and the block time over the last 1000 blocks the node keeps (the
+oldest one's header, from /blockchain). It serves them as Prometheus metrics for
+UpgradeSignalMissing, UpgradeScheduled and UpgradeSoon.
+
+  celestia-mon-signal --config FILE [--once]
+  celestia-mon-signal --check-address ADDRESS
+
+The RPC URLs of the config are tried in order: the first one that answers for chain_id with a
+current state is read. One that serves another network, whose node is catching up or has made no
+block for MAX_BLOCK_AGE seconds, or that answers /abci_info at an older height than /status, is
+skipped, and so is one whose store does not hold the height /abci_info gave. While no RPC can be
+read, the last good reading stays and only its time ages; while the block time cannot be
+measured, the one measured last stays. Only the Python standard library is used; it sends no
+transaction and needs no key.
+"""
+
+import argparse
+import base64
+import datetime
+import http.client
+import json
+import re
+import sys
+import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+USER_AGENT = "celestia-mon-signal (https://github.com/s0urledd/celestia-validator-monitoring)"
+
+# celestia-app v10.4.0: proto/celestia/signal/v1/query.proto, and the signal store (store key
+# "signal", x/signal/types/keys.go), which keeps each validator's signalled version under its
+# operator address bytes as an 8-byte big-endian number.
+TALLY_PATH = "/celestia.signal.v1.Query/VersionTally"
+UPGRADE_PATH = "/celestia.signal.v1.Query/GetUpgrade"
+STORE_PATH = "/store/signal/key"
+OPERATOR_PREFIX = "celestiavaloper"
+# The blocks the block time is measured over.
+BLOCK_SPAN = 1000
+# A node whose last block is older than this (in seconds; some 40 blocks) has stalled or halted,
+# and its x/signal state is old.
+MAX_BLOCK_AGE = 120
+# The same in blocks, for an /abci_info height that trails the /status one.
+MAX_BLOCKS_BEHIND = 40
+
+BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+
+
+def log(msg):
+    print(msg, file=sys.stderr, flush=True)
+
+
+def epoch(text):
+    """RFC 3339 time (nanoseconds allowed) as Unix seconds; None when absent or unreadable."""
+    if not text:
+        return None
+    m = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", text)
+    if not m:
+        return None
+    zone = "+00:00" if m.group(3) == "Z" else m.group(3)
+    t = datetime.datetime.fromisoformat(m.group(1) + zone).timestamp()
+    return t + (float("0." + m.group(2)) if m.group(2) else 0.0)
+
+
+def esc(value):
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def shown(url):
+    """An RPC URL as the metrics and the log name it: scheme, host and port only, so a key in its
+    path never leaves the config (check_config refuses a login, a query and a fragment)."""
+    u = urllib.parse.urlsplit(url)
+    host = u.hostname or ""
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{u.scheme}://{host}" + (f":{u.port}" if u.port else "")
+
+
+# ------------------------------------------------------------------ bech32 (BIP 173)
+
+
+def bech32_polymod(values):
+    gen = (0x3B6A57B2, 0x26508E6D, 0x1EA119FA, 0x3D4233DD, 0x2A1462B3)
+    chk = 1
+    for v in values:
+        top = chk >> 25
+        chk = (chk & 0x1FFFFFF) << 5 ^ v
+        for i in range(5):
+            if (top >> i) & 1:
+                chk ^= gen[i]
+    return chk
+
+
+def bech32_decode(text):
+    """The prefix and the 5-bit data values of a bech32 string, its checksum checked and left out;
+    ValueError otherwise."""
+    if text != text.lower() and text != text.upper():
+        raise ValueError("mixes upper and lower case")
+    text = text.lower()
+    prefix, _, data = text.rpartition("1")
+    if len(data) < 6 or any(c not in BECH32_CHARSET for c in data):
+        raise ValueError("is not bech32")
+    values = [BECH32_CHARSET.index(c) for c in data]
+    expanded = [ord(c) >> 5 for c in prefix] + [0] + [ord(c) & 31 for c in prefix]
+    if bech32_polymod(expanded + values) != 1:
+        raise ValueError("has a wrong checksum (a mistyped character)")
+    return prefix, values[:-6]
+
+
+def from5(values):
+    """The bytes that 5-bit values carry (BIP 173's convertbits, no padding); ValueError when the
+    leftover bits are not padding."""
+    acc = bits = 0
+    out = bytearray()
+    for v in values:
+        acc = ((acc << 5) | v) & 0xFFF
+        bits += 5
+        if bits >= 8:
+            bits -= 8
+            out.append((acc >> bits) & 0xFF)
+    if bits >= 5 or (acc << (8 - bits)) & 0xFF:
+        raise ValueError("is not bech32")
+    return bytes(out)
+
+
+def operator_bytes(address):
+    """The 20 bytes of a celestiavaloper1... address, with its checksum checked; ValueError otherwise."""
+    prefix, values = bech32_decode(address)
+    if prefix != OPERATOR_PREFIX:
+        raise ValueError(f"does not start with {OPERATOR_PREFIX}1")
+    out = from5(values)
+    if len(out) != 20:
+        raise ValueError(f"holds {len(out)} bytes, not the 20 of a validator operator address")
+    return bytes(out)
+
+
+# ------------------------------------------------------------------- protobuf
+
+
+def varint(buf, i):
+    """The varint at buf[i:] and the offset after it."""
+    value = shift = 0
+    while True:
+        if i >= len(buf):
+            raise ValueError("truncated varint")
+        b = buf[i]
+        i += 1
+        value |= (b & 0x7F) << shift
+        if b < 0x80:
+            return value, i
+        shift += 7
+        if shift >= 64:
+            raise ValueError("varint longer than 10 bytes")
+
+
+def encode_varint(n):
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def fields(buf):
+    """The fields of a protobuf message as {number: value}: varints as int, length-delimited fields
+    as bytes. A field that is absent was 0 (proto3)."""
+    out = {}
+    i = 0
+    while i < len(buf):
+        key, i = varint(buf, i)
+        number, wire = key >> 3, key & 7
+        if number == 0:
+            raise ValueError("field number 0")
+        if wire == 0:
+            value, i = varint(buf, i)
+        elif wire in (1, 2, 5):
+            if wire == 2:
+                n, i = varint(buf, i)
+            else:
+                n = 8 if wire == 1 else 4
+            if i + n > len(buf):
+                raise ValueError(f"field {number} is truncated")
+            value, i = buf[i : i + n], i + n
+        else:
+            raise ValueError(f"field {number} has wire type {wire}")
+        out[number] = value
+    return out
+
+
+def uint(msg, field):
+    """A varint field of a decoded message, 0 when absent; ValueError when it came as another wire type."""
+    value = msg.get(field, 0)
+    if not isinstance(value, int):
+        raise ValueError(f"field {field} is not a number")
+    return value
+
+
+# ------------------------------------------------------------------------ RPC
+
+
+class ReadError(Exception):
+    """A failed read of one RPC; reason is the label of celestia_mon_signal_errors_total."""
+
+    def __init__(self, reason, message):
+        super().__init__(message)
+        self.reason = reason
+
+
+def get(rpc, path, **params):
+    """The result of a CometBFT RPC call."""
+    url = rpc.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            body = json.load(resp)
+    except urllib.error.HTTPError as e:
+        # CometBFT answers a failed call (a pruned height, for example) with an error and its reason.
+        detail = ""
+        try:
+            error = json.loads(e.read() or b"{}").get("error") or {}
+            detail = str(error.get("data") or error.get("message") or "")[:200]
+        except (ValueError, AttributeError, OSError):
+            pass
+        raise ReadError("http", f"{shown(rpc)} answered {e.code} for {path}" + (f": {detail}" if detail else "")) from None
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
+        raise ReadError("network", f"cannot read {shown(rpc)}: {e}") from None
+    except ValueError:
+        raise ReadError("format", f"{shown(rpc)} answered {path} with no JSON") from None
+    result = body.get("result") if isinstance(body, dict) else None
+    if not isinstance(result, dict):
+        error = body.get("error") if isinstance(body, dict) else None
+        raise ReadError("format", f"{shown(rpc)} answered {path} without a result: {error}")
+    return result
+
+
+def abci_query(rpc, path, height, data=b""):
+    """The value of an ABCI query at a height, None when the store holds none."""
+    params = {"path": json.dumps(path), "height": height}
+    if data:
+        params["data"] = "0x" + data.hex()
+    response = get(rpc, "/abci_query", **params).get("response") or {}
+    code = int(response.get("code") or 0)
+    if code != 0:
+        raise ReadError("query", f"{shown(rpc)} answered {path} with code {code}: {response.get('log')}")
+    # A store query at a height the store does not hold (not committed yet on a node behind the
+    # one that gave the height, or pruned) gets code 0, no value and a log (cosmos-sdk store
+    # iavl/store.go, Query "/key"), which would read as a validator that has not signalled. A
+    # full answer carries no log.
+    if response.get("log"):
+        raise ReadError("query", f"{shown(rpc)} answered {path} at height {height}: {response['log']}")
+    value = response.get("value")
+    return base64.b64decode(value, validate=True) if value else None
+
+
+def read_rpc(rpc, chain_id, operator):
+    """One full reading through one RPC, without the block time; and the node's sync_info."""
+    status = get(rpc, "/status")
+    network = (status.get("node_info") or {}).get("network")
+    if network != chain_id:
+        raise ReadError("wrong_network", f"{shown(rpc)} serves {network!r}, not {chain_id!r}: skipped")
+    # x/signal's state is the same on every node that is in sync: a node that is catching up,
+    # stalled or halted (at an upgrade height without the new release, say) serves an old one.
+    sync = status.get("sync_info") or {}
+    if sync.get("catching_up"):
+        raise ReadError("behind", f"{shown(rpc)} is catching up, so its state is old: skipped")
+    t1 = epoch(sync.get("latest_block_time"))
+    if t1 is None or time.time() - t1 > MAX_BLOCK_AGE:
+        age = "has no time" if t1 is None else f"is {time.time() - t1:.0f} s old"
+        raise ReadError("behind", f"{shown(rpc)}'s last block {age}, so its state is old: skipped")
+    info = get(rpc, "/abci_info").get("response") or {}
+    app_version = int(info["app_version"])
+    height = int(info["last_block_height"])
+    # Behind a provider's URL, /status and /abci_info can come from two nodes: one in sync, one stalled.
+    latest = int(sync.get("latest_block_height") or 0)
+    if latest - height > MAX_BLOCKS_BEHIND:
+        raise ReadError("behind", f"{shown(rpc)} answered /abci_info at height {height}, {latest} in /status,"
+                        " so its state is old: skipped")
+    reading = {
+        "rpc": shown(rpc),
+        "node_version": info.get("version") or "",
+        "app_version": app_version,
+        "height": height,
+        "next_version": app_version + 1,
+    }
+    # Every query at the height /abci_info gave, so a block that lands during the read (the switch
+    # to the new version, which clears the tally) cannot mix two states in one reading.
+    tally = fields(abci_query(rpc, TALLY_PATH, height, b"\x08" + encode_varint(app_version + 1)) or b"")
+    reading["tally_power"] = uint(tally, 1)
+    reading["threshold_power"] = uint(tally, 2)
+    reading["total_power"] = uint(tally, 3)
+    upgrade = fields(abci_query(rpc, UPGRADE_PATH, height) or b"").get(1)
+    if upgrade is not None:
+        upgrade = fields(upgrade)
+        reading["upgrade_version"] = uint(upgrade, 1)
+        reading["upgrade_height"] = uint(upgrade, 2)
+    # x/signal reads any value that is not 8 bytes as no version (keeper.go VersionFromBytes).
+    own = abci_query(rpc, STORE_PATH, height, operator)
+    reading["validator_version"] = int.from_bytes(own, "big") if own is not None and len(own) == 8 else 0
+    return reading, sync
+
+
+def block_time(rpc, sync):
+    """The average block time over the last BLOCK_SPAN blocks the node keeps (fewer on a node that
+    keeps fewer), from the oldest one's header; ReadError otherwise. /blockchain answers with block
+    headers only, where /block would carry every transaction of the block."""
+    try:
+        latest = int(sync["latest_block_height"])
+        span = min(BLOCK_SPAN, latest - max(1, int(sync.get("earliest_block_height") or 1)))
+        if span <= 0:
+            raise ReadError("block_time", f"{shown(rpc)} keeps no block before {latest} to measure the block time with")
+        metas = get(rpc, "/blockchain", minHeight=latest - span, maxHeight=latest - span).get("block_metas") or [{}]
+        t0 = epoch((metas[0].get("header") or {}).get("time"))
+        t1 = epoch(sync.get("latest_block_time"))
+    except (AttributeError, KeyError, TypeError, ValueError) as e:
+        raise ReadError("block_time", f"cannot read the block time from {shown(rpc)}: {e!r}") from None
+    if t0 is None or t1 is None or t1 <= t0:
+        raise ReadError("block_time", f"{shown(rpc)} gave no usable block times for heights {latest - span} and {latest}")
+    return (t1 - t0) / span
+
+
+# ---------------------------------------------------------------------- state
+
+
+class State:
+    """The last good reading, rendered as Prometheus text."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.last_success = 0.0
+        self.errors = {}
+        self.reading = None
+
+    def ok(self, reading):
+        with self.lock:
+            if "block_time" not in reading and self.reading is not None and "block_time" in self.reading:
+                reading["block_time"] = self.reading["block_time"]
+            self.reading = reading
+            self.last_success = time.time()
+
+    def error(self, reason):
+        with self.lock:
+            self.errors[reason] = self.errors.get(reason, 0) + 1
+
+    def render(self):
+        with self.lock:
+            out = [
+                "# HELP celestia_mon_signal_last_success_timestamp_seconds Unix time of the last full read through an RPC, 0 before the first.",
+                "# TYPE celestia_mon_signal_last_success_timestamp_seconds gauge",
+                f"celestia_mon_signal_last_success_timestamp_seconds {self.last_success}",
+                "# HELP celestia_mon_signal_errors_total Failed reads of an RPC, by reason.",
+                "# TYPE celestia_mon_signal_errors_total counter",
+            ]
+            out += [f'celestia_mon_signal_errors_total{{reason="{r}"}} {n}' for r, n in sorted(self.errors.items())]
+            r = self.reading
+            if r is None:
+                return "\n".join(out) + "\n"
+
+            def gauge(name, text, value, labels=""):
+                out.extend([f"# HELP {name} {text}", f"# TYPE {name} gauge", f"{name}{labels} {value}"])
+
+            gauge("celestia_mon_app_version", "The chain's current app version.", r["app_version"])
+            gauge("celestia_mon_node_version_info", "The celestia-app version of the node behind the RPC read last.", 1,
+                  f'{{version="{esc(r["node_version"])}"}}')
+            gauge("celestia_mon_chain_height", "The chain's last block height.", r["height"])
+            gauge("celestia_mon_signal_next_version", "The version validators signal for: the app version + 1.", r["next_version"])
+            gauge("celestia_mon_signal_tally_power", "Voting power that signalled the next version.", r["tally_power"])
+            gauge("celestia_mon_signal_threshold_power", "Voting power an upgrade needs: 5/6 of the total, rounded up.",
+                  r["threshold_power"])
+            gauge("celestia_mon_signal_total_power", "Total voting power.", r["total_power"])
+            gauge("celestia_mon_signal_validator_version", "The version the validator signalled, 0 when it has not signalled.",
+                  r["validator_version"])
+            pending = "upgrade_version" in r
+            gauge("celestia_mon_upgrade_pending", "1 while an upgrade is scheduled, 0 otherwise.", 1 if pending else 0)
+            if pending:
+                gauge("celestia_mon_upgrade_version", "The app version of the scheduled upgrade.", r["upgrade_version"])
+                gauge("celestia_mon_upgrade_height", "The height of the scheduled upgrade.", r["upgrade_height"])
+            if "block_time" in r:
+                gauge("celestia_mon_chain_block_time_seconds", f"Average block time over the last {BLOCK_SPAN} blocks.",
+                      round(r["block_time"], 4))
+                if pending:
+                    eta = max(0, r["upgrade_height"] - r["height"]) * r["block_time"]
+                    gauge("celestia_mon_upgrade_eta_seconds", "Time until the scheduled upgrade at the measured block time.",
+                          round(eta))
+            gauge("celestia_mon_signal_rpc_info", "1 for the RPC the last full read came from.", 1, f'{{rpc="{esc(r["rpc"])}"}}')
+            return "\n".join(out) + "\n"
+
+
+def serve(listen, state):
+    host, _, port = listen.rpartition(":")
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path != "/metrics":
+                self.send_error(404)
+                return
+            body = state.render().encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer((host, int(port)), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
+def read(cfg, operator, state):
+    """Reads through the first RPC that answers for chain_id with a current state; keeps the last
+    reading when none does."""
+    for rpc in cfg["rpc"]:
+        try:
+            reading, sync = read_rpc(rpc, cfg["chain_id"], operator)
+        except ReadError as e:
+            state.error(e.reason)
+            log(str(e))
+            continue
+        except (AttributeError, KeyError, TypeError, ValueError) as e:
+            state.error("format")
+            log(f"cannot read the answer of {shown(rpc)}: {e!r}")
+            continue
+        # The block time feeds only the ETA: without it the reading stands, with the one measured last.
+        try:
+            reading["block_time"] = block_time(rpc, sync)
+        except ReadError as e:
+            state.error("block_time")
+            log(f"{e}; the block time measured last is kept")
+        state.ok(reading)
+        return
+    log("no RPC could be read; the metrics keep the last good reading")
+
+
+def check_config(cfg):
+    """The validator's operator address bytes; exits with the reason when the config cannot work."""
+    rpcs = cfg.get("rpc")
+    if not cfg.get("chain_id") or not isinstance(rpcs, list) or not rpcs:
+        sys.exit("celestia-mon-signal: the config needs chain_id and a non-empty rpc list")
+    for i, rpc in enumerate(rpcs, 1):
+        try:
+            u = urllib.parse.urlsplit(rpc)
+            # .port raises ValueError for a port that is not a number. The path is appended to as
+            # it is, so a login, a query or a fragment would not work (and a login would show).
+            ok = (u.scheme in ("http", "https") and bool(u.hostname) and (u.port is None or u.port > 0)
+                  and "@" not in u.netloc and "?" not in rpc and "#" not in rpc)
+        except (TypeError, ValueError, AttributeError):
+            ok = False
+        if not ok:
+            # Not the URL itself: it may hold a provider's key.
+            sys.exit(f"celestia-mon-signal: rpc {i} of {len(rpcs)} is not an http or https URL with a host and no"
+                     " login, query or fragment (a provider's key goes in the path)")
+    try:
+        return operator_bytes(str(cfg.get("validator") or ""))
+    except ValueError as e:
+        sys.exit(f"celestia-mon-signal: validator {cfg.get('validator')!r} is not a celestiavaloper1 address: it {e}")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument("--config")
+    group.add_argument("--check-address", metavar="ADDRESS", help="check a celestiavaloper1 address and exit")
+    parser.add_argument("--once", action="store_true", help="read once, print the metrics and exit")
+    args = parser.parse_args()
+    if args.check_address is not None:
+        try:
+            operator_bytes(args.check_address)
+        except ValueError as e:
+            sys.exit(f"{args.check_address} is not a celestiavaloper1 address: it {e}")
+        return
+    with open(args.config) as f:
+        cfg = json.load(f)
+    operator = check_config(cfg)
+    state = State()
+    if args.once:
+        read(cfg, operator, state)
+        sys.stdout.write(state.render())
+        return
+    serve(cfg["listen"], state)
+    while True:
+        read(cfg, operator, state)
+        time.sleep(cfg["interval_seconds"])
+
+
+if __name__ == "__main__":
+    main()

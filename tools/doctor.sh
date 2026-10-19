@@ -22,7 +22,7 @@
 # <node home>/bin, as the node itself does at every start.
 #
 # Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15,
-# 16, 18, 19, 21 and 22 run on the monitor host and ask them there, with the API
+# 16, 18, 19 and 21 to 23 run on the monitor host and ask them there, with the API
 # password that only root can read (api_password_file).
 #
 # signer and fibre_enabled tell doctor the install type: with signer=local it
@@ -91,7 +91,9 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          metrics are expected (default: true if the Fibre
                          unit exists)
   appd_unit, fibre_unit  systemd unit names (default: celestia-appd, fibre)
-  node_rpc_url           default http://127.0.0.1:26657
+  node_rpc_url           default http://127.0.0.1:26657; a loopback URL
+                         follows [rpc] laddr in the node's config.toml when
+                         that names another address of the host
   node_metrics_url       default http://127.0.0.1:26660/metrics
   node_home              celestia-appd home (default: the unit's --home,
                          CELESTIA_APP_HOME, DAEMON_HOME, or ~/.celestia-app
@@ -486,6 +488,24 @@ check_metrics() {
 
 signer_median() { # -> the node's median signing latency in seconds from METRICS, empty when absent
   awk '$1 ~ /^(cometbft|celestia)_privval_signing_latency_median_seconds($|[{])/ { print $NF; exit }' <<<"$METRICS"
+}
+
+# CometBFT serves its RPC on one address, laddr in the [rpc] section of config.toml. A node
+# that serves it on its private address only (for celestia-mon-signal on another host)
+# answers nothing on 127.0.0.1, so a loopback node_rpc_url follows laddr then.
+follow_rpc_laddr() {
+  local cfg=$NODE_HOME/config/config.toml laddr
+  [[ -r $cfg ]] || return 0
+  laddr=$(toml_get "$cfg" rpc laddr)
+  case $laddr in
+    tcp://*) laddr=${laddr#tcp://} ;;
+    *://*) return 0 ;;
+  esac
+  # An empty host, 0.0.0.0 or :: is every interface, loopback included.
+  case $(addr_host "$laddr") in
+    '' | 0.0.0.0 | :: | localhost | 127.* | ::1) return 0 ;;
+  esac
+  if is_loopback "$(url_hostport "${C[node_rpc_url]}")"; then C[node_rpc_url]=http://$laddr; fi
 }
 
 STATUS=""
@@ -1110,11 +1130,12 @@ firewall_state() {
 # The systemd units celestia-mon installs. Check 8 looks only at the sockets of their
 # main processes, so other software on the host (a node_exporter, Prometheus,
 # Grafana or collector of its own) is left alone. Every one of them must listen
-# on a private address; Prometheus, Alertmanager, celestia-mon-announcements and celestia-mon-tensile on
-# 127.0.0.1 only.
+# on a private address; Prometheus, Alertmanager, celestia-mon-announcements, celestia-mon-tensile and
+# celestia-mon-signal on 127.0.0.1 only.
 CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-grafana
-  celestia-mon-announcements celestia-mon-tensile)
-CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements celestia-mon-tensile)
+  celestia-mon-announcements celestia-mon-tensile celestia-mon-signal)
+CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements celestia-mon-tensile
+  celestia-mon-signal)
 
 check_binds() {
   local name="private binds" fw unit pid addr detail
@@ -1316,6 +1337,7 @@ target_fix() { # scrape job -> what to check when its target is down
     node) printf '%s' "node: on that host read \"systemctl status celestia-mon-node-exporter\" and \"journalctl -u celestia-mon-node-exporter -n 100\"" ;;
     otelcol) printf '%s' "otelcol: on that Fibre host read \"systemctl status celestia-mon-otelcol\" and \"journalctl -u celestia-mon-otelcol -n 100\"" ;;
     prometheus | alertmanager) printf '%s' "$1: read \"journalctl -u celestia-mon-$1 -n 100\" on this host" ;;
+    signal) printf '%s' "signal: read \"systemctl status celestia-mon-signal\" and \"journalctl -u celestia-mon-signal -n 50\" on this host" ;;
     *) printf '%s' "$1: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where)" ;;
   esac
 }
@@ -1439,6 +1461,7 @@ metric_source() {
     otelcol_*) echo otelcol ;;
     prometheus_*) echo prometheus ;;
     alertmanager_*) echo alertmanager ;;
+    celestia_mon_signal_* | celestia_mon_upgrade_* | celestia_mon_app_version | celestia_mon_chain_*) echo signal ;;
   esac
 }
 
@@ -1453,7 +1476,8 @@ metric_expected() {
 
 # The event after which a metric first appears, for the metrics that do not exist
 # until it happens (celestia-core privval/metrics.go and consensus/state.go, celestia-app
-# fibre/server_metrics.go, Alertmanager notify/metrics.go); empty for the others.
+# fibre/server_metrics.go, Alertmanager notify/metrics.go, tools/celestia-mon-signal, Prometheus's
+# ALERTS); empty for the others.
 metric_event() {
   case $1 in
     cometbft_privval_signing_failures_total) echo "the first failed signing request" ;;
@@ -1466,6 +1490,8 @@ metric_event() {
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
     fibre_server_download_shard_duration_seconds*) echo "the first download" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
+    celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;
+    ALERTS) echo "the first alert that is pending or firing" ;;
   esac
 }
 
@@ -1475,6 +1501,7 @@ metric_event() {
 # source is up (WARN: most likely a renamed metric). One line per group.
 check_rule_metrics() {
   local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total nmiss=0 src why ev job state pushing=false line
+  local signal_read=false
   local -a missing=() rules=() notyet=() broken=() notexp=()
   local -A jobs=()
   if ! has_role monitor; then report SKIP 12 "$name" "not the monitor host"; return; fi
@@ -1497,6 +1524,11 @@ check_rule_metrics() {
   # Fibre to push them; it reports its storage budget from its first push on.
   while read -r job state; do jobs[$job]=$state; done < <(prom_vector 'max by (job) (up)' job)
   if [[ -n $(prom_value 'count(fibre_server_upload_shard_budget_bytes)') ]]; then pushing=true; fi
+  # celestia-mon-signal serves its reading only once it has read an RPC; before that, only its
+  # last read time (0) and its errors.
+  if awk -v t="$(prom_value 'max(celestia_mon_signal_last_success_timestamp_seconds)')" 'BEGIN { exit !(t + 0 > 0) }'; then
+    signal_read=true
+  fi
   while read -r m; do
     nmiss=$((nmiss + 1))
     if ! metric_expected "$m"; then
@@ -1511,6 +1543,8 @@ check_rule_metrics() {
       why="Fibre is not pushing metrics: check 13"
     elif [[ -n $src && $src != fibre && ${jobs[$src]:-} != 1 ]]; then
       why="$src target not up: check 11"
+    elif [[ $src == signal && $signal_read != true ]]; then
+      why="celestia-mon-signal has read no RPC since it started: check 23"
     fi
     ev=$(metric_event "$m")
     if [[ -n $why ]]; then
@@ -1821,8 +1855,10 @@ check_fibre_active() {
   fi
 }
 
-# The alerts of the rules with severity page (DiskLow also has message rules).
+# The alerts of the rules with severity page (DiskLow also has message rules). UpgradeSignalMissing
+# exists only with upgrade signalling on, whose unit the install removes when it is off.
 PAGE_ALERTS=(NodeNotAdvancing ValidatorNotSigning FibreDown DiskLow)
+if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
 
 # Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
 # endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
@@ -1887,11 +1923,11 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
   esac
 }
 
-# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning and FibreDown
-# carry only alertname and severity, so each other matcher must match an absent label. DiskLow
-# also carries host, mountpoint and the node_exporter labels, whose values are not known here:
-# it counts when the silence names alertname or severity, so a host silence for planned work
-# is listed only when it runs long.
+# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown and
+# UpgradeSignalMissing carry only alertname and severity, so each other matcher must match an
+# absent label. DiskLow also carries host, mountpoint and the node_exporter labels, whose values
+# are not known here: it counts when the silence names alertname or severity, so a host silence
+# for planned work is listed only when it runs long.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=()
   local a m n o v hit named=false out=""
@@ -2003,6 +2039,86 @@ check_deadman() {
   fi
 }
 
+pct() { awk -v a="$1" -v b="$2" 'BEGIN { if (b + 0 > 0) printf "%.1f", 100 * a / b; else printf "0" }'; }
+
+signal_first_rpc() { # the first RPC in celestia-mon-signal's settings as the service names it (scheme://host[:port]), empty when unknown
+  local url
+  url=$(sed -n 's/^ *"rpc": *\["\([^"]*\)".*/\1/p' /etc/celestia-mon/signal/config.json 2>/dev/null | head -n 1)
+  if [[ ${url,,} =~ ^(https?://[^/]+) ]]; then printf '%s' "${BASH_REMATCH[1]%:}"; fi
+}
+
+# Upgrade signalling, on the monitor, from celestia-mon-signal's metrics in Prometheus (job
+# "signal", there only with celestia_mon_signal set). A full read takes the RPC's /abci_info, the
+# x/signal queries and the validator's entry in the signal store, and the service starts only
+# with an operator address that decodes to 20 bytes, so a recent read shows the whole path works.
+# WARN while validators signal the next version and this validator has not (UpgradeSignalMissing),
+# and while the reading comes from another RPC than the first one listed (a node of your own that
+# the monitor cannot reach leaves the page to a public RPC unnoticed).
+check_signal() {
+  local name="upgrade signal" up last errs rpc first app next tally thr total own pend ver height eta line when warn=""
+  if ! has_role monitor; then report SKIP 23 "$name" "not the monitor host"; return; fi
+  if ((!PROM_OK)); then report SKIP 23 "$name" "Prometheus not answering (check 11)"; return; fi
+  up=$(prom_value 'max(up{job="signal"})')
+  if [[ -z $up ]]; then
+    report SKIP 23 "$name" "upgrade signalling is off (celestia_mon_signal is not set)"
+    return
+  fi
+  if [[ $up != 1 ]]; then
+    report FAIL 23 "$name" "Prometheus cannot scrape celestia-mon-signal, so a signalling round would not page (SignalUnreadable sends a message). Fix: read \"systemctl status celestia-mon-signal\" and \"journalctl -u celestia-mon-signal -n 50\" on this host: an operator address that does not decode, or an rpc that is not an http or https URL or has a login or query, stops it at start; correct celestia_mon_signal and re-run install.sh on this host"
+    return
+  fi
+  errs=$(prom_vector 'sum by (reason) (increase(celestia_mon_signal_errors_total{job="signal"}[15m]))' reason |
+    awk '$2 + 0 > 0 { printf "%s%s %.0f", (n++ ? ", " : ""), $1, $2 }')
+  last=$(prom_value 'max(celestia_mon_signal_last_success_timestamp_seconds{job="signal"})')
+  if [[ -z $last ]] || awk -v l="$last" -v n="$(date +%s)" 'BEGIN { exit !(n - l > 900) }'; then
+    if [[ -z $last || ${last%%.*} == 0 ]]; then
+      when="no RPC read since the service started"
+    else
+      when="no RPC read for $((($(date +%s) - ${last%%.*}) / 60)) minutes"
+    fi
+    report FAIL 23 "$name" "$when${errs:+ (read errors in the last 15 minutes by reason: $errs)}, so a signalling round would not page. Fix: read \"journalctl -u celestia-mon-signal -n 50\" on this host: wrong_network is an RPC that serves another network than celestia_mon_signal.chain_id, behind one whose node is catching up, made no block for 2 minutes or answered an old height, network one this host cannot reach, http one that refused a call, query one that refused an x/signal query or whose store did not hold the height it gave; add a working RPC to celestia_mon_signal.rpc and re-run install.sh on this host"
+    return
+  fi
+  rpc=$(prom_vector 'celestia_mon_signal_rpc_info{job="signal"}' rpc | cut -d ' ' -f 1 | head -n 1)
+  app=$(prom_value 'max(celestia_mon_app_version{job="signal"})')
+  next=$(prom_value 'max(celestia_mon_signal_next_version{job="signal"})')
+  tally=$(prom_value 'max(celestia_mon_signal_tally_power{job="signal"})')
+  thr=$(prom_value 'max(celestia_mon_signal_threshold_power{job="signal"})')
+  total=$(prom_value 'max(celestia_mon_signal_total_power{job="signal"})')
+  own=$(prom_value 'max(celestia_mon_signal_validator_version{job="signal"})')
+  pend=$(prom_value 'max(celestia_mon_upgrade_pending{job="signal"})')
+  line="read through ${rpc:-an RPC} $(( $(date +%s) - ${last%%.*} ))s ago: app version ${app:-?}; v${next:-?} signalled by $(pct "${tally:-0}" "${total:-0}")% of the voting power, an upgrade needs $(pct "${thr:-0}" "${total:-0}")%"
+  if [[ ${own:-0} == 0 ]]; then
+    line+="; your validator has not signalled"
+  else
+    line+="; your validator signalled v$own"
+  fi
+  if [[ $pend == 1 ]]; then
+    ver=$(prom_value 'max(celestia_mon_upgrade_version{job="signal"})')
+    height=$(prom_value 'max(celestia_mon_upgrade_height{job="signal"})')
+    eta=$(prom_value 'max(celestia_mon_upgrade_eta_seconds{job="signal"})')
+    line+="; upgrade to v${ver:-?} scheduled at height ${height:-?}"
+    if [[ -n $eta ]]; then
+      line+=", in about $(awk -v s="$eta" 'BEGIN { if (s >= 86400) printf "%.1f days", s / 86400; else if (s >= 3600) printf "%.0f hours", s / 3600; else printf "%.0f minutes", s / 60 }')"
+    fi
+  else
+    line+="; no upgrade scheduled"
+  fi
+  line+="${errs:+; read errors in the last 15 minutes by reason: $errs}"
+  first=$(signal_first_rpc)
+  if [[ -n $first && -n $rpc && $rpc != "$first" ]]; then
+    warn+=" The reading comes from $rpc, not from the first RPC listed, $first, so the upgrade alerts depend on a later one. Fix: \"journalctl -u celestia-mon-signal -n 50\" on this host names why $first fails: a node RPC that listens on 127.0.0.1 only (laddr in the [rpc] section of the node's config.toml), a firewall or tailnet policy between this host and that port, or a node that is down or catching up."
+  fi
+  if [[ $pend != 1 && ${own:-0} != "${next:-}" ]] && awk -v t="${tally:-0}" 'BEGIN { exit !(t + 0 > 0) }'; then
+    warn+=" Validators signal v$next and your validator has not signalled it (UpgradeSignalMissing pages after 10 minutes). Fix: upgrade celestia-appd on every node to a release that supports v$next, then celestia-appd tx signal signal $next --from <validator account key> (docs/alerts.md, UpgradeSignalMissing)."
+  fi
+  if [[ -n $warn ]]; then
+    report WARN 23 "$name" "$line.${warn%.}"
+  else
+    report OK 23 "$name" "$line"
+  fi
+}
+
 # ------------------------------------------------------------------- main
 
 conf=/etc/celestia-mon/doctor.conf
@@ -2068,6 +2184,7 @@ printf 'celestia-mon-doctor on %s (roles: %s; signer: %s; fibre_enabled: %s)\n' 
   "${C[roles]:-none}" "${C[signer]:-not set}" "${C[fibre_enabled]}"
 if node_host; then
   find_node
+  follow_rpc_laddr
   read_status
 fi
 if has_role monitor; then api_auth_load; fi
@@ -2094,6 +2211,7 @@ check_fibre_active
 check_signer_binds
 check_silences
 check_deadman
+check_signal
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

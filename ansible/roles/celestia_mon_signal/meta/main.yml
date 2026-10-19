@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: Huginn Tech
+  description: The network's upgrade signalling (x/signal) and the validator's own signal, read through a node's RPC, on the monitor host
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies:
+  - role: celestia_mon

@@ -35,6 +35,7 @@ celestia_mon_ports:
   otelcol_otlp: 9915
   announcements: 9916
   tensile: 9917
+  signal: 9918
 
 # The address Grafana listens on, on the monitor host. The default, 127.0.0.1, keeps it off
 # every network: reach it through an SSH tunnel from your machine
@@ -89,6 +90,17 @@ celestia_mon_announcements: []
 #   celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "celestiavalcons1..."}
 celestia_mon_tensile: {}
 
+# Upgrade signalling (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), on the monitor host:
+# celestia-mon-signal reads x/signal through a node's CometBFT RPC. chain_id: the network's chain ID
+# (celestia, mocha-5); an RPC that serves another network is skipped. rpc: CometBFT RPC URLs, tried
+# in order; a node of your own first, a public RPC after it. validator: the validator's operator
+# address (celestiavaloper1...). Empty: off, and nothing watches the validator's signal.
+#   celestia_mon_signal:
+#     chain_id: celestia
+#     rpc: ["http://127.0.0.1:26657", "https://rpc.celestia.pops.one"]
+#     validator: celestiavaloper1...
+celestia_mon_signal: {}
+
 # Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog
 # alert pings it every 1-2 minutes; the service alerts you when the pings stop. It must be an
 # https URL (http only to this host itself, such as a local relay); an empty value or the
@@ -127,6 +139,7 @@ celestia_mon_memory:
   grafana: {high: 512M, max: 1G}
   announcements: {high: 64M, max: 128M}
   tensile: {high: 64M, max: 128M}
+  signal: {high: 64M, max: 128M}
 
 # Inventory groups (a host may be in several):
 #   validator    exactly one host: the celestia-appd node the signer normally connects to

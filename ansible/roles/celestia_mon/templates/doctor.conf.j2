@@ -18,6 +18,7 @@ fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
 appd_unit={{ celestia_mon_units.appd }}
 fibre_unit={{ celestia_mon_units.fibre }}
 {% if inventory_hostname in node_hosts %}
+{# doctor follows [rpc] laddr in the node's config.toml when the RPC listens on another address. #}
 node_rpc_url=http://127.0.0.1:{{ celestia_mon_node_rpc_port }}
 node_metrics_url=http://{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_node_metrics_port }}/metrics
 node_home={{ celestia_mon_node_home | default('') }}
