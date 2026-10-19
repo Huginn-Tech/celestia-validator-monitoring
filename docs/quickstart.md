@@ -14,7 +14,7 @@ This guide takes you from an empty inventory to a running dashboard, working ale
   A monitor host of its own keeps alerting when a validator or Fibre host dies ([security.md](security.md#where-to-run-the-monitor)). The monitor may share a host, as on the Fibre host in the [mainnet layout](#mainnet-layout); the dead-man service (step 8) then tells you when that host dies.
 - **A private network between the hosts:** RFC 1918, Tailscale (100.64.0.0/10), WireGuard or IPv6 ULA addresses. Everything celestia-validator-monitoring installs listens on these addresses or on 127.0.0.1, and the install fails if one of its services listens on a public address.
 - **Root on each host** (`sudo`), with the `python3` and `curl` (or `wget`) that Ubuntu ships. Nothing is installed with apt or pip: `install.sh` downloads the [uv](https://github.com/astral-sh/uv) binary pinned in `versions.yml`, checks its sha256, and uses it to install the pinned ansible-core and every package it needs, from `ansible/requirements.lock` with the sha256 of each file, into a temporary directory under `/var/tmp/celestia-mon-install`, which it deletes when it ends, also on failure. `/var/tmp` must not be mounted `noexec` and needs 1 GiB free during the run.
-- **Outbound HTTPS** from every host to `github.com` and `release-assets.githubusercontent.com` (uv and the release downloads), `pypi.org` and `files.pythonhosted.org` (ansible-core); from the monitor also to `dl.grafana.com` (Grafana), your alert receivers and the dead-man service.
+- **Outbound HTTPS** from every host to `github.com` and `release-assets.githubusercontent.com` (uv and the release downloads), `pypi.org` and `files.pythonhosted.org` (ansible-core); from the monitor also to `dl.grafana.com` (Grafana), your alert receivers and the dead-man service, and to the public RPCs in `celestia_mon_signal`, if you list any ([upgrade signalling](#upgrade-signalling)).
 - **Free disk** for the releases a host gets, while they are downloaded and unpacked: about 100 MiB on a validator, backup node or KMS host, 1.2 GiB on a Fibre host (the OpenTelemetry collector), 2.2 GiB on the monitor. The install checks it.
 - **Room for Prometheus's data on the monitor:** retention size x 1.5 + 2 GiB on the disk of `/var/lib/celestia-mon/prometheus`, 14 GiB with the default `celestia_mon_prometheus_retention_size` of 8 GB. The retention size bounds only Prometheus's finished blocks: its write-ahead log, its head chunks and the new blocks a compaction writes before it deletes the old ones come on top. The install stops with the numbers when the disk cannot hold it (what Prometheus keeps there already counts, so a re-run on a grown install passes), and `doctor` check 15 repeats the check later. Lower the retention size or give the data its own disk if it does not fit.
 - **One validator per install.** To watch a testnet and a mainnet validator, run two installs with two inventories.
@@ -28,6 +28,9 @@ Default ports:
 | Prometheus | monitor | 9912 on 127.0.0.1 |
 | Alertmanager | monitor | 9913 on 127.0.0.1 |
 | Grafana | monitor | 9914 on 127.0.0.1 (or `celestia_mon_grafana_listen`) |
+| celestia-mon-announcements, with Celestia's announcements on | monitor | 9916 on 127.0.0.1 |
+| celestia-mon-tensile, with the outside check on | monitor | 9917 on 127.0.0.1 |
+| celestia-mon-signal, with upgrade signalling on | monitor | 9918 on 127.0.0.1 |
 
 Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator and on each backup node. Prometheus and Alertmanager listen on loopback only and ask for a login on every request: user `celestia-mon` and a password the install generates on the monitor, in `/etc/celestia-mon/api-password` (readable by root and Prometheus only), so no other account on the monitor can read them or silence alerts. doctor and amtool use it. Grafana reads Prometheus with a login of its own (user `grafana`, `/etc/celestia-mon/grafana-api-password`), which Alertmanager refuses. Grafana listens on loopback too by default, and you reach all three through an SSH tunnel (step 7).
 
@@ -42,6 +45,7 @@ Every unit runs with `Nice=10`, `CPUWeight=20` and `IOWeight=20` (systemd's defa
 | Prometheus | 2G | 4G |
 | Alertmanager | 128M | 256M |
 | Grafana | 512M | 1G |
+| celestia-mon-announcements, celestia-mon-tensile, celestia-mon-signal | 64M each | 128M each |
 
 **What the priorities do and do not do.** `Nice`, `CPUWeight` and `IOWeight` lower the services' share only while they compete with celestia-appd, Fibre or tmkms for CPU or disk; on an idle host they change nothing, and they reserve nothing. They lower the impact on the validator's disk; they do not guarantee there is none. `IOWeight` (the cgroup's `io.weight`) has no effect with the `none` I/O scheduler that NVMe disks commonly use, unless the kernel's io.cost controller is configured; check a disk's scheduler with `cat /sys/block/<disk>/queue/scheduler`. Where the monitor shares a disk with the validator or Fibre, measure the impact of Prometheus's compactions on the first deploy (step 9, check 16).
 
@@ -99,13 +103,14 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 |---|---|---|
 | `celestia_mon_units` | `celestia-appd`, `fibre`, `tmkms` | systemd unit names of the Celestia services. |
 | `celestia_mon_node_metrics_port`, `celestia_mon_node_rpc_port` | 26660, 26657 | celestia-appd's metrics and RPC ports. |
-| `celestia_mon_ports` | 9910 to 9915 | celestia-validator-monitoring's ports (table in step 1). |
+| `celestia_mon_ports` | 9910 to 9918 | celestia-validator-monitoring's ports (table in step 1). |
 | `celestia_mon_thresholds` | see [alerts.md](alerts.md) | Alert thresholds. |
 | `celestia_mon_prometheus_retention` | `30d` | How long Prometheus keeps data. |
 | `celestia_mon_prometheus_retention_size` | `8GB` | How much data Prometheus keeps; the oldest goes first when either limit is reached. Its disk needs this x 1.5 + 2 GiB (step 1). |
 | `celestia_mon_grafana_listen` | `127.0.0.1` | The address Grafana listens on, on the monitor (step 7). Another value must be a private address of the monitor host. |
 | `celestia_mon_nice`, `celestia_mon_cpu_weight`, `celestia_mon_io_weight` | 10, 20, 20 | CPU and disk priority of every unit. |
-| `celestia_mon_memory` | table in step 1 | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`). |
+| `celestia_mon_memory` | table in step 1 | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`, `announcements`, `tensile`, `signal`). |
+| `celestia_mon_signal` | `{}` (off) | Upgrade signalling, on the monitor host: the RPCs to read x/signal through and the validator's operator address ([below](#upgrade-signalling)). |
 
 Overriding a map (`celestia_mon_units`, `celestia_mon_ports`, `celestia_mon_thresholds`, `celestia_mon_memory`) replaces the whole map, so list every key.
 
@@ -303,8 +308,9 @@ The exit code is 1 when a check failed.
 | 18 | monitor | Node lag: every celestia-appd node's height against the highest one, and which node signs. Warns when a node is more than `node_behind_blocks` (20) behind, or reports no height: a backup node that lags cannot take over signing. |
 | 19 | monitor | Fibre active, with Fibre on: which Fibre host runs Fibre, read from systemd. `FAIL` when none does (FibreDown pages after 10 minutes), `WARN` when two or more do (two Fibre instances must never be live at once). |
 | 20 | validator, backup_node | Signer binds: where `priv_validator_laddr` (tmkms) and `priv_validator_grpc_laddr` (Fibre) listen, from `config.toml` and the listening sockets; doctor never connects to them. Warns on every interface: celestia-appd does not authenticate the signer that connects to `priv_validator_laddr`, and ufw does not filter a Tailscale interface. Fails on a public address, or on a privval gRPC beyond loopback with `priv_validator_grpc_allow_insecure = true`. On a backup node it notes an empty `priv_validator_grpc_laddr`: after a tmkms repoint, no Fibre can sign through that node until it is set. |
-| 21 | monitor | Silences: warns on each active silence in Alertmanager that holds back a page alert (NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow) or ends more than 4 hours from now, with its matchers, author, end and ID: while it holds an alert back, nothing is sent and the dead-man heartbeat stays green. A host silence counts for its length only. |
+| 21 | monitor | Silences: warns on each active silence in Alertmanager that holds back a page alert (NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow, and UpgradeSignalMissing with upgrade signalling on) or ends more than 4 hours from now, with its matchers, author, end and ID: while it holds an alert back, nothing is sent and the dead-man heartbeat stays green. A host silence counts for its length only. |
 | 22 | monitor | Dead-man heartbeat: Alertmanager sent the Watchdog to the dead-man service in the last 10 minutes, and none of those sends failed (`FAIL`). `WARN` when none went out (the Watchdog stops for an hour after a failed page or message notification); `NOT YET` in the first 10 minutes after Prometheus or Alertmanager starts. |
+| 23 | monitor | Upgrade signalling, with `celestia_mon_signal` set (`SKIP` without): celestia-mon-signal is up and has read an RPC (`/abci_info`, x/signal and the validator's entry, which needs an operator address that decodes) in the last 15 minutes. Prints the last reading: the RPC, the app version, the share of the voting power that signalled the next version against the 5/6 needed, your validator's signal, and a scheduled upgrade. `WARN` while validators signal the next version and yours has not, and while the reading comes from another RPC than the first one listed; `FAIL` when the service is down or has read no RPC for 15 minutes, with the reasons of its failed reads. |
 
 Right after an install, doctor on the monitor can take up to a minute while Prometheus starts and scrapes each target once. On the first deploy, check 12 is how the Fibre metric names get confirmed: any metric it lists as `WARN` needs a look. Run doctor again after every celestia-app or Fibre upgrade and every config change.
 
@@ -336,6 +342,8 @@ Each resolves by itself after 5 minutes. [alerts.md](alerts.md) describes every 
 Upgrades are the most common reason a node stops at a height or crash loops. Celestia announces upgrades and incidents in its announcement channels on Discord, and per network on [status.celestia.org](https://status.celestia.org/).
 
 celestia-validator-monitoring can pass the Discord announcements on to your receivers, PagerDuty included, as [CelestiaAnnouncement](alerts.md#celestiaannouncement) alerts: follow Celestia's announcement channels from a channel on your own Discord server, give a bot of yours read access to it, and set `celestia_mon_announcements` (inventory) and `celestia_mon_discord_bot_token` (vault) on the monitor. [alerts.md](alerts.md#celestiaannouncement) has the steps. Otherwise subscribe on status.celestia.org for the networks you run, or route its feed ([RSS](https://status.celestia.org/feed.rss), [Atom](https://status.celestia.org/feed.atom)) into the same channel as your alerts. See also Celestia's [network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/) page.
+
+The upgrade itself is read from the chain when you set `celestia_mon_signal` ([upgrade signalling](#upgrade-signalling)): a page while validators signal a version yours has not, and a message when the upgrade is scheduled and when it is less than a day away.
 
 ## 12. Before planned restarts and upgrades
 
@@ -375,7 +383,7 @@ Once a month, check that every path still works:
 sudo ./install.sh --uninstall --host <name>
 ```
 
-It needs neither the inventory nor the vault password, and it shows its plan and asks first as well (`--check` shows the plan only, `--yes` skips the question). It stops, disables and removes every `celestia-mon-*` unit, removes `/opt/celestia-mon` (the binaries), `/var/cache/celestia-mon`, `/usr/local/bin/celestia-mon-doctor` and the four settings files that hold secrets (Alertmanager's settings with the receivers and the dead-man URL, Grafana's admin password and its datasource, and the API password; a reinstall writes them again, with a new API password), and deletes the ufw rules the install recorded in `/var/lib/celestia-mon/firewall-added.json`: each one only while ufw still lists it with the recorded source, port, protocol and the comment `celestia-mon`. A rule that was there before the install was never recorded and stays. It keeps Prometheus's data and Grafana's database (`/var/lib/celestia-mon`), the other settings (`/etc/celestia-mon`) and the `celestia-mon-*` system users and groups, so a reinstall picks up where it left off. It prints the command that deletes those too:
+It needs neither the inventory nor the vault password, and it shows its plan and asks first as well (`--check` shows the plan only, `--yes` skips the question). It stops, disables and removes every `celestia-mon-*` unit, removes `/opt/celestia-mon` (the binaries), `/var/cache/celestia-mon`, `/usr/local/bin/celestia-mon-doctor` and the settings files that hold secrets (Alertmanager's settings with the receivers and the dead-man URL, Grafana's admin password and its datasource, the API passwords, the Discord bot token, and celestia-mon-signal's settings with its RPC URLs; a reinstall writes them again, with new API passwords), and deletes the ufw rules the install recorded in `/var/lib/celestia-mon/firewall-added.json`: each one only while ufw still lists it with the recorded source, port, protocol and the comment `celestia-mon`. A rule that was there before the install was never recorded and stays. It keeps Prometheus's data and Grafana's database (`/var/lib/celestia-mon`), the other settings (`/etc/celestia-mon`) and the `celestia-mon-*` system users and groups, so a reinstall picks up where it left off. It prints the command that deletes those too:
 
 ```sh
 sudo ./install.sh --uninstall --purge --host <name>
@@ -440,6 +448,42 @@ The fixes `doctor` prints (checks 5 and 19) name the same commands.
 **KMS standby.** A standby KMS host (tmkms installed without the key, disabled) needs nothing from celestia-validator-monitoring; leave it out of the inventory. The signer's health is read from the node side: signing failures and signer latency (RemoteSignerProblem), missed signatures (SignaturesMissed) and signing that stopped (ValidatorNotSigning).
 
 **DR site.** A disaster-recovery host at another site, which takes over only when the whole primary site is lost (the key loaded there as a key file, Fibre with a loopback signer), is a separate install: its own inventory in the `example-single` layout, with the host also in the `fibre` group, `celestia_mon_signer: local`, `celestia_mon_fibre_enabled: true`, and its own receivers and dead-man URL. Prepare the inventory and copy the repository there ahead of time, and run `install.sh` when you switch: until the key is loaded there, its node signs nothing and ValidatorNotSigning would page.
+
+## Upgrade signalling
+
+Optional, on the monitor. Celestia moves to a new app version once 5/6 of the voting power has signalled it in x/signal. celestia-mon-signal reads x/signal every minute through a node's CometBFT RPC: the voting power that signalled the next version, the upgrade once one is scheduled, and the version your validator signalled. [UpgradeSignalMissing](alerts.md#upgradesignalmissing) pages while validators signal a version yours has not; [UpgradeScheduled](alerts.md#upgradescheduled) sends a message when the upgrade is scheduled (again after 4 days while it waits, as on mainnet), and [UpgradeSoon](alerts.md#upgradesoon) one when it is less than a day away. It sends no transaction and needs no key. Set `celestia_mon_signal` on the monitor host, in its entry in `hosts.yml` or its `host_vars`:
+
+| Key | Meaning |
+|---|---|
+| `chain_id` | The network's chain ID: `celestia` on mainnet, `mocha-5` on Mocha. An RPC that serves another network is skipped, so a mainnet install never reads a Mocha node, or the reverse. |
+| `rpc` | CometBFT RPC URLs (`http` or `https`; port 26657 on a node), tried in order: the first one that answers for `chain_id` is read. x/signal's state is the same on every synced node, so put a node of your own first and a public RPC after it, for the time your node is down. An RPC whose node is catching up, or has made no block for 2 minutes, is skipped too. The block time is measured over the last 1000 blocks the node keeps. A URL may hold a provider's key in its path, not in a login or a query string. |
+| `validator` | The validator's operator address, `celestiavaloper1...`. The install checks it, its checksum included. |
+
+In the [mainnet layout](#mainnet-layout), the backup node runs on the monitor host `fibre-1` and answers on its loopback; a public RPC from Celestia's [mainnet page](https://docs.celestia.org/operate/networks/mainnet-beta/) takes over while it is down:
+
+```yaml
+    fibre-1:
+      celestia_mon_signal:
+        chain_id: celestia
+        rpc:
+          - http://127.0.0.1:26657
+          - https://rpc.celestia.pops.one
+        validator: celestiavaloper1...
+```
+
+In the [Mocha layout](#mocha-layout) the monitor runs no node, and a node's RPC listens on its loopback by default (`laddr` in the `[rpc]` section of `config.toml`). Point `rpc` at a node RPC the monitor can reach, or at the public RPCs from Celestia's [Mocha page](https://docs.celestia.org/operate/networks/mocha-testnet/):
+
+```yaml
+    fibre-1:
+      celestia_mon_signal:
+        chain_id: mocha-5
+        rpc:
+          - https://rpc-mocha.pops.one
+          - https://public-endpoint.celestia-mocha.quiknode.pro
+        validator: celestiavaloper1...
+```
+
+A public RPC is someone else's node: the reads are public and need no key, but the upgrade alerts then depend on it, so list a node of your own first wherever the monitor can reach one. A node on another host needs its RPC on its private address (`laddr` in `[rpc]`) and a firewall or tailnet rule that lets the monitor reach port 26657 there; both are your changes ([security.md](security.md#tailnet-policy) has the grant). The RPC listens on one address only, so nothing answers on that node's 127.0.0.1 afterwards: `doctor` there follows `laddr`, and `celestia-appd` commands there need `--node http://<private address>:26657` (or `node` in its `client.toml`). When a URL holds a provider's key, set `celestia_mon_signal` in the monitor's vault file instead; the metrics and the log name each RPC by its scheme, host and port only. Run `install.sh` on the monitor after the change; `sudo celestia-mon-doctor` there (check 23) shows the first reading, and warns while it comes from another RPC than the first. To turn it off, remove `celestia_mon_signal` and run `install.sh` on the monitor again: the service is removed.
 
 ## Mocha layout
 

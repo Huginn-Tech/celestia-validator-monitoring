@@ -1,0 +1,177 @@
+---
+# Upgrade signalling, on the monitor host. celestia-mon-signal (tools/celestia-mon-signal) reads
+# x/signal through a node's CometBFT RPC: the version validators signal for, the voting power
+# that signalled it, the upgrade scheduled once 5/6 did, and the version the validator signalled.
+# It serves them as metrics for UpgradeSignalMissing, UpgradeScheduled and UpgradeSoon. Off while
+# celestia_mon_signal is empty; turned off after it ran, it is removed again.
+- name: Check the upgrade signal settings
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_signal is mapping
+      - celestia_mon_signal.chain_id | default('') | string | length > 0
+      - celestia_mon_signal.rpc | default('') is sequence
+      - celestia_mon_signal.rpc | default('') is not string
+      - celestia_mon_signal.rpc | default('') is not mapping
+      - celestia_mon_signal.rpc | default([]) | length > 0
+      # As the service checks them: a host, a numeric port, and no login, query or fragment (the
+      # service appends each call to the path).
+      - celestia_mon_signal.rpc | default([]) | map('string') | reject('match', celestia_mon_signal_rpc_pattern) | list | length == 0
+      # bech32: 32 characters for the 20 address bytes, then 6 of checksum.
+      - celestia_mon_signal.validator | default('') | string is match('^celestiavaloper1[02-9ac-hj-np-z]{38}$')
+    fail_msg: >-
+      celestia_mon_signal must be {chain_id: "<chain ID>", rpc: ["<CometBFT RPC URL>", ...], validator: "<operator
+      address>"}: the network's chain ID (celestia on mainnet, mocha-5 on Mocha), one or more http or https URLs of
+      a node's CometBFT RPC (port 26657 by default), tried in order, each without a login, query or fragment (a
+      provider's key goes in the path), and the validator's operator address (celestiavaloper1...).
+    quiet: true
+  vars:
+    celestia_mon_signal_rpc_pattern: '^https?://([^/:@?#\[\]\s]+|\[[0-9A-Fa-f:.]+\])(:[1-9][0-9]*)?(/[^?#\s]*)?$'
+  when: celestia_mon_signal | default({}, true) | length > 0
+
+- name: Install celestia-mon-signal
+  when: celestia_mon_signal | default({}, true) | length > 0
+  block:
+    # The checksum, which the pattern above cannot check: the script decodes the address the way
+    # the service does, here and in the dry run, before anything is installed. It reads nothing else.
+    # It runs where the playbook and the repository are, with the playbook's Python.
+    - name: Check the validator's operator address
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - "{{ playbook_dir }}/../tools/celestia-mon-signal"
+          - --check-address
+          - "{{ celestia_mon_signal.validator }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      check_mode: false
+
+    - name: Check that nothing else listens on the signal port
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: port_check
+      vars:
+        celestia_mon_port_check_port: "{{ celestia_mon_ports.signal }}"
+        celestia_mon_port_check_unit: celestia-mon-signal
+
+    - name: Create the celestia-mon-signal user
+      ansible.builtin.user:
+        name: celestia-mon-signal
+        system: true
+        shell: /usr/sbin/nologin
+        home: /nonexistent
+        create_home: false
+
+    - name: Look for the celestia-mon-signal unit
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-signal.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_signal_unit
+
+    - name: Note whether celestia-mon-signal is installed
+      ansible.builtin.set_fact:
+        celestia_mon_signal_present: "{{ celestia_mon_signal_unit.stat.exists }}"
+
+    - name: Create the signal directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /opt/celestia-mon
+        - "{{ celestia_mon_signal_dir }}"
+        - /etc/celestia-mon
+        - "{{ celestia_mon_signal_config_dir }}"
+
+    - name: Install the signal script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../tools/celestia-mon-signal"
+        dest: "{{ celestia_mon_signal_script }}"
+        owner: root
+        group: root
+        mode: "0755"
+      # The script is code, not a setting: no diff of it in the dry run.
+      diff: false
+      notify: Restart celestia-mon-signal
+
+    # Readable by root and the service only: an RPC URL may carry a provider's key, so no diff of
+    # it in the dry run either (install.sh keeps that output in its log).
+    - name: Write the signal settings
+      ansible.builtin.template:
+        src: config.json.j2
+        dest: "{{ celestia_mon_signal_config }}"
+        owner: root
+        group: celestia-mon-signal
+        mode: "0640"
+      diff: false
+      no_log: true
+      notify: Restart celestia-mon-signal
+
+    - name: Install the celestia-mon-signal systemd unit
+      ansible.builtin.template:
+        src: celestia-mon-signal.service.j2
+        dest: /etc/systemd/system/celestia-mon-signal.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: celestia_mon_signal_unit_file
+      notify: Restart celestia-mon-signal
+
+    # Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+    # that someone else edited on disk and has not reloaded yet.
+    - name: Start celestia-mon-signal and enable it at boot
+      ansible.builtin.systemd_service:
+        name: celestia-mon-signal
+        enabled: true
+        state: started
+        daemon_reload: "{{ celestia_mon_signal_unit_file is changed }}"
+      when: celestia_mon_signal_present or not ansible_check_mode
+
+    - name: Apply a pending celestia-mon-signal restart
+      ansible.builtin.meta: flush_handlers
+
+    - name: Wait for celestia-mon-signal on {{ celestia_mon_signal_listen_address }}
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ celestia_mon_ports.signal }}"
+        timeout: 60
+        msg: >-
+          celestia-mon-signal does not listen on {{ celestia_mon_signal_listen_address }}.
+          See journalctl -u celestia-mon-signal.
+      when: not ansible_check_mode
+
+# Turned off after it ran: stop it and remove its unit, script and settings.
+- name: Remove celestia-mon-signal
+  when: celestia_mon_signal | default({}, true) | length == 0
+  block:
+    - name: Look for an earlier celestia-mon-signal
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-signal.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_signal_old_unit
+
+    - name: Stop and disable celestia-mon-signal
+      ansible.builtin.systemd_service:
+        name: celestia-mon-signal
+        state: stopped
+        enabled: false
+      when: celestia_mon_signal_old_unit.stat.exists
+
+    - name: Remove celestia-mon-signal's unit, script and settings
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/systemd/system/celestia-mon-signal.service
+        - "{{ celestia_mon_signal_dir }}"
+        - "{{ celestia_mon_signal_config_dir }}"
+
+    - name: Reload systemd after removing the unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: celestia_mon_signal_old_unit.stat.exists and not ansible_check_mode

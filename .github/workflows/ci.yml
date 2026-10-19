@@ -274,16 +274,18 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
-      # The mainnet example also reads one announcement channel and has the outside check of its
-      # Fibre endpoint, so its rules and scrape jobs include AnnouncementsUnreadable, FibreDown's
-      # outside branches, TensileUnreadable and the announcements and tensile jobs.
+      # The mainnet example also reads one announcement channel, has the outside check of its
+      # Fibre endpoint and reads upgrade signalling, so its rules and scrape jobs include
+      # AnnouncementsUnreadable, FibreDown's outside branches, TensileUnreadable, the upgrade alerts
+      # and the announcements, tensile and signal jobs.
       - name: Render the example inventories
         run: |
           for s in single split mainnet; do
             extra=()
             if [ "$s" = mainnet ]; then
               extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
-                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"}}')
+                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"},
+                          "celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"}}')
             fi
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
@@ -363,6 +365,19 @@ jobs:
           printf '%s\n' "$out"
           grep -qx '\*\*Disk / on val-1 is almost full\*\*' <<<"$out"
           grep -qx '✅ RESOLVED · DiskLow · val-1' <<<"$out"
+          # An alert that names no host, as the upgrade alerts: nothing after its name.
+          cat >"$RUNNER_TEMP/upgrade.json" <<'EOF'
+          {"receiver": "message", "status": "resolved", "alerts": [{"status": "resolved",
+            "labels": {"alertname": "UpgradeScheduled", "severity": "message"},
+            "annotations": {"summary": "Network upgrade to v11 scheduled",
+                            "description": "This alert resolves when the chain has switched to v11."}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
+          EOF
+          out=$(render "$RUNNER_TEMP/upgrade.json" html '{{ template "celestia.telegram.message" . }}')
+          printf '%s\n---\n' "$out"
+          want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
+          test "$out" = "$(printf "$want")"
+          test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
       # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
       # active or standby, in the otelcol job.
       - name: The mainnet scrape targets follow the inventory groups
@@ -379,14 +394,17 @@ jobs:
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
           assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
           assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
-          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements")})
+          assert hosts("signal") == [("fibre-1", "monitor")], hosts("signal")
+          assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
+          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal")})
           EOF
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
       # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, Watchdog ->
-      # deadman), and checks that the receiver check refuses a PagerDuty-only list and the old
-      # page/message lists.
+      # deadman, UpgradeScheduled and UpgradeSoon -> message on a route of their own that sends each
+      # once, UpgradeSignalMissing -> page), and checks that the receiver check refuses a
+      # PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         run: |
           set -euo pipefail
@@ -415,10 +433,23 @@ jobs:
             alertname=CelestiaAnnouncement severity=page host=mon-1 source=ci announcement=1
           amtool config routes test --config.file="$am" --verify.receivers=announcement-message \
             alertname=CelestiaAnnouncement severity=message host=mon-1 source=ci announcement=1
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=UpgradeSignalMissing severity=page
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeScheduled severity=message
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeSoon severity=message
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignalUnreadable severity=message host=mon-1
           python - "$am" <<'EOF'
           import sys
           import yaml
-          receivers = {r["name"]: r for r in yaml.safe_load(open(sys.argv[1]))["receivers"]}
+          config = yaml.safe_load(open(sys.argv[1]))
+          # UpgradeScheduled and UpgradeSoon: their own route, each alert sent once, before the message route.
+          routes = config["route"]["routes"]
+          upgrade = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname=~"UpgradeScheduled|UpgradeSoon"']]
+          assert len(upgrade) == 1, routes
+          r = routes[upgrade[0]]
+          assert (r["receiver"], r["group_by"], r["group_wait"], r["repeat_interval"]) == ("message", ["..."], "0s", "96h"), r
+          assert "routes" not in r and not r.get("continue", False), r
+          assert upgrade[0] < [i for i, r in enumerate(routes) if r.get("receiver") == "message" and i != upgrade[0]][0], routes
+          receivers = {r["name"]: r for r in config["receivers"]}
           def count(name):
               return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
           chat = {"telegram_configs": 1, "discord_configs": 1, "slack_configs": 2, "webhook_configs": 1}
@@ -572,6 +603,215 @@ jobs:
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
 
+  # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with
+  # mainnet's x/signal answers of 19 October 2026 (app v9; v10 signalled by 396393243 of 463776854
+  # and scheduled at height 15116658) and a synthetic operator address: an upgrade pending that the
+  # validator signalled, an open round it has not signalled, a version nobody signalled, an RPC of
+  # another network, one that is behind and an unreachable one before the right one, a store that
+  # lacks the height read, a pruned node and one that refuses the block time, a key in the RPC URL
+  # that must not show, URLs and addresses that do not decode, and the service keeping its last
+  # reading while reads fail.
+  signal:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: celestia-mon-signal serves x/signal as metrics
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/signal"
+          mkdir -p "$d"
+          op=1111111111111111111111111111111111111111
+          addr=$(python3 tools/ci/rpc_stub.py address "$op")
+          echo "operator address: $addr"
+          # file, network, GetUpgrade answer, VersionTally answer for v10, the validator's version (null:
+          # none), lowest block[, more fields]. Written aside and moved, so the stand-in never reads half a file.
+          state() {
+            cat >"$1.new" <<EOF
+          {"network": "$2", "version": "9.0.4", "app_version": 9, "height": 15000000, "lowest": $6,
+           "tally": {"10": "$4"}, "upgrade": "$3", "signals": {"$op": $5}${7:+, $7}}
+          EOF
+            mv "$1.new" "$1"
+          }
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          state "$d/other.json" mocha-5 "" EMj0pLgBGNbYkt0B null 1
+          python3 tools/ci/rpc_stub.py 8767 "$d/rpc.json" &
+          python3 tools/ci/rpc_stub.py 8768 "$d/other.json" &
+          for p in 8767 8768; do curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null "http://127.0.0.1:$p/health"; done
+          run() { # validator, RPC URLs...
+            local v=$1
+            shift
+            printf '{"chain_id": "celestia", "rpc": %s, "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 60}' \
+              "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" "$v" >"$d/config.json"
+            python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
+          }
+
+          # The upgrade to v10 is pending and the validator signalled it. The RPC URL carries a key.
+          # The stand-in answers queries at its last height only, so the reading is of one height.
+          m=$(run "$addr" http://127.0.0.1:8767/ci-secret-key)
+          printf '%s\n' "$m"
+          for want in 'celestia_mon_app_version 9' 'celestia_mon_node_version_info{version="9.0.4"} 1' \
+                      'celestia_mon_chain_height 15000000' 'celestia_mon_signal_next_version 10' \
+                      'celestia_mon_signal_tally_power 396393243' 'celestia_mon_signal_threshold_power 386480712' \
+                      'celestia_mon_signal_total_power 463776854' 'celestia_mon_signal_validator_version 10' \
+                      'celestia_mon_upgrade_pending 1' 'celestia_mon_upgrade_version 10' 'celestia_mon_upgrade_height 15116658' \
+                      'celestia_mon_chain_block_time_seconds 2.87' 'celestia_mon_upgrade_eta_seconds 334808' \
+                      'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1'; do
+            grep -qxF "$want" <<<"$m" || { echo "missing: $want"; exit 1; }
+          done
+          grep -Eq '^celestia_mon_signal_last_success_timestamp_seconds [1-9]' <<<"$m"
+          if grep -q ci-secret-key - "$d/err" <<<"$m"; then echo "the key in the RPC URL shows"; exit 1; fi
+
+          # The round for v10 is open, nothing is scheduled, and the validator has not signalled.
+          state "$d/rpc.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B null 1
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_tally_power 396393243' <<<"$m"
+          grep -qxF 'celestia_mon_signal_validator_version 0' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_pending 0' <<<"$m"
+          if grep -q '^celestia_mon_upgrade_\(version\|height\|eta_seconds\)' <<<"$m"; then echo "upgrade details without an upgrade"; exit 1; fi
+
+          # Nobody signalled v10: the answer has no voting_power field.
+          state "$d/rpc.json" celestia "" EMj0pLgBGNbYkt0B null 1
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_tally_power 0' <<<"$m"
+          grep -qxF 'celestia_mon_signal_threshold_power 386480712' <<<"$m"
+
+          # A Mocha RPC and an unreachable one come first: both are skipped, the third is read.
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:9 http://127.0.0.1:8767)
+          cat "$d/err"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="wrong_network"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="network"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qF "http://127.0.0.1:8768 serves 'mocha-5', not 'celestia'" "$d/err"
+          m=$(run "$addr" http://127.0.0.1:8768)
+          grep -qx 'celestia_mon_signal_last_success_timestamp_seconds 0.0' <<<"$m"
+          if grep -q '^celestia_mon_app_version' <<<"$m"; then echo "a reading from another network"; exit 1; fi
+
+          # A node that is catching up, then one whose last block is 10 minutes old, comes first: it
+          # serves an old state, so it is skipped as behind and the next RPC is read.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B null 1 '"catching_up": true'
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="behind"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 is catching up' "$d/err"
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B null 1 '"age": 600'
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="behind"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qE "http://127\.0\.0\.1:8768's last block is [0-9]+ s old" "$d/err"
+          # Behind a provider's URL, the calls of one read can reach different nodes: /abci_info from
+          # one 100 blocks behind the one that answered /status serves an old state, so it is skipped.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B null 1 '"abci_behind": 100'
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="behind"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /abci_info at height 14999900, 15000000 in /status' "$d/err"
+          # A signal store that does not hold the height /abci_info gave (on a node one block behind,
+          # or one that pruned it) answers with code 0, no value and a log: a failed read, never a
+          # validator that has not signalled.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"no_version": true'
+          m=$(run "$addr" http://127.0.0.1:8768)
+          cat "$d/err"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="query"} 1' <<<"$m"
+          grep -qx 'celestia_mon_signal_last_success_timestamp_seconds 0.0' <<<"$m"
+          grep -qF 'version does not exist' "$d/err"
+          if grep -q '^celestia_mon_signal_validator_version' <<<"$m"; then echo "a store without the height read as no signal"; exit 1; fi
+
+          # A node that keeps only its last 500 blocks: the block time is measured over those.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 14999500
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_chain_block_time_seconds 2.87' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_eta_seconds 334808' <<<"$m"
+          # A node that refuses /blockchain: the reading stands, without a block time and so without an ETA.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -Eq '^celestia_mon_signal_last_success_timestamp_seconds [1-9]' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="block_time"} 1' <<<"$m"
+          if grep -q '^celestia_mon_\(chain_block_time_seconds\|upgrade_eta_seconds\)' <<<"$m"; then echo "a block time from a node that refused it"; exit 1; fi
+
+          # Only unreachable RPCs, one with a key in its URL: no reading, and the key does not show.
+          m=$(run "$addr" http://127.0.0.1:9/ci-secret-key http://127.0.0.1:10)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="network"} 2' <<<"$m"
+          grep -qx 'celestia_mon_signal_last_success_timestamp_seconds 0.0' <<<"$m"
+          if grep -q ci-secret-key - "$d/err" <<<"$m"; then echo "the key in the RPC URL shows"; exit 1; fi
+
+          # URLs the service refuses at start, without printing them: a login, a query string, no host.
+          for u in http://ci:ci-secret-key@127.0.0.1:8767 'http://127.0.0.1:8767/?key=ci-secret-key' http://:26657; do
+            if run "$addr" "$u" >/dev/null; then echo "rpc $u was accepted"; exit 1; fi
+            grep -q 'rpc 1 of 1 is not an http or https URL' "$d/err"
+            if grep -q ci-secret-key "$d/err"; then echo "a refused URL shows its key"; exit 1; fi
+          done
+
+          # Addresses that do not decode: the service and the install's check refuse them.
+          last=${addr: -1}
+          bad=${addr%?}$([ "$last" = q ] && echo p || echo q)
+          if run "$bad" http://127.0.0.1:8767 >/dev/null; then echo "an address with a wrong checksum was accepted"; exit 1; fi
+          grep -q 'wrong checksum' "$d/err"
+          python3 -I tools/celestia-mon-signal --check-address "$addr"
+          for a in "$bad" "${addr/celestiavaloper/celestiavalcons}" celestiavaloper1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq; do
+            if python3 -I tools/celestia-mon-signal --check-address "$a" 2>>"$d/err"; then echo "--check-address accepted $a"; exit 1; fi
+          done
+          cat "$d/err"
+          # A checksum that holds over 32 bytes: the length is checked too.
+          long=$(python3 tools/ci/rpc_stub.py address "$(printf '22%.0s' $(seq 32))")
+          if python3 -I tools/celestia-mon-signal --check-address "$long" 2>"$d/err"; then echo "a 32-byte address was accepted"; exit 1; fi
+          grep -q 'holds 32 bytes' "$d/err"
+          # The decoder against BIP 173's own vectors, so that a mistake the stand-in's encoder shares
+          # cannot pass: valid and broken checksums, and a segwit address whose program BIP 173 gives.
+          python3 -I - tools/celestia-mon-signal <<'EOF'
+          import importlib.machinery
+          import importlib.util
+          import sys
+
+          loader = importlib.machinery.SourceFileLoader("collector", sys.argv[1])
+          collector = importlib.util.module_from_spec(importlib.util.spec_from_loader("collector", loader))
+          loader.exec_module(collector)
+          for s in ["A12UEL5L", "a12uel5l", "abcdef1qpzry9x8gf2tvdw0s3jn54khce6mua7lmqqqxw",
+                    "split1checkupstagehandshakeupstreamerranterredcaperred2y9e3w", "?1ezyfcl",
+                    "an83characterlonghumanreadablepartthatcontainsthenumber1andtheexcludedcharactersbio1tt5tgs"]:
+              collector.bech32_decode(s)
+          for s in ["A1G7SGD8", "a12UEL5L", "x1b4n0q5v", "li1dgmt3"]:
+              try:
+                  collector.bech32_decode(s)
+              except ValueError:
+                  continue
+              sys.exit(f"{s} was accepted")
+          prefix, values = collector.bech32_decode("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4")
+          assert prefix == "bc" and values[0] == 0, (prefix, values)
+          assert collector.from5(values[1:]) == bytes.fromhex("751e76e8199196d454941c45d1b3a323f1433bd6")
+          EOF
+
+          # As a service: while the block time cannot be measured, the one measured last stays; while
+          # no RPC can be read, the whole last reading stays and only its time ages.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          printf '{"chain_id": "celestia", "rpc": ["http://127.0.0.1:8767"], "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 1}' \
+            "$addr" >"$d/service.json"
+          python3 -I tools/celestia-mon-signal --config "$d/service.json" 2>"$d/service.err" &
+          service=$!
+          metrics() { curl -fsS http://127.0.0.1:9918/metrics; }
+          reading() { metrics | grep -Ev '^(#|celestia_mon_signal_(last_success_timestamp_seconds|errors_total))'; }
+          wait_for() { # an extended regular expression that a whole metrics line must match
+            for _ in $(seq 30); do
+              if grep -Eqx "$1" <<<"$(metrics 2>/dev/null)"; then return 0; fi
+              sleep 1
+            done
+            echo "no metrics line matches $1"; cat "$d/service.err"; exit 1
+          }
+          wait_for 'celestia_mon_upgrade_eta_seconds 334808'
+          before=$(reading)
+          # One thing changes at a time, so a read that began before the change gives the same reading.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
+          wait_for 'celestia_mon_signal_errors_total\{reason="block_time"\} ([2-9]|[1-9][0-9]+)'
+          test "$(reading)" = "$before" || { echo "the block time measured last did not stay"; reading; exit 1; }
+          state "$d/rpc.json" mocha-5 CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
+          wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} [1-9][0-9]*'
+          at=$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')
+          wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} ([3-9]|[1-9][0-9]+)'
+          test "$(reading)" = "$before" || { echo "a failed read changed the reading"; reading; exit 1; }
+          test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" = "$at" ||
+            { echo "the last read time moved without a read"; exit 1; }
+          kill "$service"
+
   dashboard:
     runs-on: ubuntu-24.04
     steps:
@@ -706,7 +946,7 @@ jobs:
   # (WARN 6), a standby whose plaintext loopback signer cannot reach the validator node's mTLS
   # privval gRPC on a private address (WARN 17) next to a privval port on every interface
   # (WARN 20), and a backup node whose /status (a static file served on 127.0.0.1:26657) gives
-  # its local key voting power (FAIL 2) or none (INFO 2).
+  # its local key voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
   doctor-signer:
     runs-on: ubuntu-24.04
     steps:
@@ -765,6 +1005,17 @@ jobs:
           run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^INFO +2 +remote signer +backup node: .* is not in the validator set \(voting power 0\)' <<<"$out"
           grep -Eq '^OK +20 +signer binds +no signer port' <<<"$out"
+          # The same node with its RPC on a private address only ([rpc] laddr, for celestia-mon-signal
+          # on another host): doctor reads /status there, where its key has voting power 10, and not
+          # the stand-in still answering on 127.0.0.1.
+          sudo ip addr add 10.255.0.2/32 dev lo
+          mkdir -p "$RUNNER_TEMP/rpc-private"
+          sed 's/"voting_power": "0"/"voting_power": "10"/' "$RUNNER_TEMP/rpc/status" >"$RUNNER_TEMP/rpc-private/status"
+          python3 -m http.server 26657 --bind 10.255.0.2 --directory "$RUNNER_TEMP/rpc-private" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://10.255.0.2:26657/status
+          printf '%s\n' 'priv_validator_laddr = ""' '[rpc]' 'laddr = "tcp://10.255.0.2:26657"' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^FAIL +2 +remote signer +backup node: .*/config/priv_validator_key\.json, which has voting power 10' <<<"$out"
 
           # An mTLS standby Fibre on a host whose node serves its privval gRPC in plaintext on loopback.
           exec_mtls='ExecStart=/bin/true --signer-grpc-address 127.0.0.1:26669 --signer-grpc-ca-file /ci/ca.crt'
@@ -991,6 +1242,17 @@ jobs:
               celestia_mon_discord_bot_token: ci-only-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
               celestia_mon_tensile: {api: "http://127.0.0.1:8766/api/v1", validator: "celestiavalcons1ci"}
           EOF
+          # tools/ci/rpc_stub.py stands in for a node's RPC for celestia-mon-signal: the upgrade to v10
+          # is pending, and the validator (a synthetic operator address) signalled it.
+          op=1111111111111111111111111111111111111111
+          addr=$(python3 tools/ci/rpc_stub.py address "$op")
+          printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://127.0.0.1:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
+          cat >"$RUNNER_TEMP/rpc.json" <<EOF
+          {"network": "celestia", "version": "9.0.4", "app_version": 9, "height": 15000000, "lowest": 1,
+           "tally": {"10": "CJv2gb0BEMj0pLgBGNbYkt0B"}, "upgrade": "CgcIChDy0poH", "signals": {"$op": 10}}
+          EOF
+          nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8767/health
           # A stand-in of Tensile's API for celestia-mon-tensile.
           v="$RUNNER_TEMP/tensile-api/api/v1/validators/celestiavalcons1ci"
           mkdir -p "$v"
@@ -1173,6 +1435,29 @@ jobs:
             sleep 2
           done
           echo "Prometheus does not scrape celestia-mon-tensile"; exit 1
+      # celestia-mon-signal reads the stand-in of a node's RPC, Prometheus scrapes it, and the rules
+      # rendered on this host act on it: the stand-in's upgrade is pending and the validator signalled
+      # it, so UpgradeScheduled fires and UpgradeSignalMissing does not.
+      - name: Upgrade signalling is read
+        run: |
+          set -euo pipefail
+          systemctl is-active celestia-mon-signal
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/signal/config.json)" = "root:celestia-mon-signal 640"
+          m=$(curl -fsS http://127.0.0.1:9918/metrics)
+          grep -qx 'celestia_mon_signal_validator_version 10' <<<"$m"
+          grep -qx 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
+          poll() { # PromQL, jq test its reply must pass
+            for _ in $(seq 60); do
+              if jq -e "$2" >/dev/null <<<"$(query "$1")"; then return 0; fi
+              sleep 2
+            done
+            echo "Prometheus never answered $1 as expected"; exit 1
+          }
+          poll 'up{job="signal"}' '.data.result[0].value[1] == "1"'
+          poll 'ALERTS{alertname="UpgradeScheduled",alertstate="firing"}' '.data.result | length == 1'
+          jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
       - name: Celestia announcements reach Alertmanager
         run: |
           set -euo pipefail
@@ -1211,7 +1496,7 @@ jobs:
         run: |
           out=$(sudo celestia-mon-doctor || true)
           printf '%s\n' "$out"
-          grep -Eq '^FAIL +11 +monitor stack +1 of 7 scrape targets down: celestia-app ' <<<"$out"
+          grep -Eq '^FAIL +11 +monitor stack +1 of 8 scrape targets down: celestia-app ' <<<"$out"
           line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
           for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
             # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
@@ -1225,6 +1510,10 @@ jobs:
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-announcements [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-signal 127\.0\.0\.1:9918' <<<"$out"
+          line=$(grep -E '^OK +23 +upgrade signal +read through http://127\.0\.0\.1:8767 ' <<<"$out")
+          grep -qF 'v10 signalled by 85.5% of the voting power, an upgrade needs 83.3%; your validator signalled v10;' <<<"$line"
+          grep -qF 'upgrade to v10 scheduled at height 15116658, in about 3.9 days' <<<"$line"
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
           grep -Eq '^(OK|NOT YET|WARN|FAIL) +22 +dead-man ' <<<"$out"
       # The defaults must leave headroom: each unit's peak memory since it started (memory.peak
@@ -1255,7 +1544,8 @@ jobs:
                    /var/lib/celestia-mon/firewall-added.json /var/tmp/celestia-mon-install \
                    /etc/celestia-mon/alertmanager/alertmanager.yml /etc/celestia-mon/grafana/admin-password \
                    /etc/celestia-mon/grafana/provisioning/datasources/celestia-mon.yml /etc/celestia-mon/api-password \
-                   /etc/celestia-mon/grafana-api-password /etc/celestia-mon/announcements/discord-token; do
+                   /etc/celestia-mon/grafana-api-password /etc/celestia-mon/announcements/discord-token \
+                   /etc/celestia-mon/signal/config.json; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
           for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon; do

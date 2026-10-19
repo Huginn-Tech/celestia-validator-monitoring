@@ -3,7 +3,8 @@
 #   - the celestia-mon-* systemd units (stopped, disabled, unit files removed),
 #   - /opt/celestia-mon (the binaries), /var/cache/celestia-mon and /usr/local/bin/celestia-mon-doctor,
 #   - the settings files that hold secrets: Alertmanager's config (receiver tokens, the dead-man
-#     URL), Grafana's admin password and datasource, and the API passwords; a reinstall writes
+#     URL), Grafana's admin password and datasource, the API passwords, the Discord bot token and
+#     celestia-mon-signal's settings (an RPC URL may carry a provider's key); a reinstall writes
 #     them again from the inventory (new API passwords),
 #   - the ufw rules the install recorded in /var/lib/celestia-mon/firewall-added.json, each one
 #     only while `ufw show added` lists it with the recorded source, port, protocol and the
@@ -28,7 +29,7 @@
     celestia_mon_uninstall_record: /var/lib/celestia-mon/firewall-added.json
     # Removed on every uninstall: the binaries, and the settings files that hold secrets
     # (celestia_mon_api_password_file, celestia_mon_api_grafana_password_file and the files of the
-    # alertmanager, grafana and announcements roles).
+    # alertmanager, grafana, announcements and signal roles).
     celestia_mon_uninstall_paths:
       - /opt/celestia-mon
       - /var/cache/celestia-mon
@@ -40,6 +41,7 @@
       - /etc/celestia-mon/api-password
       - /etc/celestia-mon/grafana-api-password
       - /etc/celestia-mon/announcements/discord-token
+      - /etc/celestia-mon/signal/config.json
     # Removed only with celestia_mon_uninstall_purge.
     celestia_mon_uninstall_purge_paths:
       - /var/lib/celestia-mon
@@ -50,7 +52,7 @@
     celestia_mon_uninstall_units: >-
       {{ (['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service', 'celestia-mon-prometheus.service',
            'celestia-mon-alertmanager.service', 'celestia-mon-grafana.service', 'celestia-mon-announcements.service',
-           'celestia-mon-tensile.service']
+           'celestia-mon-tensile.service', 'celestia-mon-signal.service']
           + (celestia_mon_uninstall_unit_files.files | map(attribute='path') | map('basename') | map('regex_replace', '[.]d$', '')
              | select('match', '.*[.]service$') | list)) | unique }}
     celestia_mon_uninstall_loaded: >-

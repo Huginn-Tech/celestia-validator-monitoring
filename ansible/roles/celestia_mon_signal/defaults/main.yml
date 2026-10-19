@@ -1,0 +1,4 @@
+---
+# How often the RPC is read. A signal lands in a block, so once a minute is enough for
+# UpgradeSignalMissing's 10 minutes.
+celestia_mon_signal_interval_seconds: 60

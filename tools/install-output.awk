@@ -9,6 +9,8 @@ BEGIN {
   label["celestia_mon_prometheus"] = "Prometheus"
   label["celestia_mon_alertmanager"] = "Alertmanager"
   label["celestia_mon_announcements"] = "Celestia announcements"
+  label["celestia_mon_tensile"] = "Fibre outside check (Tensile)"
+  label["celestia_mon_signal"] = "Upgrade signalling"
   label["celestia_mon_grafana"] = "Grafana"
 }
 

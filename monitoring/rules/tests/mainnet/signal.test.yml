@@ -1,0 +1,413 @@
+# The upgrade alerts on the example-mainnet inventory rendered with celestia_mon_signal (CI passes
+# it): celestia-mon-signal on fibre-1 serves x/signal as read through an RPC. The numbers are
+# mainnet's: the v10 round of October 2026, with 396393243 of 463776854 voting power signalled
+# (85.47%) and the upgrade at height 15116658, 2.87 s per block.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: A round for v11 opens and the validator has not signalled; the page resolves once it has
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x40'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '0x9 396393243x30'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x40'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '0x24 11x15'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '0x40'
+      - series: 'celestia_mon_signal_last_success_timestamp_seconds{job="signal",host="fibre-1"}'
+        values: '0+60x40'
+      - series: 'up{job="signal",host="fibre-1"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+      - eval_time: 19m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade,
+                and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release
+                that supports v11, then signal from the validator's account: celestia-appd tx signal signal 11
+                --from <validator account key>. If this alert resolves before you signal, the upgrade was
+                scheduled: see UpgradeScheduled.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+      - eval_time: 30m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: SignalUnreadable
+        exp_alerts: []
+
+  - name: The validator signalled another version than the next one; it still pages
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x20'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '396393243x20'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x20'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '12x20'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                signalled v12 instead. Once 5/6 of the voting power has signalled, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. Upgrade celestia-appd on every node to
+                a release that supports v11, then signal from the validator's account: celestia-appd tx signal
+                signal 11 --from <validator account key>. If this alert resolves before you signal, the upgrade
+                was scheduled: see UpgradeScheduled.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+
+  # The round opens at 0m; the upgrade is scheduled at 20m (signals are refused from then on), is
+  # less than a day away from 33m (ETA 86000 s), and happens at 46m: the chain is on v11 and the
+  # round for v12 has no signal yet. '_x20' is 20 missing samples, so those series start at 20m.
+  - name: An upgrade is scheduled; the page ends, UpgradeScheduled and UpgradeSoon follow and resolve after the switch
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x45 12x14'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '396393243x45 0x14'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x59'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '0x59'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '0x19 1x25 0x14'
+      - series: 'celestia_mon_upgrade_version{job="signal",host="fibre-1"}'
+        values: '_x20 11x24'
+      - series: 'celestia_mon_upgrade_height{job="signal",host="fibre-1"}'
+        values: '_x20 15116658x24'
+      - series: 'celestia_mon_upgrade_eta_seconds{job="signal",host="fibre-1"}'
+        values: '_x20 99000-1000x24'
+      - series: 'celestia_mon_chain_block_time_seconds{job="signal",host="fibre-1"}'
+        values: '2.87x59'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade,
+                and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release
+                that supports v11, then signal from the validator's account: celestia-appd tx signal signal 11
+                --from <validator account key>. If this alert resolves before you signal, the upgrade was
+                scheduled: see UpgradeScheduled.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+      - eval_time: 15m
+        alertname: UpgradeScheduled
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+      - eval_time: 21m
+        alertname: UpgradeScheduled
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 scheduled
+              description: >-
+                At least 5/6 of the voting power signalled app version 11, and the upgrade is scheduled at
+                height 15116658, in about 1d 3h 13m 20s at the measured 2.87 s per block. Your validator did
+                not signal it, and signals are no longer accepted. Every node of this install must run a
+                celestia-app release that supports v11 by then, or it stops at that height. This alert
+                resolves when the chain has switched to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradescheduled
+      - eval_time: 32m
+        alertname: UpgradeSoon
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: UpgradeSoon
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 in less than a day
+              description: >-
+                The upgrade to app version 11 is scheduled at height 15116658, in about 23h 20m 0s. Check now
+                that every node of this install (val-1, fibre-1) runs a celestia-app release that supports
+                v11: a node without one stops at that height. This alert resolves when the chain has switched
+                to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesoon
+      - eval_time: 50m
+        alertname: UpgradeScheduled
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: UpgradeSoon
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+
+  - name: The validator signalled before the upgrade was scheduled; UpgradeScheduled says so
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x10'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '396393243x10'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x10'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '11x10'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '1x10'
+      - series: 'celestia_mon_upgrade_version{job="signal",host="fibre-1"}'
+        values: '11x10'
+      - series: 'celestia_mon_upgrade_height{job="signal",host="fibre-1"}'
+        values: '15116658x10'
+      - series: 'celestia_mon_upgrade_eta_seconds{job="signal",host="fibre-1"}'
+        values: '667608x10'
+      - series: 'celestia_mon_chain_block_time_seconds{job="signal",host="fibre-1"}'
+        values: '2.87x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: UpgradeScheduled
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 scheduled
+              description: >-
+                At least 5/6 of the voting power signalled app version 11, and the upgrade is scheduled at
+                height 15116658, in about 7d 17h 26m 48s at the measured 2.87 s per block. Your validator
+                signalled it. Every node of this install must run a celestia-app release that supports v11 by
+                then, or it stops at that height. This alert resolves when the chain has switched to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradescheduled
+      - eval_time: 5m
+        alertname: UpgradeSoon
+        exp_alerts: []
+
+  # The ETA drops below a day at 1m, then a few slow blocks raise the measured block time and the
+  # ETA goes back above a day: UpgradeSoon stays firing, so it is neither resolved nor sent again,
+  # until the chain has switched at 11m.
+  - name: The ETA moves back above a day; UpgradeSoon stays until the switch
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '1x10 0x5'
+      - series: 'celestia_mon_upgrade_version{job="signal",host="fibre-1"}'
+        values: '11x10'
+      - series: 'celestia_mon_upgrade_height{job="signal",host="fibre-1"}'
+        values: '15116658x10'
+      - series: 'celestia_mon_upgrade_eta_seconds{job="signal",host="fibre-1"}'
+        values: '86500 86300 86600 86700 86650x6'
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: UpgradeSoon
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: UpgradeSoon
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 in less than a day
+              description: >-
+                The upgrade to app version 11 is scheduled at height 15116658, in about 1d 0h 5m 0s. Check now
+                that every node of this install (val-1, fibre-1) runs a celestia-app release that supports
+                v11: a node without one stops at that height. This alert resolves when the chain has switched
+                to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesoon
+      - eval_time: 12m
+        alertname: UpgradeSoon
+        exp_alerts: []
+
+  # celestia-mon-signal stops at 20m: its series go stale and its target is down. The page keeps
+  # firing on the last reading, and SignalUnreadable follows 10 minutes after the target went down.
+  - name: The collector stops; the page does not resolve, SignalUnreadable fires
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x20 stale'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '396393243x20 stale'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x20 stale'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '0x20 stale'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '0x20 stale'
+      - series: 'celestia_mon_signal_last_success_timestamp_seconds{job="signal",host="fibre-1"}'
+        values: '0+60x20 stale'
+      - series: 'up{job="signal",host="fibre-1"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: SignalUnreadable
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade,
+                and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release
+                that supports v11, then signal from the validator's account: celestia-appd tx signal signal 11
+                --from <validator account key>. If this alert resolves before you signal, the upgrade was
+                scheduled: see UpgradeScheduled.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+      - eval_time: 50m
+        alertname: SignalUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+              job: signal
+            exp_annotations:
+              summary: The upgrade signal is not being read on fibre-1
+              description: >-
+                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
+                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
+
+  # The same while an upgrade is pending and less than a day away: neither message resolves, which
+  # would read as "upgrade done".
+  - name: The collector stops while an upgrade is pending; UpgradeScheduled and UpgradeSoon stay
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '11x20 stale'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '1x20 stale'
+      - series: 'celestia_mon_upgrade_version{job="signal",host="fibre-1"}'
+        values: '11x20 stale'
+      - series: 'celestia_mon_upgrade_height{job="signal",host="fibre-1"}'
+        values: '15116658x20 stale'
+      - series: 'celestia_mon_upgrade_eta_seconds{job="signal",host="fibre-1"}'
+        values: '80000-60x20 stale'
+      - series: 'celestia_mon_chain_block_time_seconds{job="signal",host="fibre-1"}'
+        values: '2.87x20 stale'
+      - series: 'celestia_mon_signal_last_success_timestamp_seconds{job="signal",host="fibre-1"}'
+        values: '0+60x20 stale'
+      - series: 'up{job="signal",host="fibre-1"}'
+        values: '1x20 0x40'
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: UpgradeScheduled
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 scheduled
+              description: >-
+                At least 5/6 of the voting power signalled app version 11, and the upgrade is scheduled at
+                height 15116658, in about 21h 53m 20s at the measured 2.87 s per block. Your validator
+                signalled it. Every node of this install must run a celestia-app release that supports v11 by
+                then, or it stops at that height. This alert resolves when the chain has switched to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradescheduled
+      - eval_time: 50m
+        alertname: UpgradeSoon
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Network upgrade to v11 in less than a day
+              description: >-
+                The upgrade to app version 11 is scheduled at height 15116658, in about 21h 53m 20s. Check now
+                that every node of this install (val-1, fibre-1) runs a celestia-app release that supports
+                v11: a node without one stops at that height. This alert resolves when the chain has switched
+                to v11.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesoon
+      - eval_time: 50m
+        alertname: SignalUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+              job: signal
+            exp_annotations:
+              summary: The upgrade signal is not being read on fibre-1
+              description: >-
+                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
+                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
+
+  # The service runs but reads no RPC from 10m on: it keeps serving its last reading, so the page
+  # stays, and SignalUnreadable fires once the last read is over 15 minutes old, 10 minutes later.
+  - name: No RPC can be read; the page stays on the last reading, SignalUnreadable fires
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="fibre-1"}'
+        values: '11x60'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="fibre-1"}'
+        values: '396393243x60'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="fibre-1"}'
+        values: '463776854x60'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="fibre-1"}'
+        values: '0x60'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="fibre-1"}'
+        values: '0x60'
+      - series: 'celestia_mon_signal_last_success_timestamp_seconds{job="signal",host="fibre-1"}'
+        values: '0+60x10 600x50'
+      - series: 'up{job="signal",host="fibre-1"}'
+        values: '1x60'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SignalUnreadable
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: SignalUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+              job: signal
+            exp_annotations:
+              summary: The upgrade signal is not being read on fibre-1
+              description: >-
+                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
+                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
+      - eval_time: 40m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade,
+                and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release
+                that supports v11, then signal from the validator's account: celestia-appd tx signal signal 11
+                --from <validator account key>. If this alert resolves before you signal, the upgrade was
+                scheduled: see UpgradeScheduled.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing

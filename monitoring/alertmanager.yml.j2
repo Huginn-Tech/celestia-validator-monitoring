@@ -77,6 +77,16 @@ route:
         - receiver: announcement-message
           matchers:
             - 'severity="message"'
+    # A scheduled network upgrade (celestia-mon-signal): one message when it is scheduled and one
+    # when it is less than a day away, each sent at once, with a "resolved" message once the chain
+    # has switched. Mainnet's delay is about a week, so a message still firing repeats after
+    # 96 hours, within the 120 hours Alertmanager keeps its notification log.
+    - receiver: message
+      matchers:
+        - 'alertname=~"UpgradeScheduled|UpgradeSoon"'
+      group_by: ['...']
+      group_wait: 0s
+      repeat_interval: 96h
     - receiver: page
       matchers:
         - 'severity="page"'

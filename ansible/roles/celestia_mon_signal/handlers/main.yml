@@ -1,0 +1,7 @@
+---
+- name: Restart celestia-mon-signal
+  ansible.builtin.systemd_service:
+    name: celestia-mon-signal
+    state: restarted
+    daemon_reload: "{{ celestia_mon_signal_unit_file is defined and celestia_mon_signal_unit_file is changed }}"
+  when: celestia_mon_signal_present or not ansible_check_mode
