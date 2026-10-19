@@ -28,15 +28,16 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
     }
 
 Layout (docs/panels.md): a first screen without a row header that reads like a status page, top
-to bottom: the validator's name and network with four facts; one verdict line; up to six one-word
-answers; the status board, one line of bars per check and per server with its uptime; the role
-band, which server held each role; a colour key; and the Servers now table. Then the rows
+to bottom: one framed strip with the validator's name and network, four facts and the Status (the
+worst alert in a few words); up to six one-word answers; the status board, one line of bars per
+check and per server with its uptime; the role band, which server held each role; a colour key;
+and the Servers now table. Then the rows
 Validator and Fibre (expanded) and Network upgrade, All firing alerts and Servers in detail
 (collapsed). Panels that do not apply to the install are left out.
 
 Colour means state only. Amber and red appear only where an alert rule watches the condition, at
 the rule's own threshold: amber while the problem is true or its alert is pending, red once a page
-alert fires. The verdict, the answers and the status bars read Prometheus's own ALERTS series, so
+alert fires. The Status, the answers and the status bars read Prometheus's own ALERTS series, so
 they agree with the alerts that were sent.
 
 Roles can move between hosts (a backup node takes over signing after a tmkms repoint, a standby
@@ -49,9 +50,9 @@ host with its public endpoint.
 
 Python 3 standard library only. The same settings always give the same bytes. Next to the
 settings, the generator reads two files beside the alert rules: the rules template, whose every
-alert must have a plain sentence in TITLES, and monitoring/rules/holds.json, the hold times the
-descriptions print (CI checks them against the rules' for:). It stops with a message rather than
-write a dashboard whose words would miss an alert or not fit their panel at 1440 px.
+alert must have a plain sentence and a short name in TITLES, and monitoring/rules/holds.json, the
+hold times the descriptions print (CI checks them against the rules' for:). It stops with a message
+rather than write a dashboard whose words would miss an alert or not fit their panel at 1440 px.
 
 There are no dashboard variables. Only Grafana's built-in $__interval and $__range appear, and only
 in the status board, the role band and the uptime columns; tools/ci/check_queries.py replaces
@@ -131,12 +132,14 @@ TABLE_HEADER_PX = 40
 CHAR_EM, DIGIT_EM, SEP_EM = 0.52, 0.60, 0.30
 LINE_EM = 1.2                            # a line of text is 1.2 times its size high
 STACK_GAP_PX = 7                         # between label and value in a centred value_and_name stack
-HEADER_ROWS = 3                          # the header: untitled panels, label over value
+# The intro strip at the top: six framed, untitled cells of one height, each a label over a value,
+# all in one size pair, so every label sits on one line and every value on another. Widths:
+# identity, Latest block, Block time, Voting power, Signed and Status, 24 columns in all.
+INTRO_ROWS, INTRO_LABEL_PX, INTRO_VALUE_PX = 3, 14, 24
+INTRO_WIDTHS = (6, 4, 3, 3, 3, 5)
+NAME_CHARS = 20                          # the validator's name in the identity cell
+INTRO_NUMBER = "99.999.999"              # the widest number a cell shows (a block height)
 KEY_ROWS, KEY_PX = 2, 12                 # the colour key: one 12 px line, centred in an untitled h2
-NAME_PX, NAME_CHARS = 28, 20             # the validator's name in the header
-HEADER_LABEL_PX, HEADER_VALUE_PX = 14, 28
-HEADER_NUMBER = "99.999.999"             # the widest number a header fact shows (a block height)
-BANNER_PX, BANNER_SMALL_PX, BANNER_CHARS, BANNER_SLOT = 24, 22, 43, 540   # two items side by side
 TILE_SIZES = (22, 20, 18, 16)            # the answer tiles: the largest at which every word fits its tile
 # Facts inside the rows: an untitled h2 with the label over the value, never larger than the answers.
 FACT_ROWS, FACT_LABEL_PX, FACT_PX, FACT_SMALL_PX = 2, 12, 18, 16
@@ -205,47 +208,49 @@ BOARD_PANELS = {20, 21, 22, 23, 25}
 # (uploads_failing) reads a 5-minute window before its hold.
 TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 1800, 900, 300
 
-# Plain sentences for the alerts, the words of the notifications, for the banner and the alert
-# list: (key, sentence, hosts, needs). The key is a regex over alertname:severity:unit:reason:check:host
-# of a series grouped by by_alert(); Prometheus anchors it, and $1 is the host at the end of the key.
-# hosts: the servers the alert can name, for the length check ("nodes", "fibre", "kms", "servers",
-# or None for a sentence without a host). needs: the switch the alert needs (Setup.has).
+# Plain sentences for the alerts, the words of the notifications, for the alert list, and short
+# names for the Status cell: (key, sentence, short, needs). The key is a regex over
+# alertname:severity:unit:reason:check:host of a series grouped by by_alert(); Prometheus anchors it,
+# and $1 is the host at the end of the key. short: the Status cell's words, without a host, at most
+# what the cell holds (the intro strip's fit check). needs: the switch the alert needs (Setup.has).
 TITLES = [
-    ("NodeNotAdvancing:.*", "No new blocks on any node", None, None),
-    ("ValidatorNotSigning:.*", "Validator not signing", None, None),
-    ("SignaturesMissed:.*", "Validator missed blocks", None, None),
-    ("NodeBehind:.*:([^:]*)", "Node behind on $1", "nodes", None),
-    ("RemoteSignerProblem:message::::.*", "Remote signer slow", None, "remote"),
-    ("RemoteSignerProblem:message::[^:]+::.*", "Remote signer fails proposals", None, "remote"),
-    ("FibreDown:page::::", "No Fibre server running", None, "fibre"),
-    ("FibreDown:page:::reachability:.*", "Fibre unreachable from outside", None, "tensile"),
-    ("FibreDown:page:::registration:.*", "Fibre not registered or wrong host", None, "tensile"),
-    ("FibreBothActive:.*", "Fibre running on two servers", None, "fibre"),
-    ("FibreNotServing:message::stale::([^:]*)", "No Fibre uploads on $1", "fibre", "fibre"),
-    ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "fibre", "fibre"),
-    ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "fibre", "fibre"),
-    ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "servers", None),
-    ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "nodes", None),
-    ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "fibre", "fibre"),
-    ("ServiceDown:message:appd:::([^:]*)", "Celestia node stopped on $1", "nodes", None),
-    ("ServiceDown:message:appd:crashloop::([^:]*)", "Node keeps restarting on $1", "nodes", None),
-    ("ServiceDown:message:appd:not_loaded::([^:]*)", "Node service missing on $1", "nodes", None),
-    ("ServiceDown:message:tmkms:::([^:]*)", "Remote signer stopped on $1", "kms", "tmkms"),
-    ("ServiceDown:message:tmkms:crashloop::([^:]*)", "Signer keeps restarting on $1", "kms", "tmkms"),
-    ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "kms", "tmkms"),
-    ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "fibre", "fibre"),
-    ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "servers", None),
-    ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "servers", None),
-    ("MonitoringBroken:.*", "Alert rules failing", None, None),
-    ("NotificationsFailing:.*", "Alerts not delivered", None, None),
-    ("DeadmanFailing:.*", "Dead-man service not reached", None, None),
-    ("TensileUnreadable:.*", "Outside check stopped", None, "tensile"),
-    ("AnnouncementsUnreadable:.*", "Announcements not read", None, "announcements"),
-    ("UpgradeSignalMissing:.*", "Upgrade signal needed", None, "signal"),
-    ("UpgradeScheduled:.*", "Network upgrade scheduled", None, "signal"),
-    ("UpgradeSoon:.*", "Network upgrade within 24 hours", None, "signal"),
-    ("SignalUnreadable:.*", "Upgrade check stopped", None, "signal"),
+    ("NodeNotAdvancing:.*", "No new blocks on any node", "Nodes stalled", None),
+    ("ValidatorNotSigning:.*", "Validator not signing", "Not signing", None),
+    ("SignaturesMissed:.*", "Validator missed blocks", "Missed blocks", None),
+    ("NodeBehind:.*:([^:]*)", "Node behind on $1", "Node behind", None),
+    ("RemoteSignerProblem:message::::.*", "Remote signer slow", "Signer slow", "remote"),
+    ("RemoteSignerProblem:message::[^:]+::.*", "Remote signer fails proposals", "Proposals fail", "remote"),
+    ("FibreDown:page::::", "No Fibre server running", "Fibre down", "fibre"),
+    ("FibreDown:page:::reachability:.*", "Fibre unreachable from outside", "Fibre offline", "tensile"),
+    ("FibreDown:page:::registration:.*", "Fibre not registered or wrong host", "Bad registration", "tensile"),
+    ("FibreBothActive:.*", "Fibre running on two servers", "Fibre on 2 hosts", "fibre"),
+    ("FibreNotServing:message::stale::([^:]*)", "No Fibre uploads on $1", "No Fibre uploads", "fibre"),
+    ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "Uploads failing", "fibre"),
+    ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre metrics", "fibre"),
+    ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", None),
+    ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "No node metrics", None),
+    ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "No Fibre metrics", "fibre"),
+    ("ServiceDown:message:appd:::([^:]*)", "Celestia node stopped on $1", "Node stopped", None),
+    ("ServiceDown:message:appd:crashloop::([^:]*)", "Node keeps restarting on $1", "Node crashing", None),
+    ("ServiceDown:message:appd:not_loaded::([^:]*)", "Node service missing on $1", "Node not loaded", None),
+    ("ServiceDown:message:tmkms:::([^:]*)", "Remote signer stopped on $1", "Signer stopped", "tmkms"),
+    ("ServiceDown:message:tmkms:crashloop::([^:]*)", "Signer keeps restarting on $1", "Signer crashing", "tmkms"),
+    ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "Signer missing", "tmkms"),
+    ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crashing", "fibre"),
+    ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", None),
+    ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", None),
+    ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", None),
+    ("NotificationsFailing:.*", "Alerts not delivered", "Alerts not sent", None),
+    ("DeadmanFailing:.*", "Dead-man service not reached", "Dead-man failing", None),
+    ("TensileUnreadable:.*", "Outside check stopped", "No outside check", "tensile"),
+    ("AnnouncementsUnreadable:.*", "Announcements not read", "Announcer down", "announcements"),
+    ("UpgradeSignalMissing:.*", "Upgrade signal needed", "Signal missing", "signal"),
+    ("UpgradeScheduled:.*", "Network upgrade scheduled", "Upgrade planned", "signal"),
+    ("UpgradeSoon:.*", "Network upgrade within 24 hours", "Upgrade in 24 h", "signal"),
+    ("SignalUnreadable:.*", "Upgrade check stopped", "No upgrade check", "signal"),
 ]
+# The Status cell's words for an alert whose labels match no key of TITLES.
+SHORT_FALLBACK = "See alerts"
 # The heartbeat goes to the dead-man service only and is never shown as an alert.
 UNTITLED = {"Watchdog"}
 # Worst first between alerts of one level, so the order stays the same between refreshes.
@@ -610,10 +615,6 @@ class Setup:
         return {None: True, "remote": self.remote, "fibre": self.fibre, "tensile": self.tensile,
                 "signal": self.signal, "announcements": self.announcements, "tmkms": bool(self.kms_hosts)}[need]
 
-    def hosts(self, which):
-        """The servers an alert can name: "nodes", "fibre", "kms" or "servers"."""
-        return {"nodes": self.nodes, "fibre": self.fibre_hosts, "kms": self.kms_hosts, "servers": self.servers}[which]
-
     def color(self, host):
         """(named colour, hex) of a server's identity colour; the text colour past the list."""
         i = self.servers.index(host) if host in self.servers else len(HOST_COLORS)
@@ -821,7 +822,7 @@ def signed_share(s, rng, step, cap):
             % (signed, promok, rng, step, blk, promok, rng, step))
 
 
-# The alert sentences: the banner and the alert list group ALERTS series the same way.
+# The alert sentences: the Status cell and the alert list group ALERTS series the same way.
 
 def by_alert(x):
     """x (ALERTS-shaped) grouped by what tells its alerts apart. ServiceDown's crash loop and
@@ -833,23 +834,29 @@ def by_alert(x):
     return "max by (alertname, severity, unit, reason, check, host) (%s)" % sdr
 
 
-def titled(s, x):
-    """x (grouped by by_alert) with a title label: a plain sentence, else the alert's name."""
+def titled(s, x, short=False):
+    """x (grouped by by_alert) with a title label: a plain sentence, else the alert's name; with
+    short, also a short label: the Status cell's words, else SHORT_FALLBACK."""
     expr = 'label_join(%s, "key", ":", "alertname", "severity", "unit", "reason", "check", "host")' % x
     expr = 'label_replace(%s, "title", "$1", "alertname", "(.+)")' % expr
-    for key, sentence, _, need in TITLES:
+    if short:
+        expr = label(expr, "short", SHORT_FALLBACK)
+    for key, sentence, words, need in TITLES:
         if s.has(need):
             expr = "label_replace(%s, %s, %s, %s, %s)" % (expr, q("title"), q(sentence), q("key"), q(key))
+            if short:
+                expr = "label_replace(%s, %s, %s, %s, %s)" % (expr, q("short"), q(words), q("key"), q(key))
     return expr
 
 
 def check_titles(s):
-    """Every alert of the rules template has a sentence."""
-    named = {key.split(":")[0] for key, _, _, _ in TITLES}
+    """Every alert of the rules template has a sentence and a short name."""
+    named = {key.split(":")[0] for key, sentence, words, _ in TITLES if sentence and words}
     missing = [a for a in s.alert_names if a not in named and a not in UNTITLED]
     if missing:
-        raise SystemExit("gen_dashboard.py has no sentence in TITLES for the alert(s) %s of %s; add one, so the "
-                         "banner and the alert list name it in plain words" % (", ".join(missing), RULES_TEMPLATE))
+        raise SystemExit("gen_dashboard.py has no sentence and short name in TITLES for the alert(s) %s of %s; add "
+                         "them, so the Status cell and the alert list name it in plain words"
+                         % (", ".join(missing), RULES_TEMPLATE))
 
 
 def message(sel):
@@ -859,10 +866,10 @@ def message(sel):
 
 
 def alert_items(s):
-    """What is wrong now, one series per sentence (label title), valued by level: 3 a page fires
-    (red), 2.5 a page is pending, 2 to 2.95 a message or monitoring trouble (amber), 0.2 a scheduled
-    upgrade (plain text); plus a priority between alerts of one level. Alertmanager's inhibitions are
-    mirrored, and follow-on alerts are grouped into their cause."""
+    """What is wrong now, one series per sentence (labels title and short), valued by level: 3 a page
+    fires (red), 2.5 a page is pending, 2 to 2.95 a message or monitoring trouble (amber); plus a
+    priority between alerts of one level. Alertmanager's inhibitions are mirrored, and follow-on alerts
+    are grouped into their cause. A scheduled upgrade is no item: the Network upgrade tile shows it."""
     pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) (%s and on () %s)"
              % (by_alert('ALERTS{alertstate="firing",severity="page"}'),
                 by_alert('ALERTS{alertstate="pending",severity="page"}'),
@@ -884,73 +891,82 @@ def alert_items(s):
     disk = ('%s unless on (host) ALERTS{alertname="DiskLow",severity="page"}'
             % message('alertname="DiskLow",severity="message"'))
     items = [pages, messages, service, disk]
-    if s.signal:
-        items.append("%s * 0 + 0.2" % by_alert('ALERTS{alertname="UpgradeScheduled",alertstate="firing"}'))
     # Every alert of the rules has a priority (0 when none is set), so group_left keeps every item.
     # "group_left ()" names no labels to copy; a bare "group_left (" would read the operand as that list.
     prio = "(%s)" % " or ".join(label("vector(%s)" % num(PRIORITY.get(a, 0)), "alertname", a) for a in s.alert_names)
     alerts = "(%s) + on (alertname) group_left () %s" % (" or ".join("(%s)" % i for i in items), prio)
-    return "(max by (title) (%s) or %s)" % (titled(s, alerts), synth(s))
+    return "(max by (title, short) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
 
 
 def synth_items(s):
-    """(level, sentence, condition) of the banner items no alert rule carries."""
+    """(level, sentence, short, condition) of the Status cell's items no alert rule carries."""
     evaluated = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
     items = [
-        (2.95, "Alert rules are not running", "(time() - max(%s) > 120)" % evaluated),
-        (2.95, "Alert rules are not running", "max(absent(%s))" % evaluated),
-        (2.9, "Alertmanager down, alerts not sent", '(min(up{job="alertmanager"}) == 0)'),
-        (2.85, "Alerts not reaching Alertmanager",
+        (2.95, "Alert rules are not running", "Rules stopped", "(time() - max(%s) > 120)" % evaluated),
+        (2.95, "Alert rules are not running", "Rules stopped", "max(absent(%s))" % evaluated),
+        (2.9, "Alertmanager down, alerts not sent", "No Alertmanager", '(min(up{job="alertmanager"}) == 0)'),
+        (2.85, "Alerts not reaching Alertmanager", "Alerts not sent",
          '((sum(increase(prometheus_notifications_errors_total{job="prometheus"}[10m])) > 0) '
          'or (sum(increase(prometheus_notifications_dropped_total{job="prometheus"}[10m])) > 0) '
          'or (max(prometheus_notifications_alertmanagers_discovered{job="prometheus"}) == 0))'),
         # A failed notification stops the Watchdog for an hour, also after NotificationsFailing cleared.
-        (2.8, "A notification failed in the last hour",
+        (2.8, "A notification failed in the last hour", "No heartbeat",
          '(((((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 1) '
          "and on () (time() - max(%s) <= 120)) unless on () max(ALERTS{alertname=\"NotificationsFailing\"}))"
          % evaluated),
     ]
     if s.remote and not s.multi:
-        items.append((2.45, "Validator signs through two nodes", two_signers(s)))
+        items.append((2.45, "Validator signs through two nodes", "Two signers", two_signers(s)))
     if s.announcements:
         # A Celestia announcement goes to Alertmanager directly, not through the rules.
-        items.append((2.3, "New Celestia announcement, see your alerts",
+        items.append((2.3, "New Celestia announcement, see your alerts", "New announcement",
                       "(sum(increase(celestia_mon_announcements_forwarded_total[30m])) > 0)"))
     return items
 
 
 def synth(s):
-    """The banner items no alert rule carries: the monitoring itself, two signers, an announcement."""
-    return "(%s)" % " or ".join(label("%s * 0 + %s" % (cond, num(level)), "title", text)
-                                for level, text, cond in synth_items(s))
+    """The Status cell's items no alert rule carries: the monitoring itself, two signers, an announcement."""
+    return "(%s)" % " or ".join(label(label("%s * 0 + %s" % (cond, num(level)), "title", text), "short", words)
+                                for level, text, words, cond in synth_items(s))
 
 
-def banner_expr(s):
-    """At most two items, worst first; above two, the worst and a pointer to the alert list; "All
-    clear" while no item is amber or red."""
+def status_words(s):
+    """(short name, sentence) of every item the Status cell can show in this install, each once, in
+    TITLES order and then the items no rule carries. A scheduled upgrade is no item (alert_items)."""
+    pairs = [(words, sentence) for key, sentence, words, need in TITLES
+             if s.has(need) and not key.startswith("UpgradeScheduled:")]
+    pairs += [(words, sentence) for _, sentence, words, _ in synth_items(s)]
+    unique = []
+    for p in pairs:
+        if p not in unique:
+            unique.append(p)
+    return unique
+
+
+def status_shorts(s):
+    """The short names the Status cell can show, each once, in status_words order, then SHORT_FALLBACK.
+    The n-th (from 1) is shown as code 10 n + 1 in amber and 10 n + 2 in red; "All clear" is code 1."""
+    shorts = []
+    for words, _ in status_words(s):
+        if words not in shorts:
+            shorts.append(words)
+    return shorts + [SHORT_FALLBACK]
+
+
+def status_expr(s):
+    """The Status cell: one series with label status ("Status", or "Status · N alerts" with more than
+    one item) whose value is a code for the worst item's short name and colour (status_shorts); with
+    no item, "All clear" (code 1). The worst item has the highest level, then the highest PRIORITY."""
     t = alert_items(s)
-    return ("sort_desc((topk(2, %s) unless on () (count(%s) > 2)) or (topk(1, %s) and on () (count(%s) > 2)) "
-            "or %s or (%s unless on () count(%s >= 2)))"
-            % (t, t, t, t, label("(count(%s) > 2) * 0 + 0.5" % t, "title", "More alerts in All firing alerts below"),
-               label("vector(0.4)", "title", "All clear"), t))
-
-
-def banner_size(s):
-    """The banner's text size: BANNER_PX when every sentence it can show, with the longest host it
-    can name, has at most BANNER_CHARS characters, else BANNER_SMALL_PX; stops when one does not fit
-    its slot even then."""
-    texts = ["All clear", "More alerts in All firing alerts below"] + [t for _, t, _ in synth_items(s)]
-    for _, sentence, which, need in TITLES:
-        if s.has(need):
-            texts += [sentence.replace("$1", h) for h in (s.hosts(which) if which else [""])]
-    longest = max(texts, key=len)
-    if len(longest) <= BANNER_CHARS and text_px(longest, BANNER_PX) <= BANNER_SLOT:
-        return BANNER_PX
-    widest = max(texts, key=lambda t: text_px(t, BANNER_SMALL_PX))
-    if text_px(widest, BANNER_SMALL_PX) <= BANNER_SLOT:
-        return BANNER_SMALL_PX
-    raise SystemExit("The banner sentence %r needs %d px at %d px; a slot has %d. Shorten the host name in it in the "
-                     "inventory." % (widest, text_px(widest, BANNER_SMALL_PX), BANNER_SMALL_PX, BANNER_SLOT))
+    lookup = "(%s)" % " or ".join(label("vector(%d)" % (10 * i), "short", w) for i, w in enumerate(status_shorts(s), 1))
+    # 1 amber, 2 red, plus ten times the short name's place in the lookup.
+    code = "(((topk(1, %s) >= bool 3) + 1) + on (short) %s)" % (t, lookup)
+    # count_values turns the number of items into a label, which names the cell.
+    counted = '(%s * on () group_left (n) count_values("n", count(%s)))' % (code, t)
+    named = ('label_replace(label_replace(%s, "status", "Status", "", ""), "status", %s, "n", "([2-9]|[1-9][0-9]+)")'
+             % (counted, q("Status · $1 alerts")))
+    clear = label("vector(1) unless on () count(%s)" % t, "status", "Status")
+    return "(%s or %s)" % (named, clear)
 
 
 def panel_texts(p):
@@ -994,25 +1010,57 @@ def fit_strip(items, height, what, samples=None):
 
 # The first screen.
 
-def header(s):
-    """The quiet, untitled header: the validator's name over its network, then four neutral facts."""
+def status_cell(s):
+    """(id, label, description, query, options) of the Status cell: "All clear" in green, or the worst
+    item's short name in amber, red once a page fires; the label counts the items when there are
+    several. The full sentences are in the description and in the All firing alerts row."""
+    shorts = status_shorts(s)
+    sentences = {}
+    for words, sentence in status_words(s):
+        text = sentence.replace("$1", "a server")
+        sentences.setdefault(words, []).append(text[0].upper() + text[1:])
+    desc = ("What is wrong right now, or about to be: the short name of the worst item (urgent before warning, then "
+            "by how much the alert matters). Red: an urgent (page) alert fires. Amber: a warning (message) alert "
+            "fires, or an alert's problem is true and it will be sent if it lasts. With several items the label counts "
+            "them ('Status · 3 alerts'). "
+            "Follow-on alerts are grouped into their cause, as Alertmanager's inhibitions do (no 'Missed blocks' while "
+            "'Not signing' shows); your notifications may still list some of them separately. Silenced alerts still "
+            "show: a silence only stops notifications. 'All clear' also needs the alert rules to have run in the last "
+            "2 minutes and Alertmanager to be up and reached. Every alert in full, with its server and how long it has "
+            "been active: open the collapsed row 'All firing alerts' below.")
+    if s.announcements:
+        desc += " A new Celestia announcement shows here for 30 minutes; its text is in your alert channel."
+    if s.signal:
+        desc += " A scheduled network upgrade is no fault and does not show here: the Network upgrade tile shows it."
+    desc += " The short names: %s." % "; ".join("%s: %s" % (w, ", or ".join(sentences[w])) for w in shorts
+                                               if w in sentences)
+    desc += more(pages=[("Alert reference", DOCS)])
+    words = [(1, "All clear", "semi-dark-green")]
+    for i, w in enumerate(shorts, 1):
+        words += [(10 * i + 1, w, "orange"), (10 * i + 2, w, "red")]
+    return (10, "{{status}}", desc, status_expr(s),
+            dict(color_mode="value", mappings=mapping(*words), no_value="No data"))
+
+
+def intro(s):
+    """The intro strip, one band at the top: the validator's name under its network, four neutral
+    facts and the Status, in six framed, untitled cells of one height. Each cell is a label over a
+    value, set from the left, in one size pair, so the labels share one line and the values another.
+    The generator stops when a text does not fit its cell at that size."""
     name = s.name or "Celestia validator"
     if len(name) > NAME_CHARS:
-        raise SystemExit("celestia_mon_validator_name %r has %d characters; at most %d fit the dashboard's header"
+        raise SystemExit("celestia_mon_validator_name %r has %d characters; at most %d fit the dashboard's top strip"
                          % (name, len(name), NAME_CHARS))
     net = ('max by (net) (label_replace(label_replace(label_replace(max by (chain_id) (%s), '
            '"net", "$1", "chain_id", "(.*)"), "net", "Celestia mainnet", "chain_id", "celestia"), '
            '"net", "Mocha testnet ($1)", "chain_id", "(mocha-.*)")) * 0 + 1' % H)
-    identity = stat(
-        1, "",
-        "Celestia validator%s monitoring: which validator this is and which network its nodes are on. The network is "
-        "read from the nodes' own metrics (chain_id), so a Mocha and a mainnet dashboard cannot be confused. The name "
-        "is celestia_mon_validator_name in the inventory." % (" and Fibre" if s.fibre else ""),
-        [target("A", net, "{{net}}", instant=True)], mappings=mapping((1, name, "text")),
-        no_value="No node reporting", size=NAME_PX, text_mode="value_and_name", color_mode="none",
-        justify="auto", wide=False, title_size=HEADER_LABEL_PX)
-    blocks = "Blocks signed, %d d" % s.days
-    facts = [
+    signed = "Signed, %d d" % s.days
+    cells = [
+        (1, "{{net}}",
+         "Celestia validator%s monitoring: which validator this is and which network its nodes are on. The network is "
+         "read from the nodes' own metrics (chain_id), so a Mocha and a mainnet dashboard cannot be confused. The name "
+         "is celestia_mon_validator_name in the inventory." % (" and Fibre" if s.fibre else ""),
+         net, dict(mappings=mapping((1, name, "text")), no_value="No node reporting")),
         (2, "Latest block",
          "The newest block committed by any node of this setup. It grows by about 20 a minute, so it changes on every "
          "refresh. Compare it with an explorer or [status.celestia.org](https://status.celestia.org/) to see that the "
@@ -1026,17 +1074,17 @@ def header(s):
          'rate(cometbft_consensus_block_interval_seconds_count{job="celestia-app"}[5m]))',
          dict(unit="s", decimals=2, color_mode="value", no_value="No data",
               mappings=special_map("nan", "Stalled", "orange"))),
-        (4, "Share of voting power",
+        (4, "Voting power",
          "This validator's share of all voting power in the active set. It sets how often the validator proposes "
          "blocks and how much Fibre data it stores. A drop means delegations left or the validator was slashed. "
-         "'Out of set': the chain moves but no node records blocks for the validator's key (jailed, unbonded or "
+         "'Inactive': the chain moves but no node records blocks for the validator's key (jailed, unbonded or "
          "outside the active set). While no node reports or no block arrives, the share cannot be read, and the "
          "words say so.",
          chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
                "((max(%s) / max(%s)) and on () %s)" % (POWER, TOTAL, IN_SET), "(max(%s) * 0 - 3)" % H),
          dict(unit="percentunit", decimals=2, no_value="No data",
-              mappings=mapping((-1, "No data", GREY), (-2, "Stalled", GREY), (-3, "Out of set", GREY)))),
-        (5, blocks,
+              mappings=mapping((-1, "No data", GREY), (-2, "Stalled", GREY), (-3, "Inactive", GREY)))),
+        (5, signed,
          "Share of the blocks committed over the last %d days that carry this validator's signature. Blocks committed "
          "while it was not signing at all (jailed, out of the set, signer or node down) count as unsigned; time without "
          "monitoring data is left out. On a young install, or when Prometheus's size limit holds less, it covers the "
@@ -1045,47 +1093,28 @@ def header(s):
          signed_share(s, "%dd" % s.days, "5m", 300),
          dict(unit="percentunit", decimals=2, no_value="No data",
               mappings=range_map(0.99995, 1, "100%") + special_map("nan", "No data"))),
+        status_cell(s),
     ]
-    # Every text must fit as pinned: the name and the network over it in the w8 identity, each fact's
-    # label, words and widest number in its w4 panel, and label over value in the untitled panel
-    # (left-aligned, so no gap between them).
-    check_fit("The header's name", panel_texts(identity), NAME_PX, 8)
-    check_fit("The header's network", ["Mocha testnet (mocha-5)", "Celestia mainnet"], HEADER_LABEL_PX, 8)
-    content = grid_px(HEADER_ROWS) - CHROME_UNTITLED
-    for label_size, value_size in [(HEADER_LABEL_PX, NAME_PX), (HEADER_LABEL_PX, HEADER_VALUE_PX)]:
-        if stack_px(label_size, value_size, False) > content:
-            raise SystemExit("The header: a label over a value needs %d px; an untitled h%d panel has %d"
-                             % (stack_px(label_size, value_size, False), HEADER_ROWS, content))
-    panels = [(identity, 8)]
-    for pid, lbl, desc, expr, kw in facts:
+    # The labels each cell can show, where they are not its query's legend, and the values its words
+    # do not name: the widest number of each fact.
+    labels = {1: ["Mocha testnet (mocha-5)", "Celestia mainnet"], 10: ["Status", "Status · 99 alerts"]}
+    samples = {2: [INTRO_NUMBER], 3: ["9.99 s"], 4: ["99.99%"], 5: ["99.99%"]}
+    if sum(INTRO_WIDTHS) != 24 or len(INTRO_WIDTHS) != len(cells):
+        raise SystemExit("INTRO_WIDTHS must give the %d cells of the top strip 24 columns in all" % len(cells))
+    content = grid_px(INTRO_ROWS) - CHROME_UNTITLED
+    if stack_px(INTRO_LABEL_PX, INTRO_VALUE_PX, False) > content:
+        raise SystemExit("The top strip: a label over a value needs %d px; an untitled h%d panel has %d"
+                         % (stack_px(INTRO_LABEL_PX, INTRO_VALUE_PX, False), INTRO_ROWS, content))
+    panels = []
+    for (pid, legend, desc, expr, kw), w in zip(cells, INTRO_WIDTHS):
         kw.setdefault("color_mode", "none")
-        p = stat(pid, "", desc, [target("A", expr, lbl, instant=True)], size=HEADER_VALUE_PX,
-                 text_mode="value_and_name", justify="auto", wide=False, title_size=HEADER_LABEL_PX, **kw)
-        check_fit("The header label", [lbl], HEADER_LABEL_PX, 4)
-        check_fit("The header fact %r" % lbl, panel_texts(p) + [HEADER_NUMBER], HEADER_VALUE_PX, 4)
-        panels.append((p, 4))
-    for p, _ in panels:
-        p["transparent"] = True
+        p = stat(pid, "", desc, [target("A", expr, legend, instant=True)], size=INTRO_VALUE_PX,
+                 text_mode="value_and_name", justify="auto", wide=False, title_size=INTRO_LABEL_PX, **kw)
+        what = "The top strip's %s cell" % {1: "identity", 10: "Status"}.get(pid, repr(legend))
+        check_fit(what + " (label)", labels.get(pid, [legend]), INTRO_LABEL_PX, w)
+        check_fit(what, panel_texts(p) + samples.get(pid, []), INTRO_VALUE_PX, w)
+        panels.append((p, w))
     return panels
-
-
-def banner(s):
-    """The verdict: what is wrong now, or about to be, in the words of the notifications."""
-    desc = ("What is wrong right now, or about to be, in the words of your notifications, worst first. Red: an urgent "
-            "(page) alert is firing. Amber: a warning (message) alert fires, or an alert's problem is true and it will "
-            "be sent if it lasts. At most two are shown; the collapsed row 'All firing alerts' lists them all with how "
-            "long each has been active. Follow-on alerts are grouped into their cause (for example 'Validator missed "
-            "blocks' while 'Validator not signing' is shown); your notifications may still list some of them "
-            "separately. Silenced alerts still show: a silence only stops notifications. 'All clear' also needs the "
-            "alert rules to have run in the last 2 minutes and Alertmanager to be up and reached.")
-    if s.announcements:
-        desc += " A new Celestia announcement shows here for 30 minutes; its text is in your alert channel."
-    if s.signal:
-        desc += " A scheduled network upgrade shows in plain text next to 'All clear': it is a to-do, not a fault."
-    desc += more(pages=[("Alert reference", DOCS)])
-    return stat(10, "", desc, [target("A", banner_expr(s), "{{title}}", instant=True)],
-                thresholds=steps(("text", None), ("semi-dark-green", 0.35), ("text", 0.5), ("orange", 2), ("red", 3)),
-                no_value="No data from Prometheus", size=banner_size(s), text_mode="name", orientation="vertical")
 
 
 def validator_tile(s):
@@ -1338,7 +1367,7 @@ CHECK_DESC = ("One line per check, one bar per time block: 10 minutes on a 24-ho
               "fired, or an urgent alert's problem was true for a moment and cleared before it paged. Red: an urgent "
               "alert fired. Grey: no data (before the install, monitoring down, the alert rules not running, or nothing "
               "to check). Each alert colours one line; NodeBehind colours Node in sync and the line of the server that "
-              "lags. Network upgrades have no line: the Network upgrade tile and the banner show them.")
+              "lags. Network upgrades have no line: the Network upgrade tile shows them.")
 
 
 def check_lanes(s):
@@ -1873,8 +1902,8 @@ def servers_table(s):
 
 
 def first_screen(s):
-    """The lines of the first screen: header, banner, answers, the status board with its uptime
-    columns, the role band, the key and Servers now."""
+    """The lines of the first screen: the intro strip (with the Status), the answers, the status board
+    with its uptime columns, the role band, the key and Servers now."""
     check, servers, roles = check_lanes(s), server_lanes(s), role_lanes(s)
     axis = axis_width(s, check, servers, roles)
     h_check = grid_rows(LANE_PX * len(check), CHROME_TITLED)
@@ -1905,8 +1934,7 @@ def first_screen(s):
                    "full or read-only." + more(["ServiceDown", "DiskLow", "NodeBehind"]))
     table, h_table = servers_table(s)
     return [
-        (HEADER_ROWS, header(s)),
-        (2, [(banner(s), 24)]),
+        (INTRO_ROWS, intro(s)),
         (3, answer_tiles(s)),
         (h_check, [(status_history(20, "Status", desc, check, h_check, axis), 22),
                    (uptime_column(21, "Uptime", check, h_check), 2)]),
@@ -2256,7 +2284,7 @@ def upgrade_row(s):
 
 
 def alerts_row(s):
-    """The collapsed All firing alerts row: every alert firing or pending, in the banner's sentences."""
+    """The collapsed All firing alerts row: every alert firing or pending, in the notifications' sentences."""
     levels = " or ".join("%s * 0 + %s" % (by_alert('ALERTS{alertstate="%s",severity="%s"}' % (state, sev)), num(v))
                          for state, sev, v in [("firing", "page", 3), ("pending", "page", 2),
                                                ("firing", "message", 1), ("pending", "message", 0.5)])
@@ -2266,7 +2294,8 @@ def alerts_row(s):
     table = panel(
         301, "table", "Firing alerts",
         "Every alert Prometheus has firing now, plus alerts whose problem is true but has not lasted long enough to be "
-        "sent. The same sentences as the banner and your notifications. Active for: how long since the problem started, "
+        "sent, in the sentences of your notifications; the Status cell at the top names the worst one. Active for: how "
+        "long since the problem started, "
         "including the waiting time before it fired. The heartbeat (Watchdog) is left out. Silences do not hide alerts "
         "here. Each alert's meaning and first checks: the [alert reference](%s)." % DOCS,
         [target("A", level, "", instant=True, fmt="table"), target("B", since, "", instant=True, fmt="table")],

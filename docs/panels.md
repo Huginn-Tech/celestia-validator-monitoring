@@ -4,30 +4,56 @@ The dashboard **Celestia validator**, in the **Celestia validator** folder, read
 
 **Colours mean state, and only where an alert watches.** Every word, bar and cell follows one rule, printed in the key under the role band:
 
-- **Fine**: plain text, or a muted green bar. Only the verdict "All clear" is green text.
+- **Fine**: plain text, or a muted green bar. Only "All clear" in the Status cell is green text.
 - **Look soon** (amber): the problem an alert watches is true, the alert is pending, or a message alert fires. If it lasts, you get the alert.
 - **Urgent alert** (red): a page alert fires.
 - **No data or not in use** (grey).
 
-Amber and red appear only where an alert rule in [alerts.md](alerts.md) watches the condition, at the rule's own threshold, so anything amber reaches you if it lasts. Facts no alert watches (CPU, memory, link load, peers, the storage budget, proposals, uptime shares) are drawn in neutral colours whatever their value. The one exception is "Two signers" (below), which is amber without a rule. The verdict, the answers and the status bars read Prometheus's own alert states, so they always agree with the alerts you received. Silences stop notifications only: a silenced alert still shows here.
+Amber and red appear only where an alert rule in [alerts.md](alerts.md) watches the condition, at the rule's own threshold, so anything amber reaches you if it lasts. Facts no alert watches (CPU, memory, link load, peers, the storage budget, proposals, uptime shares) are drawn in neutral colours whatever their value. The one exception is "Two signers" (below), which is amber without a rule. The Status cell, the answers and the status bars read Prometheus's own alert states, so they always agree with the alerts you received. Silences stop notifications only: a silenced alert still shows here.
 
 **Servers and roles.** A server is every host node_exporter runs on: the validator node and the backup nodes first, then the Fibre hosts, then KMS hosts with `celestia_mon_kms_scrape: true`, in inventory order. Each server keeps one colour (blue, purple, light blue, ...) in every chart and in its name in the Servers now table. Roles move between hosts (a tmkms repoint to a backup node, a Fibre failover), so no panel takes a role from the inventory: the signing node is the node the validator's signatures go through, and the active Fibre is the host whose Fibre unit systemd reports active.
 
 ## First screen
 
-### Header
+### Top strip
 
-No title bar: each fact is a small label over a large value, set on the page from the left. A fact that cannot be read says "No data".
+One framed band of six cells, each a small label over a larger value, set from the left, so the labels share one line and the values another. A fact that cannot be read says "No data".
 
-- **Name and network**: `celestia_mon_validator_name` (or "Celestia validator") under the network, read from the nodes' own metrics (`chain_id`): "Celestia mainnet" or "Mocha testnet (mocha-5)". A Mocha and a mainnet dashboard cannot be confused. "No node reporting" while no node answers.
+- **Name and network**: `celestia_mon_validator_name` (or "Celestia validator", at most 20 characters) under the network, read from the nodes' own metrics (`chain_id`): "Celestia mainnet" or "Mocha testnet (mocha-5)". A Mocha and a mainnet dashboard cannot be confused. "No node reporting" while no node answers.
 - **Latest block**: the newest block any node of this setup committed. It grows by about 20 a minute; compare it with an explorer or [status.celestia.org](https://status.celestia.org/).
 - **Block time**: the average time between blocks over 5 minutes, from the blocks' own timestamps. About 2.9 s is normal today; slower blocks affect every validator. Amber "Stalled" when no block arrived in those 5 minutes.
-- **Share of voting power**: this validator's share of the active set's voting power. "Out of set" while the chain moves but no node records blocks for the validator's key (jailed, unbonded, outside the set); "Stalled" while no block arrives, when the share cannot be read.
-- **Blocks signed, 30 d**: the share of the blocks committed over the last 30 days (or the retention, if shorter) that carry the validator's signature. Blocks while it was not signing at all count as unsigned, and so does the jump of a node that catches up after an outage; time without monitoring is left out. Explorers count over the chain's slashing window, so their number can differ.
+- **Voting power**: this validator's share of the active set's voting power. "Inactive" while the chain moves but no node records blocks for the validator's key (jailed, unbonded, outside the set); "Stalled" while no block arrives, when the share cannot be read.
+- **Signed, 30 d**: the share of the blocks committed over the last 30 days (or the retention, if shorter) that carry the validator's signature. Blocks while it was not signing at all count as unsigned, and so does the jump of a node that catches up after an outage; time without monitoring is left out. Explorers count over the chain's slashing window, so their number can differ.
+- **Status**: green "All clear", or what is wrong right now, or about to be, in a few words: the worst item, urgent before warning. Red: a page alert fires. Amber: a message alert fires, or an alert's problem is true and it will be sent if it lasts. With several items the label counts them ("Status · 3 alerts"); the closed row **All firing alerts** lists every alert in the words of your notifications, with its server and how long it has been active. Follow-on alerts are grouped into their cause, as Alertmanager's inhibitions do (no "Missed blocks" while "Not signing" shows; a server whose node_exporter does not answer counts once, as "Not reporting"). A scheduled network upgrade is no fault and does not show here: the Network upgrade answer shows it. "All clear" needs the alert rules to have run in the last 2 minutes and Alertmanager to be up and reached.
 
-### Verdict
+The Status words and what they stand for (hover the cell's (i) for the list of your install):
 
-One line: green "All clear", or what is wrong right now, or about to be, in the words of your notifications ("Validator not signing", "Disk low or read-only on fibre-1"), worst first. Red: a page alert fires. Amber: a message alert fires, or an alert's problem is true and it will be sent if it lasts. At most two sentences show; with more, the worst one and "More alerts in All firing alerts below". Follow-on alerts are grouped into their cause, as Alertmanager's inhibitions do (no "Validator missed blocks" next to "Validator not signing"; a server whose node_exporter does not answer shows once, as "<server> not reporting"). It also names what no rule carries: "Alert rules are not running", "Alertmanager down, alerts not sent", "Alerts not reaching Alertmanager", "A notification failed in the last hour" (the heartbeat to the dead-man service stops for an hour after a failed notification), "Validator signs through two nodes", and for 30 minutes "New Celestia announcement, see your alerts" with `celestia_mon_announcements`. A scheduled network upgrade shows in plain text next to "All clear": it is a to-do, not a fault. "All clear" needs the alert rules to have run in the last 2 minutes and Alertmanager to be up and reached; while Prometheus cannot be read, the line says "No data from Prometheus".
+| Status | Alert or condition |
+|---|---|
+| Nodes stalled | NodeNotAdvancing: no new blocks on any node |
+| Not signing | ValidatorNotSigning |
+| Missed blocks | SignaturesMissed |
+| Node behind | NodeBehind |
+| Signer slow, Proposals fail | RemoteSignerProblem (remote signer) |
+| Fibre down | FibreDown: no Fibre server running |
+| Fibre offline, Bad registration | FibreDown: unreachable from outside, or not registered or wrong host (`celestia_mon_tensile`) |
+| Fibre on 2 hosts | FibreBothActive |
+| No Fibre uploads, Uploads failing, No Fibre metrics | FibreNotServing |
+| Not reporting | ServiceDown: a server's node_exporter does not answer |
+| No node metrics, No Fibre metrics | ServiceDown: celestia-appd's or the OpenTelemetry collector's metrics lost |
+| Node stopped, Node crashing, Node not loaded | ServiceDown: celestia-appd stopped, in a crash loop, or its unit missing |
+| Signer stopped, Signer crashing, Signer missing | ServiceDown: tmkms, likewise (`celestia_mon_kms_scrape`) |
+| Fibre crashing | ServiceDown: Fibre in a crash loop |
+| Disk critical, Disk low | DiskLow: page (full or read-only), message (low or read-only) |
+| Rules failing, Alerts not sent, Dead-man failing | MonitoringBroken, NotificationsFailing, DeadmanFailing |
+| No outside check, Announcer down, No upgrade check | TensileUnreadable, AnnouncementsUnreadable, SignalUnreadable |
+| Signal missing, Upgrade in 24 h | UpgradeSignalMissing, UpgradeSoon |
+| Rules stopped | no rule run in the last 2 minutes |
+| No Alertmanager | Alertmanager down, alerts not sent |
+| Alerts not sent | alerts not reaching Alertmanager |
+| No heartbeat | a notification failed in the last hour, so the heartbeat to the dead-man service stops for that hour |
+| Two signers | the validator signs through two nodes (remote signer) |
+| New announcement | a new Celestia announcement, for 30 minutes (`celestia_mon_announcements`); its text is in your alert channel |
 
 ### Answers
 
@@ -42,12 +68,12 @@ One word each, amber while the problem an alert watches is true, red once its pa
 
 ### Status board
 
-One line per check and one per server, one bar per time block: 10 minutes on the default 24 hours (144 bars), 1 hour on 7 days, 6 hours on 30 days. The bars follow the time picker and line up with the charts below. The newest bar on the right is the current block and fills in as its minutes pass; in its first 30 seconds it shows the 2 minutes before it. A bar shows the worst moment of its block, read from the alert states Prometheus evaluated at the time, so each alert colours one line; NodeBehind colours Node in sync and the line of the server that lags. Network upgrades have no line: the Network upgrade answer and the verdict show them. A bar is green only while the alert rules ran in its block; grey means no data: before the install, monitoring down, the rules not running, or nothing to check. Hover a bar to see every line at that moment. Each bar is drawn centred on the start of its block, half a block left of the charts below.
+One line per check and one per server, one bar per time block: 10 minutes on the default 24 hours (144 bars), 1 hour on 7 days, 6 hours on 30 days. The bars follow the time picker and line up with the charts below. The newest bar on the right is the current block and fills in as its minutes pass; in its first 30 seconds it shows the 2 minutes before it. A bar shows the worst moment of its block, read from the alert states Prometheus evaluated at the time, so each alert colours one line; NodeBehind colours Node in sync and the line of the server that lags. Network upgrades have no line: the Network upgrade answer shows them. A bar is green only while the alert rules ran in its block; grey means no data: before the install, monitoring down, the rules not running, or nothing to check. Hover a bar to see every line at that moment. Each bar is drawn centred on the start of its block, half a block left of the charts below.
 
 | Line | Shown | Amber | Red | Uptime % |
 |---|---|---|---|---|
 | Node in sync | always | NodeNotAdvancing pending, NodeBehind fired for any node | NodeNotAdvancing fired | minutes in which the nodes advanced and none was behind |
-| Validator signing | always | ValidatorNotSigning pending, SignaturesMissed fired | ValidatorNotSigning fired | share of the blocks that carry the validator's signature, counted as in Blocks signed |
+| Validator signing | always | ValidatorNotSigning pending, SignaturesMissed fired | ValidatorNotSigning fired | share of the blocks that carry the validator's signature, counted as in Signed |
 | Remote signer | remote signer | RemoteSignerProblem fired; "No signatures" while the chain records misses and no node signs | | minutes in which it signed without a signer alert, among the minutes it was asked to sign |
 | Fibre serving | Fibre on | FibreDown pending, FibreNotServing, FibreBothActive | FibreDown fired (no Fibre unit active) | minutes with a Fibre unit active and uploads not all failing |
 | Fibre from outside | `celestia_mon_tensile` | FibreDown's outside branches pending, TensileUnreadable | FibreDown (unreachable, or not registered or wrong host) fired | minutes in which a check under 15 minutes old reached the registered endpoint |
@@ -100,7 +126,7 @@ Closed; with `celestia_mon_signal`. One strip of three facts. **Support for next
 
 ## All firing alerts
 
-Closed. Every alert Prometheus has firing now, and those whose problem is true but has not lasted long enough to be sent, in the verdict's sentences, with their level ("Urgent", "Urgent, not paged yet", "Warning", "Warning, not sent yet") and how long since the problem started. The heartbeat is left out. With nothing firing it reads "No alerts firing".
+Closed. Every alert Prometheus has firing now, and those whose problem is true but has not lasted long enough to be sent, in the words of your notifications ("Validator not signing", "Disk low or read-only on fibre-1"), with their level ("Urgent", "Urgent, not paged yet", "Warning", "Warning, not sent yet") and how long since the problem started. The heartbeat is left out. With nothing firing it reads "No alerts firing".
 
 ## Servers in detail
 
