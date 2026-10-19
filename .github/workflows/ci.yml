@@ -884,10 +884,16 @@ jobs:
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
+          # mainnet without upgrade signalling has five answers, which the Servers tile makes six.
+          mkdir -p build/five
+          jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
+          python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
       # single: local key, one node, Fibre off (two answer tiles). split: remote signer and Fibre (the
       # Fibre row). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
-      # on top (six answer tiles, Blocks behind the highest node, the Network upgrade row). Panels
-      # of collapsed rows count too; the first screen ends where the Validator row starts.
+      # on top (six answer tiles, Blocks behind the highest node, the Network upgrade row). five:
+      # mainnet without signalling (the Servers tile). Panels of collapsed rows count too; the first
+      # screen ends where the Validator row starts; the top strip's six cells and the answer tiles
+      # below them share their column edges.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
@@ -895,13 +901,20 @@ jobs:
           test "$(count single)" = 29
           test "$(count split)" = 42
           test "$(count mainnet)" = 51
+          test "$(count five)" = 46
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,13,14,15,16]'
-          for s in single split mainnet; do
+          test "$(tiles five)" = '[11,12,17,13,14,15]'
+          for s in single split mainnet five; do
             jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
             jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
                    == (.panels[] | select(.id == 100) | .gridPos.y)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.gridPos.y == 0) | [.gridPos.x, .gridPos.w, .gridPos.h]]
+                   == [[0,4,3],[4,4,3],[8,4,3],[12,4,3],[16,4,3],[20,4,3]]' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .gridPos] as $t
+                   | ($t | map(.w) | unique | length) == 1 and ($t | map(.h) | unique) == [3]
+                   and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
           done
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
                  and .monitor_host == "fibre-1" and .name == "CI validator"' build/mainnet/dashboard-config.json
@@ -916,7 +929,7 @@ jobs:
       - name: Every panel query parses in Prometheus
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
-          build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json
+          build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
 
   doctor:
     runs-on: ubuntu-24.04

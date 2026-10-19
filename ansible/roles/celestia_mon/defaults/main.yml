@@ -9,8 +9,9 @@ celestia_mon_signer: local
 # "Two nodes" instead of the amber "Two signers" it shows when two nodes sign for 3 minutes.
 celestia_mon_signer_multi_node: false
 
-# The validator's name at the top of the dashboard, at most 20 characters (for example its
-# moniker). Empty: the dashboard reads "Celestia validator" over the network's name.
+# The validator's name at the top of the dashboard (for example its moniker): up to 13 characters
+# at full size; 14 to 17 characters make the whole top strip's values a little smaller; longer
+# names stop the dashboard build. Empty: the dashboard reads "Validator" under the network's name.
 celestia_mon_validator_name: ""
 
 # Install and render everything Fibre-related. Keep false on networks where

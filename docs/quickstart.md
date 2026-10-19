@@ -111,7 +111,7 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 | `celestia_mon_nice`, `celestia_mon_cpu_weight`, `celestia_mon_io_weight` | 10, 20, 20 | CPU and disk priority of every unit. |
 | `celestia_mon_memory` | table in step 1 | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`, `announcements`, `tensile`, `signal`). |
 | `celestia_mon_signal` | `{}` (off) | Upgrade signalling, on the monitor host: the RPCs to read x/signal through and the validator's operator address ([below](#upgrade-signalling)). |
-| `celestia_mon_validator_name` | `""` | The validator's name at the top of the dashboard, at most 20 characters, for example its moniker. Empty: the dashboard reads "Celestia validator" over the network's name. |
+| `celestia_mon_validator_name` | `""` | The validator's name at the top of the dashboard, for example its moniker: up to 13 characters at full size; 14 to 17 characters make the top strip's values a little smaller; a longer name stops the dashboard build. Empty: the dashboard reads "Validator" under the network's name. |
 | `celestia_mon_signer_multi_node` | `false` | With a remote signer: `true` when tmkms is set up to sign through several nodes at once (several `[[validator]]` entries). Two signing nodes are then normal, and the dashboard reads "Two nodes" instead of the amber "Two signers" it shows when two nodes sign for 3 minutes. |
 
 Overriding a map (`celestia_mon_units`, `celestia_mon_ports`, `celestia_mon_thresholds`, `celestia_mon_memory`) replaces the whole map, so list every key.
