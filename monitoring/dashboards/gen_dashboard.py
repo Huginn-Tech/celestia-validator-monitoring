@@ -2001,7 +2001,8 @@ def validator_row(s):
 
 
 def fibre_row(s):
-    """The Fibre row: facts with sparklines, then the charts that explain the Fibre answer."""
+    """The Fibre row: facts, then the charts that explain the Fibre answer. The facts carry no
+    sparkline: in a short tile it runs under the number, and the charts below hold the history."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
     active = 'node_systemd_unit_state{name=%s,state="active"} == 1' % q(s.units["fibre"])
@@ -2017,27 +2018,28 @@ def fibre_row(s):
                "(fibre_server_upload_shard_budget_bytes > 0)) and on (host) (%s)" % active, "")])
         + [target("B", "(max by (host) (fibre_server_upload_shard_budget_bytes) == 0) and on (host) (%s)" % active, "",
                   instant=True)],
-        unit="percentunit", decimals=1, graph="area", no_value="No active Fibre",
+        unit="percentunit", decimals=1, no_value="No active Fibre",
         overrides=[override("byFrameRefID", "B", unit="none", mappings=mapping((0, "No limit", "text")))])
     facts = [
         fact(202, "Uploads accepted, 1 h",
-             "Uploads the active Fibre server accepted and signed in the last hour; the sparkline shows the same over the "
-             "selected time. A low number on a quiet network is normal." + more(pages=[FIBRE_DASHBOARD, TENSILE]),
-             refs([("round(sum(increase(%s[1h])))" % ok, "")]), graph="area", no_value="No Fibre metrics"),
+             "Uploads the active Fibre server accepted and signed in the last hour; Uploads and downloads below shows "
+             "them over the selected time. A low number on a quiet network is normal."
+             + more(pages=[FIBRE_DASHBOARD, TENSILE]),
+             refs([("round(sum(increase(%s[1h])))" % ok, "")]), no_value="No Fibre metrics"),
         fact(203, "Upload success, 1 h",
              "Share of upload requests accepted in the last hour. Failures include clients' invalid payment promises and "
              "uploads refused because the storage budget is full, so a few are not this setup's fault. Every upload "
              "failing for %s is FibreNotServing." % s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
              + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
              refs([("sum(rate(%s[1h])) / (sum(rate(%s[1h])) > 0)" % (ok, count), "")]), unit="percentunit",
-             decimals=1, graph="area", no_value="No uploads"),
+             decimals=1, no_value="No uploads"),
         budget,
         fact(205, "Upload time",
              "How long an accepted upload took for 95 of 100 uploads over 15 minutes: checking the payment promise, "
              "storing the shard and signing it through the validator's signer. Failed uploads are left out, so quick "
              "rejections cannot hide slowness." + more(pages=[FIBRE_DASHBOARD]),
              refs([('histogram_quantile(0.95, sum by (le) (rate(fibre_server_upload_shard_duration_seconds_bucket'
-                    '{success="true"}[15m])))', "")]), unit="s", decimals=None, graph="area",
+                    '{success="true"}[15m])))', "")]), unit="s", decimals=None,
              mappings=special_map("nan", "No uploads")),
     ]
     strip = fit_strip([(p, 6) for p in facts], FACT_PX, FACT_SMALL_PX, "Fibre facts")
@@ -2138,8 +2140,7 @@ def fibre_row(s):
         "means old shards stay on disk, so the store fills and DiskLow fires later. 0 on a healthy server; the first "
         "failure after a Fibre start counts too (the series appears with it). Fibre's log names the error."
         + more(["DiskLow"], [FIBRE_DASHBOARD]),
-        refs([("sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (prune, prune, prune), "")]),
-        graph="area")
+        refs([("sum(((%s - %s offset 24h) >= 0) or %s) or on () vector(0)" % (prune, prune, prune), "")]))
     fit_strip([(last_upload, 6), (cleanups, 6)], FACT_PX, FACT_SMALL_PX, "Fibre stats")
     return [(4, strip), (8, [(since, 18), (last_upload, 6)]), (8, [(shards, 12), (store, 12)]),
             (8, [(response, 18), (cleanups, 6)])]
