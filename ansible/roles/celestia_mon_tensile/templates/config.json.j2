@@ -1,0 +1,6 @@
+{
+  "api": {{ celestia_mon_tensile.api | string | to_json }},
+  "validator": {{ celestia_mon_tensile.validator | string | to_json }},
+  "listen": {{ celestia_mon_tensile_listen_address | to_json }},
+  "interval_seconds": {{ celestia_mon_tensile_interval_seconds | int }}
+}

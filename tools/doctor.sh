@@ -1110,10 +1110,11 @@ firewall_state() {
 # The systemd units celestia-mon installs. Check 8 looks only at the sockets of their
 # main processes, so other software on the host (a node_exporter, Prometheus,
 # Grafana or collector of its own) is left alone. Every one of them must listen
-# on a private address; Prometheus, Alertmanager and celestia-mon-announcements on 127.0.0.1 only.
+# on a private address; Prometheus, Alertmanager, celestia-mon-announcements and celestia-mon-tensile on
+# 127.0.0.1 only.
 CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-grafana
-  celestia-mon-announcements)
-CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements)
+  celestia-mon-announcements celestia-mon-tensile)
+CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements celestia-mon-tensile)
 
 check_binds() {
   local name="private binds" fw unit pid addr detail

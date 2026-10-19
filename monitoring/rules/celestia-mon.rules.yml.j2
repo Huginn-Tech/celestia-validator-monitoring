@@ -17,12 +17,22 @@
 {% set nodes = celestia_mon_appd_hosts %}
 {% set fibres = groups.get('fibre', []) if fibre_on else [] %}
 {% set kms = groups.get('kms', []) %}
+{# KMS hosts whose node_exporter runs (celestia_mon_kms_scrape). Without one, nothing runs on the
+   KMS host, and tmkms is seen only from the validator side: ValidatorNotSigning and the signer's
+   failures. #}
+{% set ns_kms = namespace(scraped=[]) %}
+{% for h in kms %}
+{%   if hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
+{%     set ns_kms.scraped = ns_kms.scraped + [h] %}
+{%   endif %}
+{% endfor %}
+{% set tensile_on = fibre_on and celestia_mon_tensile.validator | default('') | length > 0 %}
 {% set vf = nodes + groups.get('fibre', []) %}
 {# ServiceDown per unit: (key, unit, hosts it must be loaded on). A Fibre unit may be a stopped
    standby, which systemd drops from its list once it is also disabled, so Fibre has only the
    crash loop rule; FibreDown covers "no Fibre runs". #}
 {% set units = [('appd', appd, nodes)]
-   + ([('tmkms', tmkms, kms)] if remote else [])
+   + ([('tmkms', tmkms, ns_kms.scraped)] if remote and ns_kms.scraped else [])
    + ([('fibre', fibre, [])] if fibre_on else []) %}
 {% set tmkms_first = 'Check journalctl -u ' ~ celestia_mon_units.tmkms ~ ' on the KMS host first. ' if remote else '' %}
 {% set vns_text = tmkms_first ~ 'The chain moves but no node of this install has seen a signature from the validator for more than '
@@ -212,7 +222,7 @@ groups:
       # is normal; this pages only when none runs: Fibre stopped or crashed everywhere, the host of
       # the active Fibre down (its node_exporter goes with it) and no standby started, or
       # celestia_mon_units.fibre naming the wrong unit. A failover within 10 minutes pages nobody.
-      # celestia-mon does not probe Fibre's public port from outside.
+      # The branches after it look at the endpoint from outside, through Tensile, when it is set up.
       - alert: FibreDown
         expr: (count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) or vector(0)) == 0
         for: 10m
@@ -222,6 +232,53 @@ groups:
           summary: "No Fibre unit is active"
           description: "For 10 minutes no Fibre host ({{ fibres | sort | join(', ') }}) has reported {{ fibre }} as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit."
           runbook: "{{ docs }}#fibredown"
+{% if tensile_on %}
+
+      # FibreDown, seen from outside: Tensile (celestia-mon-tensile) dials the Fibre endpoint
+      # registered on chain from outside this install's networks. A running Fibre unit is not
+      # enough when nobody can reach it: a closed port, an inbound outage at the provider, an
+      # identity the validator's key does not endorse, or the wrong address on chain. Only checks
+      # of the last 15 minutes count; TensileUnreadable reports a check that stopped.
+      - alert: FibreDown
+        expr: >-
+          max by (endpoint) (celestia_mon_fibre_reachable) == 0
+          and on () time() - max(celestia_mon_fibre_last_check_timestamp_seconds) < 900
+        for: 10m
+        labels:
+          severity: page
+          check: reachability
+        annotations:
+          summary: "{% raw %}Fibre at {{ $labels.endpoint }} is unreachable from outside{% endraw %}"
+          description: "For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the last check."
+          runbook: "{{ docs }}#fibredown"
+      - alert: FibreDown
+        expr: max(celestia_mon_fibre_registered) == 0
+        for: 10m
+        labels:
+          severity: page
+          check: registration
+        annotations:
+          summary: "No Fibre host is registered on chain"
+          description: "For 10 minutes the chain has had no Fibre host for the validator in x/valaddr, so no client finds it. Register the active Fibre host: celestia-appd tx valaddr set-host <host:port> --from <validator account key>."
+          runbook: "{{ docs }}#fibredown"
+{%   for h in fibres %}
+{%     set e = hostvars[h].celestia_mon_fibre_public_endpoint | default('') %}
+{%     if e %}
+      - alert: FibreDown
+        expr: >-
+          max by (endpoint) (celestia_mon_fibre_registered{endpoint!={{ e | to_json }}} == 1)
+          and on () max(node_systemd_unit_state{host={{ h | to_json }},name="{{ fibre }}",state="active"}) == 1
+        for: 10m
+        labels:
+          severity: page
+          check: registration
+        annotations:
+          summary: "{% raw %}The chain points to {{ $labels.endpoint }}, but Fibre runs on {% endraw %}{{ h }}"
+          description: "For 10 minutes Fibre has been active on {{ h }}, whose public endpoint is {{ e }}, while the chain registers another endpoint, so clients dial a host where this Fibre does not run (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host {{ e }} --from <validator account key>."
+          runbook: "{{ docs }}#fibredown"
+{%     endif %}
+{%   endfor %}
+{% endif %}
 
       # FibreBothActive: Fibre runs active-passive, but the Fibre unit has been active on more than
       # one host for 5 minutes.
@@ -390,6 +447,25 @@ groups:
             announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
             names the cause and the fix.
           runbook: "{{ docs }}#announcementsunreadable"
+
+{% endif %}
+{% if tensile_on %}
+      # TensileUnreadable: for 30 minutes celestia-mon-tensile has not read Tensile, or Tensile has
+      # not checked the endpoint, or the service is down, for 10 minutes more: FibreDown cannot see
+      # an endpoint that is unreachable from outside meanwhile.
+      - alert: TensileUnreadable
+        expr: >-
+          time() - celestia_mon_tensile_last_success_timestamp_seconds > 1800
+          or time() - max(celestia_mon_fibre_last_check_timestamp_seconds) > 1800
+          or up{job="tensile"} == 0
+        for: 10m
+        labels:
+          severity: message
+          host: {{ celestia_mon_monitor_host | to_json }}
+        annotations:
+          summary: "Fibre is not checked from outside"
+          description: "For 30 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre endpoint, or the service is down, so an endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on the monitor: it names the cause."
+          runbook: "{{ docs }}#tensileunreadable"
 
 {% endif %}
       # MonitoringBroken: Prometheus failed to evaluate alert rules, so some alerts cannot fire.

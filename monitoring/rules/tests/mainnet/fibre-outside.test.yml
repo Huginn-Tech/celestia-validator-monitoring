@@ -1,0 +1,140 @@
+# FibreDown seen from outside, and TensileUnreadable, on the example-mainnet inventory rendered
+# with celestia_mon_tensile (CI passes it): celestia-mon-tensile on fibre-1 serves Tensile's
+# checks of the endpoint registered on chain. fibre-1's public endpoint is fibre.example.org:7980,
+# val-1's (its standby) val.example.org:7980.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Fibre runs on fibre-1 but Tensile cannot reach it; FibreDown after 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x30'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x30'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '1x30'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0x30'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              check: reachability
+              endpoint: fibre.example.org:7980
+            exp_annotations:
+              summary: Fibre at fibre.example.org:7980 is unreachable from outside
+              description: >-
+                For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
+                endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
+                from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the
+                last check.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+      - eval_time: 15m
+        alertname: TensileUnreadable
+        exp_alerts: []
+
+  - name: Tensile's last check is old; no FibreDown from it, TensileUnreadable instead
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x60'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '1x60'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0x60'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: TensileUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+            exp_annotations:
+              summary: Fibre is not checked from outside
+              description: >-
+                For 30 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre
+                endpoint, or the service is down, so an endpoint unreachable from outside would not page. Run
+                journalctl -u celestia-mon-tensile on the monitor: it names the cause.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
+
+  - name: After a failover to val-1 the chain still points to fibre-1; FibreDown for the address and the reachability
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '0x30'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '1x30'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '1x30'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0x30'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+        values: '0+60x30'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              check: reachability
+              endpoint: fibre.example.org:7980
+            exp_annotations:
+              summary: Fibre at fibre.example.org:7980 is unreachable from outside
+              description: >-
+                For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
+                endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
+                from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the
+                last check.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+          - exp_labels:
+              severity: page
+              check: registration
+              endpoint: fibre.example.org:7980
+            exp_annotations:
+              summary: The chain points to fibre.example.org:7980, but Fibre runs on val-1
+              description: >-
+                For 10 minutes Fibre has been active on val-1, whose public endpoint is val.example.org:7980,
+                while the chain registers another endpoint, so clients dial a host where this Fibre does not run
+                (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
+                val.example.org:7980 --from <validator account key>.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+
+  - name: No Fibre host registered on chain; FibreDown after 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x30'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint=""}'
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              check: registration
+            exp_annotations:
+              summary: No Fibre host is registered on chain
+              description: >-
+                For 10 minutes the chain has had no Fibre host for the validator in x/valaddr, so no client
+                finds it. Register the active Fibre host: celestia-appd tx valaddr set-host <host:port> --from
+                <validator account key>.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown

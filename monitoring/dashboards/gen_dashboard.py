@@ -14,19 +14,22 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
       "thresholds": {...},                         # celestia_mon_thresholds
       "nodes": ["..."],                            # celestia-appd hosts: validator, then backup_node
       "fibre_mounts": [{"host": "...", "mount": "..."}],  # every fibre host, active or standby
+      "fibre_endpoints": [{"host": "...", "endpoint": "..."}],  # every fibre host; celestia_mon_fibre_public_endpoint or ""
       "data_mounts": [{"host": "...", "mount": "..."}],
       "links": [{"host": "...", "mbps": 1000}]     # every node_exporter host; mbps: celestia_mon_link_mbps or null
     }
 
 Layout: a 'Now' strip without a row header, then the rows 'Validator and signer',
 'Fibre' and 'Hosts'. Panels that do not apply are left out: no signer panels with
-a local signer, no Fibre panels without Fibre. A row whose panels are wider than
-the 24 grid columns continues on a second line.
+a local signer, no Fibre panels without Fibre, no node lag chart with one node. A row
+whose panels are wider than the 24 grid columns continues on a second line.
 
 Roles can move between hosts (a backup node takes over signing after a tmkms repoint,
-a standby Fibre is started on another host), so no query names the host that holds a
-role: signing is read across all nodes, and the active Fibre is the one whose unit
-systemd reports active.
+a standby Fibre is started on another host), so no query takes the host that holds a
+role from the settings: the signing node is the one the signatures go through, and
+the active Fibre is the one whose unit systemd reports active. Host names from the
+settings appear in queries only as display text (the Signing tile) and to pair each
+Fibre host with its public endpoint.
 
 Python 3 standard library only. The same settings always give the same bytes.
 Every query is plain PromQL (no Grafana variables), so CI can send each one to
@@ -65,11 +68,19 @@ DISK = r"dm-.*|md.*|zd.*|sr.*|nbd.*"
 # Grafana's palette rather than repeat a colour.
 HOST_COLORS = ["blue", "purple", "yellow", "light-blue", "light-purple", "light-yellow"]
 
-# A standby Fibre unit: grey, neither fine-green nor alarm-red.
-STANDBY = "#808080"
+# A standby Fibre unit, or a check that does not run: grey, neither fine-green nor alarm-red.
+GREY = "#808080"
 
 # Block height of every celestia-appd node: the validator and the backup nodes.
 HEIGHT = 'cometbft_consensus_height{job="celestia-app"}'
+
+# True while the validator's key is in the active set: a node recorded a block for it in the
+# last 2 minutes, as a signature (the last signed height changes) or a miss (the missed-block
+# count grows). celestia-core sets the validator's voting power, last signed height and missed
+# blocks only while its key is in the set (consensus/state.go recordMetrics) and never writes a
+# power of 0, so after a jail or an unbond the power keeps its last value; these two show it.
+IN_SET = ('(max(changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[2m])) > 0 '
+          'or max(increase(cometbft_consensus_validator_missed_blocks{job="celestia-app"}[2m])) > 0)')
 
 
 def q(value):
@@ -85,6 +96,11 @@ def num(value):
 def js_regex(text):
     """text with JavaScript regex metacharacters escaped."""
     return re.sub(r"[\\^$.*+?()\[\]{}|/]", lambda m: "\\" + m.group(0), text)
+
+
+def label(expr, name, value):
+    """expr with the label name set to the fixed text value ('$' kept as it is)."""
+    return 'label_replace(%s, %s, %s, "", "")' % (expr, q(name), q(value.replace("$", "$$")))
 
 
 def target(ref, expr, legend, instant=False, interval=None, fmt=None):
@@ -225,6 +241,144 @@ def blocks_since_signature(cap):
             "or max(%s) * 0), %s)" % (HEIGHT, HEIGHT, num(cap)))
 
 
+def signing_nodes(cfg):
+    """The node or nodes the validator signs through now, one series per host. With a remote signer:
+    the nodes whose privval client made a signature in the last 2 minutes. A node that tmkms left
+    keeps the validator's key and reads its signatures from the chain's commits, so the last signed
+    height cannot tell which node signs. With a local key: the node whose last signed height
+    advanced in the last 2 minutes."""
+    if cfg["signer"] == "remote":
+        return 'sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app"}[2m])) > 0'
+    return 'max by (host) (changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[2m])) > 0'
+
+
+def signing_tile(cfg, signing):
+    """The Signing tile: blocks since the last signature, the active set, and the node that signs."""
+    blocks = cfg["thresholds"]["not_signing_blocks"]
+    remote = cfg["signer"] == "remote"
+    nodes = cfg.get("nodes", [])
+    power = 'max(cometbft_consensus_validator_power{job="celestia-app"})'
+    tiles = [
+        (blocks_since_signature(10 * blocks), "blocks since my last signature",
+         {"mappings": [{"type": "range", "options": {"from": 10 * blocks, "to": 10 * blocks, "result": {
+             "color": "red", "index": 0, "text": "%g+" % (10 * blocks)}}}]}),
+        ("%s and on () %s" % (power, IN_SET), "in active set, voting power",
+         {"unit": "locale", "thresholds": steps(("green", None))}),
+        # Only a node that saw the validator's key in the set since its start has a power series.
+        ("%s * 0 unless on () %s and on () changes(max(%s)[2m:]) > 0" % (power, IN_SET, HEIGHT), "active set",
+         {"mappings": mapping((0, "not in active set", "red"))}),
+    ]
+    if nodes:
+        # The signing node as its position in the settings' node list, which a value mapping
+        # turns into its host name: the big text of a tile is its value.
+        lookup = " or ".join(label("vector(%d)" % (i + 1), "host", h) for i, h in enumerate(nodes))
+        signer = "(%s) and on (host) (%s)" % (lookup, signing)
+        names = [(i + 1, h, "green") for i, h in enumerate(nodes)]
+        if remote:
+            # A validator out of the active set asks for no signatures, so only a validator in
+            # the set without signatures reads 'no signer connected'.
+            signer += " or (vector(0) and on () %s unless on () count(%s))" % (IN_SET, signing)
+            names = [(0, "no signer connected", "red")] + names
+        tiles.append((signer, "signing on", {"mappings": mapping(*names)}))
+    targets = refs([(expr, legend) for expr, legend, _ in tiles], instant=True)
+    signer_desc = (
+        "the node whose privval client made a signature in the last 2 minutes; red 'no signer connected' while "
+        "the validator is in the active set and no node made one" if remote else
+        "the node whose last signed height advanced in the last 2 minutes")
+    # Red from one block above the threshold, because ValidatorNotSigning fires on '> not_signing_blocks'.
+    return stat(16, "Signing",
+                "Is my validator in the active set and signing right now, and through which node? Blocks since "
+                "the validator's last signature, counted across all nodes as ValidatorNotSigning does, so it "
+                "follows a move of the signer to a backup node; red above the ValidatorNotSigning threshold "
+                "(%g blocks), history in Blocks since my last signature. Active set: the voting power while a "
+                "node records each block for the validator's key, as a signature or a miss; red 'not in active "
+                "set' while the chain moves and no node does: the validator is jailed, unbonded or outside the "
+                "active set. Signing on: %s." % (blocks, signer_desc),
+                targets, steps(("green", None), ("red", blocks + 1)),
+                [override("byFrameRefID", tg["refId"], **props) for tg, (_, _, props) in zip(targets, tiles)])
+
+
+def fibre_active(cfg):
+    """One series per host whose Fibre unit systemd reports active, labelled host only."""
+    return 'max by (host) (node_systemd_unit_state{name=%s,state="active"} == 1)' % q(cfg["units"]["fibre"] + ".service")
+
+
+def roles(cfg, signing):
+    """(expr, mappings) for one role tile per server, read from the metrics: the Validator (signing)
+    while the signer signs through the node, a Backup node while another node signs, Node (not
+    signing) while no node signs; Fibre (active) while the host's Fibre unit is active, else Fibre
+    (standby). A host's parts add up to one code (node 1-3, Fibre 4 or 8), which the mappings name."""
+    nodes = 'max by (host) (up{job="celestia-app"})'
+    # 'or' keeps the first series per host: the signing node, then the others.
+    node = "(%s) * 0 + 1 or %s * 0 + 2 and on () count(%s) or %s * 0 + 3" % (signing, nodes, signing, nodes)
+    node_parts = [(1, "Validator (signing)", "green"), (2, "Backup node", "text"),
+                  (3, "Node (not signing)", "red")]
+    if not cfg["fibre_enabled"]:
+        return node, mapping(*node_parts)
+    # Every Fibre host has a collector target, so up{job="otelcol"} lists the active one and the standbys.
+    fibre = '%s * 0 + 4 or max by (host) (up{job="otelcol"}) * 0 + 8' % fibre_active(cfg)
+    fibre_parts = [(4, "Fibre (active)", "green"), (8, "Fibre (standby)", GREY)]
+    # A server with both roles names both, coloured by the part that matters most.
+    rank = ["red", "green", "text", GREY]
+    items = node_parts + fibre_parts + [(n + f, "%s, %s" % (nt, ft), min(nc, fc, key=rank.index))
+                                        for n, nt, nc in node_parts for f, ft, fc in fibre_parts]
+    return ("sum by (host) (%s or %s)" % (label(node, "part", "node"), label(fibre, "part", "fibre")),
+            mapping(*items))
+
+
+def fibre_endpoint(cfg):
+    """The Fibre endpoint tile, from celestia-mon-tensile on the monitor (job "tensile"), which reads
+    Tensile's check of the validator's registered Fibre endpoint from outside."""
+    reg = "max by (endpoint) (celestia_mon_fibre_registered == 1)"
+    active = fibre_active(cfg)
+    tiles = [
+        # A registration Tensile has not checked yet reads -1.
+        ("max by (endpoint) (celestia_mon_fibre_reachable and on (endpoint) %s) or %s * 0 - 1" % (reg, reg),
+         "{{endpoint}}",
+         {"mappings": mapping((1, "reachable from outside", "green"), (0, "unreachable", "red"),
+                              (-1, "not checked yet", GREY))}),
+        # Only an endpoint Tensile reached can show its identity.
+        ("max by (endpoint) (celestia_mon_fibre_identity_verified "
+         "and on (endpoint) celestia_mon_fibre_reachable == 1 and on (endpoint) %s)" % reg, "TLS identity",
+         {"mappings": mapping((1, "verified", "green"), (0, "not verified", "red"))}),
+    ]
+    endpoints = [(e["host"], e["endpoint"]) for e in cfg.get("fibre_endpoints", []) if e.get("endpoint")]
+    if endpoints:
+        # The registration against the public endpoint of the host whose Fibre unit is active, while
+        # exactly one is and it has one configured: group_left needs that single host.
+        lookup = " or ".join(label(label("vector(1)", "host", h), "endpoint", ep) for h, ep in endpoints)
+        tiles.append(("(%s unless on (endpoint) ((%s) and on (host) %s)) * on () group_left (host) "
+                      "(%s and on (host) (%s) and on () count(%s) == 1)"
+                      % (reg, lookup, active, active, lookup, active),
+                      "points to {{endpoint}}, Fibre runs on {{host}}",
+                      {"mappings": mapping((1, "wrong endpoint", "red"))}))
+    tiles += [
+        ('max(celestia_mon_fibre_registered{endpoint=""} == 0) '
+         "unless on () count(celestia_mon_fibre_registered == 1)",
+         "registered endpoint", {"mappings": mapping((0, "none", "red"))}),
+        ("time() - max by (endpoint) (celestia_mon_fibre_last_check_timestamp_seconds > 0 "
+         "and on (endpoint) %s)" % reg,
+         "since last outside check", {"unit": "s"}),
+        # celestia-mon-tensile is optional (celestia_mon_tensile): without it there is no tensile job.
+        ('absent(up{job="tensile"}) * -1 or (max(up{job="tensile"}) == 0) - 2', "outside check",
+         {"mappings": mapping((-1, "not checked (Tensile not configured)", GREY),
+                              (-2, "celestia-mon-tensile not reporting", "red"))}),
+    ]
+    targets = refs([(expr, legend) for expr, legend, _ in tiles], instant=True)
+    return stat(19, "Fibre endpoint",
+                "Is the Fibre endpoint registered on chain reachable from outside, and is it the active Fibre "
+                "server's? From Tensile (https://tensile.huginn.tech), which dials every validator's registered "
+                "endpoint from outside, read by celestia-mon-tensile on the monitor. The first tile names the "
+                "registered host:port: green 'reachable from outside' or red 'unreachable' at Tensile's last "
+                "check. TLS identity: whether the endpoint's TLS identity is endorsed by the validator's consensus "
+                "key. Red 'wrong endpoint' while the registration does not name the public endpoint "
+                "(celestia_mon_fibre_public_endpoint) of the host whose Fibre unit is active, and red 'none' while "
+                "nothing is registered. Grey 'not checked (Tensile not configured)' without celestia_mon_tensile.",
+                targets, steps(("text", None)),
+                [override("byFrameRefID", tg["refId"], **props) for tg, (_, _, props) in zip(targets, tiles)],
+                no_value="No data from celestia-mon-tensile yet")
+
+
 def node_progress(cfg):
     """Node progress: with one node, tiles for that node; with backup nodes, one row per node."""
     if len(cfg.get("nodes", [])) < 2:
@@ -249,7 +403,8 @@ def node_progress(cfg):
         "validator and each backup node. Blocks: new blocks the node committed in the last 3 minutes; red at 0, "
         "'down' while Prometheus cannot read the node's metrics. Lag: blocks behind the highest node of this "
         "install; a backup node must stay near 0 to take over signing. Orange above %g, where NodeBehind sends a "
-        "message after 10 minutes; a node in block sync also lags. Peers: red at 0. This shows that the nodes "
+        "message after 10 minutes; a node in block sync also lags; history in Blocks behind the highest node. "
+        "Peers: red at 0. This shows that the nodes "
         "advance, not that they are at the network's head: compare with an explorer or status.celestia.org. "
         "NodeNotAdvancing pages when no node commits a block for 3 minutes. If the whole chain stopped, "
         "coordinate instead of fixing locally." % behind,
@@ -263,8 +418,9 @@ def node_progress(cfg):
 
 def now_strip(cfg):
     """(panel, width, links) for the top strip."""
-    t = cfg["thresholds"]
     fibre = cfg["fibre_enabled"]
+    signing = signing_nodes(cfg)
+    role, role_names = roles(cfg, signing)
     loads = []
     for link in cfg["links"]:
         sel = "{host=%s,device!~%s}" % (q(link["host"]), q(VIRT))
@@ -274,7 +430,6 @@ def now_strip(cfg):
         for direction, metric in (("in", "receive"), ("out", "transmit")):
             peak = "max_over_time((sum by (host) (rate(node_network_%s_bytes_total%s[1m])))[1h:1m])" % (metric, sel)
             loads.append(("%s / %s or %s" % (peak, cap, unknown), "{{host}} %s" % direction))
-    blocks = t["not_signing_blocks"]
     states = mapping((0, "not active", "red"), (1, "active", "green"))
     units = 'node_systemd_unit_state{state="active"}'
     units_desc = ""
@@ -292,36 +447,34 @@ def now_strip(cfg):
                  "or (%s + 2 and on () count(%s == 1)) or (%s + 3)"
                  % (q(name), fibre_unit, fibre_unit, fibre_unit, fibre_unit,
                     unloaded, fibre_unit, unloaded))
-        states = mapping((0, "not active", "red"), (1, "active", "green"), (2, "standby", STANDBY),
+        states = mapping((0, "not active", "red"), (1, "active", "green"), (2, "standby", GREY),
                          (3, "none active", "red"))
         units_desc = (" A stopped Fibre unit reads 'standby' while another host's Fibre unit is active, and "
                       "'none active' when no Fibre unit is active (FibreDown pages after 10 minutes); so does "
                       "a Fibre host that lists no Fibre unit, as systemd unloads a stopped, disabled standby.")
+    fibre_roles = (" A Fibre host is Fibre (active) while its Fibre unit is active, else Fibre (standby); "
+                   "a server with both a node and a Fibre names both roles." if fibre else "")
     strip = [
         (node_progress(cfg), 4, []),
-        # Red from one block above the threshold, because ValidatorNotSigning fires on '> not_signing_blocks'.
-        (stat(16, "Signing",
-              "Is my validator signing right now, on whichever node the signer is connected to? Blocks since "
-              "the validator's last signature, counted across all nodes as ValidatorNotSigning does, so it "
-              "follows a move of the signer to a backup node. Red above the ValidatorNotSigning threshold "
-              "(%g blocks); history in Blocks since my last signature." % blocks,
-              refs([(blocks_since_signature(10 * blocks), "blocks since my last signature")], instant=True),
-              steps(("green", None), ("red", blocks + 1)),
-              mappings=[{"type": "range", "options": {"from": 10 * blocks, "to": 10 * blocks, "result": {
-                  "color": "red", "index": 0, "text": "%g+" % (10 * blocks)}}}]),
-         4, []),
+        (signing_tile(cfg, signing), 4, []),
         (stat(8, "Services per host",
-              "Are celestia-appd, Fibre and tmkms running, and how often did systemd restart them in the last "
-              "24 hours? Restarts count only automatic restarts under Restart=.%s A 'not reporting' tile appears "
-              "while Prometheus cannot read a host's metrics (celestia-app, node_exporter or the Fibre "
-              "collector); that host's other tiles are then missing, not fine." % units_desc,
-              refs([(units, "{{host}} {{name}}"),
+              "Which role does each server hold now, are celestia-appd, Fibre and tmkms running, and how often "
+              "did systemd restart them in the last 24 hours? The role tiles come first and are read from the "
+              "metrics, so they follow a tmkms repoint or a Fibre failover: a node is the Validator (signing) "
+              "while the signer signs through it (as Signing on in the Signing tile), a Backup node while "
+              "another node signs, and red Node (not signing) while no node signs.%s Restarts count only "
+              "automatic restarts under Restart=.%s A 'not reporting' tile appears while Prometheus cannot read "
+              "a host's metrics (celestia-app, node_exporter or the Fibre collector); that host's other tiles "
+              "are then missing, not fine." % (fibre_roles, units_desc),
+              refs([(role, "{{host}} role"),
+                    (units, "{{host}} {{name}}"),
                     ("increase(node_systemd_service_restart_total[24h])", "{{host}} {{name}} restarts (24h)"),
                     ('up{job=~"celestia-app|node|otelcol"} == 0', "{{host}} {{job}} metrics")],
                    instant=True),
               steps(("green", None), ("orange", 1)),
-              [override("byFrameRefID", "A", mappings=states),
-               override("byFrameRefID", "C", mappings=mapping((0, "not reporting", "red")))]),
+              [override("byFrameRefID", "A", mappings=role_names),
+               override("byFrameRefID", "B", mappings=states),
+               override("byFrameRefID", "D", mappings=mapping((0, "not reporting", "red")))]),
          7 if fibre else 9, HOSTS_LINKS),
         (bargauge(11, "Link load (busiest minute, last hour)",
                   "Busiest 1-minute average in the last hour, against celestia_mon_link_mbps or, when that is not set, "
@@ -332,7 +485,7 @@ def now_strip(cfg):
                   steps(("green", None), ("orange", 0.7), ("red", 0.9)), decimals=0,
                   mappings=[{"type": "range", "options": {"from": -1, "to": -1, "result": {
                       "color": "text", "index": 0, "text": "speed unknown: set celestia_mon_link_mbps"}}}]),
-         5 if fibre else 7, HOSTS_LINKS),
+         3 if fibre else 7, HOSTS_LINKS),
     ]
     if fibre:
         active = 'node_systemd_unit_state{name=%s,state="active"} == 1' % q(cfg["units"]["fibre"] + ".service")
@@ -362,7 +515,8 @@ def now_strip(cfg):
                   no_value="No active Fibre, or no Fibre metrics",
                   overrides=[override("byFrameRefID", "B", unit="none",
                                       mappings=mapping((0, "No limit", "text")))]),
-             4, FIBRE_LINKS))
+             3, FIBRE_LINKS))
+        strip.append((fibre_endpoint(cfg), 3, FIBRE_LINKS))
     return strip
 
 
@@ -370,18 +524,47 @@ def validator_row(cfg):
     t = cfg["thresholds"]
     remote = cfg["signer"] == "remote"
     cap = 10 * t["not_signing_blocks"]
-    row = [
-        (timeseries(2, "Blocks since my last signature",
-                    "Is my validator signing right now? Works after restarts and jails, when missed-block "
-                    "counters freeze. Counted across all nodes, as ValidatorNotSigning does: the line goes on when "
-                    "the signer moves to a backup node. Dashed line: the ValidatorNotSigning threshold (%g blocks). "
-                    "The line stops at %g blocks (10 times the threshold): right after a node start the value is "
-                    "the full block height until the first own signature, and one restart would otherwise flatten "
-                    "the chart. The alert uses the uncapped value." % (t["not_signing_blocks"], cap),
-                    refs([(blocks_since_signature(cap), "blocks since my last signature")]),
-                    "none", line=t["not_signing_blocks"]),
-         8 if remote else 24, []),
+    ratio = t.get("signatures_missed_ratio", 0.05)
+    behind = t.get("node_behind_blocks", 20)
+    # As SignaturesMissed, per node. A node that knows the validator's key but has missed no
+    # block since its start has no missed-block count yet: it reads 0 once it has seen a signature.
+    missed = ('(max by (host) (increase(cometbft_consensus_validator_missed_blocks{job="celestia-app"}[1h])) '
+              'or max by (host) (cometbft_consensus_validator_last_signed_height{job="celestia-app"}) * 0) '
+              "/ (max by (host) (delta(%s[1h])) > 0)" % HEIGHT)
+    signs = [
+        timeseries(2, "Blocks since my last signature",
+                   "Is my validator signing right now? Works after restarts and jails, when missed-block "
+                   "counters freeze. Counted across all nodes, as ValidatorNotSigning does: the line goes on when "
+                   "the signer moves to a backup node. Dashed line: the ValidatorNotSigning threshold (%g blocks). "
+                   "The line stops at %g blocks (10 times the threshold): right after a node start the value is "
+                   "the full block height until the first own signature, and one restart would otherwise flatten "
+                   "the chart. The alert uses the uncapped value." % (t["not_signing_blocks"], cap),
+                   refs([(blocks_since_signature(cap), "blocks since my last signature")]),
+                   "none", line=t["not_signing_blocks"]),
+        timeseries(17, "Missed blocks, last hour",
+                   "Does my validator miss signatures now and then? Per node, the share of the blocks it committed "
+                   "in the last hour that carry no signature from the validator, as SignaturesMissed computes it. "
+                   "Each node that knows the validator's key reads the signatures from the chain's commits, so a "
+                   "node that tmkms left keeps counting; a node without the key has no line. Dashed line: the "
+                   "SignaturesMissed threshold (%g%%), where it sends a message after 10 minutes. Timeouts on the "
+                   "link to the KMS host show here while Blocks since my last signature stays low. The count "
+                   "starts over when the node restarts. The share says how often signatures are missed, not how "
+                   "close the validator is to being jailed." % (ratio * 100),
+                   refs([(missed, "{{host}}")]), "percentunit", line=ratio, decimals=1),
     ]
+    # Like NodeBehind, only with more than one node.
+    if len(cfg.get("nodes", [])) > 1:
+        signs.append(
+            timeseries(18, "Blocks behind the highest node",
+                       "Is every node keeping up with the others? One line per node: the blocks it trails the "
+                       "highest node of this install. A backup node must stay near 0 to take over signing; a node "
+                       "in block sync also lags. Dashed line: the NodeBehind threshold (%g blocks), where it sends a "
+                       "message after 10 minutes. NodeBehind also fires for a node that stops while another "
+                       "advances: Node progress shows that as 0 new blocks." % behind,
+                       refs([("max(%s) - on () group_right %s" % (HEIGHT, HEIGHT), "{{host}}")]),
+                       "none", line=behind, decimals=0))
+    # One line for the validator's signatures; with a remote signer a second line for the signer.
+    row = [(p, 24 // len(signs), []) for p in signs]
     if not remote:
         return row
     limit = t["signer_median_seconds"]
@@ -394,7 +577,7 @@ def validator_row(cfg):
                           ("histogram_quantile(0.99, sum by (le, message_type) "
                            "(rate(cometbft_privval_signing_latency_seconds_bucket[5m])))", "p99 {{message_type}}")]),
                     "s", line=limit),
-         8, []),
+         12, []),
         (timeseries(4, "Signing failures by reason",
                     "Which path fails? no_connection or timeout: the KMS host or the link. Proposal only: the KMS "
                     "cannot propose. raw_bytes only: tmkms is too old for Fibre. Each retry counts as a failure. "
@@ -403,7 +586,7 @@ def validator_row(cfg):
                     refs([("sum by (message_type, reason) (increase(cometbft_privval_signing_failures_total[5m]))",
                            "{{message_type}} {{reason}}")]),
                     "none", decimals=0),
-         8, []),
+         12, []),
     ]
 
 

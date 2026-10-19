@@ -34,6 +34,7 @@ celestia_mon_ports:
   grafana: 9914
   otelcol_otlp: 9915
   announcements: 9916
+  tensile: 9917
 
 # The address Grafana listens on, on the monitor host. The default, 127.0.0.1, keeps it off
 # every network: reach it through an SSH tunnel from your machine
@@ -80,6 +81,14 @@ celestia_mon_receivers: []
 #     - {channel_id: "1234567890123456789", severity: page}
 celestia_mon_announcements: []
 
+# The outside check of the Fibre endpoint (FibreDown), on the monitor host: Tensile, a Fibre
+# observer, dials the host registered on chain from outside your network; celestia-mon reads its
+# verdict for your validator. api: Tensile's API base for your network, such as
+# https://tensile-mocha.huginn.tech/api/v1 on Mocha; validator: the validator's consensus
+# address (celestiavalcons1...). Empty: off, and nothing checks the endpoint from outside.
+#   celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "celestiavalcons1..."}
+celestia_mon_tensile: {}
+
 # Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog
 # alert pings it every 1-2 minutes; the service alerts you when the pings stop. It must be an
 # https URL (http only to this host itself, such as a local relay); an empty value or the
@@ -117,6 +126,7 @@ celestia_mon_memory:
   alertmanager: {high: 128M, max: 256M}
   grafana: {high: 512M, max: 1G}
   announcements: {high: 64M, max: 128M}
+  tensile: {high: 64M, max: 128M}
 
 # Inventory groups (a host may be in several):
 #   validator    exactly one host: the celestia-appd node the signer normally connects to

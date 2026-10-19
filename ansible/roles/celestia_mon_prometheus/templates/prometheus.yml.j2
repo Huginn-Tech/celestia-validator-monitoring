@@ -105,6 +105,17 @@ scrape_configs:
           role: fibre
 {% endfor %}
 {% endif %}
+{% if celestia_mon_tensile.validator | default('') | length > 0 %}
+
+  # celestia-mon-tensile on this host: Tensile's outside check of the registered Fibre endpoint.
+  - job_name: tensile
+    static_configs:
+      - targets:
+          - "127.0.0.1:{{ celestia_mon_ports.tensile }}"
+        labels:
+          host: {{ inventory_hostname | to_json }}
+          role: monitor
+{% endif %}
 {% if celestia_mon_announcements | default([]) | length > 0 %}
 
   # celestia-mon-announcements on this host: whether it still reads Celestia's announcements.

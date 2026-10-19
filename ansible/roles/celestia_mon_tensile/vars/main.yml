@@ -1,0 +1,8 @@
+---
+# Paths of celestia-mon-tensile on the monitor host. The setting itself is celestia_mon_tensile
+# (celestia_mon role defaults).
+celestia_mon_tensile_dir: /opt/celestia-mon/tensile
+celestia_mon_tensile_script: "{{ celestia_mon_tensile_dir }}/celestia-mon-tensile"
+celestia_mon_tensile_config_dir: /etc/celestia-mon/tensile
+celestia_mon_tensile_config: "{{ celestia_mon_tensile_config_dir }}/config.json"
+celestia_mon_tensile_listen_address: "127.0.0.1:{{ celestia_mon_ports.tensile }}"
