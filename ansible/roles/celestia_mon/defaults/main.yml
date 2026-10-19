@@ -4,6 +4,15 @@
 # Signer in use on the validator: local (key file on the node) or remote (tmkms).
 celestia_mon_signer: local
 
+# With a remote signer: true when tmkms is set up to sign through several nodes at once (several
+# [[validator]] entries in tmkms.toml). Two nodes signing is then normal, and the dashboard reads
+# "Two nodes" instead of the amber "Two signers" it shows when two nodes sign for 3 minutes.
+celestia_mon_signer_multi_node: false
+
+# The validator's name at the top of the dashboard, at most 20 characters (for example its
+# moniker). Empty: the dashboard reads "Celestia validator" over the network's name.
+celestia_mon_validator_name: ""
+
 # Install and render everything Fibre-related. Keep false on networks where
 # Fibre is not active (mainnet runs app v9 as of 2026-10).
 celestia_mon_fibre_enabled: false
@@ -162,7 +171,7 @@ celestia_mon_memory:
 #                                       a range no wider than its private block (10.0.0.0/8,
 #                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7)
 #   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
-#                                       Link load panel (every node_exporter host). Set it when
+#                                       dashboard's Network peak (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one
 #                                       physical NIC, or buys less than its port speed
 #   celestia_mon_node_home              celestia-appd home for celestia-mon-doctor (validator and

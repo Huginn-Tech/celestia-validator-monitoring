@@ -138,7 +138,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 1. [status.celestia.org](https://status.celestia.org/) and an explorer. If the whole chain stopped, coordinate with the other validators instead of fixing locally.
 2. `systemctl status celestia-appd` and `journalctl -u celestia-appd -n 200` on each node: a stopped service, an upgrade height that needs a new binary, a consensus failure, an app hash mismatch.
-3. Peers and sync: the "Node progress" panel shows new blocks, block sync and peers (with backup nodes: new blocks, lag and peers per node); `sudo celestia-mon-doctor` (check 3) on each node shows whether its height advances and `catching_up`.
+3. Peers and sync: the "Servers now (Node, Peers)" table shows each node as "in sync", behind, "stalled", "syncing" or "down", and its peers; `sudo celestia-mon-doctor` (check 3) on each node shows whether its height advances and `catching_up`.
 
 ## NodeBehind
 
@@ -148,7 +148,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Check first.**
 
-1. The "Node progress" panel: the node's new blocks, its lag behind the highest node and its peers.
+1. The "Servers now (Node, Peers)" table: the node's lag behind the highest node (or "stalled", "syncing", "down") and its peers; "Blocks behind the highest node" has the history.
 2. On that host, `sudo celestia-mon-doctor` (check 3: height and `catching_up`), then `journalctl -u celestia-appd -n 100`: block sync after a restart, too few peers, a full or slow disk.
 3. On the monitor, `sudo celestia-mon-doctor` check 18 lists every node's height and lag, and which one signs.
 
@@ -162,7 +162,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Check first.** Never load the validator key on another machine because of this page alone: a node that Prometheus cannot reach may still be signing, and two signers of one key double-sign. When the description names a node Prometheus cannot reach, check on an explorer whether the validator misses blocks before you act.
 
-1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host first: whether tmkms runs, which node it connects to, and why it fails. Then the link between that node and the KMS host, and the "Signing failures by reason" panel. If the node tmkms connects to is down, the way out is your tmkms repoint to a synced backup node ([mainnet layout](quickstart.md#mainnet-layout)); the "Node progress" panel shows which node is in step.
+1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host first: whether tmkms runs, which node it connects to, and why it fails. Then the link between that node and the KMS host, and the "Signing failures, 24 h" panel. If the node tmkms connects to is down, the way out is your tmkms repoint to a synced backup node ([mainnet layout](quickstart.md#mainnet-layout)); the "Servers now (Node, Peers)" table and the Backup node tile show which node is in step.
 2. Is the validator jailed or out of the active set? Look it up in an explorer or with `celestia-appd query staking validator <celestiavaloper address>`. If it is jailed, find out why before you unjail.
 3. The key: `sudo celestia-mon-doctor` (check 4) on the validator host prints the consensus address the node signs with, from its `/status`. Compare it with your validator's consensus address on chain. With a remote signer, do not use `celestia-appd comet show-address` for this: it reads the local key file, not the signer.
 
@@ -174,8 +174,8 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Check first.**
 
-1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host: timeouts and reconnects. The "Signing failures by reason" and "Signer latency vs 10 ms" panels show whether signatures time out or come late.
-2. The link between the node and the KMS host (packet loss, round trip) and the load on the KMS host; then the node itself: its peers and a slow disk ("Disk latency and load" panel), since a node that lags signs late.
+1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host: timeouts and reconnects. The "Signing failures, 24 h" and "Signer latency" panels show whether signatures time out or come late.
+2. The link between the node and the KMS host (packet loss, round trip) and the load on the KMS host; then the node itself: its peers and a slow disk ("Disk latency" panel), since a node that lags signs late.
 3. How close to jailing: `celestia-appd query slashing signing-info <celestiavalcons address>` (`doctor` check 4 on the validator host prints the address) shows the blocks missed in the current window; `celestia-appd query slashing params` shows the window and the share it must sign.
 
 **Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/), [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#key-management-systems-kms).
@@ -193,7 +193,7 @@ Only with `celestia_mon_signer: remote`.
 
 **Check first.**
 
-1. The "Signer latency vs 10 ms" and "Signing failures by reason" panels: which message type is slow or failing, and why.
+1. The "Signer latency" and "Signing failures, 24 h" panels: whether votes or Fibre's signatures are slow, and whether signatures fail; the Servers now table's Signer time shows "Proposals fail" on the node whose proposals fail.
 2. Latency: the network path between the validator and the KMS host (round trip, same datacenter or not) and the load on the KMS host. Celestia recommends keeping the signer close, for example by colocation.
 3. Proposal failures: the tmkms log on the KMS host around the failed proposals, and whether the tmkms version and its chain settings match the network's current app version (often the cause after an upgrade).
 
@@ -265,7 +265,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 
 1. For `no_telemetry`: `sudo celestia-mon-doctor` on the Fibre host (check 7) shows where the unit sends its metrics, and check 13 on the monitor shows whether they arrive. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT` ([quickstart step 6](quickstart.md#6-point-fibre-at-its-collector)).
 2. Registration and reachability: `sudo celestia-mon-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) shows your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
-3. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures in the "Signing failures by reason" panel).
+3. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures add to the "Signing failures, 24 h" panel).
 4. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([mainnet layout](quickstart.md#mainnet-layout)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
 
 **Links.** [Fibre server guide: server runs but no uploads arrive](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#server-runs-but-no-uploads-arrive), [registration](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#registration), [tracing and metrics](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#tracing--metrics).
@@ -291,7 +291,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 1. Read-only: `journalctl -k` or `dmesg` for I/O or filesystem errors. The disk may be failing; find out why before you remount it read-write.
 2. Free space: `du -xh --max-depth=2 <mount> | sort -h | tail` shows what grew. On the node, check pruning in `app.toml` and blockstore compaction in `config.toml`.
-3. Fibre store: the "Fibre disk" panel shows budget, occupancy, used and free space. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
+3. Fibre store: the "Fibre disk and budget" panel shows each Fibre store's free space against the room the storage budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
 
@@ -333,7 +333,7 @@ Only with `celestia_mon_signal` set.
 
 **Severity.** message, sent once. Once sent, it stays until the chain has switched, also when slower blocks move the time left back above 24 hours; its "resolved" message means the chain has switched to the new version.
 
-**Check first.** On every node of this install, the validator and each backup node, confirm that the celestia-app release it runs supports the target version (`celestia-appd version`, and the release notes). After the height, the "Node progress" panel and NodeNotAdvancing show whether the nodes moved on.
+**Check first.** On every node of this install, the validator and each backup node, confirm that the celestia-app release it runs supports the target version (`celestia-appd version`, and the release notes). After the height, the "Servers now (Node, Peers)" table and NodeNotAdvancing show whether the nodes moved on.
 
 ## SignalUnreadable
 

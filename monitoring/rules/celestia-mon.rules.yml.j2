@@ -259,7 +259,7 @@ groups:
           check: reachability
         annotations:
           summary: "{% raw %}Fibre at {{ $labels.endpoint }} is unreachable from outside{% endraw %}"
-          description: "For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the last check."
+          description: "For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of the last check."
           runbook: "{{ docs }}#fibredown"
       - alert: FibreDown
         expr: max(celestia_mon_fibre_registered) == 0

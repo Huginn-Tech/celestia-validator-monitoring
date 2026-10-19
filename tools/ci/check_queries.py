@@ -3,9 +3,11 @@
 
     check_queries.py --prometheus http://localhost:9090 DASHBOARD.json [DASHBOARD.json ...]
 
-Each panel target's expr and each annotation's expr goes to /api/v1/query as it
-is. An empty result is fine (the CI Prometheus has no Celestia data); a response
-other than status "success" (for example a PromQL parse error) fails the check.
+Each panel target's expr and each annotation's expr goes to /api/v1/query, with
+Grafana's built-in $__interval and $__range (the only variables the dashboard uses, in
+its status board) replaced by 60s and 3600s, as Grafana would replace them. An empty
+result is fine (the CI Prometheus has no Celestia data); a response other than status
+"success" (for example a PromQL parse error) fails the check.
 Table panels are also checked without Prometheus: their columns are named from
 Grafana's 'Value #<refId>' fields, so queries, column names and overrides must line up.
 Python 3 standard library only.
@@ -68,9 +70,15 @@ def annotation_exprs(dashboard):
             yield "annotation " + a.get("name", ""), expr
 
 
+def substitute(expr):
+    """expr with Grafana's built-in variables replaced as Grafana does: [$__interval:1m] offset
+    -$__interval becomes [60s:1m] offset -60s."""
+    return expr.replace("$__interval", "60s").replace("$__range", "3600s")
+
+
 def query(base, expr):
     """Return None on success, else the error text."""
-    data = urllib.parse.urlencode({"query": expr}).encode()
+    data = urllib.parse.urlencode({"query": substitute(expr)}).encode()
     try:
         with urllib.request.urlopen(base.rstrip("/") + "/api/v1/query", data=data, timeout=30) as r:
             body = r.read()

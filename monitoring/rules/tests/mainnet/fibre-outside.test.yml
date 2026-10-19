@@ -36,8 +36,8 @@ tests:
               description: >-
                 For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
                 endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
-                from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the
-                last check.
+                from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
+                the last check.
               runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
       - eval_time: 15m
         alertname: TensileUnreadable
@@ -98,8 +98,8 @@ tests:
               description: >-
                 For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
                 endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
-                from it, although its unit may run. The dashboard's Fibre endpoint tile shows the outcome of the
-                last check.
+                from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
+                the last check.
               runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
           - exp_labels:
               severity: page

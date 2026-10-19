@@ -1,0 +1,21 @@
+{
+  "about": "Hold times (for:) of the alert rules that the dashboard prints in its descriptions. monitoring/dashboards/gen_dashboard.py reads them by name; CI checks each against every rule it matches in the rendered rules. A rule matches by its alert name, its labels (each value a regular expression the whole label must match) and, when given, a piece of its expression. Change a rule's for: and its entry here together.",
+  "holds": {
+    "NodeNotAdvancing": {"alert": "NodeNotAdvancing", "for": "1m"},
+    "NodeBehind": {"alert": "NodeBehind", "for": "10m"},
+    "ValidatorNotSigning": {"alert": "ValidatorNotSigning", "for": "2m"},
+    "SignaturesMissed": {"alert": "SignaturesMissed", "for": "10m"},
+    "RemoteSignerProblem slow": {"alert": "RemoteSignerProblem", "expr": "cometbft_privval_signing_latency_median_seconds", "for": "15m"},
+    "ServiceDown unreachable": {"alert": "ServiceDown", "labels": {"unit": "celestia_app|node_exporter|otelcol"}, "for": "3m"},
+    "FibreDown": {"alert": "FibreDown", "for": "10m"},
+    "FibreBothActive": {"alert": "FibreBothActive", "for": "5m"},
+    "FibreNotServing stale": {"alert": "FibreNotServing", "labels": {"reason": "stale"}, "for": "10m"},
+    "FibreNotServing uploads_failing": {"alert": "FibreNotServing", "labels": {"reason": "uploads_failing"}, "for": "10m"},
+    "FibreNotServing no_telemetry": {"alert": "FibreNotServing", "labels": {"reason": "no_telemetry"}, "for": "30m"},
+    "DiskLow low space": {"alert": "DiskLow", "labels": {"severity": "message"}, "expr": "node_filesystem_size_bytes", "for": "10m"},
+    "DiskLow budget": {"alert": "DiskLow", "expr": "fibre_server_upload_shard_occupancy_bytes", "for": "30m"},
+    "TensileUnreadable": {"alert": "TensileUnreadable", "for": "10m"},
+    "SignalUnreadable": {"alert": "SignalUnreadable", "for": "10m"},
+    "UpgradeSignalMissing": {"alert": "UpgradeSignalMissing", "for": "10m"}
+  }
+}

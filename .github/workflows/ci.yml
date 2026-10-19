@@ -289,6 +289,39 @@ jobs:
             fi
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
+      # The dashboard's descriptions print the hold times in monitoring/rules/holds.json
+      # (gen_dashboard.py reads them); each must be the for: of every rule it names.
+      - name: The hold times the dashboard prints match the rules
+        run: |
+          python - monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml <<'EOF'
+          import json
+          import re
+          import sys
+
+          import yaml
+
+
+          def seconds(text):
+              return sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+)([hms])", text))
+
+
+          holds = json.load(open(sys.argv[1]))["holds"]
+          rules = [r for path in sys.argv[2:] for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if "alert" in r]
+          failed = False
+          for name, h in sorted(holds.items()):
+              found = [r for r in rules if r["alert"] == h["alert"] and h.get("expr", "") in r["expr"]
+                       and all(re.fullmatch(v, str(r.get("labels", {}).get(k, ""))) for k, v in h.get("labels", {}).items())]
+              wrong = sorted({str(r.get("for", "0s")) for r in found if seconds(str(r.get("for", "0s"))) != seconds(h["for"])})
+              if not found:
+                  failed = True
+                  print("%s: the dashboard prints %s, but no rule matches" % (name, h["for"]))
+              elif wrong:
+                  failed = True
+                  print("%s: the dashboard prints %s, but the rules hold for %s" % (name, h["for"], ", ".join(wrong)))
+              else:
+                  print("%s: %s in %d rules" % (name, h["for"], len(found)))
+          sys.exit(1 if failed else 0)
+          EOF
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
@@ -829,10 +862,19 @@ jobs:
       # A throwaway Prometheus container that only parses the panel queries; it is not celestia-mon's.
       - name: Start a throwaway Prometheus at the version in versions.yml
         run: docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$PROMETHEUS_VERSION"
+      # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
+      # job, and a validator name, so every optional panel and query is generated and checked.
       - name: Render the dashboard settings for the example inventories
         run: |
           for s in single split mainnet; do
-            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
+            extra=()
+            if [ "$s" = mainnet ]; then
+              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
+                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"},
+                          "celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"},
+                          "celestia_mon_validator_name": "CI validator"}')
+            fi
+            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
       - name: Generate the dashboards
         run: |
@@ -842,18 +884,29 @@ jobs:
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
-      # mainnet: a backup node and a standby Fibre on top of split, so Node progress is a table
-      # with one row per node, and Blocks behind the highest node is added (19 panels).
+      # single: local key, one node, Fibre off (two answer tiles). split: remote signer and Fibre (the
+      # Fibre row). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
+      # on top (six answer tiles, Blocks behind the highest node, the Network upgrade row). Panels
+      # of collapsed rows count too; the first screen ends where the Validator row starts.
       - name: Panels match the switches
         run: |
-          count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
-          kind() { jq -r '.panels[] | select(.id == 1) | .type' "build/$1/dashboard.json"; }
-          test "$(count single)" = 11
-          test "$(count split)" = 18
-          test "$(count mainnet)" = 19
-          test "$(kind single)" = stat
-          test "$(kind split)" = stat
-          test "$(kind mainnet)" = table
+          count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
+          tiles() { jq -c '[.panels[] | select(.gridPos.y == 4 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
+          test "$(count single)" = 29
+          test "$(count split)" = 42
+          test "$(count mainnet)" = 51
+          test "$(tiles single)" = '[11,12]'
+          test "$(tiles split)" = '[11,12,14]'
+          test "$(tiles mainnet)" = '[11,12,13,14,15,16]'
+          for s in single split mainnet; do
+            jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
+            jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
+                   == (.panels[] | select(.id == 100) | .gridPos.y)' "build/$s/dashboard.json"
+          done
+          jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
+                 and .monitor_host == "fibre-1" and .name == "CI validator"' build/mainnet/dashboard-config.json
+          jq -e '.kms_hosts == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not) and .name == ""' \
+            build/split/dashboard-config.json
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
