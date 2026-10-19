@@ -215,6 +215,15 @@
     mode: "0640"
   notify: Reload Alertmanager
 
+# Read before the render: no configuration yet means a first install, which sends a test
+# message (below).
+- name: Look for an earlier Alertmanager configuration
+  ansible.builtin.stat:
+    path: "{{ celestia_mon_alertmanager_config_dir }}/alertmanager.yml"
+    get_checksum: false
+    get_mime: false
+  register: celestia_mon_alertmanager_config_before
+
 # The rendered file holds receiver tokens: never show it or its diff. If this task
 # fails, amtool rejected the new file and the old one stays in place: check the
 # receivers in celestia_mon_receivers against the keys Alertmanager expects.
@@ -227,7 +236,6 @@
     mode: "0640"
     validate: "{{ celestia_mon_alertmanager_home }}/amtool check-config %s"
   no_log: true
-  register: celestia_mon_alertmanager_config
   notify: Reload Alertmanager
 
 - name: Read or create the API password
@@ -304,13 +312,31 @@
     msg: celestia-mon-alertmanager does not listen on {{ celestia_mon_alertmanager_listen_address }}. See journalctl -u celestia-mon-alertmanager.
   when: not ansible_check_mode
 
-# One test message when this run changed Alertmanager's configuration (the first install, a
-# receiver added or changed), so a wrong token or chat id shows now and not at the first real
-# alert. It is a message alert: the chat channels and webhooks get it, PagerDuty does not.
-# Alertmanager resolves it after its resolve_timeout (5 minutes); a receiver that cannot
-# deliver it raises NotificationsFailing.
+# One test message when the receivers changed (the first install, a receiver added or changed),
+# so a wrong token or chat id shows now and not at the first real alert. An upgrade that only
+# changes the rest of Alertmanager's configuration sends none: the receivers are compared by a
+# hash kept in receivers.sha256 (root only), written after the message went out; an install made
+# before that file existed records it without a message, unless it is a first install. It is a message
+# alert: the chat channels and webhooks get it, PagerDuty does not. Alertmanager resolves it
+# after its resolve_timeout (5 minutes); a receiver that cannot deliver it raises
+# NotificationsFailing.
+- name: Read the hash of the receivers the last test message went to
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_alertmanager_config_dir }}/receivers.sha256"
+  register: celestia_mon_alertmanager_receivers_tested
+  failed_when: false
+
+- name: Note whether the receivers changed since the last test message
+  ansible.builtin.set_fact:
+    celestia_mon_alertmanager_receivers_hash: "{{ celestia_mon_receivers | to_json | hash('sha256') }}"
+    celestia_mon_alertmanager_receivers_new: >-
+      {{ (celestia_mon_alertmanager_receivers_tested.content | b64decode | trim) != (celestia_mon_receivers | to_json | hash('sha256'))
+         if celestia_mon_alertmanager_receivers_tested.content is defined
+         else not celestia_mon_alertmanager_config_before.stat.exists }}
+  no_log: true
+
 - name: Send a test notification to the chat receivers
-  when: celestia_mon_alertmanager_config is changed and not ansible_check_mode
+  when: celestia_mon_alertmanager_receivers_new | bool and not ansible_check_mode
   no_log: true
   block:
     - name: Read the API password for the test notification
@@ -337,6 +363,15 @@
                 Sent once because the install changed Alertmanager's receivers. No action needed: it
                 resolves in about 5 minutes. PagerDuty gets no test message.
         status_code: 200
+
+- name: Note the receivers the test message went to
+  ansible.builtin.copy:
+    dest: "{{ celestia_mon_alertmanager_config_dir }}/receivers.sha256"
+    content: "{{ celestia_mon_alertmanager_receivers_hash }}\n"
+    owner: root
+    group: root
+    mode: "0600"
+  when: not ansible_check_mode
 
 - name: Find older Alertmanager versions
   ansible.builtin.find:
