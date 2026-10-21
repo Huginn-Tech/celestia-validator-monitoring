@@ -934,35 +934,46 @@ jobs:
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
-          # mainnet without upgrade signalling has five answers, which the Servers tile makes six.
+          # mainnet without upgrade signalling has four answers, which the Servers and Monitoring tiles make six.
           mkdir -p build/five
           jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
           python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
-      # single: local key, one node, Fibre off (two answer tiles). split: remote signer and Fibre (the
-      # Fibre row). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
-      # on top (six answer tiles, the Network upgrade row). five:
-      # mainnet without signalling (the Servers tile). Panels of collapsed rows count too; the first
-      # screen ends where the Validator row starts; the top strip's six cells and the answer tiles
-      # below them share their column edges. The Servers rows (open, then closed) hold eight charts per
-      # server (single: one server, mainnet and five: two, split: three, its KMS host scraped): each
-      # line one kind of chart, at one width and height, filling the 24 columns; each server's charts
-      # in one column, titled with its name first; its out-of-memory marker on its own memory chart.
+      # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
+      # side by side). split: remote signer and Fibre (the Fibre row; three columns, the scraped KMS
+      # host's last). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
+      # on top (six answer tiles, the Network upgrade row; three columns,
+      # the last the remote signer's, which is not scraped). five: mainnet without signalling (the Servers
+      # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
+      # row starts; the top strip's six cells and the answer tiles below them share their column edges.
+      # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
+      # many rows, over one lower panel per column (ids 34-37) of four bars, all of one height; the
+      # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
+      # halves, of one height); up to four columns, so no Servers now table (id 26). The Servers rows
+      # (open, then closed) hold eight charts per server (single: one server, mainnet and five: two,
+      # split: three, its KMS host scraped): each line one kind of chart, at one width and height,
+      # filling the 24 columns; each server's charts in one column, titled with its name first; its
+      # out-of-memory marker on its own memory chart.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
-          test "$(count single)" = 33
-          test "$(count split)" = 61
-          test "$(count mainnet)" = 61
-          test "$(count five)" = 56
+          columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
+          test "$(count single)" = 34
+          test "$(count split)" = 66
+          test "$(count mainnet)" = 66
+          test "$(count five)" = 61
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
-          test "$(tiles mainnet)" = '[11,12,13,14,15,16]'
-          test "$(tiles five)" = '[11,12,17,13,14,15]'
+          test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
+          test "$(tiles five)" = '[11,12,17,14,15,18]'
           charts() { jq -c '[.panels[] | select(.id > 100 and .id < 200 and .type == "timeseries") | .id]' "build/$1/dashboard.json"; }
           test "$(charts single)" = '[111,116,115]'
           test "$(charts split)" = '[111,112,116,115]'
           test "$(charts mainnet)" = '[111,112,116,115]'
+          test "$(columns single)" = 1
+          test "$(columns split)" = 3
+          test "$(columns mainnet)" = 3
+          test "$(columns five)" = 3
           for s in single split mainnet five; do
             jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
             jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
@@ -995,11 +1006,26 @@ jobs:
                    and ($c | map(.gridPos.h) | unique) == [7]
                    and ($c | group_by(.gridPos.y) | all(map(.gridPos.w) | (unique | length) == 1 and add == 24))
                    and ($v | length) == ($f | length) + ($c | length)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.id >= 30 and .id < 34)] as $c | [.panels[] | select(.id >= 34 and .id < 38)] as $l
+                   | ($c | length) as $n | ($c | map(.gridPos)) as $cg | ($l | map(.gridPos)) as $lg
+                   | $n >= 1 and ($l | length) == $n and ([.panels[] | select(.id == 26)] | length) == 0
+                   and ($cg | map(.y) | unique) == [6] and ($cg | map(.h) | unique | length) == 1
+                   and ($lg | map(.h) | unique | length) == 1
+                   and ($c | map(.targets | length) | unique | length) == 1 and ($l | map(.targets | length) | unique) == [4]
+                   and (if $n == 1 then
+                          [$cg[0].x, $cg[0].w, $lg[0].x, $lg[0].w, $lg[0].y, $lg[0].h] == [0, 12, 12, 12, 6, $cg[0].h]
+                        else
+                          ($cg | map(.w) | unique | length) == 1 and ($cg | map(.w) | add) == 24
+                          and ($cg | map(.x)) == [range(0; $n) * $cg[0].w] and ($lg | map(.x)) == ($cg | map(.x))
+                          and ($lg | map(.w) | unique) == [$cg[0].w] and ($lg | map(.y) | unique) == [6 + $cg[0].h]
+                        end)' "build/$s/dashboard.json"
           done
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
-                 and .monitor_host == "fibre-1" and .name == "CI validator"' build/mainnet/dashboard-config.json
-          jq -e '.kms_hosts == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not) and .name == ""' \
-            build/split/dashboard-config.json
+                 and .kms_names == ["kms-1"] and .monitor_host == "fibre-1" and .name == "CI validator"' \
+            build/mainnet/dashboard-config.json
+          jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
+                 and .name == ""' build/split/dashboard-config.json
+          jq -e '.kms_names == []' build/single/dashboard-config.json
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
