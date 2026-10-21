@@ -35,9 +35,12 @@ and the Servers now table. Then the rows
 Validator and Fibre (expanded) and Network upgrade, All firing alerts and Servers in detail
 (collapsed). Panels that do not apply to the install are left out.
 
-Colour means state only. Amber and red appear only where an alert rule watches the condition, at
-the rule's own threshold: amber while the problem is true or its alert is pending, red once a page
-alert fires. The Status, the answers and the status bars read Prometheus's own ALERTS series, so
+Colour has three layers. Each server has one identity colour (HOST_COLORS) on every line, fill,
+bar and sparkline it owns, so a section reads in the colour of the server that holds its role and a
+role move shows as a colour change; what belongs to the whole network is the text colour. Amber
+and red mean state only and appear only where an alert rule watches the condition, at the rule's
+own threshold: amber while the problem is true or its alert is pending, red once a page alert
+fires. The Status, the answers and the status bars read Prometheus's own ALERTS series, so
 they agree with the alerts that were sent.
 
 Roles can move between hosts (a backup node takes over signing after a tmkms repoint, a standby
@@ -98,11 +101,15 @@ VIRT = (r"lo|docker.*|veth.*|br.*|vmbr.*|virbr.*|cni.*|flannel.*|cali.*|cilium.*
 # are noise. node_exporter already leaves out partitions, loop, ram and zram devices.
 DISK = r"dm-.*|md.*|zd.*|sr.*|nbd.*"
 
-# One identity colour per server, in servers order: chart lines, the table's name cells and the
-# role band's tints (the hex at 20% alpha). Never green, yellow, orange, red or grey, which mean
-# state; neighbours differ in lightness. Servers past the list are drawn in the text colour.
-HOST_COLORS = [("blue", "#5794F2"), ("purple", "#B877D9"), ("super-light-blue", "#C0D8FF"),
-               ("dark-purple", "#8F3BB8"), ("dark-blue", "#1F60C4"), ("super-light-purple", "#DEB6F2")]
+# One identity colour per server, in servers order: every line, fill, bar and sparkline of the
+# server, its name and the role band's tints (the hex at 20% alpha). Never green, yellow, orange,
+# red or grey, which mean state; neighbours differ in hue and lightness, and each keeps at least
+# 5:1 against the panel background. Servers past the list are drawn in the text colour.
+HOST_COLORS = [("#5794F2", "#5794F2"), ("#CA95E5", "#CA95E5"), ("#6ED0E0", "#6ED0E0"), ("#8AB8FF", "#8AB8FF")]
+# What belongs to the whole network rather than one server (block time, the network's missed
+# share, expected counts, capacity lines): the text colour, dashed where it is a reference.
+NETWORK = "#CCCCDC"
+REFERENCE = "#CCCCDC99"
 
 # Bar fills and key swatches: fine (a muted green, so a healthy board is calm), look soon, urgent
 # (Grafana's dark-theme red, so red words and red bars match), and no data or not in use.
@@ -431,34 +438,51 @@ def stat(pid, title, desc, targets, unit="none", decimals=0, thresholds=None, ma
 
 def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, soft_max=None, soft_min=None,
                minimum=0, maximum=None, decimals=None, step=False, smooth=False, span_nulls=False, centered=False,
-               overrides=(), mirror=(), legend=True):
-    """Lines over time. threshold: (value, colour) of an alert rule's threshold, drawn as a dashed
-    line; scheme: a single series that takes the threshold's colour where it crosses it (text below).
-    soft_max, soft_min: the range the axis always shows (a soft max stops Grafana's 0..100 axis on
-    flat data); minimum, maximum: hard limits, None for none. step: counts drawn as steps; smooth:
-    smooth curves. span_nulls: False, or the longest gap in ms a line bridges. centered: zero in the
-    middle of the axis. mirror: refIds drawn below zero (receive above, transmit below). legend
-    False: one series, drawn thicker, without a legend."""
-    custom = {"axisBorderShow": False, "drawStyle": "line", "fillOpacity": 0,
+               overrides=(), mirror=(), legend=True, bars=False, stack=False, fill=None, low_bad=False,
+               color=NETWORK):
+    """Filled lines over time: 2 px lines over a fill that fades downwards, in color unless an
+    override (host_colors, a fixed part colour) gives a series its own. threshold: (value, colour)
+    of an alert rule's threshold, drawn as a dashed line with the zone past it faintly tinted, so
+    colour appears only where the alert's condition holds (low_bad: the zone is below the value);
+    scheme: a single series that takes the threshold's colour where it crosses it. soft_max,
+    soft_min: the range the axis always shows (a soft max stops Grafana's 0..100 axis on flat data);
+    minimum, maximum: hard limits, None for none. step: counts drawn as steps; smooth: smooth curves.
+    span_nulls: False, or the longest gap in ms a line bridges. centered: zero in the middle of the
+    axis. mirror: refIds drawn below zero (receive above, transmit below). bars: events per time
+    bucket as bars, so a quiet chart is empty and a single event shows. stack: the series are parts
+    of a whole, stacked in flat fills (a total drawn over them needs an override with
+    custom__stacking={"mode": "none", "group": "A"}). fill: the fill opacity, when the default does
+    not suit. legend False: one series, without a legend."""
+    custom = {"axisBorderShow": False, "drawStyle": "bars" if bars else "line",
+              "fillOpacity": 20, "gradientMode": "opacity",
               "lineInterpolation": "stepAfter" if step else "smooth" if smooth else "linear",
-              "lineWidth": 1 if legend else 2, "showPoints": "never", "spanNulls": span_nulls,
-              "thresholdsStyle": {"mode": "dashed" if threshold else "off"}}
+              "lineWidth": 2, "showPoints": "never", "spanNulls": span_nulls,
+              "thresholdsStyle": {"mode": "dashed+area" if threshold else "off"}}
+    if bars:
+        custom.update({"barAlignment": 0, "barWidthFactor": 0.7, "fillOpacity": 80, "gradientMode": "none",
+                       "lineWidth": 1})
+    if stack:
+        custom.update({"fillOpacity": 45, "gradientMode": "none", "lineWidth": 1,
+                       "stacking": {"group": "A", "mode": "normal"}})
+    if fill is not None:
+        custom["fillOpacity"] = fill
     if soft_max is not None:
         custom["axisSoftMax"] = soft_max
     if soft_min is not None:
         custom["axisSoftMin"] = soft_min
     if centered or mirror:
         custom["axisCenteredZero"] = True
-    defaults = {"color": {"mode": "palette-classic"}, "custom": custom, "thresholds": steps(("text", None)),
-                "unit": unit}
+    defaults = {"color": fixed(color), "custom": custom, "thresholds": steps(("text", None)), "unit": unit}
     if threshold:
-        value, color = threshold
+        value, tone = threshold
         if scheme:
             defaults["color"] = {"mode": "thresholds"}
             custom["gradientMode"] = "scheme"
-            defaults["thresholds"] = steps(("text", None), (color, value))
+            defaults["thresholds"] = steps((color, None), (tone, value))
+        elif low_bad:
+            defaults["thresholds"] = steps((tone, None), ("transparent", value))
         else:
-            defaults["thresholds"] = steps(("transparent", None), (color, value))
+            defaults["thresholds"] = steps(("transparent", None), (tone, value))
     if minimum is not None and not mirror and not centered:
         defaults["min"] = minimum
     if maximum is not None:
