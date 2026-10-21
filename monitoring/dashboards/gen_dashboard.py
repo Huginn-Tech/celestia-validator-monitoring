@@ -81,6 +81,7 @@ FIBRE_DASHBOARD = ("Fibre dashboard (celestia-app)",
                    "https://github.com/celestiaorg/celestia-app/blob/v10.4.0/observability/docker/grafana/dashboards/fibre.json")
 TENSILE = ("Tensile", "https://tensile.huginn.tech")
 MAINNET_LAYOUT = ("mainnet layout", QUICKSTART + "#mainnet-layout")
+PANEL_GUIDE = ("Panel guide", "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/panels.md")
 
 # The alert rules template and the hold times of its rules that the descriptions print.
 RULES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "rules")
@@ -127,10 +128,11 @@ ZERO_WIDTH = chr(0x200B)
 # an untitled one 18 px. A grid row is 30 px, plus 8 px between rows.
 CHROME_TITLED = 58
 CHROME_UNTITLED = 18
-LANE_PX = 24          # the least height of a status board line or role lane
-BAR_PX = 20           # the thickness of every status bar
-BAND_BAR_PX = 24      # the thickness of the role band's segments
-AXIS_PX = 24          # the role band's time axis
+LANE_PX = 24          # the least height of a History line or role lane
+BAR_PX = 20           # the thickness of every bar of the History board and of the role band
+# A state timeline or status history with its lane names on the left and no time axis insets its plot
+# 8 px at the top and 8 px at the bottom (Grafana's paddingSide), so its lanes share the rest.
+PLOT_INSET = 16
 TABLE_ROW_PX = 42     # cellHeight "md": each table row
 # The table's header row. At most 40 px, as the render showed: two rows then fit h5 with no
 # scrollbar. Set it to the measured height to keep the band under the last row as small as can be.
@@ -153,8 +155,8 @@ INTRO_WIDTHS = (4, 4, 4, 4, 4, 4)
 NAME_CHARS = 17                          # the validator's name: 13 characters at 22 px, 15 at 20, 17 at 18
 DEFAULT_NAME = "Validator"               # the name when celestia_mon_validator_name is empty
 INTRO_NUMBER = "99.999.999"              # the widest number a cell shows (a block height)
-KEY_ROWS, KEY_PX = 2, 12                 # the colour key: one 12 px line, centred in an untitled h2
-TILE_SIZES = (22, 20, 18, 16)            # the answer tiles: the largest at which every word fits its tile
+KEY_ROWS, KEY_PX = 1, 12                 # the colour key and the range ends: one 12 px line in an untitled h1
+TILE_SIZES = INTRO_VALUE_SIZES          # the answer tiles: the largest at which every word fits its tile
 # Facts inside the rows: an untitled h2 with the label over the value, never larger than the answers.
 FACT_ROWS, FACT_LABEL_PX, FACT_PX, FACT_SMALL_PX = 2, 12, 18, 16
 # The table's 14 px text. Its columns are sized by short words ("no data", "Peers"), which run up to
@@ -164,26 +166,26 @@ TABLE_PAD = 16                           # a cell's padding
 TABLE_ROOM = 1060                        # what the Servers now table may fill without a horizontal scrollbar
 GAUGE_MIN, GAUGE_FLOOR = 90, 60          # the gauge columns' minimum width, and the least it may drop to
 # The Servers band: per column a card (a stat, one row per part, the name left and the word right,
-# both in one size so they share a baseline) over a bar gauge of four bars. A card's height follows
-# its rows; every card of an install has the same rows. Each row is a BigValue item of at most 100 px,
-# padded 8 px on each side, and needs a gap between its name and its word.
-CARD_H = {1: 3, 2: 4, 3: 5}
+# both in one size so they share a baseline) over a bar gauge of four bars. Every card of an install
+# has the same rows. Each row is a BigValue item of at most 100 px, padded 8 px on each side, and needs
+# a gap between its name and its word: three rows fit an h4 at about 28 px apart.
+CARD_H = {1: 3, 2: 4, 3: 4}
 CARD_SIZES = (14, 13)
 CARD_PAD, CARD_GAP = 8, 16
 # A titled panel's header keeps 96 px of the panel's width for its padding, the (i) and the menu button
 # (hidden until hover, but its room is kept): the title has inner_px(w) - TITLE_CHROME.
 TITLE_PX, TITLE_CHROME = 14, 79
-LOWER_ROWS = 3                           # the bar gauge under each card, untitled: four ~15 px bars, 10 px apart,
-#                                          filling its 88 px (no space left under the last bar)
+# The bar gauge under each card, untitled, LOWER_ROWS high: four bars about 15 px thick, each with its
+# name above it at BAR_NAME_PX and its value at the end of a faint full-width track, so the tracks of
+# every column end on one line. At 4 rows the bars shrink to 6 px and clip their values.
+LOWER_ROWS = 5
 # Each row name of a card starts with a four-per-em space (3.5 px at 14 px): a BigValue item of at most
 # 100 px is padded 8 px and the panel title 12 px, so the names line up with the title above them.
 ROW_INDENT = "\u2005"
-# Grafana's bar gauge sizes the name box on the left from the name measured at 12 px (a bar under 30 px),
-# plus 15 px, at most 40% of the panel, with 10 px padding on its right. The names are set at 11 px, so
-# a full name that the 12 px measure would push past the 40% still shows whole; BAR_NAME_EM is Inter's
-# measured width at weight 400 ("Slowest 1%, proposals" is 130 px at 12 px), with a little margin.
-BAR_NAME_PX, BAR_VALUE_PX, BAR_NAME_EM = 11, 14, 0.54
-BAR_NAME_SHARE, BAR_NAME_PAD = 0.4, 10
+BAR_NAME_PX, BAR_VALUE_PX = 12, 14
+# A card row whose words carry a number (peers, blocks behind) is a text: its colour rides on an
+# invisible last character, which a regex mapping turns into amber, red or grey.
+MARKS = {"orange": "\u200b", "red": "\u200c", GREY: "\u200d"}
 MAX_COLUMNS = 4                          # more servers than this: the Servers now table instead
 
 # Block height of every celestia-appd node: the validator and the backup nodes.
@@ -251,7 +253,7 @@ STARTED = '(count_over_time(up{job="prometheus"}%s) >= 3)' % W
 # than a minute after Prometheus's last scrape of itself, which also leaves out the steps of a
 # monitoring outage.
 LIVE = '(time() - max(timestamp(up{job="prometheus"})) < 60)'
-BOARD_PANELS = {20, 21, 22, 23, 25}
+BOARD_PANELS = {20, 21, 25}
 
 # How long after a check stopped the alert that reports it fires, on top of its hold time: the
 # 30 minutes in TensileUnreadable's expression and the 15 in SignalUnreadable's. FibreNotServing
@@ -482,7 +484,7 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     of a whole, stacked in flat fills (a total drawn over them needs an override with
     custom__stacking={"mode": "none", "group": "A"}). fill: the fill opacity, when the default does
     not suit. legend False: one series, without a legend."""
-    custom = {"axisBorderShow": False, "axisWidth": AXIS_PX, "drawStyle": "bars" if bars else "line",
+    custom = {"axisBorderShow": False, "axisWidth": VALUE_AXIS_PX, "drawStyle": "bars" if bars else "line",
               "fillOpacity": 20, "gradientMode": "opacity",
               "lineInterpolation": "stepAfter" if step else "smooth" if smooth else "linear",
               "lineWidth": 2, "showPoints": "never", "spanNulls": span_nulls,
@@ -781,9 +783,17 @@ def newer(s):
     return "(%s unless on (host) %s)" % (signing_nodes(s), signing_nodes(s, "[2m] offset 2m"))
 
 
-def two_signers(s):
-    """True while two nodes have signed for 3 minutes running: longer than a repoint takes."""
-    return "(min_over_time(((count(%s) or vector(0)) > bool 1)[3m:30s]) == 1)" % signing_nodes(s)
+def two_signers(s, state=""):
+    """ValidatorSigningTwice now, pending or firing (state "firing": firing only), as one series without
+    labels. Every surface that says "Two signers" reads the alert itself, so none can disagree with
+    the page; a tmkms repoint never matches it (the rule needs signatures on both nodes in two windows)."""
+    sel = ',alertstate="%s"' % state if state else ""
+    return 'max(ALERTS{alertname="ValidatorSigningTwice"%s})' % sel
+
+
+def twice10(s):
+    """10 while ValidatorSigningTwice fires, else 0: added to a code, it turns the amber word red."""
+    return "(%s * 10 or vector(0))" % two_signers(s, "firing")
 
 
 def fibre_active(s):
@@ -1002,7 +1012,7 @@ def alert_items(s):
     # "group_left ()" names no labels to copy; a bare "group_left (" would read the operand as that list.
     prio = "(%s)" % " or ".join(label("vector(%s)" % num(PRIORITY.get(a, 0)), "alertname", a) for a in s.alert_names)
     alerts = "(%s) + on (alertname) group_left () %s" % (" or ".join("(%s)" % i for i in items), prio)
-    return "(max by (title, short) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
+    return "(max by (title, short, part) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
 
 
 def synth_items(s):
@@ -1021,17 +1031,16 @@ def synth_items(s):
          "and on () (time() - max(%s) <= 120)) unless on () max(ALERTS{alertname=\"NotificationsFailing\"}))"
          % evaluated),
     ]
-    if s.remote and not s.multi:
-        items.append((2.45, "Validator signs through two nodes", "Two signers", two_signers(s)))
     if s.announcements:
-        # A Celestia announcement goes to Alertmanager directly, not through the rules.
-        items.append((2.3, "New Celestia announcement, see your alerts", "Announcement",
+        # A Celestia announcement goes to Alertmanager directly, not through the rules. It is news, not a
+        # fault: level 1.5 shows its words in the text colour.
+        items.append((1.5, "New Celestia announcement, see your alerts", "Announcement",
                       "(sum(increase(celestia_mon_announcements_forwarded_total[30m])) > 0)"))
     return items
 
 
 def synth(s):
-    """The Status cell's items no alert rule carries: the monitoring itself, two signers, an announcement."""
+    """The Status cell's items no alert rule carries: the monitoring itself and an announcement."""
     return "(%s)" % " or ".join(label(label("%s * 0 + %s" % (cond, num(level)), "title", text), "short", words)
                                 for level, text, words, cond in synth_items(s))
 
@@ -1060,17 +1069,22 @@ def status_shorts(s):
 
 
 def status_expr(s):
-    """The Status cell: one series with label status ("Status", or "Status · N alerts" with more than
-    one item) whose value is a code for the worst item's short name and colour (status_shorts); with
-    no item, "All online" (code 1). The worst item has the highest level, then the highest PRIORITY."""
+    """The Status cell: one series with label status whose value is a code for the worst item's short
+    name and colour (status_shorts); with no item, "All online" (code 1). The worst item has the highest
+    level, then the highest PRIORITY. The label names the worst item's part when it has one (label part,
+    from TITLES) and counts the items when there are several: "Status", "Status · Fibre",
+    "Status · 3 alerts", "Fibre · 3 alerts" (both do not fit one line of the cell)."""
     t = alert_items(s)
     lookup = "(%s)" % " or ".join(label("vector(%d)" % (10 * i), "short", w) for i, w in enumerate(status_shorts(s), 1))
-    # 1 amber, 2 red, plus ten times the short name's place in the lookup.
-    code = "(((topk(1, %s) >= bool 3) + 1) + on (short) %s)" % (t, lookup)
-    # count_values turns the number of items into a label, which names the cell.
-    counted = '(%s * on () group_left (n) count_values("n", count(%s)))' % (code, t)
-    named = ('label_replace(label_replace(%s, "status", "Status", "", ""), "status", %s, "n", "([2-9]|[1-9][0-9]+)")'
-             % (counted, q("Status · $1 alerts")))
+    # 0 text (level under 2), 1 amber, 2 red, plus ten times the short name's place in the lookup.
+    code = "(clamp(floor(topk(1, %s)) - 1, 0, 2) + on (short) %s)" % (t, lookup)
+    # count_values turns the number of items into a label; label_join puts it next to the part.
+    counted = 'label_join(%s * on () group_left (n) count_values("n", count(%s)), "pn", ":", "part", "n")' % (code, t)
+    many = "([2-9]|[1-9][0-9]+)"
+    named = label(counted, "status", "Status")
+    named = 'label_replace(%s, "status", "Status · $1", "part", "(.+)")' % named
+    named = 'label_replace(%s, "status", "Status · $1 alerts", "pn", %s)' % (named, q(":" + many))
+    named = 'label_replace(%s, "status", "$1 · $2 alerts", "pn", %s)' % (named, q("(.+):" + many))
     clear = label("vector(1) unless on () count(%s)" % t, "status", "Status")
     return "(%s or %s)" % (named, clear)
 
@@ -1118,35 +1132,20 @@ def fit_strip(items, height, what, samples=None):
 
 def status_cell(s):
     """(id, label, description, query, options) of the Status cell: "All online" in green, or the worst
-    item's short name in amber, red once a page fires; the label counts the items when there are
-    several. The full sentences are in the description and in the All firing alerts row."""
+    item's short name in amber, red once a page fires (an announcement in the text colour); the label
+    names the part and counts the items. Each short name's sentence is in docs/panels.md and in the All
+    firing alerts row."""
     shorts = status_shorts(s)
-    sentences = {}
-    for words, sentence in status_words(s):
-        text = sentence.replace("$1", "a server")
-        sentences.setdefault(words, []).append(text[0].upper() + text[1:])
-    desc = ("What is wrong right now, or about to be: the short name of the worst item (urgent before warning, then "
-            "by how much the alert matters). Red: an urgent (page) alert fires. Amber: a warning (message) alert "
-            "fires, or an alert's problem is true and it will be sent if it lasts. With several items the label counts "
-            "them ('Status · 3 alerts'). "
-            "Follow-on alerts are grouped into their cause, as Alertmanager's inhibitions do (no 'Missed blocks' while "
-            "'Not signing' shows); your notifications may still list some of them separately. Silenced alerts still "
-            "show: a silence only stops notifications. 'All online' (green): nothing is wrong, the alert rules ran in "
-            "the last 2 minutes and Alertmanager is up and reached. Every alert in full, with its server and how long it has "
-            "been active: open the collapsed row 'All firing alerts' below.")
-    if restarting(s):
-        desc += (" A collector that misses a scrape (as when install.sh restarts it) shows only once its alert fires, "
-                 "so a restart does not flash here.")
+    desc = ("What is wrong now, or about to be: the worst alert's short name; All online in green when nothing is. "
+            "Red: an urgent alert fires. Amber: a warning fires, or an alert's problem is true and is sent if it "
+            "lasts. The label names the part and counts the alerts. Follow-on alerts fold into their cause; "
+            "silenced alerts still show.")
     if s.announcements:
-        desc += " A new Celestia announcement shows here for 30 minutes; its text is in your alert channel."
-    if s.signal:
-        desc += " A scheduled network upgrade is no fault and does not show here: the Network upgrade tile shows it."
-    desc += " The short names: %s." % "; ".join("%s: %s" % (w, ", or ".join(sentences[w])) for w in shorts
-                                               if w in sentences)
-    desc += more(pages=[("Alert reference", DOCS)])
+        desc += " A new Celestia announcement shows for 30 minutes in the text colour."
+    desc += " Every alert in full: the collapsed row All firing alerts." + more(pages=[("Alert reference", DOCS)])
     words = [(1, "All online", "semi-dark-green")]
     for i, w in enumerate(shorts, 1):
-        words += [(10 * i + 1, w, "orange"), (10 * i + 2, w, "red")]
+        words += [(10 * i, w, "text"), (10 * i + 1, w, "orange"), (10 * i + 2, w, "red")]
     return (10, "{{status}}", desc, status_expr(s),
             dict(color_mode="value", mappings=mapping(*words), no_value="No data"))
 
@@ -1177,7 +1176,7 @@ def intro(s):
     net = ('max by (net) (label_replace(label_replace(label_replace(max by (chain_id) (%s), '
            '"net", "$1", "chain_id", "(.*)"), "net", "Celestia mainnet", "chain_id", "celestia"), '
            '"net", %s, "chain_id", "(mocha-.*)")) * 0 + 1' % (H, q(mocha_label)))
-    signed = "Signed, %d d" % s.days
+    signed = "Blocks signed, %d d" % s.days
     cells = [
         (1, "{{net}}",
          "Celestia validator%s monitoring: which validator this is and which network its nodes are on, read from the "
@@ -1243,15 +1242,16 @@ def intro(s):
 
 
 def validator_tile(s):
-    """(id, title, description, query, words) of the Validator tile."""
+    """(id, title, description, query, words) of the Validator tile. Missed blocks uses SignaturesMissed's
+    own expression, so the word and the rule agree to the block."""
     n = num(s.N)
     expr = chain(
         "(max(absent(%s)) * 0 + 7) + on () %s" % (H, NNA10),
         "(%s * 0 + 5) + on () %s" % (STALL, NNA10),
         '((((%s > %s) * 0 + 6 and on () (min(up{job="celestia-app"}) == 0)) or ((max(%s) * 0 + 4) unless on () %s) '
         "or (%s > %s) * 0 + 3) + on () %s)" % (BLOCKS_SINCE, n, POWER, IN_SET_OR_NEW, BLOCKS_SINCE, n, VNS10),
-        "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
-        % (missed_in("1h"), num(s.R), H),
+        "(max(max by (host) (increase(%s[1h])) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
+        % (MISSED, num(s.R), H),
         "max(%s) * 0 + 1" % H)
     words = [(1, "Signing", "text"), (2, "Missed blocks", "orange"),
              (3, "Not signing", "orange"), (13, "Not signing", "red"),
@@ -1260,26 +1260,24 @@ def validator_tile(s):
              (6, "Not seen", "orange"), (16, "Not seen", "red"),
              (7, "Nodes offline", "orange"), (17, "Nodes offline", "red")]
     desc = ("Is the validator signing, and in the active set? Signing: its signature is on one of the last %g blocks. "
-            "Missed blocks: more than %g%% of the last hour's blocks were committed without its signature on some node "
-            "(SignaturesMissed sends a message after %s). Not signing: more than %g blocks since its last signature; "
-            "red once ValidatorNotSigning pages (%s later). Out of set: the chain moves but no node records blocks for "
-            "its key: jailed, unbonded or outside the active set. Not seen: as Not signing, but a node Prometheus cannot "
-            "read may still be signing unseen; check an explorer before you move the key anywhere, because two signers "
-            "of one key double-sign. Nodes stalled: no node of this setup committed a block for 2 minutes "
-            "(NodeNotAdvancing pages %s later): the nodes are stuck, for example at an upgrade height, or the whole "
-            "chain halted; compare Latest block with status.celestia.org. Nodes offline: Prometheus reads no node at "
-            "all." % (s.N, s.R * 100, s.hold("SignaturesMissed"), s.N, s.hold("ValidatorNotSigning"),
-                      s.hold("NodeNotAdvancing")))
+            "Missed blocks: over %g%% of the last hour's blocks lack it (SignaturesMissed, after %s). Not signing: "
+            "over %g blocks since its last signature; red once ValidatorNotSigning pages. Out of set: jailed, unbonded "
+            "or outside the active set. Not seen: a node Prometheus cannot read may still sign; check an explorer "
+            "before you move the key. Nodes stalled: no block for 2 minutes. Nodes offline: no node is read."
+            % (s.N, s.R * 100, s.hold("SignaturesMissed"), s.N))
     return 11, "Validator", desc + more(["ValidatorNotSigning", "SignaturesMissed", "NodeNotAdvancing"]), expr, words
 
 
 def signing_expr(s):
     """The node the validator signs through now, as its place in s.nodes (1, 2, ...), or a code for
-    why there is none (signing_words)."""
+    why there is none (signing_words). Two signers is ValidatorSigningTwice itself: amber while it is
+    pending, red once it pages."""
     sig = signing_nodes(s)
+    twice = s.remote and not s.multi
     return chain(
+        "%s * 0 + 45" % two_signers(s, "firing") if twice else None,
         "%s * 0 + 31" % STALL,
-        "%s * 0 + 35" % two_signers(s) if s.remote and not s.multi else None,
+        "%s * 0 + 35" % two_signers(s) if twice else None,
         "(count(%s) > 1) * 0 + 30" % sig if s.remote else None,
         "max(%s and on (host) %s)" % (lookup(s.nodes), sig),
         '((min(up{job="celestia-app"}) == 0) * 0 + 32) + on () %s' % VNS10,
@@ -1293,7 +1291,7 @@ def signing_words(s):
     if s.remote:
         words.append((30, "Two nodes" if s.multi else "Switching", "text"))
     if s.remote and not s.multi:
-        words.append((35, "Two signers", "orange"))
+        words += [(35, "Two signers", "orange"), (45, "Two signers", "red")]
     return words + [(31, "Nodes stalled", "orange"), (32, "Not visible", "orange"), (42, "Not visible", "red"),
                     (33, "No node signing", "orange"), (43, "No node signing", "red"), (34, "Out of set", GREY)]
 
@@ -1301,79 +1299,68 @@ def signing_words(s):
 def signing_tile(s):
     """(id, title, description, query, words) of the Signing through tile."""
     if s.remote:
-        desc = ("The server whose node the remote signer signs through now, in the server's colour: the node whose "
-                "privval client signed a vote "
-                "or proposal in the last 2 minutes. It follows a tmkms repoint. A node that tmkms left keeps reading the "
-                "validator's signatures from the chain, so only signatures made through the node count. ")
+        desc = ("Which server's node the validator's signatures go through now. tmkms, the remote signer, connects to "
+                "that node. ")
         if s.multi:
-            desc += ("Two nodes: tmkms signs through both nodes, as it is set up to "
-                     "(celestia_mon_signer_multi_node). ")
+            desc += "Two nodes: tmkms signs through both, as set up (celestia_mon_signer_multi_node). "
         else:
-            desc += ("Switching: for up to 2 minutes after tmkms is pointed at another node, both nodes have recent "
-                     "signatures; this is normal. Two signers: two nodes have signed for 3 minutes running; one key "
-                     "signing through two nodes can double-sign, so stop one at once (unless tmkms is set up to sign "
-                     "through both: set celestia_mon_signer_multi_node). ")
-        desc += ("No node signing: the validator is in the active set but no node signed for 2 minutes; check tmkms on "
-                 "the KMS host and the link to it (red once ValidatorNotSigning pages). ")
+            desc += ("Switching: both nodes signed in the last 2 minutes, as during a repoint. Two signers: "
+                     "ValidatorSigningTwice, amber while pending, red once it pages; stop one signer at once. ")
     else:
-        desc = ("The server whose node the validator signs through now, in the server's colour: the node whose last "
-                "signed height advanced in the last 2 minutes. No node signing: the validator is in the active set but "
-                "no node signed for 2 minutes (red once ValidatorNotSigning pages). ")
-    desc += ("Not visible: no node is seen signing and a node is not reporting; that node may still be signing. Out of "
-             "set: nothing is asked to sign. Nodes stalled: no node committed a block for 2 minutes. Whether another "
-             "node could take over: its card in the Servers band below ('Backup, in sync').")
-    return 12, "Signing through", desc + more(["ValidatorNotSigning"], [MAINNET_LAYOUT]), signing_expr(s), signing_words(s)
+        desc = "Which server's node signs for the validator now: its last signed height advanced in 2 minutes. "
+    desc += ("No node signing: in the set, but no node signed for 2 minutes; red once ValidatorNotSigning pages. "
+             "Not visible: a node that is not reporting may still sign. Whether a backup could take over: its card "
+             "below.")
+    return 12, "Signing through", desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.remote and not
+                                                                        s.multi else []), [MAINNET_LAYOUT]), \
+        signing_expr(s), signing_words(s)
+
+
+# FibreNotServing's reasons, the Fibre tile's and the cards' words for them (D2), and the switch each needs.
+NOT_SERVING = [("missed_uploads", "Uploads missed", "tensile"), ("not_served", "Rows not served", "tensile"),
+               ("uploads_failing", "Uploads failing", "fibre"), ("no_telemetry", "No Fibre data", "fibre")]
 
 
 def fibre_tile(s):
     """(id, title, description, query, words) of the Fibre tile. Serving needs no recent upload: a quiet
-    network sends none for hours, and Fibre is fine meanwhile."""
+    network sends none for hours, and Fibre is fine meanwhile. FibreNotServing shows by its reason while it
+    is pending or firing, as the Status cell does; the outside check by FibreDown's own states."""
     seen_f = fibre_seen(s)
     lost = fibre_lost(s)
-    ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
-    failing = ('((sum(increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[5m])) > 0) '
-               "unless on () (sum(increase(%s[5m])) > 0))" % ok)
-    outside = 'ALERTS{alertname="FibreDown",check=~"reachability|registration"%s}'
-    expr = chain(
-        '(max(ALERTS{alertname="FibreDown",check="",alertstate="firing"}) * 0 + 15) + on () '
-        "((count(%s) > 0) * 0 + 4 or vector(0))" % lost,
-        '((count(%s) > 0) and on () max(ALERTS{alertname="FibreDown",check=""})) * 0 + 9' % lost,
-        '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(up{job="node"} == 1) > 0))' % seen_f,
-        "(count(%s) > 1) * 0 + 3" % seen_f,
-        'max(ALERTS{alertname="FibreNotServing",alertstate="firing"}) * 0 + 4',
-        "((count(%s) > 0) unless on () count(fibre_server_upload_shard_budget_bytes)) * 0 + 7" % seen_f,
-        "(%s and on () (sum(increase(fibre_server_upload_shard_rejected_total[5m])) > 0)) * 0 + 8" % failing,
-        "%s * 0 + 2" % failing,
-        # Seen from outside (with Tensile): FibreDown's outside branches, amber while pending, red once it pages.
-        "max(%s) * 0 + 20" % (outside % ',alertstate="firing"') if s.tensile else None,
-        "max(%s) * 0 + 10" % (outside % "") if s.tensile else None,
-        "count(%s) * 0 + 1" % seen_f)
-    words = [(1, "Serving", "text"), (2, "Uploads failing", "orange"),
-             (8, "Storage full", "orange"), (7, "No metrics", "orange"), (4, "Not serving", "orange"),
-             (3, "On 2 servers", "orange"), (5, "Not running", "orange"), (15, "Not running", "red"),
-             (9, "Not seen", "orange"), (19, "Not seen", "red")]
+    outside = 'max(ALERTS{alertname="FibreDown",check=%s%s})'
+    unregistered = "(max(celestia_mon_fibre_registered) == 0)"
+
+    def check(state, base):
+        """The outside check's branches: base + 3 not registered, + 2 wrong host, + 0 unreachable."""
+        reg = outside % (q("registration"), state)
+        return ["((%s * 0 + %d) and on () %s)" % (reg, base + 3, unregistered), "(%s * 0 + %d)" % (reg, base + 2),
+                "(%s * 0 + %d)" % (outside % (q("reachability"), state), base)]
+    expr = chain(*(
+        ['(max(ALERTS{alertname="FibreDown",check="",alertstate="firing"}) * 0 + 15) + on () '
+         "((count(%s) > 0) * 0 + 4 or vector(0))" % lost]
+        + (check(',alertstate="firing"', 20) if s.tensile else [])
+        + ['((count(%s) > 0) and on () max(ALERTS{alertname="FibreDown",check=""})) * 0 + 9' % lost,
+           '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(up{job="node"} == 1) > 0))' % seen_f,
+           "(count(%s) > 1) * 0 + 3" % seen_f]
+        + ['max(ALERTS{alertname="FibreNotServing",reason=%s}) * 0 + %d' % (q(r), 31 + i)
+           for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
+        + (check("", 10) if s.tensile else [])
+        + ["count(%s) * 0 + 1" % seen_f]))
+    words = [(1, "Serving", "text"), (3, "Two Fibres", "orange"), (5, "Not running", "orange"),
+             (15, "Not running", "red"), (9, "Not seen", "orange"), (19, "Not seen", "red")]
+    words += [(31 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)]
     if s.tensile:
-        words += [(10, "Not reachable", "orange"), (20, "Not reachable", "red")]
-        serving = ", and Tensile reaches its registered endpoint from outside."
-        reach = (" Not reachable: the outside check fails (Fibre from outside says why); red once FibreDown pages after "
-                 "%s." % s.hold("FibreDown"))
-    else:
-        serving = " (the outside check, celestia_mon_tensile, is not set up, so it is not part of Serving)."
-        reach = ""
-    desc = ("Is Fibre doing its job? Serving: one Fibre server runs, sends its metrics and does not fail its uploads%s "
-            "Serving needs no recent upload: on a quiet network no blob may come for hours, and that is normal. Uploads "
-            "failing: in the last 5 minutes uploads failed and none was accepted, most often because Fibre still signs "
-            "through a node that tmkms left; point Fibre's signer address at the signing node (FibreNotServing sends a "
-            "message after %s). Storage full: the same, but because the storage budget is full and uploads are "
-            "refused. No metrics: the Fibre unit runs but Fibre's metrics stopped arriving (FibreNotServing after %s, "
-            "unless otelcol is down). Not serving: FibreNotServing fires. On 2 servers: Fibre runs on more than one "
-            "host; stop the standby (FibreBothActive after %s). Not running: no Fibre unit is active anywhere; amber "
-            "during a failover, red once FibreDown pages after %s. Not seen: no Fibre unit is reported active and a "
-            "Fibre host's node_exporter does not answer, so its unit state is unknown; if the Fibre facts below still "
-            "update, Fibre runs and only that host's metrics are missing (FibreDown still pages after %s).%s Which "
-            "server runs Fibre: the Servers band below." % (serving, s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW),
-                                                           s.hold("FibreNotServing no_telemetry"), s.hold("FibreBothActive"),
-                                                           s.hold("FibreDown"), s.hold("FibreDown"), reach))
+        words += [(10, "Unreachable", "orange"), (20, "Unreachable", "red"), (12, "Wrong host", "orange"),
+                  (22, "Wrong host", "red"), (13, "Not registered", "orange"), (23, "Not registered", "red")]
+    reasons = [w for _, w, need in NOT_SERVING if s.has(need)]
+    desc = ("Is Fibre, the service that stores and serves this validator's share of blob data, running and taking "
+            "uploads? Serving: one Fibre runs and no Fibre alert is due; a quiet network sends no blob for hours, "
+            "and that is fine. Amber: FibreNotServing by its reason (%s), Two Fibres (FibreBothActive) or Not "
+            "running; red once FibreDown pages. Not seen: a Fibre host is not reporting, so its Fibre may still run."
+            % ", ".join(reasons))
+    if s.tensile:
+        desc += " Unreachable, Wrong host, Not registered: the outside check, as Fibre from outside."
+    desc += " Which server runs it: the cards below."
     return 14, "Fibre", desc + more(["FibreDown", "FibreNotServing", "FibreBothActive"], [FIBRE_DASHBOARD]), expr, words
 
 
@@ -1398,17 +1385,13 @@ def outside_tile(s):
              (3, "Wrong host", "orange"), (13, "Wrong host", "red"), (4, "Not registered", "orange"),
              (14, "Not registered", "red"), (10, "Check stopped", "orange"), (0, "Not checked", GREY),
              (9, "Check pending", GREY)]
-    desc = ("From [Tensile](https://tensile.huginn.tech), which dials every validator's registered Fibre endpoint from outside; "
-            "celestia-mon-tensile on the monitor reads its verdict every minute. Reachable: Tensile's last check, under "
-            "15 minutes old, completed TCP, TLS and the validator's identity. Unreachable: it did not (FibreDown pages "
-            "after %s). Wrong host: the chain registers an endpoint that is not the active Fibre host's "
-            "(celestia_mon_fibre_public_endpoint); after a failover, send set-host. Not registered: no Fibre endpoint "
-            "for the validator in x/valaddr. Not checked: no Tensile check in 15 minutes, or celestia-mon-tensile is "
-            "down; an outage seen from outside cannot page meanwhile. Check stopped: TensileUnreadable fires (after %s "
-            "without a check, or %s with the service down). Check pending: Tensile has not checked a new "
-            "registration." % (s.hold("FibreDown"), s.hold("TensileUnreadable", TENSILE_STALE),
-                               s.hold("TensileUnreadable")))
-    return 15, "Fibre from outside", desc + more(["FibreDown", "TensileUnreadable"]), expr, words
+    desc = ("Can the internet reach your Fibre at the address registered on chain? Tensile checks it every minute. "
+            "Reachable: the last check, under 15 minutes old, completed TCP, TLS and the validator's identity. "
+            "Unreachable: it did not (FibreDown pages after %s). Wrong host: the chain names another host's "
+            "endpoint; after a failover, send set-host. Not registered: no endpoint on chain. Not checked: no check "
+            "for 15 minutes. Check stopped: TensileUnreadable. Check pending: a new registration is not checked yet."
+            % s.hold("FibreDown"))
+    return 15, "Fibre from outside", desc + more(["FibreDown", "TensileUnreadable"], [TENSILE]), expr, words
 
 
 def upgrade_tile(s):
@@ -1429,26 +1412,19 @@ def upgrade_tile(s):
     words = [(1, "None pending", "text"), (2, "Signal sent", "text"), (3, "Signal needed", "orange"),
              (13, "Signal needed", "red"), (4, "Scheduled", "text"), (5, "Within 24 h", "orange"),
              (10, "Check stopped", "orange"), (0, "Not checked", GREY)]
-    desc = ("Celestia switches app versions through signalling (x/signal): validators signal the next version, and once "
-            "5/6 of the voting power has signalled, an upgrade is scheduled at a fixed height. None pending: no "
-            "validator has signalled a next version. Signal sent: a round is open and this validator has signalled the "
-            "next version. Signal needed: a round is open and this validator has not (yet) signalled it; red once "
-            "UpgradeSignalMissing pages (after %s). Signal only after every node runs a release that supports the new "
-            "version. A round opened early by one validator, before any release exists, still shows red while you "
-            "silence the page (see alerts.md): the dashboard cannot see silences. Scheduled: the upgrade height is set; "
-            "every node must run a supporting release by then. Within 24 h: the upgrade is less than 24 hours away "
-            "(UpgradeSoon, which stays once sent): confirm every node runs a release that supports the target version, "
-            "or it stops at that height. Not checked: celestia-mon-signal has not read the chain for 15 minutes or is "
-            "down. Check stopped: SignalUnreadable fires (after %s without a read, or %s with the service down). "
-            "Version, support so far, height and time to go: the Validator row and the collapsed Network upgrade row."
-            % (s.hold("UpgradeSignalMissing"), s.hold("SignalUnreadable", SIGNAL_STALE), s.hold("SignalUnreadable")))
+    desc = ("Is a network upgrade coming, and has this validator signalled for it? None pending and Signal sent are "
+            "fine. Signal needed: a round is open and this validator has not signalled; red once UpgradeSignalMissing "
+            "pages (after %s). Signal only once every node runs a release that supports the new version. Scheduled: "
+            "the height is set. Within 24 h: UpgradeSoon. Not checked: no read of the chain for 15 minutes. Check "
+            "stopped: SignalUnreadable. Versions, support and height: the collapsed Network upgrade row."
+            % s.hold("UpgradeSignalMissing"))
     return 16, "Network upgrade", desc + more(["UpgradeSignalMissing", "UpgradeScheduled", "UpgradeSoon",
                                                "SignalUnreadable"]), expr, words
 
 
 def servers_tile(s):
-    """(id, title, description, query, words) of the Servers tile: the server lines of the status
-    board now, the worst first, in their words and colours. It only makes four or five answers six (with
+    """(id, title, description, query, words) of the Servers tile: the server lines of the History board
+    now, the worst first, in their words and colours. It only makes four or five answers six (with
     Monitoring for four), so the tiles line up with the six cells of the top strip."""
     sel = "host=~%s" % q("|".join(re2(h) for h in s.servers))
 
@@ -1471,15 +1447,12 @@ def servers_tile(s):
     words = [(1, "All up", "text"), (3, "Warning", "orange"), (4, "Node behind", "orange"),
              (5, "Disk low", "orange"), (6, "Service down", "orange"), (7, "Not reporting", "orange"),
              (13, "Disk critical", "red"), (0, "No data", GREY)]
-    desc = ("Every server's metrics and the disks DiskLow watches, now: the worst of the server lines on the status "
-            "board, in their colours. All up: every server's node_exporter answers, no server alert fires and the "
-            "alert rules ran. Disk critical: a disk is full or read-only and DiskLow pages. Not reporting: a metrics "
-            "endpoint of a server (node_exporter, celestia-appd's, the OpenTelemetry collector's) does not answer "
-            "(ServiceDown after %s). Service down: celestia-appd, Fibre or tmkms stopped, keeps restarting or is not "
-            "installed. Disk low: a watched disk is low on space or read-only (DiskLow sends a message). Node behind: "
-            "a node lags the highest node (NodeBehind). Warning: another message alert names a server. No data: a "
-            "server's node_exporter is not read yet, or the alert rules did not run. Which server: its column in the "
-            "Servers band below and its line on the status board." % s.hold("ServiceDown unreachable"))
+    desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
+            "node_exporter answers, no server alert fires and the rules ran. Disk critical: DiskLow pages. Not "
+            "reporting: a metrics endpoint does not answer (ServiceDown after %s). Service down: celestia-appd, Fibre "
+            "or tmkms stopped, keeps restarting or is not installed. Disk low, Node behind: those alerts. Warning: "
+            "another warning names a server. Which server: its card below and its line in History."
+            % s.hold("ServiceDown unreachable"))
     return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind"]), expr, words
 
 
@@ -1508,20 +1481,20 @@ MONITOR_WORDS = [(1, "Working", "text"), (2, "Rules failing", "orange"), (3, "Al
 def monitoring_tile(s):
     """(id, title, description, query, words) of the Monitoring tile: only where the answers would be
     four, so that with Servers they are six and line up with the strip."""
-    desc = ("Is the monitoring itself working, so that every other answer is current and a problem reaches you? "
-            "Working: the alert rules ran in the last 2 minutes and none failed, Alertmanager is up and reached, and "
-            "the heartbeat goes to your dead-man service. Rules stopped: no rule ran for 2 minutes; Rules failing: "
-            "MonitoringBroken; Alerting down: Alertmanager does not answer; Alerts unsent: alerts did not reach "
-            "Alertmanager, or a notification failed (NotificationsFailing); No heartbeat: the heartbeat stopped "
-            "(DeadmanFailing, or for an hour after a failed notification). The status board's Monitoring line has the "
-            "history.")
+    desc = ("Is the monitoring itself working, so every other answer is current and alerts reach you? Working: the "
+            "alert rules ran in the last 2 minutes and none failed, Alertmanager is up and reached, and the heartbeat "
+            "goes to your dead-man service. Otherwise the word names what failed: Rules stopped, Rules failing "
+            "(MonitoringBroken), Alerting down, Alerts unsent (NotificationsFailing) or No heartbeat "
+            "(DeadmanFailing). The history: the Monitoring line of History.")
     return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]), \
         monitoring_now(s), MONITOR_WORDS
 
 
 def answer_tiles(s):
-    """(panel, width) of the one-word answers, in one pinned text size and equal widths, so their
-    edges line up with the cells of the top strip."""
+    """(panel, width) of the one-word answers, in the top strip's cell form: untitled, the name over the
+    word from the left, one word size for the row and equal widths, so their edges, labels and words line
+    up with the cells of the strip above. The size is the largest of TILE_SIZES at which every word fits
+    its tile; the generator stops when even the smallest is too large."""
     tiles = [validator_tile(s), signing_tile(s)]
     if s.fibre:
         tiles.append(fibre_tile(s))
@@ -1538,10 +1511,14 @@ def answer_tiles(s):
     if len(tiles) not in (1, 2, 3, 6):
         raise SystemExit("%d answer tiles cannot share the strip's column edges" % len(tiles))
     widths = [24 // len(tiles)] * len(tiles)
-    items = [(stat(pid, title, desc, [target("A", expr, "", instant=True)], mappings=mapping(*words),
-                   no_value="No data"), w)
-             for (pid, title, desc, expr, words), w in zip(tiles, widths)]
-    # One size for the strip: the largest at which every word fits its tile.
+    items = []
+    for (pid, title, desc, expr, words), w in zip(tiles, widths):
+        p = stat(pid, "", desc, [target("A", expr, title, instant=True)], mappings=mapping(*words), no_value="No data",
+                 text_mode="value_and_name", justify="auto", wide=False, title_size=INTRO_LABEL_PX)
+        # The name also when the query returns nothing.
+        p["fieldConfig"]["defaults"]["displayName"] = title
+        check_fit("The answer tile %r (label)" % title, [title], INTRO_LABEL_PX, w)
+        items.append((p, w))
     texts = [(t, w) for p, w in items for t in panel_texts(p)]
     for size in TILE_SIZES:
         if all(text_px(t, size) <= inner_px(w) for t, w in texts):
@@ -1553,15 +1530,11 @@ def answer_tiles(s):
                      "inventory" % (bad[0], TILE_SIZES[-1]))
 
 
-CHECK_DESC = ("One line per check, one bar per time block: 10 minutes on a 24-hour range, 1 hour on 7 days, 6 hours on "
-              "30 days. The newest bar on the right is the current block and fills in as its minutes pass; in its first "
-              "30 seconds it shows the 2 minutes before it. A bar shows "
-              "the worst moment of its block, read from the alert states Prometheus evaluated at the time, so the bars "
-              "always agree with the alerts you received. Green: fine, and the alert rules ran. Amber: a warning alert "
-              "fired, or an urgent alert's problem was true for a moment and cleared before it paged. Red: an urgent "
-              "alert fired. Grey: no data (before the install, monitoring down, the alert rules not running, or nothing "
-              "to check). Each alert colours one line; NodeBehind colours Node in sync and the line of the server that "
-              "lags. Network upgrades have no line: the Network upgrade tile shows them.")
+HISTORY_DESC = ("How each check and each server fared over the selected time, one bar per time block, worst moment "
+                "first. Green: fine. Amber: a warning fired, or an urgent alert's problem showed and cleared before it "
+                "paged. Red: an urgent alert fired. Grey: no data. The bars come from the alert states Prometheus "
+                "evaluated at the time, so they match the alerts you got. Uptime, on the right: the share of the time "
+                "the line was fine. Hover a bar to see every line at that moment.")
 
 
 def check_lanes(s):
@@ -1570,8 +1543,14 @@ def check_lanes(s):
     fine (instant); words: (code, text, fill) per code. Every green branch needs the alert rules to
     have run in the block, so a bar is never green when no rule checked it."""
     gate = rules_ran()
-    rsp = 'max(ALERTS{alertname="RemoteSignerProblem",alertstate="firing"})'
+    rsp = 'max(ALERTS{alertname=~"RemoteSignerProblem|ValidatorSigningTwice",alertstate="firing"})'
     behind = 'max(ALERTS{alertname="NodeBehind",alertstate="firing"})'
+    # ValidatorSigningTwice colours Validator signing and Remote signer: red once it pages, amber while
+    # it was pending only.
+    twice = s.remote and not s.multi
+    twice_red = "%s * 0 + 6" % firing('alertname="ValidatorSigningTwice"') if twice else None
+    twice_amber = "%s * 0 + 7" % active('alertname="ValidatorSigningTwice"') if twice else None
+    twice_words = [(6, "Two signers", ALERT), (7, "Two signers", WARN)] if twice else []
     lanes = [
         # The nodes advance and none lags: NodeNotAdvancing, and NodeBehind for any node.
         ("A", "Node in sync",
@@ -1586,8 +1565,10 @@ def check_lanes(s):
           (0, "No data", NODATA)]),
         # While the nodes are stalled, ValidatorNotSigning is inhibited: grey, not a second red line for one cause.
         ("B", "Validator signing",
-         chain("(%s unless on () %s) * 0 + 3" % (firing('alertname="ValidatorNotSigning"'),
+         chain(twice_red,
+               "(%s unless on () %s) * 0 + 3" % (firing('alertname="ValidatorNotSigning"'),
                                                 firing('alertname="NodeNotAdvancing"')),
+               twice_amber,
                "(%s unless on () %s) * 0 + 2" % (active('alertname="ValidatorNotSigning"'),
                                                 active('alertname="NodeNotAdvancing"')),
                "%s * 0 + 5" % firing('alertname="NodeNotAdvancing"'),
@@ -1596,13 +1577,16 @@ def check_lanes(s):
                nodata()),
          signed_share(s, "$__range", "1m", 60),
          [(1, "Signing", OK), (2, "Short gap in signing", WARN), (3, "Not signing", ALERT),
-          (4, "Missed some blocks", WARN), (5, "Nodes stalled", NODATA), (0, "No data", NODATA)]),
+          (4, "Missed blocks", WARN), (5, "Nodes stalled", NODATA)] + twice_words + [(0, "No data", NODATA)]),
     ]
     if s.remote:
         # Green needs real signatures in the block, never the median gauge, which freezes when tmkms stops.
         lanes.append(
             ("C", "Remote signer",
-             chain("%s * 0 + 2" % firing('alertname="RemoteSignerProblem"'),
+             chain(twice_red,
+                   twice_amber,
+                   "%s * 0 + 3" % firing('alertname="RemoteSignerProblem",reason!=""'),
+                   "%s * 0 + 2" % firing('alertname="RemoteSignerProblem"'),
                    # A minute of the block with misses and no signature: one signature elsewhere in
                    # the block does not make it green.
                    "max(%s) * 0 + 4" % in_block(
@@ -1614,29 +1598,35 @@ def check_lanes(s):
              uptime("((((sum(increase(%s[1m])) > bool 0) unless on () %s) or on () (%s * 0)) and on () "
                     "((sum(increase(%s[1m])) > 0) or (sum(%s) > 0))) and on () %s"
                     % (PV, rsp, rsp, PV, missed_in("1m"), PROM)),
-             [(1, "Signing, fast enough", OK), (2, "Slow or failing", WARN), (4, "No signatures", WARN),
-              (0, "Not asked to sign, or no data", NODATA)]))
+             [(1, "Signing, fast enough", OK), (2, "Signer slow", WARN), (3, "Bad proposals", WARN),
+              (4, "No signatures", WARN)] + twice_words + [(0, "Not asked to sign, or no data", NODATA)]))
     if s.fibre:
-        not_failing = 'max(ALERTS{alertname="FibreNotServing",reason="uploads_failing",alertstate="firing"})'
+        # Uptime leaves out every minute the line is amber or red: a Fibre alert firing, or no Fibre running.
+        fibre_alert = 'max(ALERTS{alertname=~"FibreNotServing|FibreBothActive",alertstate="firing"})'
+        reasons = [(r, w) for r, w, need in NOT_SERVING if s.has(need)]
         lanes.append(
             ("D", "Fibre serving",
-             chain("%s * 0 + 3" % firing('alertname="FibreDown",check=""'),
-                   "%s * 0 + 2" % active('alertname="FibreDown",check=""'),
-                   "%s * 0 + 4" % firing('alertname="FibreNotServing"'),
-                   "%s * 0 + 5" % firing('alertname="FibreBothActive"'),
-                   '((%s == 1) and on () %s) * 0 + 1' % (seen('node_systemd_unit_state{name=%s,state="active"}'
-                                                              % q(s.units["fibre"])), gate),
-                   nodata()),
+             chain(*(["%s * 0 + 3" % firing('alertname="FibreDown",check=""'),
+                      "%s * 0 + 2" % active('alertname="FibreDown",check=""')]
+                     + ["%s * 0 + %d" % (firing('alertname="FibreNotServing",reason=%s' % q(r)), 21 + i)
+                        for i, (r, _) in enumerate(reasons)]
+                     + ["%s * 0 + 5" % firing('alertname="FibreBothActive"'),
+                        '((%s == 1) and on () %s) * 0 + 1' % (seen('node_systemd_unit_state{name=%s,state="active"}'
+                                                                   % q(s.units["fibre"])), gate),
+                        nodata()])),
              uptime("((((count(%s) > bool 0) or on () (%s * 0)) unless on () %s) or on () (%s * 0)) and on () %s"
-                    % (fibre_active(s), PROM, not_failing, PROM, PROM)),
-             [(1, "Serving", OK), (2, "Briefly not running", WARN), (3, "Not running", ALERT),
-              (4, "Not serving", WARN), (5, "Running on two servers", WARN), (0, "No data", NODATA)]))
+                    % (fibre_active(s), PROM, fibre_alert, PROM, PROM)),
+             [(1, "Serving", OK), (2, "Briefly not running", WARN), (3, "Not running", ALERT)]
+             + [(21 + i, w, WARN) for i, (_, w) in enumerate(reasons)]
+             + [(5, "Two Fibres", WARN), (0, "No data", NODATA)]))
     if s.tensile:
         # celestia-mon-tensile keeps exporting the last reading when its reads fail, so green also
         # needs a check under 15 minutes old at every minute of the block, as FibreDown does.
         lanes.append(
             ("E", "Fibre from outside",
              chain("%s * 0 + 3" % firing('alertname="FibreDown",check="reachability"'),
+                   "(%s and on () (%s == 0)) * 0 + 9" % (firing('alertname="FibreDown",check="registration"'),
+                                                         seen("celestia_mon_fibre_registered")),
                    "%s * 0 + 4" % firing('alertname="FibreDown",check="registration"'),
                    "%s * 0 + 5" % firing('alertname="TensileUnreadable"'),
                    "%s * 0 + 2" % active('alertname="FibreDown",check="reachability"'),
@@ -1651,8 +1641,8 @@ def check_lanes(s):
                     "unless on () (time() - max(celestia_mon_fibre_last_check_timestamp_seconds) > 900)) "
                     "and on () %s" % PROM),
              [(1, "Reachable", OK), (2, "Unreachable briefly", WARN), (8, "Registration wrong briefly", WARN),
-              (3, "Unreachable", ALERT), (4, "Not registered or wrong host", ALERT), (5, "Check stopped", WARN),
-              (6, "Not checked", NODATA), (0, "No data", NODATA)]))
+              (3, "Unreachable", ALERT), (4, "Wrong host", ALERT), (9, "Not registered", ALERT),
+              (5, "Check stopped", WARN), (6, "Not checked", NODATA), (0, "No data", NODATA)]))
     # Monitoring is a function, not a server: the last check line. Alertmanager down or not reached is
     # read from Prometheus's own metrics; no rule watches it (the Watchdog keeps firing meanwhile).
     lanes.append(
@@ -1717,14 +1707,21 @@ def axis_width(s, check, servers, roles):
     return max(140, 7 * max(len(lbl) for lbl in labels) + 24)
 
 
+def spacer_lane():
+    """An empty lane between the check lines and the server lines of History: no bar, no name, no uptime."""
+    return ("Z", ZERO_WIDTH, "vector(-2)", "vector(-2)", [(-2, ZERO_WIDTH, "transparent")])
+
+
 def board_row_height(title, height, lanes):
-    """The status history's rowHeight (a share of each lane) that makes every bar BAR_PX thick."""
-    lane = (grid_px(height) - (CHROME_TITLED if title else CHROME_UNTITLED)) / float(len(lanes))
+    """The rowHeight (a share of each lane) that makes every bar BAR_PX thick in a panel height rows tall
+    with lanes lanes, titled or not."""
+    lane = (grid_px(height) - (CHROME_TITLED if title else CHROME_UNTITLED) - PLOT_INSET) / float(len(lanes))
     return round(min(1.0, BAR_PX / lane), 2)
 
 
 def status_history(pid, title, desc, lanes, height, axis):
-    """One line of bars per lane, every bar BAR_PX thick; the time axis is the role band's."""
+    """One line of bars per lane, every bar BAR_PX thick, without a time axis: the key line under the role
+    band names the range's ends."""
     targets = [target(ref, bars, lbl, interval="1m") for ref, lbl, bars, _, _ in lanes]
     defaults = {"color": {"mode": "thresholds"}, "thresholds": steps((NODATA, None)),
                 "custom": {"axisPlacement": "auto", "axisWidth": axis, "fillOpacity": 100, "lineWidth": 0},
@@ -1741,19 +1738,20 @@ def status_history(pid, title, desc, lanes, height, axis):
 
 def uptime_column(pid, title, lanes, height):
     """The uptime of each lane, printed on the lane itself: a state timeline with the same lanes,
-    height, chrome, step and rowHeight as the bars beside it, invisible fill and no axes, so each
-    value sits on its line. Each query is the uptime read once, at the end of the range, and held
-    over it; every query returns a value, so no value slides into another line's place. The lane
-    names are distinct zero-width spaces, so no label shows. No description: the (i) would crowd the
-    title; the bars' panel explains the values."""
+    height, chrome, step and rowHeight as the bars beside it and invisible fill. Its lane-name axis is
+    1 px wide, so its plot is inset like the bars' and each value sits on its line. Each query is the
+    uptime read once, at the end of the range, and held over it; every query returns a value, so no
+    value slides into another line's place. The lane names are distinct zero-width spaces, so no label
+    shows. No description: the History panel explains the values."""
     targets = [target(ref, "last_over_time((%s %s)[1m:1m] @ end())" % (up, UP_LOST), ZERO_WIDTH * (i + 1),
                       interval="1m")
                for i, (ref, _, _, up, _) in enumerate(lanes)]
     defaults = {"color": {"fixedColor": "transparent", "mode": "fixed"}, "decimals": 2, "unit": "percentunit",
                 "thresholds": steps(("text", None)),
-                "custom": {"axisPlacement": "hidden", "fillOpacity": 0, "lineWidth": 0},
-                "mappings": range_map(0.99995, 1, "100%") + mapping((-1, "No data", GREY)) + special_map("nan", "No data")}
-    options = {"alignValue": "center", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
+                "custom": {"axisPlacement": "left", "axisWidth": 1, "fillOpacity": 0, "lineWidth": 0},
+                "mappings": range_map(0.99995, 1, "100%") + mapping((-1, "No data", GREY), (-2, ZERO_WIDTH, "transparent"))
+                + special_map("nan", "No data")}
+    options = {"alignValue": "left", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
                "mergeValues": True, "rowHeight": board_row_height(title, height, lanes), "showValue": "always",
                "tooltip": {"mode": "none", "sort": "none"}}
     p = panel(pid, "state-timeline", title, "", targets, defaults,
@@ -1776,7 +1774,9 @@ def role_lanes(s):
         return "((%s) and on () %s) or %s * 0 - 99" % (expr, evaluated(), seen('up{job="prometheus"}'))
 
     no_data = [(-99, "No data", NODATA)]
+    twice = s.remote and not s.multi
     lanes = [("A", "Validator signs through", gated(chain(
+        "%s * 0 - 6" % firing('alertname="ValidatorSigningTwice"') if twice else None,
         "(%s unless on () %s) * 0 - 4" % (firing('alertname="ValidatorNotSigning"'),
                                           firing('alertname="NodeNotAdvancing"')),
         "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "((changes(max(%s)[2m:]) == bool 0) and on () %s)"
@@ -1784,8 +1784,7 @@ def role_lanes(s):
         # Out of the set at some step of the block, as the board reads every line: never from one reading.
         "(max(%s) == 1) * 0 - 2" % in_block("max_over_time", "((max(%s) * 0 + 1) unless on () %s)"
                                             % (POWER, IN_SET_OR_NEW), sub=True),
-        "(max(%s) == 1) * 0 - 5" % in_block("max_over_time", two_signers(s), sub=True)
-        if s.remote and not s.multi else None,
+        "%s * 0 - 5" % active('alertname="ValidatorSigningTwice"') if twice else None,
         "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "((count(%s) or vector(0)) > bool 1)" % sig, sub=True)
         if s.remote else None,
         "(min(%s) == 0) * 0" % in_block("min_over_time", "(count(%s) or vector(0))" % sig, sub=True),
@@ -1793,7 +1792,7 @@ def role_lanes(s):
         "max(%s) * 0" % H)),
         [(i + 1, h, s.tint(h)) for i, h in enumerate(s.nodes)]
         + ([(-1, "Two nodes" if s.multi else "Switching", NODATA)] if s.remote else [])
-        + ([(-5, "Two signers", WARN)] if s.remote and not s.multi else [])
+        + ([(-5, "Two signers", WARN), (-6, "Two signers", ALERT)] if twice else [])
         + [(0, "No node signing", WARN), (-4, "No node signing", ALERT), (-2, "Out of set", NODATA),
            (-3, "Nodes stalled", NODATA)] + no_data)]
     if s.fibre:
@@ -1808,7 +1807,7 @@ def role_lanes(s):
             "(count(%s) > 0) * 0 - 5" % fibre_lost(s),
             '(((count(%s) or vector(0)) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))' % seen_f)),
             [(i + 1, h, s.tint(h)) for i, h in enumerate(s.fibre_hosts)]
-            + [(-1, "Two servers", WARN), (0, "No Fibre running", WARN), (-4, "No Fibre running", ALERT),
+            + [(-1, "Two Fibres", WARN), (0, "Not running", WARN), (-4, "Not running", ALERT),
                (-5, "Not seen", WARN)] + no_data))
     if s.fibre and s.remote:
         # The node Fibre sends its signing requests to: raw bytes in the last 15 minutes, else the last hour.
@@ -1828,64 +1827,64 @@ def role_lanes(s):
 
 
 def role_band(s, lanes, height, axis):
-    """The role band: who held each role over the selected time, with the time axis of the whole board."""
-    lane = (grid_px(height) - CHROME_UNTITLED - AXIS_PX) / float(len(lanes))
+    """The role band: who held each role over the selected time, its bars BAR_PX thick and, like History,
+    without a time axis, so both plots end on one x (a time axis adds 8 px of padding on the right)."""
     desc = ("Which server held each role over the selected time, read from the metrics, never from the inventory. "
-            "Validator signs through: the server whose node made the validator's signatures; a tmkms repoint shows as the "
-            "name changing, marked by a thin line")
+            "Validator signs through: the server whose node made the validator's signatures; a tmkms repoint shows "
+            "as the name changing.")
     if s.remote and not s.multi:
-        desc += (" ('Switching' while both nodes have recent signatures, up to 2 minutes; 'Two signers' in amber if "
-                 "that lasts 3 minutes)")
-    desc += "."
+        desc += " Switching: both nodes signed, as during a repoint. Two signers: ValidatorSigningTwice."
     if s.fibre:
-        desc += (" Fibre active on: the server whose Fibre unit systemd reported active; a failover shows the same "
-                 "way.")
+        desc += " Fibre active on: the server whose Fibre unit runs."
     if s.fibre and s.remote:
-        desc += (" Fibre signs through: the node Fibre sends its signing requests to (raw bytes, last 15 minutes, else "
-                 "last hour); amber when it is not the node the validator signs through, because after a repoint a "
-                 "Fibre that still dials the old node fails every upload: point Fibre's signer address at the signing "
-                 "node.")
-    desc += (" Amber: nobody held the role, or two servers did; red: the page alert for it fired. Grey 'No data' "
-             "where monitoring had no data, as on the bars. On long ranges each step shows its worst moment.")
-    desc += more(["ValidatorNotSigning"] + (["FibreDown", "FibreNotServing"] if s.fibre else []), [MAINNET_LAYOUT])
+        desc += (" Fibre signs through: the node Fibre sends its signing requests to; amber when it is not the node "
+                 "the validator signs through, because then Fibre's uploads fail.")
+    desc += " Amber: nobody or two servers held the role; red: its page alert fired."
+    desc += more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.remote and not s.multi else [])
+                 + (["FibreDown"] if s.fibre else []), [MAINNET_LAYOUT])
     targets = [target(ref, expr, lbl, interval="1m") for ref, lbl, expr, _ in lanes]
     defaults = {"color": {"fixedColor": "#8E8E8E26", "mode": "fixed"},
                 "custom": {"axisWidth": axis, "fillOpacity": 100, "lineWidth": 0},
                 "mappings": special_map("null", "No data", NODATA)}
-    overrides = [override("byFrameRefID", ref, mappings=lane_map(words)) for ref, _, _, words in lanes]
+    overrides = [override("byType", "time", custom__axisPlacement="hidden")]
+    overrides += [override("byFrameRefID", ref, mappings=lane_map(words)) for ref, _, _, words in lanes]
     options = {"alignValue": "left", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
-               "mergeValues": True, "rowHeight": round(min(1.0, BAND_BAR_PX / lane), 2), "showValue": "always",
+               "mergeValues": True, "rowHeight": board_row_height("", height, lanes), "showValue": "always",
                "tooltip": {"mode": "single", "sort": "none"}}
     p = panel(25, "state-timeline", "", desc, targets, defaults, overrides, options)
     p.update({"interval": "1m", "maxDataPoints": 1500, "transparent": True})
     return p
 
 
-def key_line(s, axis):
-    """The colour key under the role band: the one rule for every colour on the screen. Each server's
-    colour with its name (every line, bar and name it owns), then the states: fine, look soon, urgent,
-    no data. It is one line of KEY_PX in an untitled h2, moved down to the middle of the panel's
-    content by a top padding; the line and its padding stay well inside the content, so no scrollbar
-    appears (an h1 leaves exactly KEY_PX, and Grafana scrolled it). The swatches are flex items, so
-    they never make the line taller than its line height. The servers are left out where the whole
-    line would not fit at 1440 px."""
-    top = (grid_px(KEY_ROWS) - CHROME_UNTITLED - KEY_PX) // 2
+def key_line(s, axis, width):
+    """The line under the role band: the selected range's first and last moment (in the dashboard's time
+    zone, UTC) under the two ends of the plots, which have no time axis, and between them the one rule
+    for every colour on the screen: each server's colour with its name, then the states. It is one line
+    in an untitled h1 (width columns) whose font sets the line height to KEY_PX, lifted 1 px because the
+    font's glyph box is a little taller than its line, so Grafana never scrolls it (the text panel's
+    sanitiser drops line-height, overflow, flex and column-gap, but keeps font, gap, flex-grow,
+    flex-basis, flex-wrap and margin). The servers and the states are two groups in a box laid out from
+    the right that wraps upwards: where the line has no room for the servers they wrap above the panel's
+    top, which its scroll box clips without scrolling, and the states stay."""
     swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:10px;height:10px;'
               'border-radius:2px;background-color:%s;margin-right:4px"></span>%s</span>')
-    states = [(OK, "Fine"), (WARN, "Look soon"), (ALERT, "Urgent alert"), (NODATA, "No data")]
+    states = [(OK, "Fine"), (WARN, "Warning"), (ALERT, "Urgent"), (NODATA, "No data")]
     hosts = [(c, name) for _, name, c in band_columns(s) if c]
     gap = 14
-
-    def width(items):
-        return sum(text_px(t, KEY_PX) + 14 + gap for _, t in items) + 2 * gap + text_px("Times in UTC", KEY_PX)
-    if width(hosts + states) > inner_px(22) - axis - 24:
-        hosts = []
+    ends = ["${__from:text}", "${__to:text} UTC"]
+    room = (inner_px(width) - axis - text_px("2026-10-21 09:18:15", KEY_PX)
+            - text_px("2026-10-21 09:18:15 UTC", KEY_PX) - 4 * gap)
+    if sum(text_px(t, KEY_PX) + 14 for _, t in states) + gap * (len(states) - 1) > room:
+        raise SystemExit("The key line under the role band does not fit %d columns" % width)
     group = '<span style="display:flex;align-items:center;gap:%dpx">%s</span>'
-    parts = [group % (gap, "".join(swatch % (c, t) for c, t in items)) for items in (hosts, states) if items]
-    content = ('<div style="display:flex;justify-content:space-between;align-items:center;height:%dpx;font-size:%dpx;'
-               'line-height:%dpx;color:#8e8e8e;padding-top:%dpx;padding-left:%dpx"><span>Times in UTC</span>'
-               '<span style="display:flex;align-items:center;gap:%dpx">%s</span></div>'
-               % (KEY_PX, KEY_PX, KEY_PX, top, axis, 3 * gap, "".join(parts)))
+    boxes = "".join(group % (gap, "".join(swatch % (c, t) for c, t in items)) for items in (states, hosts) if items)
+    content = ('<div style="display:flex;align-items:center;height:%dpx;margin-top:-1px;font:%dpx/%dpx Inter, '
+               'Helvetica, Arial, sans-serif;color:#8e8e8e;padding-left:%dpx">'
+               '<span style="flex-shrink:0">%s</span>'
+               '<span style="flex-grow:1;flex-basis:0;min-width:0;height:%dpx;display:flex;flex-direction:row-reverse;'
+               'flex-wrap:wrap-reverse;justify-content:center;align-items:center;gap:0 %dpx;margin:0 %dpx">%s</span>'
+               '<span style="flex-shrink:0">%s</span></div>'
+               % (KEY_PX, KEY_PX, KEY_PX, axis, ends[0], KEY_PX, 3 * gap, 2 * gap, boxes, ends[1]))
     return {"id": 24, "type": "text", "title": "", "transparent": True,
             "options": {"content": content, "mode": "html"}}
 
@@ -2131,9 +2130,9 @@ def servers_table(s):
 # across a row shows where a part runs), over a bar gauge of the server's hardware now in the
 # server's colour. Roles come from the metrics, as everywhere: a tmkms repoint or a Fibre failover
 # moves the words between cards. Words are plain text while fine, amber or red only where an alert
-# watches, grey for "–" (not on this server) and "No data".
+# watches, grey for "Not here" (the part does not run on this server) and "No data".
 
-NOTHING = [(-8, "No data", GREY), (-9, "–", GREY)]
+NOTHING = [(-8, "No data", GREY), (-9, "Not here", GREY)]
 
 
 def band_columns(s):
@@ -2155,11 +2154,13 @@ def pick(expr, host):
 
 
 def node_part(s):
-    """What each consensus node does now, one series per host, as a code of node_words. The node a
-    repoint leaves is a backup at once, as the signer card says Switching meanwhile."""
+    """What each consensus node does now, one series per host, as a code of NODE_WORDS. The node a
+    repoint leaves is a backup at once, as the signer card says Switching meanwhile. Two signers is
+    ValidatorSigningTwice itself, amber while pending, red once it pages."""
     sig = signing_nodes(s)
     signing = sig
-    if s.remote and not s.multi:
+    twice = s.remote and not s.multi
+    if twice:
         fresh = newer(s)
         leaving = ("((%s unless on (host) %s) and on () (count(%s) > 0) unless on () %s)"
                    % (sig, fresh, fresh, two_signers(s)))
@@ -2177,7 +2178,8 @@ def node_part(s):
         "%s * 0 + 11" % loop,
         "(%s unless on (host) %s) * 0 + 10" % (down, NE_UP),
         "%s * 0 + 9" % down,
-        "(%s and on () %s) * 0 + 4" % (signing, two_signers(s)) if s.remote and not s.multi else None,
+        "(((%s and on () %s) * 0 + 4) + on () group_left () %s)" % (signing, two_signers(s), twice10(s))
+        if twice else None,
         "%s * 0 + 1" % signing,
         "(%s and on (host) %s) * 0 + 8" % (up, stalled),
         "(%s and on (host) %s and on () count(%s)) * 0 + 3" % (up, behind, sig),
@@ -2188,48 +2190,93 @@ def node_part(s):
         "%s * 0 + 12" % up)
 
 
-def node_words(s):
-    words = [(1, "Signing", "text"), (2, "Backup, in sync", "text"), (3, "Backup, behind", "orange"),
-             (13, "Behind", "orange"), (6, "Not signing", "orange"), (16, "Not signing", "red"),
-             (7, "Syncing", "text"), (8, "Stalled", "orange"), (9, "Down", "orange"), (10, "Not reporting", "orange"),
-             (11, "Crash loop", "orange"), (12, "In sync", "text")]
-    if s.remote and not s.multi:
-        words.append((4, "Two signers", "orange"))
-    return words + NOTHING
+# The Consensus node row: (code, words, words with a number, colour). The number ({peers}: the node's
+# peers; {lag}: blocks behind the highest node) shows while it is known and has at most three digits;
+# otherwise the plain words.
+NODE_WORDS = [(1, "Signing", "Signing · {peers} peers", "text"), (2, "Backup", "Backup · {peers} peers", "text"),
+              (3, "Backup, behind", "Backup, {lag} behind", "orange"), (13, "Behind", "{lag} blocks behind", "orange"),
+              (4, "Two signers", None, "orange"), (14, "Two signers", None, "red"),
+              (6, "Not signing", None, "orange"), (16, "Not signing", None, "red"),
+              (7, "Syncing", "Syncing, {lag} behind", "text"), (8, "Stalled", None, "orange"),
+              (9, "No node data", None, "orange"), (10, "Not reporting", None, "orange"),
+              (11, "Crash loop", None, "orange"), (12, "In sync", "In sync · {peers} peers", "text")] + \
+    [(c, w, None, color) for c, w, color in NOTHING]
+NUMBER_SAMPLE = "999"
+
+
+def text_row(code, words, numbers):
+    """A card row whose words carry numbers, as one series with the label text: code is the row's code
+    (one series), words (code, words, words with numbers, colour) as NODE_WORDS, numbers (name, query of
+    one series) the numbers by name. count_values turns the code and each number into a label; a missing
+    number leaves its label empty, and its code shows the plain words. The colour rides on the text's
+    last, invisible character (MARKS)."""
+    x = 'count_values("code", %s)' % code
+    names = [n for n, _ in numbers]
+    for name, expr in numbers:
+        x = ("(%s * on () group_left (%s) (count_values(%s, %s) or (vector(1) unless on () count(%s))))"
+             % (x, name, q(name), expr, expr))
+    x = 'label_join(%s, "key", ":", %s)' % (x, ", ".join(q(n) for n in ["code"] + names))
+    for c, plain, numbered, color in words:
+        mark = MARKS.get(color, "")
+        x = 'label_replace(%s, "text", %s, "key", %s)' % (x, q(plain + mark), q("%d(:.*)?" % c))
+        if numbered:
+            used = [n for n in names if "{%s}" % n in numbered]
+            pattern = ":".join(["%d" % c] + ["([0-9]{1,3})" if n in used else "[^:]*" for n in names])
+            text = numbered
+            for i, n in enumerate(used, 1):
+                text = text.replace("{%s}" % n, "${%d}" % i)
+            x = 'label_replace(%s, "text", %s, "key", %s)' % (x, q(text + mark), q(pattern))
+    return "max by (text) (%s)" % x
+
+
+def text_words(words):
+    """Every text a text_row can show, numbers as NUMBER_SAMPLE, as (code, text, colour), for the fit checks."""
+    out = []
+    for c, plain, numbered, color in words:
+        out.append((c, plain, color))
+        if numbered:
+            out.append((c, re.sub(r"\{\w+\}", NUMBER_SAMPLE, numbered), color))
+    return out
+
+
+def text_maps():
+    """The colours of a text_row: its invisible last character, as regex mappings."""
+    return [m for color, mark in MARKS.items() for m in regex_map(".*" + mark, color)]
+
+
+def node_row(s, host):
+    """The Consensus node row of host's card: its code, with its peers and how far it lags."""
+    sel = "{job=\"celestia-app\",host=%s}" % q(host)
+    numbers = [("peers", "max(cometbft_p2p_peers%s)" % sel),
+               ("lag", "(max(%s) - max(cometbft_consensus_height%s))" % (H, sel))]
+    return text_row("(%s or vector(-8))" % pick(node_part(s), host), NODE_WORDS, numbers)
 
 
 def fibre_part(s):
-    """What each Fibre host does now, one series per host, as a code of fibre_words. A standby stopped
-    by design is plain text; it turns amber only where it could not take over (its collector is down)."""
+    """What each Fibre host does now, one series per host, as a code of fibre_words(s). A standby stopped
+    by design is plain text; it turns amber only where it could not take over (its collector is down).
+    FibreNotServing shows by its reason while pending or firing, as the Status cell and the Fibre tile."""
     seen_f = fibre_seen(s)
-    ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
-    fail = ('((sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[5m])) > 0) '
-            "unless on (host) (sum by (host) (increase(%s[5m])) > 0))" % ok)
-    rejected = "(sum by (host) (increase(fibre_server_upload_shard_rejected_total[5m])) > 0)"
-    budget = "max by (host) (fibre_server_upload_shard_budget_bytes)"
     loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'
-    not_serving = 'max by (host) (ALERTS{alertname="FibreNotServing",alertstate="firing"})'
     collector = '(max by (host) (up{job="otelcol"}) == 1)'
     down10 = '(max(ALERTS{alertname="FibreDown",check="",alertstate="firing"}) * 10 or vector(0))'
-    return chain(
-        "%s * 0 + 11" % loop,
-        "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f),
-        "(%s unless on (host) %s) * 0 + 5" % (seen_f, budget),
-        "(%s and on (host) %s and on (host) %s) * 0 + 4" % (seen_f, fail, rejected),
-        "(%s and on (host) %s) * 0 + 3" % (seen_f, fail),
-        "(%s and on (host) %s) * 0 + 12" % (seen_f, not_serving),
-        "%s * 0 + 1" % seen_f,
-        "(((%s * 0 + 8) unless on () count(%s)) + on () group_left () %s)" % (NE_UP, seen_f, down10),
-        "(%s unless on (host) %s) * 0 + 9" % (NE_UP, collector),
-        "%s * 0 + 6" % NE_UP,
-        "%s * 0 + 10" % lookup(s.fibre_hosts))
+    reasons = ['max by (host) (ALERTS{alertname="FibreNotServing",reason=%s}) * 0 + %d' % (q(r), 21 + i)
+               for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
+    return chain(*(
+        ["%s * 0 + 11" % loop, "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f)] + reasons
+        + ["%s * 0 + 1" % seen_f,
+           "(((%s * 0 + 8) unless on () count(%s)) + on () group_left () %s)" % (NE_UP, seen_f, down10),
+           "(%s unless on (host) %s) * 0 + 9" % (NE_UP, collector),
+           "%s * 0 + 6" % NE_UP,
+           "%s * 0 + 10" % lookup(s.fibre_hosts)]))
 
 
-FIBRE_WORDS = [(1, "Active, serving", "text"), (3, "Active, uploads fail", "orange"),
-               (4, "Active, storage full", "orange"), (5, "Active, no metrics", "orange"),
-               (12, "Active, not serving", "orange"), (7, "Two active", "orange"), (6, "Standby, stopped", "text"),
-               (9, "Standby, no collector", "orange"), (8, "Stopped", "orange"), (18, "Stopped", "red"),
-               (10, "Not reporting", "orange"), (11, "Crash loop", "orange")] + NOTHING
+def fibre_words(s):
+    """The Fibre row's words: D2's names for FibreNotServing's reasons, FibreBothActive and FibreDown."""
+    return ([(1, "Active, serving", "text"), (7, "Two Fibres", "orange"), (6, "Standby, stopped", "text"),
+             (9, "Standby, no collector", "orange"), (8, "Not running", "orange"), (18, "Not running", "red"),
+             (10, "Not reporting", "orange"), (11, "Crash loop", "orange")]
+            + [(21 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)] + NOTHING)
 
 
 def fibre_signer(s):
@@ -2266,52 +2313,56 @@ def signer_service(s, host):
 
 
 def card_rows(s, kind, host, short):
-    """(name, query, words) of each row of a card. Server cards: Consensus node, Fibre (Fibre on),
-    Monitoring (when the monitor is a server), "–" where the part does not run. The signer's card,
-    as many rows: where the validator signs, where Fibre signs (Fibre on), then the signer's own
-    service (scraped) or its server health (not monitored). short: the names that fit a quarter."""
+    """(name, query, words, text) of each row of a card; text: the query gives the label text (text_row),
+    else a code of words. Server cards: Consensus node, Fibre (Fibre on), Monitoring (when the monitor is
+    a server), "Not here" where the part does not run. The signer's card, as many rows: where the
+    validator signs, where Fibre signs (Fibre on), then the signer's own service (scraped) or its server
+    health (not monitored). short: the names that fit a quarter."""
     if kind == "server":
-        rows = [("Consensus node", "%s or vector(-8)" % pick(node_part(s), host) if host in s.nodes else "vector(-9)",
-                 node_words(s))]
+        node = (node_row(s, host) if host in s.nodes else
+                text_row("vector(-9)", [w for w in NODE_WORDS if w[0] == -9], []))
+        rows = [("Node" if short else "Consensus node", node, text_words(NODE_WORDS), True)]
         if s.fibre:
             rows.append(("Fibre", "%s or vector(-8)" % pick(fibre_part(s), host) if host in s.fibre_hosts
-                         else "vector(-9)", FIBRE_WORDS))
+                         else "vector(-9)", fibre_words(s), False))
         if s.monitor in s.servers:
-            rows.append(("Monitoring", monitoring_now(s) if host == s.monitor else "vector(-9)", MONITOR_WORDS + NOTHING))
+            rows.append(("Monitoring", monitoring_now(s) if host == s.monitor else "vector(-9)", MONITOR_WORDS + NOTHING,
+                         False))
         return rows
-    rows = [("Signs through" if short else "Validator signs through", signing_expr(s), signing_words(s) + NOTHING)]
+    rows = [("Signs through" if short else "Validator signs through", signing_expr(s), signing_words(s) + NOTHING, False)]
     if s.fibre:
-        rows.append(("Fibre via" if short else "Fibre signs through", fibre_signer(s), fibre_signer_words(s)))
+        rows.append(("Fibre via" if short else "Fibre signs through", fibre_signer(s), fibre_signer_words(s), False))
     if kind == "kms":
         rows.append(("Signer service", signer_service(s, host),
                      [(1, "Running", "text"), (3, "Stopped", "orange"), (4, "Not loaded", "orange"),
-                      (10, "Not reporting", "orange"), (11, "Crash loop", "orange")] + NOTHING))
+                      (10, "Not reporting", "orange"), (11, "Crash loop", "orange")] + NOTHING, False))
     else:
-        rows.append(("Server health", "vector(-10)", [(-10, "Not monitored", GREY)] + NOTHING))
+        rows.append(("Server health", "vector(-10)", [(-10, "Not monitored", GREY)] + NOTHING, False))
     return rows
 
 
 def card_fits(rows, size, width):
     """Every row's name and its longest word fit one line of a card width columns wide at size px."""
     room = inner_px(width) - 2 * CARD_PAD - CARD_GAP
-    return all(text_px(name, size) + 4 + max(text_px(w, size) for _, w, _ in words) <= room for name, _, words in rows)
+    return all(text_px(name, size) + 4 + max(text_px(w, size) for _, w, _ in words) <= room
+               for name, _, words, _ in rows)
 
 
 def bar_names_fit(names, width):
-    """Every bar gauge name fits Grafana's left name box of a panel width columns wide."""
-    return all(text_px(n, BAR_NAME_PX, BAR_NAME_EM) <= BAR_NAME_SHARE * inner_px(width) - BAR_NAME_PAD for n in names)
+    """Every bar gauge name fits the line above its bar in a panel width columns wide."""
+    return all(text_px(n, BAR_NAME_PX) <= inner_px(width) - 2 * CARD_PAD for n in names)
 
 
 def band_bars(pid, title, desc, fields, hue, unit, maximum, decimals, overrides=()):
-    """Four bars, one per (name, query) of fields, from 0 to maximum, in the column's colour (hue), the
-    name on the left and the value at the bar's end in the bar's colour. No unfilled track: Grafana
-    sizes each value box to its own text, so a track's right end would move with every value."""
+    """Four bars, one per (name, query) of fields, from 0 to maximum, in the column's colour (hue): the
+    name above each bar at BAR_NAME_PX, the value at the end of a faint full-width track, so the track
+    ends of every column fall on one line."""
     defaults = {"color": {"mode": "thresholds"}, "decimals": decimals, "max": maximum, "min": 0, "unit": unit,
                 "noValue": "No data", "thresholds": steps((hue, None)),
-                "mappings": mapping(*NOTHING) + special_map("nan", "–", GREY)}
-    options = {"displayMode": "basic", "maxVizHeight": 24, "minVizHeight": 12, "namePlacement": "left",
+                "mappings": mapping(*NOTHING) + special_map("nan", "No data", GREY)}
+    options = {"displayMode": "basic", "maxVizHeight": 40, "minVizHeight": 16, "namePlacement": "top",
                "orientation": "horizontal", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-               "showUnfilled": False, "sizing": "manual",
+               "showUnfilled": True, "sizing": "auto",
                "text": {"titleSize": BAR_NAME_PX, "valueSize": BAR_VALUE_PX}, "valueMode": "color"}
     targets = [target(chr(65 + i), expr, name, instant=True) for i, (name, expr) in enumerate(fields)]
     return panel(pid, "bargauge", title, desc, targets, defaults, overrides, options)
@@ -2337,7 +2388,7 @@ def disk_now(s, host):
         "max(%s) * 0 - 4" % " or ".join(tight) if tight else None,
         "(1 - min(%s))" % " or ".join(limited),
         # A host whose only watched disk is a Fibre store with a budget: the Fibre row shows it.
-        "vector(%d)" % (-8 if data else -9))
+        "vector(%d)" % (-8 if data else -5))
 
 
 def network_now(s, host):
@@ -2356,115 +2407,121 @@ def network_now(s, host):
                  '(max(up{job="node",host=%s}) == 1) * 0 - 4' % q(host), "vector(-8)")
 
 
+HARDWARE_NAMES = ["CPU", "Memory", "Disk used", "Network peak"]
+
+
 def hardware(s, pid, host, hue, title):
     """Hardware now of one server: CPU, memory, its fullest watched disk and its network peak."""
     sel = "host=%s" % q(host)
-    fields = [
-        ("CPU", '1 - sum(rate(node_cpu_seconds_total{%s,mode=~"idle|iowait"}[5m])) / '
-                'count(node_cpu_seconds_total{%s,mode="idle"}) or vector(-8)' % (sel, sel)),
-        ("Memory", "1 - max(node_memory_MemAvailable_bytes{%s}) / max(node_memory_MemTotal_bytes{%s}) or vector(-8)"
-         % (sel, sel)),
-        ("Disk", disk_now(s, host)),
-        ("Network peak", network_now(s, host)),
-    ]
-    desc = ("Share in use on %s now: CPU (5-minute average; on a VM, steal counts as busy), memory, the fullest disk "
-            "DiskLow watches by its free space (the data disks you listed, and a Fibre store while Fibre reports no "
-            "storage budget), and the busiest minute of the last hour on its link against the link speed "
-            "(celestia_mon_link_mbps, else the NIC speed; '–' while neither is known). No alert watches CPU, memory or "
-            "the link, so their bars keep the server's colour at any value. Disk turns amber below %g%% free (DiskLow "
-            "sends a message after %s), and shows DiskLow's other conditions as words: amber 'Read-only', amber "
-            "'Too small' (a Fibre store with less free space than its budget still needs), red 'Full or read-only' "
-            "once DiskLow pages. The history: the Servers section below." % (host, s.DM * 100, s.hold("DiskLow low space"))
+    fields = list(zip(HARDWARE_NAMES, [
+        '1 - sum(rate(node_cpu_seconds_total{%s,mode=~"idle|iowait"}[5m])) / '
+        'count(node_cpu_seconds_total{%s,mode="idle"}) or vector(-8)' % (sel, sel),
+        "1 - max(node_memory_MemAvailable_bytes{%s}) / max(node_memory_MemTotal_bytes{%s}) or vector(-8)" % (sel, sel),
+        disk_now(s, host),
+        network_now(s, host)]))
+    desc = ("How busy %s is now: CPU over 5 minutes, memory, its fullest watched disk, and the busiest minute of the "
+            "last hour on its link. Disk used turns amber at %g%% and red at %g%%, DiskLow's levels (it sends a message "
+            "after %s); the other bars have no alert and keep the server's colour. Their history: the Servers row "
+            "below." % (host, (1 - s.DM) * 100, (1 - s.DP) * 100, s.hold("DiskLow low space"))
             + more(["DiskLow"], [NODE_EXPORTER_FULL]))
-    disk = override("byFrameRefID", "C", thresholds=steps((hue, None), ("orange", round(1 - s.DM, 6))),
-                    mappings=mapping((-7, "Full or read-only", "red"), (-6, "Read-only", "orange"),
-                                     (-4, "Too small", "orange"), *NOTHING) + special_map("nan", "–", GREY))
-    link = override("byFrameRefID", "D", mappings=mapping((-4, "–", GREY), *NOTHING) + special_map("nan", "–", GREY))
+    disk = override("byFrameRefID", "C",
+                    thresholds=steps((hue, None), ("orange", round(1 - s.DM, 6)), ("red", round(1 - s.DP, 6))),
+                    mappings=mapping(*NOTHING, (-7, "Full or read-only", "red"), (-6, "Read-only", "orange"),
+                                     (-4, "Too small", "orange"), (-5, "Fibre store", GREY), (-9, "Not watched", GREY))
+                    + special_map("nan", "No data", GREY))
+    link = override("byFrameRefID", "D", mappings=mapping(*NOTHING, (-4, "Speed unknown", GREY), (-9, "Not watched", GREY))
+                    + special_map("nan", "No data", GREY))
     return band_bars(pid, title, desc, fields, hue, "percentunit", 1, 0, [disk, link])
 
 
-HARDWARE_NAMES = ["CPU", "Memory", "Disk", "Network peak"]
-
-
-def signing_names(s, short):
-    """The names of the signer's four bars: the median, then the slowest 1% of votes, of proposals and
-    of Fibre's signatures (without Fibre: of every signature over the day)."""
-    if short:
-        return ["Median", "Votes", "Proposals", "Fibre" if s.fibre else "Day"]
-    return ["Median signing time", "Slowest 1%, votes", "Slowest 1%, proposals",
+def signing_names(s):
+    """The names of the signer's four bars: the median against its limit, then the slowest 1% of votes, of
+    proposals and of Fibre's signatures (without Fibre: of every signature over the day)."""
+    return ["Median (limit %s ms)" % s.ms(), "Slowest 1%, votes", "Slowest 1%, proposals",
             "Slowest 1%, Fibre" if s.fibre else "Slowest 1%, 24 h"]
 
 
-def signing_time(s, pid, hue, short, title):
-    """The signer's lower panel: how fast it signs, against Celestia's 10 ms limit for the median."""
+def signing_time(s, pid, hue, title):
+    """The signer's lower panel: how fast it signs, in ms, against Celestia's limit for the median; the
+    proposals bar says "Bad proposals" while RemoteSignerProblem's proposal failures fire."""
     sig = signing_nodes(s)
     bucket = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type%s}'
-    p99 = "max(histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) and on (host) %s) or vector(-9)"
-    names = signing_names(s, short)
+    p99 = "max(histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) and on (host) %s) * 1000 or vector(-9)"
+    names = signing_names(s)
     exprs = [
         'max(max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) and on (host) %s) '
-        "or vector(-9)" % sig,
+        "* 1000 or vector(-9)" % sig,
         p99 % (bucket % '=~"prevote|precommit"', "5m", sig),
-        p99 % (bucket % '="proposal"', "24h", sig),
+        'max(ALERTS{alertname="RemoteSignerProblem",reason!="",alertstate="firing"}) * 0 - 5 or '
+        + p99 % (bucket % '="proposal"', "24h", sig),
         p99 % (bucket % '="raw_bytes"', "1h", "(sum by (host) (increase(%s[1h])) > 0)" % RAW) if s.fibre else
         p99 % (bucket % '=~"prevote|precommit|proposal"', "24h", sig)]
-    desc = ("How fast the remote signer signs, read on the node the validator signs through. %s: the median of the "
-            "node's last 50 signatures, which Celestia requires at or under %s ms; amber from there "
-            "(RemoteSignerProblem sends a message after %s). %s and %s: the slowest 1%% of vote signatures over 5 "
-            "minutes and of block proposals over 24 hours" % (names[0], s.ms(), s.hold("RemoteSignerProblem slow"),
-                                                              names[1], names[2]))
-    if s.fibre:
-        desc += ("; %s: the slowest 1%% of Fibre's signatures over the last hour, on the node Fibre signs through"
-                 % names[3])
-    else:
-        desc += "; %s: the slowest 1%% of every signature over 24 hours" % names[3]
-    desc += (". The bars run from 0 to %s ms across the panel. '–': no node signs, or no such signature in the window. tmkms's own server is not "
-             "scraped (celestia_mon_kms_scrape), so this is all the dashboard sees of it." % s.ms()
-             + more(["RemoteSignerProblem"]))
-    median = override("byFrameRefID", "A", thresholds=steps((hue, None), ("orange", s.S)))
-    return band_bars(pid, title, desc, list(zip(names, exprs)), hue, "s", s.S, 2, [median])
+    desc = ("How fast the remote signer signs, on the node it signs through. Median: of the last 50 signatures; "
+            "Celestia requires at most %s ms, so the bar turns amber there (RemoteSignerProblem after %s). Slowest "
+            "1%%: of votes over 5 minutes, of proposals over 24 hours%s. Bad proposals: RemoteSignerProblem's "
+            "proposal failures. None: no such signature in the window."
+            % (s.ms(), s.hold("RemoteSignerProblem slow"),
+               ", of Fibre's signatures over the last hour" if s.fibre else ", of every signature over 24 hours")
+            + more(["RemoteSignerProblem"]))
+    median = override("byFrameRefID", "A", thresholds=steps((hue, None), ("orange", s.S * 1000)))
+    proposals = override("byFrameRefID", "C", mappings=mapping((-5, "Bad proposals", "orange"), (-9, "None", GREY),
+                                                               (-8, "No data", GREY)))
+    p = band_bars(pid, title, desc, list(zip(names, exprs)), hue, "ms", s.S * 1000, 2, [median, proposals])
+    p["fieldConfig"]["defaults"]["mappings"] = mapping((-9, "None", GREY), (-8, "No data", GREY))
+    return p
 
 
 def card_desc(s, kind, rows):
     """The (i) of a card that shows rows (as card_rows gives them)."""
     if kind == "server":
-        desc = ("What runs on this server now and the role it holds, read from the metrics, never from the inventory, so "
-                "it follows a tmkms repoint or a Fibre failover. Consensus node: 'Signing' while the validator's "
-                "signatures go through this node; 'Backup, in sync' for a node that can take over (within %g blocks of "
-                "the highest node); amber 'Backup, behind' beyond that (NodeBehind sends a message after %s), 'Stalled', "
-                "'Down', 'Not reporting' or 'Crash loop'; 'Not signing' while no node signs (red once ValidatorNotSigning "
-                "pages)." % (s.NB, s.hold("NodeBehind")))
+        desc = ("What runs on this server now, read from the metrics, so it follows a tmkms repoint or a Fibre "
+                "failover. Consensus node: Signing or Backup, with its peers; amber 'Backup, N behind' past %g blocks "
+                "(NodeBehind)." % s.NB)
         if s.remote and not s.multi:
-            desc += " 'Two signers' in amber while two nodes have signed for 3 minutes: stop one."
+            desc += " Two signers: ValidatorSigningTwice, red once it pages; stop one signer."
         if s.fibre:
-            desc += (" Fibre: 'Active, serving' where the Fibre unit runs, sends its metrics and does not fail its "
-                     "uploads (no recent upload is needed: on a quiet network that is normal); 'Standby, stopped' "
-                     "where it is installed and stopped on purpose, which is fine; amber where it fails uploads, has a "
-                     "full storage budget, sends no metrics, or FibreNotServing fires; 'Two active' (FibreBothActive), "
-                     "'Stopped' while no Fibre runs anywhere (red once FibreDown pages), 'Standby, no collector' when "
-                     "a standby could not report if started.")
+            desc += (" Fibre: Active or Standby; amber words name a Fibre alert, as the Fibre tile.")
         if s.monitor in s.servers:
-            desc += (" Monitoring: 'Working' while the alert rules run, Alertmanager is up and reached and the heartbeat "
-                     "goes out.")
-        return desc + " '–': not on this server." + more(["NodeBehind", "ServiceDown"] + (
-            ["FibreDown", "FibreNotServing", "FibreBothActive"] if s.fibre else []), [MAINNET_LAYOUT])
+            desc += " Monitoring: as the Monitoring line of History."
+        return desc + " Not here: the part does not run on this server." + more(
+            ["NodeBehind", "ServiceDown"] + (["FibreNotServing"] if s.fibre else []), [MAINNET_LAYOUT])
     shown = len(rows)
-    desc = ("Where the remote signer signs: through which node the validator's signatures go now (as the Signing "
-            "through answer; 'Switching' during a repoint, amber 'Two signers' if both keep signing)")
+    desc = ("Where the remote signer signs now: the node the validator's signatures go through")
     if s.fibre and shown > 1:
-        desc += (", and through which node Fibre signs, from its own signatures (the last hour, else the last day on a "
-                 "quiet network). Fibre's node in amber: it is not the node the validator signs through; after a "
-                 "repoint, point Fibre's signer address at the signing node, or its uploads fail")
+        desc += (", and the node Fibre's go through, amber when they differ, because then Fibre's uploads fail")
+    desc += "."
     if kind == "kms":
         if shown == (3 if s.fibre else 2):
-            desc += ". Signer service: tmkms's unit on this server, as ServiceDown reads it."
-        else:
-            desc += ". ServiceDown watches tmkms's unit on this server."
+            desc += " Signer service: tmkms's unit on this server, as ServiceDown reads it."
     else:
-        desc += (". tmkms's own server is not scraped (celestia_mon_kms_scrape), so its disk, memory and service are not "
-                 "read: only its signing is, through the nodes.")
+        desc += " tmkms's own server is not scraped (celestia_mon_kms_scrape): only its signing is seen."
     return desc + more(["ValidatorNotSigning", "RemoteSignerProblem"] + (["ServiceDown"] if kind == "kms" else []),
                        [MAINNET_LAYOUT])
+
+
+def card(s, pid, title, desc, rows, size):
+    """A card: a stat of rows, the name left and the words right. A card with a text row (text_row) reads
+    every row as a table and keeps only the text and the other rows' values, in row order."""
+    texts = any(t for _, _, _, t in rows)
+    refs_ = [chr(65 + j) for j in range(len(rows))]
+    targets = [target(r, e, "" if texts else ROW_INDENT + nm, instant=True, fmt="table" if texts else None)
+               for r, (nm, e, _, _) in zip(refs_, rows)]
+    overrides = []
+    for r, (nm, _, words, text) in zip(refs_, rows):
+        props = {"mappings": text_maps() if text else mapping(*words)}
+        if texts:
+            props["displayName"] = ROW_INDENT + nm
+        overrides.append(override("byFrameRefID", r, **props))
+    p = stat(pid, title, desc, targets, mappings=mapping(*NOTHING), no_value="No data", size=size, title_size=size,
+             text_mode="value_and_name", justify="auto", orientation="horizontal", wide=True, overrides=overrides)
+    if texts:
+        # Grafana names each table query's value "Value #<refId>" when there are several, else "Value".
+        keep = ["text"] + ["Value #%s" % r if len(rows) > 1 else "Value"
+                           for r, (_, _, _, t) in zip(refs_, rows) if not t]
+        p["transformations"] = [{"id": "filterFieldsByName",
+                                 "options": {"include": {"pattern": "^(%s)$" % "|".join(keep)}}}]
+        p["options"]["reduceOptions"]["fields"] = "/.*/"
+    return p
 
 
 def servers_band(s):
@@ -2478,19 +2535,19 @@ def servers_band(s):
         return [(h_table, [(table, 24)])]
     w = 24 // n if n > 1 else 12
     signer = any(kind == "signer" for kind, _, _ in cols)
-    # The full names where every card and the signer's bars fit them, else the short ones.
+    # The full names where every card fits them, else the short ones.
     for short in (False, True):
         rows = [card_rows(s, kind, host, short) for kind, host, _ in cols]
         # The signer's card shows its first rows, as many as a server's card has.
         count = len(next(r for (kind, _, _), r in zip(cols, rows) if kind == "server"))
         rows = [r[:count] for r in rows]
         size = next((z for z in CARD_SIZES if all(card_fits(r, z, w) for r in rows)), None)
-        if size and (short or not signer or bar_names_fit(signing_names(s, False), w)):
+        if size:
             break
     if size is None:
         raise SystemExit("The Servers band: a card's row does not fit its %d columns even at %d px; shorten the host "
                          "names in the inventory" % (w, CARD_SIZES[-1]))
-    if not bar_names_fit(HARDWARE_NAMES + (signing_names(s, short) if signer else []), w):
+    if not bar_names_fit(HARDWARE_NAMES + (signing_names(s) if signer else []), w):
         raise SystemExit("The Servers band: a bar's name does not fit %d columns" % w)
     if len({len(r) for r in rows}) != 1:
         raise SystemExit("The Servers band: the cards must have the same rows")
@@ -2499,22 +2556,16 @@ def servers_band(s):
     for i, ((kind, name, hue), r) in enumerate(zip(cols, rows)):
         hue = hue or NETWORK
         title = name
-        if kind == "signer":
-            title = next((t for t in ("%s · seen through the nodes" % name, name)
+        if kind != "server":
+            title = next((t for t in ("%s · remote signer" % name, name)
                           if text_px(t, TITLE_PX) <= inner_px(w) - TITLE_CHROME), name)
         if text_px(title, TITLE_PX) > inner_px(w) - TITLE_CHROME:
             raise SystemExit("The Servers band: the title %r does not fit %d columns; shorten the host name" % (title, w))
-        p = stat(30 + i, title, card_desc(s, kind, r), [target(chr(65 + j), e, ROW_INDENT + nm, instant=True)
-                                                       for j, (nm, e, _) in enumerate(r)],
-                 mappings=mapping(*NOTHING), no_value="No data", size=size, title_size=size,
-                 text_mode="value_and_name", justify="auto", orientation="horizontal", wide=True,
-                 overrides=[override("byFrameRefID", chr(65 + j), mappings=mapping(*words))
-                            for j, (_, _, words) in enumerate(r)])
-        cards.append((p, w))
+        cards.append((card(s, 30 + i, title, card_desc(s, kind, r), r, size), w))
         # One server: its hardware beside its card, titled, so both panels' content starts on one line.
         under = "Hardware now" if n == 1 else ""
         if kind == "signer":
-            lower.append((signing_time(s, 34 + i, hue, short, under), w))
+            lower.append((signing_time(s, 34 + i, hue, under), w))
         else:
             lower.append((hardware(s, 34 + i, name, hue, under), w))
     if n == 1:
@@ -2523,47 +2574,30 @@ def servers_band(s):
     return [(height, cards), (LOWER_ROWS, lower)]
 
 
+UPTIME_W = 3                             # the Uptime column: "Uptime" whole at 1440 px with the menu docked
+
+
 def first_screen(s):
     """The lines of the first screen: the intro strip (with the Status), the answers, the Servers band,
-    the status board with its uptime columns, the role band and the key."""
+    History (the check lines, a gap, the server lines) with its Uptime column, the role band and the
+    key line."""
     check, servers, roles = check_lanes(s), server_lanes(s), role_lanes(s)
+    lanes = check + [spacer_lane()] + servers
     axis = axis_width(s, check, servers, roles)
-    h_check = grid_rows(LANE_PX * len(check), CHROME_TITLED)
-    h_servers = max(2, grid_rows(LANE_PX * len(servers), CHROME_UNTITLED))
-    h_roles = grid_rows(LANE_PX * len(roles) + AXIS_PX, CHROME_UNTITLED)
-    desc = CHECK_DESC
-    desc += (" Monitoring: the alert rules, alert delivery, Alertmanager, the heartbeat to your dead-man service"
-             "%s. Hover a bar to see every line at that moment. Prometheus keeps %s of data, or less at its size "
-             "limit; older bars are grey. Each bar is drawn centred on the start of its block, so it sits half a block "
-             "to the left of the charts below." % (" and Celestia's announcements" if s.announcements else "",
-                                                     s.retention))
-    # The uptime columns beside the bars have no description of their own: it is here.
-    desc += (" Node in sync: the nodes advance (NodeNotAdvancing) and none lags behind the others (NodeBehind). "
-             "Uptime, the value at the right of each line, over the selected time: Node in sync, minutes in which "
-             "the nodes advanced and none was behind; Validator signing, the share of blocks that carry the "
-             "validator's signature (blocks while it was not signing at all count as unsigned)")
-    if s.remote:
-        desc += "; Remote signer, minutes in which it signed without a signer alert"
-    if s.fibre:
-        desc += "; Fibre serving, minutes with a Fibre server running and not failing every upload"
-    if s.tensile:
-        desc += "; Fibre from outside, minutes in which a recent outside check reached the right endpoint"
-    desc += ("; Monitoring, minutes with alert rules running, Alertmanager up and reached, and the heartbeat flowing. "
-             "Time without monitoring data is left out, the minute Prometheus starts included." + more(pages=[("Alert reference", DOCS)]))
-    server_desc = ("One line per server: red when its disk is full or read-only (DiskLow pages), amber when it is not "
-                   "reporting, a service is down, its disk runs low or turns read-only, or its node falls behind. "
-                   "Uptime at the right: minutes in which all of the server's metrics answered and its disk was not "
-                   "full or read-only." + more(["ServiceDown", "DiskLow", "NodeBehind"]))
+    h_board = grid_rows(LANE_PX * len(lanes) + PLOT_INSET, CHROME_TITLED)
+    h_roles = grid_rows(LANE_PX * len(roles) + PLOT_INSET, CHROME_UNTITLED)
+    desc = HISTORY_DESC + more(pages=[("Alert reference", DOCS), PANEL_GUIDE])
+    w = 24 - UPTIME_W
+    if text_px("Uptime", TITLE_PX) > inner_px(UPTIME_W) - (TITLE_CHROME - 40):
+        raise SystemExit("The Uptime column's title does not fit %d columns" % UPTIME_W)
     return [
         (INTRO_ROWS, intro(s)),
-        (3, answer_tiles(s)),
+        (INTRO_ROWS, answer_tiles(s)),
     ] + servers_band(s) + [
-        (h_check, [(status_history(20, "Status", desc, check, h_check, axis), 22),
-                   (uptime_column(21, "Uptime", check, h_check), 2)]),
-        (h_servers, [(status_history(22, "", server_desc, servers, h_servers, axis), 22),
-                     (uptime_column(23, "", servers, h_servers), 2)]),
-        (h_roles, [(role_band(s, roles, h_roles, axis), 22)]),
-        (KEY_ROWS, [(key_line(s, axis), 22)]),
+        (h_board, [(status_history(20, "History", desc, lanes, h_board, axis), w),
+                   (uptime_column(21, "Uptime", lanes, h_board), UPTIME_W)]),
+        (h_roles, [(role_band(s, roles, h_roles, axis), w)]),
+        (KEY_ROWS, [(key_line(s, axis, w), w)]),
     ]
 
 
@@ -3325,13 +3359,13 @@ def alerts_row(s):
 # Ids: the open row 400, the closed row 450, and for each line of charts a base (410, 420, ...) plus the
 # server's place in servers order.
 SERVERS_MAX = 10                         # servers the ids leave room for
-AXIS_PX = 76                             # every chart's value axis width, so plots in a column start at one x
+VALUE_AXIS_PX = 76                             # every chart's value axis width, so plots in a column start at one x
 TITLE_PX, TITLE_ROOM = 14, 34            # a chart title's text, and its title bar's padding and (i) icon
 LEGEND_PX, LEGEND_ITEM = 12, 28          # a legend entry's text, and its swatch, gaps and margin (measured: 6
                                          # entries of 51 letters take 465 px; this estimate gives 486)
 # The width of every chart's value axis, so the plots of a column start at one x down the page
 # whatever their labels ("100%", "96 GiB", "-300 Mb/s").
-SERVER_AXIS_PX = AXIS_PX
+SERVER_AXIS_PX = VALUE_AXIS_PX
 # Shades of the server's colour for the parts of a whole, strongest first, the same for a part on every server:
 # the consensus node, Fibre, monitoring, and everything else. Each is (hex alpha of the line and the legend
 # swatch, "" for the full colour; fill opacity), since Grafana fills at the fill opacity whatever the colour's
