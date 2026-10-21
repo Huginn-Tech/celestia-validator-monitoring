@@ -158,15 +158,15 @@ STACK_GAP_PX = 7                         # between label and value in a centred 
 # The intro strip at the top: six framed, untitled cells of one height and width (identity, Latest
 # block, Block time, Voting power, Signed and Status), each a label over a value, all in one size
 # pair, so every label sits on one line and every value on another, and the column edges line up
-# with the answer tiles below. The values take the first size of INTRO_VALUE_SIZES at which the
-# validator's name fits; every other word must fit at the first.
+# with the answer tiles below. Every six-cell row (this strip, the answers and the facts of the
+# Validator, Fibre and Network upgrade rows) takes one value size, the first of INTRO_VALUE_SIZES at
+# which every word and number of every one of them fits (one_value_size).
 INTRO_ROWS, INTRO_LABEL_PX, INTRO_VALUE_SIZES = 3, 13, (22, 20, 18)
 INTRO_WIDTHS = (4, 4, 4, 4, 4, 4)
 NAME_CHARS = 17                          # the validator's name: 13 characters at 22 px, 15 at 20, 17 at 18
 DEFAULT_NAME = "Validator"               # the name when celestia_mon_validator_name is empty
 INTRO_NUMBER = "99.999.999"              # the widest number a cell shows (a block height)
 KEY_ROWS, KEY_PX = 1, 12                 # the colour key and the range ends: one 12 px line in an untitled h1
-TILE_SIZES = INTRO_VALUE_SIZES          # the answer tiles: the largest at which every word fits its tile
 # Facts inside the rows: an untitled h2 with the label over the value, never larger than the answers.
 FACT_ROWS, FACT_LABEL_PX, FACT_PX, FACT_SMALL_PX = 2, 12, 18, 16
 # The table's 14 px text. Its columns are sized by short words ("no data", "Peers"), which run up to
@@ -1398,6 +1398,38 @@ def panel_texts(p):
     return [t for t in texts if t]
 
 
+# The key on a cell of a six-cell row under which six_cells() leaves its texts for one_value_size().
+SIX_CELLS = "_six_cells"
+
+
+def six_cells(items, samples=None):
+    """Marks (panel, width) items as the cells of a six-cell row: every text each can show (its words, its
+    no-value text and samples {panel id: [texts]}, the values no mapping names) waits for one_value_size(),
+    which sizes every such row of the dashboard at once."""
+    samples = samples or {}
+    for p, w in items:
+        p[SIX_CELLS] = [(t, w) for t in panel_texts(p) + samples.get(p["id"], [])]
+    return items
+
+
+def one_value_size(panels):
+    """One value size for every six-cell row of the dashboard (the top strip, the answers and the facts of
+    the Validator, Fibre and Network upgrade rows), so their proportions match: the largest of
+    INTRO_VALUE_SIZES at which every text of every such cell fits its cell, measured letter by letter
+    (value_px within value_room). Stops when a text does not fit even at the smallest. Returns the size."""
+    cells = [p for p in panels if SIX_CELLS in p]
+    texts = [(t, w, p["id"]) for p in cells for t, w in p.pop(SIX_CELLS)]
+    fits = [v for v in INTRO_VALUE_SIZES if all(value_px(t, v) <= value_room(w) for t, w, _ in texts)]
+    if not fits:
+        t, w, pid = max(texts, key=lambda x: value_px(x[0], INTRO_VALUE_SIZES[-1]) - value_room(x[1]))
+        raise SystemExit("Panel %d: %r needs %d px at %d px, and its cell has %d; the six-cell rows share one value "
+                         "size (if it is a host or validator name, shorten it in the inventory)"
+                         % (pid, t, value_px(t, INTRO_VALUE_SIZES[-1]), INTRO_VALUE_SIZES[-1], value_room(w)))
+    for p in cells:
+        p["options"]["text"]["valueSize"] = fits[0]
+    return fits[0]
+
+
 def fit_strip(items, height, what, samples=None):
     """Pins one value size on a strip of row facts, (panel, width) items height grid rows tall: FACT_PX
     when every value fits its panel, else FACT_SMALL_PX; stops when a value does not fit even then,
@@ -1453,14 +1485,12 @@ def intro(s):
     if len(name) > NAME_CHARS:
         raise SystemExit("celestia_mon_validator_name %r has %d characters; at most %d fit the dashboard's top strip"
                          % (name, len(name), NAME_CHARS))
-    # The value size: the largest at which the name fits its cell. Longer names make the whole strip
-    # smaller, so the values stay one size.
-    fits = [v for v in INTRO_VALUE_SIZES if value_px(name, v) <= value_room(INTRO_WIDTHS[0])]
-    if not fits:
+    # A longer name makes every six-cell row's values smaller (one_value_size), so they stay one size.
+    if value_px(name, INTRO_VALUE_SIZES[-1]) > value_room(INTRO_WIDTHS[0]):
         raise SystemExit("celestia_mon_validator_name %r needs %d px even at %d px; the top strip's identity cell has "
                          "%d. Use a shorter name." % (name, value_px(name, INTRO_VALUE_SIZES[-1]),
                                                       INTRO_VALUE_SIZES[-1], value_room(INTRO_WIDTHS[0])))
-    size = fits[0]
+    size = INTRO_VALUE_SIZES[0]
     # The network over the name: Mocha with its chain id while that fits the cell, else without. A cell
     # over 100 px high pads its text 12 px, not 8, so the label has 8 px less than inner_px.
     mocha = "Mocha testnet (mocha-5)"
@@ -1516,7 +1546,7 @@ def intro(s):
     # do not name: the widest number of each fact.
     labels = {1: networks, 10: ["Status", "Status · 99 alerts"] + ["Status · %s" % p for p in PARTS]
               + ["%s · 99 alerts" % p for p in PARTS]}
-    samples = {2: [INTRO_NUMBER], 3: ["9.99 s"], 4: ["99.99%"], 5: ["99.99%"]}
+    samples = {1: [name], 2: [INTRO_NUMBER], 3: ["9.99 s"], 4: ["99.99%"], 5: ["99.99%"]}
     if sum(INTRO_WIDTHS) != 24 or len(INTRO_WIDTHS) != len(cells):
         raise SystemExit("INTRO_WIDTHS must give the %d cells of the top strip 24 columns in all" % len(cells))
     content = grid_px(INTRO_ROWS) - CHROME_UNTITLED
@@ -1531,17 +1561,8 @@ def intro(s):
         what = "The top strip's %s cell" % {1: "identity", 10: "Status"}.get(pid, repr(legend))
         check_fit(what + " (label)", labels.get(pid, [legend]), INTRO_LABEL_PX, w)
         panels.append((p, w))
-    # One value size for the strip: the largest at which the name and every word of every cell fit.
-    texts = [(t, w, p["id"]) for p, w in panels for t in panel_texts(p) + samples.get(p["id"], [])]
-    fits = [v for v in INTRO_VALUE_SIZES if v <= size and all(value_px(t, v) <= value_room(w) for t, w, _ in texts)]
-    if not fits:
-        t, w, pid = max(texts, key=lambda x: value_px(x[0], INTRO_VALUE_SIZES[-1]) - value_room(x[1]))
-        raise SystemExit("The top strip's %s cell: %r needs %d px at %d px, and its cell has %d"
-                         % ({1: "identity", 10: "Status"}.get(pid, "panel %d" % pid), t,
-                            value_px(t, INTRO_VALUE_SIZES[-1]), INTRO_VALUE_SIZES[-1], value_room(w)))
-    for p, _ in panels:
-        p["options"]["text"]["valueSize"] = fits[0]
-    return panels
+    # The value size: one_value_size(), from the name and every word of every cell.
+    return six_cells(panels, samples)
 
 
 def validator_tile(s):
@@ -1812,8 +1833,7 @@ def monitoring_tile(s):
 def answer_tiles(s):
     """(panel, width) of the one-word answers, in the top strip's cell form: untitled, the name over the
     word from the left, one word size for the row and equal widths, so their edges, labels and words line
-    up with the cells of the strip above. The size is the largest of TILE_SIZES at which every word fits
-    its tile; the generator stops when even the smallest is too large."""
+    up with the cells of the strip above. Their value size is the six-cell rows' (one_value_size())."""
     tiles = [validator_tile(s), signing_tile(s)]
     if s.fibre:
         tiles.append(fibre_tile(s))
@@ -1838,15 +1858,8 @@ def answer_tiles(s):
         p["fieldConfig"]["defaults"]["displayName"] = title
         check_fit("The answer tile %r (label)" % title, [title], INTRO_LABEL_PX, w)
         items.append((p, w))
-    texts = [(t, w) for p, w in items for t in panel_texts(p)]
-    for size in TILE_SIZES:
-        if all(value_px(t, size) <= value_room(w) for t, w in texts):
-            for p, _ in items:
-                p["options"]["text"]["valueSize"] = size
-            return items
-    bad = [t for t, w in texts if value_px(t, TILE_SIZES[-1]) > value_room(w)]
-    raise SystemExit("The answer tile word %r does not fit its tile even at %d px; shorten the host name in the "
-                     "inventory" % (bad[0], TILE_SIZES[-1]))
+    # The value size: one_value_size(), with the strip and the rows' facts.
+    return six_cells(items)
 
 
 HISTORY_DESC = ("How each check and each server fared over the selected time, one bar per time block, worst moment "
@@ -2984,7 +2997,7 @@ CHART_ROWS = 7
 def cell(pid, label, desc, targets, **kw):
     """A cell of a six-cell row in the top strip's form: untitled, the label (INTRO_LABEL_PX) over the
     value, set from the left, in the text colour unless thresholds or words colour it. label None:
-    the queries' legends name the cell, so its label can follow its state; fit_cells() sizes it."""
+    the queries' legends name the cell, so its label can follow its state; one_value_size() sizes it."""
     kw.setdefault("color_mode", "none")
     p = stat(pid, "", desc, targets, size=INTRO_VALUE_SIZES[0], text_mode="value_and_name", justify="auto",
              wide=False, title_size=INTRO_LABEL_PX, **kw)
@@ -2994,12 +3007,12 @@ def cell(pid, label, desc, targets, **kw):
 
 
 def fit_cells(items, what, labels=None, samples=None):
-    """Sizes the values of a six-cell row ((panel, width) items, INTRO_ROWS high) as the top strip
-    does: each value the largest of INTRO_VALUE_SIZES at which every number and word it can show
-    fits its cell. labels: {panel id: [texts]} for a cell named by its legends; samples: {panel id:
-    [texts]} it shows that no mapping names. Stops when a label does not fit at INTRO_LABEL_PX, or
-    when a label over a value is taller than the cell."""
-    labels, samples = labels or {}, samples or {}
+    """Checks a six-cell row ((panel, width) items, INTRO_ROWS high) as the top strip is checked and marks
+    its cells for one_value_size(), which gives every six-cell row of the dashboard one value size.
+    labels: {panel id: [texts]} for a cell named by its legends; samples: {panel id: [texts]} it shows
+    that no mapping names. Stops when a label does not fit at INTRO_LABEL_PX, or when a label over a
+    value is taller than the cell."""
+    labels = labels or {}
     content = grid_px(INTRO_ROWS) - CHROME_UNTITLED
     if stack_px(INTRO_LABEL_PX, INTRO_VALUE_SIZES[0], False) > content:
         raise SystemExit("%s: a label over a value needs %d px; an untitled h%d panel has %d"
@@ -3007,12 +3020,7 @@ def fit_cells(items, what, labels=None, samples=None):
     for p, w in items:
         check_fit(what + " (label)", labels.get(p["id"]) or [p["fieldConfig"]["defaults"]["displayName"]],
                   INTRO_LABEL_PX, w)
-        texts = panel_texts(p) + samples.get(p["id"], [])
-        fits = [v for v in INTRO_VALUE_SIZES if all(text_px(t, v) <= inner_px(w) for t in texts)]
-        if not fits:
-            check_fit(what, texts, INTRO_VALUE_SIZES[-1], w)
-        p["options"]["text"]["valueSize"] = fits[0]
-    return items
+    return six_cells(items, samples)
 
 
 def as_signer(expr, sig):
@@ -3338,23 +3346,16 @@ def fibre_fact(pid, label, desc, targets, **kw):
 
 
 def fibre_strip(facts, samples):
-    """The six Fibre facts as (panel, width) items on the top strip's column edges, in one value size: the
-    largest of INTRO_VALUE_SIZES at which every text a fact can show (its words, its no-value text and
-    samples {id: [texts]} of values that no mapping names) fits its cell. Stops when a label, or a text at
-    the smallest size, does not fit."""
+    """The six Fibre facts as (panel, width) items on the top strip's column edges, marked for
+    one_value_size() with every text a fact can show (its words, its no-value text and samples {id: [texts]}
+    of values that no mapping names), so they take the value size of every six-cell row. Stops when a
+    label does not fit."""
     if len(facts) != len(INTRO_WIDTHS):
         raise SystemExit("The Fibre row needs %d facts, one per column of the top strip" % len(INTRO_WIDTHS))
     items = list(zip(facts, INTRO_WIDTHS))
     for p, w in items:
         check_fit("The Fibre facts (label)", [p["fieldConfig"]["defaults"]["displayName"]], INTRO_LABEL_PX, w)
-    texts = [(t, w) for p, w in items for t in panel_texts(p) + samples.get(p["id"], [])]
-    fits = [v for v in INTRO_VALUE_SIZES if all(text_px(t, v) <= inner_px(w) for t, w in texts)]
-    if not fits:
-        for t, w in texts:
-            check_fit("The Fibre facts", [t], INTRO_VALUE_SIZES[-1], w)
-    for p, _ in items:
-        p["options"]["text"]["valueSize"] = fits[0]
-    return items
+    return six_cells(items, samples)
 
 
 def of_fact(pid, name, desc, x, y, zero, missing, alarm=None):
@@ -3479,17 +3480,21 @@ def fibre_row(s):
             fibre_fact(
                 201, "Last accepted upload",
                 "When the active Fibre last accepted an upload; hours ago is normal on a quiet network. Fibre "
-                "sends its metrics up to a minute apart, so this can be a minute late. None since start: Fibre "
+                "sends its metrics up to a minute apart, so this can be a minute late; an upload in the last "
+                "minute reads a minute ago. None since start: Fibre "
                 "reports but has accepted no upload since it started. Nothing on your servers tells a quiet "
                 "network from a Fibre that receives nothing; the outside check (celestia_mon_tensile) does."
                 + more(pages=[FIBRE_DASHBOARD, TENSILE]),
-                one("max(fibre_server_upload_shard_last_success_timestamp_seconds) * 1000 or on () "
-                    "((count(fibre_server_upload_shard_budget_bytes) > 0) * 0 - 1)"),
+                # At least 45 s back, so the time-ago text starts at "a minute ago": "a few seconds ago" is
+                # wider than a cell at the six-cell rows' smallest value size on a 1440-pixel screen.
+                one("clamp_max(max(fibre_server_upload_shard_last_success_timestamp_seconds), time() - 45) * 1000 "
+                    "or on () ((count(fibre_server_upload_shard_budget_bytes) > 0) * 0 - 1)"),
                 unit="dateTimeFromNow", mappings=mapping((-1, "None since start", None)),
                 no_value="No Fibre data"),
         ]
-        # The longest text a time-ago value shows, which no mapping names.
-        samples = {201: ["a few seconds ago"]}
+        # The longest text the time-ago value shows, which no mapping names ("44 minutes ago"; "a few
+        # seconds ago" cannot show, see above).
+        samples = {201: ["44 minutes ago"]}
     strip = fibre_strip(first + [upload_time, budget, cleanups], samples)
 
     # The first chart draws what a FibreNotServing rule watches, in the active Fibre's colour, with the
@@ -4212,6 +4217,7 @@ def build(cfg):
         # Host colours first, so a panel's own colour overrides (threshold series) win.
         if p["type"] == "timeseries":
             p["fieldConfig"]["overrides"] = colors + p["fieldConfig"]["overrides"]
+    one_value_size(every)
     check_variables(every)
     check_surfaces(s, every)
     check_words(s, every)
