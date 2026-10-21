@@ -910,9 +910,26 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
-      # A throwaway Prometheus container that only parses the panel queries; it is not celestia-mon's.
+      # A throwaway Prometheus container that runs the panel queries; it is not celestia-mon's. It
+      # scrapes the stub series written further down (one for each selector of the dashboards) on
+      # loopback, so a query that would carry a PromQL warning or info on real data carries it here.
       - name: Start a throwaway Prometheus at the version in versions.yml
-        run: docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$PROMETHEUS_VERSION"
+        run: |
+          mkdir -p build/stub
+          cat > build/stub/prometheus.yml <<'EOF'
+          global:
+            scrape_interval: 2s
+            scrape_timeout: 2s
+          scrape_configs:
+            - job_name: stub
+              honor_labels: true
+              metrics_path: /metrics.txt
+              fallback_scrape_protocol: PrometheusText0.0.4
+              static_configs:
+                - targets: ["127.0.0.1:9099"]
+          EOF
+          docker run -d --name prometheus --network host -v "$PWD/build/stub:/stub:ro" "prom/prometheus:v$PROMETHEUS_VERSION" \
+            --config.file=/stub/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090
       # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
       # job, and a validator name, so every optional panel and query is generated and checked.
       - name: Render the dashboard settings for the example inventories
@@ -1045,6 +1062,43 @@ jobs:
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
           jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
+      # SignaturesMissed is max(A > on (host) R * B): A the blocks each node counted as missed in the last
+      # hour, B the blocks it committed in that hour, R the share. The Validator tile holds the whole
+      # comparison, and Missed blocks (the fact and the chart) draws A over B with its level at R, so
+      # neither side can change alone.
+      - name: Missed blocks read the SignaturesMissed rule
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("single", "split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              rule = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                      if r.get("alert") == "SignaturesMissed"]
+              assert len(rule) == 1, "%s: one SignaturesMissed rule, not %d" % (s, len(rule))
+              expr = " ".join(rule[0]["expr"].split())
+              m = re.fullmatch(r"max\((max by \(host\) \(.+\)) > on \(host\) ([0-9.]+) \* "
+                               r"(max by \(host\) \(delta\(cometbft_consensus_height\{[^}]*\}\[1h\]\)\))\)", expr)
+              assert m, expr
+              a, r, b = m.groups()
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              text = lambda i: [" ".join(t["expr"].split()) for t in panels[i]["targets"]]
+              assert any(expr in t for t in text(11)), "%s: tile 11 lacks %s" % (s, expr)
+              for i in (117, 111):
+                  shares = [t for t in text(i) if a in t and b in t]
+                  assert shares, "%s: %d draws no %s over %s" % (s, i, a, b)
+                  level = panels[i]["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+                  assert level == float(r), "%s: %d's level %s, the rule's %s" % (s, i, level, r)
+              print("%s: tile 11, 117 and 111 read %s over %s at %s" % (s, a[:60] + "...", b, r))
+          EOF
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
       # three charts of one height: two side by side on columns 0 and 12, then one across the row.
@@ -1092,7 +1146,23 @@ jobs:
           EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
-      - name: Every panel query parses in Prometheus
+      # The stub series, served on loopback; the check waits until a minute step of Prometheus holds
+      # them, so the queries' 1-minute subqueries read data too.
+      - name: Serve the dashboards' series to Prometheus
+        run: |
+          python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
+            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+          nohup python -m http.server 9099 --bind 127.0.0.1 --directory build/stub > build/stub/http.log 2>&1 &
+          for _ in $(seq 60); do
+            reply=$(curl -sS http://127.0.0.1:9090/api/v1/query \
+              --data-urlencode 'query=count_over_time((up{job="stub"} == 1)[5m:1m]) > 0' || true)
+            case "$reply" in *'"value"'*) exit 0 ;; esac
+            sleep 3
+          done
+          echo "Prometheus did not scrape the stub series"
+          docker logs prometheus 2>&1 | tail -20
+          exit 1
+      - name: Every panel query runs in Prometheus without an error, warning or info
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
           build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json

@@ -249,6 +249,38 @@ tests:
         eval_time: 40m
         exp_samples: []
 
+  # A validator inside the 2/3 quorum: Fibre accepts each upload before its blob settles. Uploads at
+  # 10m, 20m and 30m (and one at 5m before); each blob settles 70 s after its upload, and Tensile's
+  # record of it is read at the next minute. The newest blob always settles 70 s after Fibre's last
+  # accepted upload, well under 5 minutes, and an hour of quiet follows: not even a pending alert.
+  - name: Each blob settles 70 s after Fibre accepted its upload; no FibreNotServing
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x61'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x61'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="fibre-1",name="fibre.service"}'
+        values: '60x61'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="val-1",name="fibre.service"}'
+        values: '0x61'
+      - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
+        values: '1000000000000x61'
+      - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
+        values: '300x9 600x9 1200x9 1800x31'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+        values: '0+60x61'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+        values: '370x11 670x9 1270x9 1870x29'
+    alert_rule_test:
+      - eval_time: 61m
+        alertname: FibreNotServing
+        exp_alerts: []
+    promql_expr_test:
+      - expr: count_over_time(ALERTS{alertname="FibreNotServing"}[61m])
+        eval_time: 61m
+        exp_samples: []
+
   # celestia-mon-tensile last read Tensile at 1m, when the newest blob had settled before Fibre's
   # last accepted upload. The reading stays as it was, and Fibre's side can only move later, so an
   # old reading cannot start missed_uploads; TensileUnreadable reports it 15 + 10 minutes on.

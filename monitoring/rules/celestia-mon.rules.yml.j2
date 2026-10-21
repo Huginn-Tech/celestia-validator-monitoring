@@ -50,6 +50,15 @@
 {% set vns_text = tmkms_first ~ 'The chain moves but no node of this install has seen a signature from the validator for more than '
    ~ th.not_signing_blocks ~ ' blocks.' %}
 {% set missed_ratio = th.signatures_missed_ratio | default(0.05) %}
+{# The blocks each node counted as missed in the last hour (SignaturesMissed; gen_dashboard.py's
+   MISSED_1H is the same text, which CI checks). The count is a counter without a _total suffix, so
+   increase() over it carries a PromQL notice; this sums each minute's rise instead: the count now
+   less its last value a minute before, or after a node restart, when the count starts again, its
+   new value. A count with no earlier value in the hour (a fresh install, a gap over an hour) adds
+   nothing, as in increase(). #}
+{% set missed = 'cometbft_consensus_validator_missed_blocks{job="celestia-app"}' %}
+{% set missed_before = 'last_over_time(' ~ missed ~ '[1h] offset 1m)' %}
+{% set missed_1h = 'sum_over_time((' ~ missed ~ ' - ' ~ missed_before ~ ' >= 0 or ' ~ missed ~ ' * 1 < ' ~ missed_before ~ ')[1h:1m])' %}
 {% set docs = 'https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
 groups:
   - name: celestia_mon
@@ -196,11 +205,11 @@ groups:
       # tmkms left keeps counting. Per node, the misses of the last hour are compared with the blocks
       # it committed in that hour, and the highest share counts: the alert follows the signer between
       # nodes and names no host. The count appears at the first miss and restarts with the node;
-      # increase() treats the restart as a reset. It reports a share of blocks, never how far the
-      # validator is from being jailed.
+      # the minute sums count the restart as a reset (missed_1h above). It reports a share of
+      # blocks, never how far the validator is from being jailed.
       - alert: SignaturesMissed
         expr: >-
-          max(max by (host) (increase(cometbft_consensus_validator_missed_blocks{job="celestia-app"}[1h]))
+          max(max by (host) ({{ missed_1h }})
           > on (host) {{ missed_ratio }} * max by (host) (delta(cometbft_consensus_height{job="celestia-app"}[1h])))
         for: 10m
         labels:
