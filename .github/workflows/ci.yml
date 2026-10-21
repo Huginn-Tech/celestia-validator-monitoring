@@ -592,7 +592,7 @@ jobs:
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
   # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
   # an unknown validator (404), an unreachable API, and a Tensile without signing.last_assigned_at,
-  # whose time the running service derives from its own reads.
+  # whose time the running service takes from Tensile's newest block (/tip) at its reads.
   tensile:
     runs-on: ubuntu-24.04
     steps:
@@ -648,9 +648,10 @@ jobs:
           grep -q 'check celestia_mon_tensile.validator' "$d/err"
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
-          # Without last_assigned_at, the time of the newest assigned blob is the read at which the
-          # number of assigned blobs rose, only while Tensile's newest block (/tip) is under 2 minutes
-          # older than its clock at that read and the one before. The service reads every second here.
+          # Without last_assigned_at, the time of the newest assigned blob is the time of Tensile's newest
+          # block (/tip) at the read at which the number of assigned blobs rose, only while that block is
+          # under 2 minutes older than Tensile's clock at that read and the one before. The service reads
+          # every second here.
           tip() {
             printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip"
           }
@@ -681,9 +682,9 @@ jobs:
           tip 2026-10-18T06:25:15Z
           sleep 3
           if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a Tensile catch-up taken for new blobs"; exit 1; fi
-          # A rise between two reads in step sets the time.
+          # A rise between two reads in step sets the time: Tensile's newest block then, 06:25:15.
           old 231
-          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds [1-9]'
+          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304715\.0$'
           kill "$svc"
 
   # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with
@@ -946,22 +947,25 @@ jobs:
       # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
       # row starts; the top strip's six cells and the answer tiles below them share their column edges.
       # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
-      # many rows, over one lower panel per column (ids 34-37) of four bars, all of one height; the
+      # many rows, over one lower panel per column (ids 34-37) of four bars, all 5 rows high; the
       # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
-      # halves, of one height); up to four columns, so no Servers now table (id 26). The Servers rows
-      # (open, then closed) hold eight charts per server (single: one server, mainnet and five: two,
-      # split: three, its KMS host scraped): each line one kind of chart, at one width and height,
+      # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
+      # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
+      # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
+      # (open, then closed) hold six charts per server (single: one server, mainnet and five: two,
+      # split: three, its KMS host scraped), each line one kind of chart, at one width and height,
       # filling the 24 columns; each server's charts in one column, titled with its name first; its
-      # out-of-memory marker on its own memory chart.
+      # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
+      # server in one chart across the full width.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
-          test "$(count single)" = 34
-          test "$(count split)" = 66
-          test "$(count mainnet)" = 66
-          test "$(count five)" = 61
+          test "$(count single)" = 32
+          test "$(count split)" = 59
+          test "$(count mainnet)" = 62
+          test "$(count five)" = 56
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -985,8 +989,10 @@ jobs:
                    and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
             jq -e --slurpfile cfg "build/$s/dashboard-config.json" '
                    ($cfg[0].nodes + ([$cfg[0].links[].host] - $cfg[0].nodes)) as $servers | ($servers | length) as $n
-                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $p
-                   | ($p | length) == 8 * $n
+                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $all
+                   | ($all | map(select(.id < 480))) as $p
+                   | ($p | length) == 6 * $n
+                   and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
                    and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
                    and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
                                                         and (map(.gridPos.w) | unique | length) == 1
@@ -995,14 +1001,14 @@ jobs:
                    and ($p | all(. as $c | $c.title | startswith($servers[$c.id % 10] + " · ")))
                    and ([.annotations.list[] | select(.name | startswith("Out of memory on ")) | .filter.ids]
                         == [range(0; $n) | [420 + .]])' "build/$s/dashboard.json"
-            # The Validator row: six facts on the top strip's column edges, tall enough for their
-            # sparklines, then charts of one height, of one width on each line and filling it.
+            # The Validator row: six cells on the top strip's column edges and of its height (3 rows),
+            # then charts of one height, of one width on each line and filling it.
             jq -e '(.panels[] | select(.id == 100) | .gridPos.y) as $y
                    | [.panels[] | select(.id > 100 and .id < 200)] as $v
                    | ($v | map(select(.type == "stat"))) as $f | ($v | map(select(.type == "timeseries"))) as $c
                    | ($f | map(.id)) == [109,117,118,101,102,103]
                    and ($f | map([.gridPos.x, .gridPos.y, .gridPos.w, .gridPos.h]))
-                       == [[0,$y+1,4,4],[4,$y+1,4,4],[8,$y+1,4,4],[12,$y+1,4,4],[16,$y+1,4,4],[20,$y+1,4,4]]
+                       == [[0,$y+1,4,3],[4,$y+1,4,3],[8,$y+1,4,3],[12,$y+1,4,3],[16,$y+1,4,3],[20,$y+1,4,3]]
                    and ($c | map(.gridPos.h) | unique) == [7]
                    and ($c | group_by(.gridPos.y) | all(map(.gridPos.w) | (unique | length) == 1 and add == 24))
                    and ($v | length) == ($f | length) + ($c | length)' "build/$s/dashboard.json"
@@ -1018,7 +1024,15 @@ jobs:
                           ($cg | map(.w) | unique | length) == 1 and ($cg | map(.w) | add) == 24
                           and ($cg | map(.x)) == [range(0; $n) * $cg[0].w] and ($lg | map(.x)) == ($cg | map(.x))
                           and ($lg | map(.w) | unique) == [$cg[0].w] and ($lg | map(.y) | unique) == [6 + $cg[0].h]
+                          and ($lg | map(.h) | unique) == [5]
                         end)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.id >= 20 and .id < 30)] as $b | ($b | map(.id) | sort) == [20, 21, 24, 25]
+                   and (INDEX($b[]; .id | tostring) | map_values(.gridPos)) as $g
+                   | ([$g["20"].y, $g["20"].h] == [$g["21"].y, $g["21"].h]) and $g["21"].x == $g["20"].x + $g["20"].w
+                   and $g["21"].x + $g["21"].w == 24
+                   and ([$g["20"], $g["25"], $g["24"]] | map([.x, .w]) | unique | length) == 1
+                   and $g["25"].y == $g["20"].y + $g["20"].h and $g["24"].y == $g["25"].y + $g["25"].h
+                   and $g["24"].h == 1' "build/$s/dashboard.json"
           done
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
                  and .kms_names == ["kms-1"] and .monitor_host == "fibre-1" and .name == "CI validator"' \
@@ -1030,23 +1044,49 @@ jobs:
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
           jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
-      # The Fibre row (ids 201-249): one line of facts of width 4 across the 24 columns, at one height
-      # and at least 4 rows where a fact draws a sparkline (Grafana draws it only above 100 px), then
-      # charts two to a line on columns 0 and 12, an even number of them, all of one height.
+      # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
+      # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
+      # three charts of one height: two side by side on columns 0 and 12, then one across the row.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
-                   | [$f[] | select(.type == "stat") | .gridPos] as $s
+                   | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
-                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique | length) == 1
+                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
-                     and ([$f[] | select(.type == "stat" and .options.graphMode == "area") | .gridPos.h] | all(. >= 4))
-                     and ($c | length) > 0 and ($c | length) % 2 == 0
-                     and ($c | map(.w) | unique) == [12] and ($c | map(.x) | unique) == [0, 12]
-                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)' \
+                     and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
+                                   and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
+                     and ($p | map(.options.text.valueSize) | unique | length) == 1
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)
+                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
               "build/$s/dashboard.json"
           done
+      # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
+      # compares, which is the rule's expression without its comparison, and its dashed line at the
+      # rule's number, so neither side can change alone.
+      - name: Fibre behind the network draws the missed_uploads rule
+        run: |
+          python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
+          import json
+          import re
+          import sys
+
+          import yaml
+
+          dash = json.load(open(sys.argv[1]))
+          rules = [r for g in yaml.safe_load(open(sys.argv[2]))["groups"] for r in g["rules"]
+                   if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
+          assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
+          m = re.fullmatch(r"(.*) > (\d+) (and on .*)", " ".join(rules[0]["expr"].split()))
+          assert m, rules[0]["expr"]
+          chart = next(p for p in dash["panels"] if p.get("id") == 210)
+          drawn = " ".join(chart["targets"][0]["expr"].split())
+          assert drawn == "((%s %s) > 0) / 60" % (m.group(1), m.group(3)), (drawn, m.groups())
+          level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+          assert level * 60 == int(m.group(2)), (level, m.group(2))
+          print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
+          EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
