@@ -210,7 +210,7 @@ Only with `celestia_mon_signer: remote`.
 
 **Check first.**
 
-1. The "Signing time" chart: whether the median this alert watches is above its dashed 10 ms line, how slow the slowest signatures are, and whether signatures fail (its grey bars); the remote signer's card reads "Bad proposals" while proposals fail (with five servers or more, the Servers now table's Signer time column, on the node whose proposals fail).
+1. The "Signing time" chart: whether the median this alert watches is above its dashed 10 ms line, how slow the slowest vote signatures are, and whether signatures fail (its grey bars); the remote signer's card reads "Bad proposals" while proposals fail (with five servers or more, the Servers now table's Signer time column, on the node whose proposals fail).
 2. Latency: the network path between the validator and the KMS host (round trip, same datacenter or not) and the load on the KMS host. Celestia recommends keeping the signer close, for example by colocation.
 3. Proposal failures: the tmkms log on the KMS host around the failed proposals, and whether the tmkms version and its chain settings match the network's current app version (often the cause after an upgrade).
 
