@@ -924,6 +924,23 @@ jobs:
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
           jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
+      # The Fibre row (ids 201-249): one line of facts of width 4 across the 24 columns, at one height
+      # and at least 4 rows where a fact draws a sparkline (Grafana draws it only above 100 px), then
+      # charts two to a line on columns 0 and 12, an even number of them, all of one height.
+      - name: The Fibre row is symmetric
+        run: |
+          for s in split mainnet five; do
+            jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
+                   | [$f[] | select(.type == "stat") | .gridPos] as $s
+                   | [$f[] | select(.type == "timeseries") | .gridPos] as $c
+                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique | length) == 1
+                     and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
+                     and ([$f[] | select(.type == "stat" and .options.graphMode == "area") | .gridPos.h] | all(. >= 4))
+                     and ($c | length) > 0 and ($c | length) % 2 == 0
+                     and ($c | map(.w) | unique) == [12] and ($c | map(.x) | unique) == [0, 12]
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)' \
+              "build/$s/dashboard.json"
+          done
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
