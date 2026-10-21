@@ -4,8 +4,9 @@
     check_queries.py --prometheus http://localhost:9090 DASHBOARD.json [DASHBOARD.json ...]
 
 Each panel target's expr and each annotation's expr goes to /api/v1/query, with
-Grafana's built-in $__interval and $__range (the only variables the dashboard uses, in
-its status board) replaced by 60s and 3600s, as Grafana would replace them. An empty
+Grafana's built-in $__interval and $__range (the only variables the dashboard uses: both in
+its status board, $__interval also in the charts that count per time block) replaced by
+60s and 3600s, as Grafana would replace them. An empty
 result is fine (the CI Prometheus has no Celestia data); a response other than status
 "success" (for example a PromQL parse error) fails the check.
 Table panels are also checked without Prometheus: their columns are named from
