@@ -1,6 +1,6 @@
 # Panels
 
-The dashboard **Celestia validator**, in the **Celestia validator** folder, reads like a status page for one validator setup. The first screen answers, top to bottom: whose validator and which network, is anything wrong, is each part fine, was it fine over the last day, which server held each role, and how each server is doing now. Below it, the rows **Validator** and **Fibre** (open) hold the charts that explain those answers, and **Network upgrade**, **All firing alerts** and **Servers in detail** (closed) hold the detail. The install on the monitor builds the dashboard from your inventory: panels that do not apply are left out (no signer panels with a local key, no Fibre panels with Fibre off, no backup panels with one node, no outside check without `celestia_mon_tensile`, no upgrade panels without `celestia_mon_signal`). The default range is 24 hours, refreshed every 30 seconds; times are in UTC.
+The dashboard **Celestia validator**, in the **Celestia validator** folder, reads like a status page for one validator setup. The first screen answers, top to bottom: whose validator and which network, is anything wrong, is each part fine, was it fine over the last day, which server held each role, and how each server is doing now. Below it, the rows **Validator** and **Fibre** (open) hold the charts that explain those answers, **Servers** (open) has a column of hardware charts for each server, and **Servers: disk activity, restarts and clocks**, **Network upgrade** and **All firing alerts** (closed) hold the detail. The install on the monitor builds the dashboard from your inventory: panels that do not apply are left out (no signer panels with a local key, no Fibre panels with Fibre off, no backup panels with one node, no outside check without `celestia_mon_tensile`, no upgrade panels without `celestia_mon_signal`). The default range is 24 hours, refreshed every 30 seconds; times are in UTC.
 
 **Colours mean state, and only where an alert watches.** Every word, bar and cell follows one rule, printed in the key under the role band:
 
@@ -121,6 +121,24 @@ Only with `celestia_mon_fibre_enabled: true`. Only the active Fibre sends Fibre 
 - **Fibre response time**: 95 of 100 requests over the last hour for the whole upload, the disk write and the signing through the node and its signer. A rising disk write points at the Fibre disk, a rising signing time at the signer or the link to it.
 - **Fibre disk and budget** (DiskLow, Fibre store): free space on each Fibre store (solid, the standby's too) against the room the active Fibre's budget may still fill (dashed). The dashed line must stay below the solid one.
 
+## Servers
+
+Open. One column of charts for each server, in inventory order and in the server's colour, each chart titled with the server's name first ("fibre-server · CPU by service"), so a server's charts sit under one another and each line compares the servers. Two servers take half the width each, three a third, four a quarter; a single server's charts sit two to a line. No alert watches CPU, memory or traffic, so only the disk chart has alert levels.
+
+- **CPU by service**: the share of all the server's cores in use, 5-minute averages, stacked by what uses it: **Consensus node** (celestia-appd's own CPU time), **Monitoring** (Prometheus and Alertmanager, on the monitor host), and **Other**, everything else; on a Fibre host it reads **Fibre and other**, because Fibre reports no CPU time of its own. The line on top is all in use; the chart's top is all the cores. On a VM, steal counts as in use.
+- **Memory by service**: the same parts in bytes, with **Fibre** (the memory Fibre's Go runtime holds, a little under its real use) on a Fibre host where Fibre runs. The line on top is all in use (installed minus available, so cache that can be freed is left out); the dashed line is the installed memory. Fibre can use about 27 GiB at its default limits ([connection caps and memory](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#connection-caps-and-memory)). An amber marker shows each time the kernel killed a process for lack of memory (`journalctl -k` names it).
+- **Network in and out**: bits per second through the server's network ports (virtual interfaces left out), in above zero and out below. On a Fibre host, **Fibre in** and **Fibre out** are the shard data Fibre accepted and served, drawn inside the totals; the rest is consensus traffic, RPC, proofs and TLS. The first screen shows the busiest minute against the link speed.
+- **Free disk space** (DiskLow): each data disk you listed ("Data disk /var/lib/celestia") and each Fibre store ("Fibre store /var/lib/fibre"). The amber zone starts at 10% free, where DiskLow sends a message (on a Fibre store only while Fibre reports no storage budget); on servers with celestia-appd or tmkms the red zone starts at 5% free, where DiskLow pages. A server with no listed disk shows its root filesystem, which no alert watches.
+
+## Servers: disk activity, restarts and clocks
+
+Closed. The same columns.
+
+- **Disk latency**: how long one write (above zero) and one read (below) took on average over the server's physical disks; above about 10 ms on NVMe the disk is overloaded or the provider's storage is slow. LVM, RAID, ZFS volumes and CD drives are left out; their physical disks count. Where the monitor shares a disk with the validator or Fibre, `celestia-mon-doctor` check 16 compares it around Prometheus's compactions ([quickstart step 9](quickstart.md#9-run-doctor)).
+- **Disk reads and writes**: bytes written (above zero) and read (below) per second.
+- **Restarts** (ServiceDown, crash loop): automatic restarts of celestia-appd, Fibre and tmkms by systemd, one bar per 30 minutes; an empty chart means none. The dashed line is the crash-loop level (more than 2 in 30 minutes, `crashloop_restarts`).
+- **Clock offset**: how far the server's clock is from its time servers; more than a few tens of milliseconds means time sync is not working.
+
 ## Network upgrade
 
 Closed; with `celestia_mon_signal`. One strip of three facts. **Support for next version**, as a bar: the share of all voting power that signalled the next version (an upgrade can be scheduled at 5/6). **Upgrade height** and **Time to upgrade** at the measured block time, amber under 24 hours, while an upgrade is scheduled. They read the last value of the past 7 days, as the upgrade alerts do.
@@ -129,18 +147,8 @@ Closed; with `celestia_mon_signal`. One strip of three facts. **Support for next
 
 Closed. Every alert Prometheus has firing now, and those whose problem is true but has not lasted long enough to be sent, in the words of your notifications ("Validator not signing", "Disk low or read-only on fibre-1"), with their level ("Urgent", "Urgent, not paged yet", "Warning", "Warning, not sent yet") and how long since the problem started. The heartbeat is left out. With nothing firing it reads "No alerts firing".
 
-## Servers in detail
-
-Closed. The history behind the Servers now table, one line per server in its colour.
-
-- **Network traffic**: bits per second, receive above zero and transmit below, 5-minute averages, for the whole machine. With Fibre on, dashed lines show the Fibre shards accepted and served, drawn over the NIC line.
-- **CPU busy** and **Memory used**: shares in use. A marker on Memory used shows each time the kernel killed a process for lack of memory (`journalctl -k` names it). Fibre can use about 27 GiB at its default limits ([connection caps and memory](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#connection-caps-and-memory)).
-- **Disk latency**: the average time one read or write took per physical disk; above about 10 ms on NVMe the disk is overloaded or the provider's storage is slow. LVM, RAID, ZFS volumes and CD drives are left out; their physical disks count. Where the monitor shares a disk with the validator or Fibre, `celestia-mon-doctor` check 16 compares it around Prometheus's compactions ([quickstart step 9](quickstart.md#9-run-doctor)).
-- **Free space per data disk** (DiskLow): each data disk you listed and each Fibre store ("(Fibre store)"), with the dashed 10% line, DiskLow's level for the data disks and for a Fibre store without a storage budget.
-- **Disk reads and writes** and **Clock offset** (more than a few tens of milliseconds means time sync is not working).
-
 ## Markers and links
 
-Charts carry grey markers, hidden from the dashboard's controls: "<unit> started on <server>" each time systemd starts celestia-appd, Fibre or tmkms; "Signing through <server>" at each repoint (on the role band too); "Out of memory on <server>" on Memory used, in amber; with `celestia_mon_signal`, "Network upgrade: new app version"; with `celestia_mon_announcements`, "Celestia announcement" (its text is in your alert channel). Markers can be missed on ranges longer than about a week, where Grafana takes coarser steps.
+Charts carry grey markers, hidden from the dashboard's controls: "<unit> started on <server>" each time systemd starts celestia-appd, Fibre or tmkms; "Signing through <server>" at each repoint (on the role band too); "Out of memory on <server>" on that server's Memory by service, in amber; with `celestia_mon_signal`, "Network upgrade: new app version"; with `celestia_mon_announcements`, "Celestia announcement" (its text is in your alert channel). A chart of the Servers rows shows the starts of its own server only. Markers can be missed on ranges longer than about a week, where Grafana takes coarser steps.
 
 Each panel's (i) ends with links to the alerts it shows in the [alert reference](alerts.md) and to related pages. The dashboard's links open the alert reference, [Node Exporter Full](https://grafana.com/grafana/dashboards/1860-node-exporter-full/) for everything else about a server, and with Fibre on the official [Fibre dashboard](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/observability/docker/grafana/dashboards/fibre.json) and [Tensile](https://tensile.huginn.tech).
