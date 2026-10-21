@@ -193,6 +193,13 @@ MAX_COLUMNS = 4                          # more servers than this: the Servers n
 H = 'cometbft_consensus_height{job="celestia-app"}'
 LSH = 'cometbft_consensus_validator_last_signed_height{job="celestia-app"}'
 MISSED = 'cometbft_consensus_validator_missed_blocks{job="celestia-app"}'
+# The blocks each node counted as missed in the last hour, the text SignaturesMissed reads (missed_1h
+# in the rules template; CI checks that they are equal). The count is a counter without a _total
+# suffix, so increase() over it carries a PromQL notice; this sums each minute's rise instead: the
+# count now less its last value a minute before, or after a node restart, when the count starts
+# again, its new value.
+MISSED_BEFORE = "last_over_time(%s[1h] offset 1m)" % MISSED
+MISSED_1H = "sum_over_time((%s - %s >= 0 or %s * 1 < %s)[1h:1m])" % (MISSED, MISSED_BEFORE, MISSED, MISSED_BEFORE)
 POWER = 'cometbft_consensus_validator_power{job="celestia-app"}'
 TOTAL = 'cometbft_consensus_validators_power{job="celestia-app"}'
 # Signatures the node's privval client made: votes and proposals (PV), and Fibre's raw bytes (RAW).
@@ -995,42 +1002,227 @@ def check_titles(s):
                          % (", ".join(missing), RULES_TEMPLATE))
 
 
-def rendered(s, alert):
-    """Whether this install's rules hold the alert: a TITLES entry for it whose switch is on."""
-    return any(key.split(":")[0] == alert and s.has(need) for key, _, _, _, need in TITLES)
+# check_surfaces() and check_words() read the rules template and the first screen's queries as text.
+# A label value of a rule's alerts that the template does not fix: ANY (any value, or a label the
+# checks do not read), SOME (some value, never empty).
+ANY, SOME = object(), object()
+VARIANT_LABELS = ("alertname", "severity", "unit", "reason", "check", "job", "state")
+REDS = {"red", ALERT}
+# Not surfaces: the Status cell takes its words from TITLES itself, and the Uptime column (21) prints
+# shares, not states.
+NOT_SURFACES = {STATUS_ID, 21}
+# Words a surface may show for an alert's state instead of its TITLES short word, each with the reason
+# (check_words): {alert: {word: reason}}.
+OTHER_WORDS = {}
 
 
-def alert_matchers(expr):
-    """The alertname matchers of every ALERTS and ALERTS_FOR_STATE selector in expr: (operator, value)."""
-    found = []
-    for sel in re.findall(r"\bALERTS(?:_FOR_STATE)?\{([^}]*)\}", expr):
-        found += re.findall(r'alertname\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"', sel)
-    return found
+def rule_variants():
+    """Every rule of the rules template as the labels its alerts carry, one dict of VARIANT_LABELS per
+    unit for a rule whose unit the template fills in from its ServiceDown list (units); a list per rule.
+    ServiceDown's crash loop and not-loaded rules carry no reason label: by_alert() reads it from the
+    job and state their expressions leave, and so does this. A rule whose expression keeps its metric's
+    reason label (RemoteSignerProblem's proposal failures) has SOME reason."""
+    with open(RULES_TEMPLATE, encoding="utf-8") as f:
+        text = f.read()
+    units = re.findall(r"\('(\w+)', ", re.search(r"\{% set units = (.*?)%\}", text, re.S).group(1))
+    rules = []
+    for block in re.split(r"^\s*- alert: ", text, flags=re.M)[1:]:
+        m = re.search(r"^( *)labels:\n((?:\1 +\S.*\n)+)", block, re.M)
+        head = block[:m.start()] if m else block
+        labels = dict(re.findall(r"^\s+(severity|unit|reason|check): *(\S.*?)\s*$", m.group(2), re.M)) if m else {}
+        v = {"alertname": re.match(r"\w+", block).group(0), "severity": labels.get("severity", ""),
+             "reason": labels.get("reason", ""), "check": labels.get("check", ""), "job": ANY, "state": ANY}
+        if v["alertname"] == "ServiceDown":
+            if "absent(" in head:
+                v.update(reason="not_loaded", job="", state="")
+            elif "node_systemd_service_restart_total" in head:
+                v.update(reason="crashloop", job=SOME, state="")
+            else:
+                v.update(job=SOME, state=SOME if "node_systemd_unit_state" in head else "")
+        elif not v["reason"] and re.search(r"\{[^}]*\breason\s*!?[=~]", head):
+            v["reason"] = SOME
+        unit = labels.get("unit", "")
+        rules.append([dict(v, unit=u) for u in (units if "{{" in unit else [unit])])
+    return rules
+
+
+def variant_key(v, host="h"):
+    """The key titled() matches TITLES against, for alerts with v's labels on host ("" for none)."""
+    return ":".join(["x" if v[k] is SOME else v[k] for k in VARIANT_LABELS[:5]] + [host])
+
+
+def title_entries(v):
+    """The TITLES entries whose key matches alerts with v's labels, with a host or without one (a rule
+    that keeps no host label)."""
+    return [e for e in TITLES if re.fullmatch(e[0], variant_key(v)) or re.fullmatch(e[0], variant_key(v, ""))]
+
+
+def variants(s):
+    """(labels, TITLES entry) of every rule this install holds, as rule_variants() reads them, with the
+    entry titled() gives its alerts: like titled()'s chain, the last key that matches wins. Stops when a
+    rule's alerts match no key, so a new reason or check cannot reach the Status cell as SHORT_FALLBACK."""
+    out = []
+    for rule in rule_variants():
+        if rule[0]["alertname"] in UNTITLED:
+            continue
+        found = False
+        for v in rule:
+            entries = title_entries(v)
+            found = found or bool(entries)
+            live = [e for e in entries if s.has(e[4])]
+            if live:
+                out.append((v, live[-1]))
+        if not found:
+            raise SystemExit("No key of TITLES matches the alerts of a %s rule (%s): add a sentence, a short name and "
+                             "a part for them" % (rule[0]["alertname"], variant_key(rule[0])))
+    return out
+
+
+def value_part(expr):
+    """expr with the right side of every 'and' and 'unless' blanked: those series only filter the left
+    side, so a selector there never gives the query its value. Strings and label matchers do not count
+    as parentheses or keywords."""
+    masked = re.sub(r'"(?:[^"\\]|\\.)*"', lambda m: " " * len(m.group(0)), expr)
+    masked = re.sub(r"\{[^}]*\}", lambda m: " " * len(m.group(0)), masked)
+    depth, depths = 0, []
+    for ch in masked:
+        depths.append(depth)
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+    keep = list(expr)
+    for m in re.finditer(r"\b(and|unless)\b", masked):
+        d = depths[m.start()]
+        modifier = re.compile(r"\s*(on|ignoring)\s*\([^)]*\)").match(masked, m.end())
+        i = start = modifier.end() if modifier else m.end()
+        # The right side ends where its group closes or at the next 'or', 'and' or 'unless' of its group.
+        while i < len(masked):
+            if depths[i] == d and (masked[i] == ")" or (re.match(r"(or|and|unless)\b", masked[i:])
+                                                        and not re.match(r"\w", masked[i - 1]))):
+                break
+            i += 1
+        keep[start:i] = " " * (i - start)
+    return "".join(keep)
+
+
+def value_selectors(expr):
+    """The label matchers of every ALERTS and ALERTS_FOR_STATE selector that can give expr its value,
+    each a list of (label, operator, value)."""
+    return [re.findall(r'(\w+)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"', sel)
+            for sel in re.findall(r"\bALERTS(?:_FOR_STATE)?\{([^}]*)\}", value_part(expr))]
+
+
+def admits(op, pattern, value):
+    """Whether a label matcher accepts value (a string, ANY or SOME)."""
+    if value is ANY:
+        return True
+    if value is SOME:
+        return not (op == "=" and pattern == "")
+    hit = value == pattern if op in ("=", "!=") else bool(re.fullmatch(pattern, value))
+    return hit if op in ("=", "=~") else not hit
+
+
+def names(selector, v):
+    """Whether a selector names the alerts with v's labels: it picks their alert name (= or =~; one that
+    only excludes names none) and every matcher on VARIANT_LABELS accepts their value."""
+    return (any(k == "alertname" and op in ("=", "=~") for k, op, _ in selector)
+            and all(admits(op, p, v[k]) for k, op, p in selector if k in VARIANT_LABELS))
+
+
+def target_words(p, t):
+    """(text, colour) of every word query t of panel p can show: the mappings Grafana applies to its
+    field (an override of its refId, else the panel's; a table's columns, all of them) and a card row's
+    label texts (text_row), whose colour rides on their invisible last character."""
+    fc = p["fieldConfig"]
+    own = [pr["value"] for o in fc["overrides"] for pr in o["properties"] if pr["id"] == "mappings"
+           and (p["type"] == "table" or o["matcher"] == {"id": "byFrameRefID", "options": t.get("refId")})]
+    maps = [m for ms in (own if own and p["type"] != "table" else own + [fc["defaults"].get("mappings", [])])
+            for m in ms]
+    words = []
+    for m in maps:
+        for r in (m["options"].values() if m["type"] == "value" else [m["options"]["result"]]):
+            if r.get("text"):
+                words.append((r["text"], r.get("color")))
+    marks = {mark: color for color, mark in MARKS.items()}
+    for lit in re.findall(r'"text", ("(?:[^"\\]|\\.)*")', t["expr"]):
+        text = json.loads(lit)
+        color = marks.get(text[-1:]) if text else None
+        words.append((re.sub(r"\$\{\d+\}", NUMBER_SAMPLE, text.rstrip("".join(MARKS.values()))), color or "text"))
+    return words
+
+
+def surfaces(panels):
+    """(name, selectors, words) of every query on the first screen beside the Status cell: the tiles, the
+    History lines, the role band's lanes, the server cards and the panels under them."""
+    out = []
+    for p in panels:
+        if p["id"] >= 100 or p["id"] in NOT_SURFACES:
+            continue
+        for t in p.get("targets", []):
+            name = " · ".join(n for n in (p.get("title") or p["fieldConfig"]["defaults"].get("displayName", ""),
+                                          (t.get("legendFormat") or "").strip(ROW_INDENT + ZERO_WIDTH)) if n)
+            out.append((name or "panel %d" % p["id"], value_selectors(t["expr"]), target_words(p, t)))
+    return out
 
 
 def check_surfaces(s, panels):
     """Every alert this install's rules hold reaches a place on the first screen beside the Status cell
-    and the alert list: a tile, a line of the History board, the role band or a server card whose
-    queries name it (alertname="X", or a regex that matches X). Selectors that name no alert, or only
-    exclude some, do not count: the link must stay when a query is changed. The alerts with no such
-    place are in NO_SURFACE, each with its reason."""
-    exprs = [t["expr"] for p in panels if p["id"] < 100 and p["id"] != STATUS_ID for t in p.get("targets", [])]
-    named = set()
-    for e in exprs:
-        for op, value in alert_matchers(e):
-            for a in s.alert_names:
-                if (op == "=" and value == a) or (op == "=~" and re.fullmatch(value, a)):
-                    named.add(a)
-    required = [a for a in s.alert_names if a in UNTITLED or rendered(s, a)]
-    missing = [a for a in required if a not in named and a not in NO_SURFACE]
-    if missing:
-        raise SystemExit("No tile, History line, role band lane or server card names the alert(s) %s: give each a "
-                         "state on the first screen beside the Status cell, or list it in NO_SURFACE with the reason"
-                         % ", ".join(missing))
-    stale = [a for a in NO_SURFACE if a in named]
-    if stale:
-        raise SystemExit("NO_SURFACE lists %s, which the first screen now names: remove it from NO_SURFACE"
-                         % ", ".join(stale))
+    and the alert list: a tile, a line of the History board, the role band, a server card or a panel under
+    it whose query names it, for each reason, check, unit and severity its rules carry (variants), so a
+    new reason cannot fire while the surfaces list only the old ones. A selector names alerts only where
+    it picks them by name and can give the query its value: not where it only excludes names, nor on the
+    right of 'and' or 'unless'. A page alert must also have a red word on one of its surfaces. The alerts
+    with no such place are in NO_SURFACE, each with its reason."""
+    found = surfaces(panels)
+    problems = []
+    for v, entry in variants(s):
+        if v["alertname"] in NO_SURFACE:
+            continue
+        mine = [(n, w) for n, sels, w in found if any(names(sel, v) for sel in sels)]
+        if not mine:
+            problems.append("no surface names %s (%s)" % (variant_key(v), entry[2]))
+        elif v["severity"] == "page" and not any(c in REDS for _, w in mine for _, c in w):
+            problems.append("%s pages, but no surface that names it (%s) has a red word"
+                            % (variant_key(v), ", ".join(sorted({n for n, _ in mine}))))
+
+    def named(alert):
+        return any(names(sel, dict(dict.fromkeys(VARIANT_LABELS, ANY), alertname=alert))
+                   for _, sels, _ in found for sel in sels)
+    problems += ["no surface names %s" % a for a in sorted(UNTITLED) if a in s.alert_names and not named(a)]
+    problems += ["NO_SURFACE lists %s, which the first screen now names: remove it from NO_SURFACE" % a
+                 for a in sorted(NO_SURFACE) if named(a)]
+    if problems:
+        raise SystemExit("The first screen does not show every alert's state (check_surfaces); give each a state on "
+                         "a tile, History line, role band lane or server card, or list the alert in NO_SURFACE with "
+                         "the reason:\n  " + "\n  ".join(problems))
+
+
+def check_words(s, panels):
+    """Every surface that names an alert's state shows the alert's TITLES short word, as the Status cell
+    does, so one state has one name on the whole first screen. A query's selectors are read in order, as
+    its branches take precedence: a selector that names states no earlier one named needs their word
+    among the query's words, or, where it takes in states of several words (a line's coarser code), one
+    of them. OTHER_WORDS lists the words a surface may show instead, each with its reason."""
+    found = surfaces(panels)
+    live = [(v, e) for v, e in variants(s) if v["alertname"] not in NO_SURFACE]
+    shown = {w for _, _, words in found for w, _ in words}
+    problems = ["OTHER_WORDS lists %r for %s, which no surface shows: remove it" % (w, a)
+                for a, words in sorted(OTHER_WORDS.items()) if any(v["alertname"] == a for v, _ in live)
+                for w in sorted(words) if w not in shown]
+    for name, sels, words in found:
+        texts = {w for w, _ in words}
+        seen = set()
+        for sel in sels:
+            new = [i for i, (v, _) in enumerate(live) if names(sel, v) and i not in seen]
+            seen.update(new)
+            shorts = {live[i][1][2] for i in new}
+            ok = shorts | {w for i in new for w in OTHER_WORDS.get(live[i][0]["alertname"], {})}
+            if new and not texts & ok:
+                problems.append("%s names %s but shows none of %s (its words: %s)"
+                                % (name, ", ".join(sorted({variant_key(live[i][0]) for i in new})),
+                                   " / ".join(sorted(shorts)), ", ".join(sorted(texts))))
+    if problems:
+        raise SystemExit("A first-screen surface names an alert's state in other words than the Status cell "
+                         "(check_words); use the alert's TITLES short word, or list the word in OTHER_WORDS with "
+                         "the reason:\n  " + "\n  ".join(sorted(set(problems))))
 
 
 def message(sel, quiet=None):
@@ -1329,8 +1521,8 @@ def validator_tile(s):
         "(%s * 0 + 5) + on () %s" % (STALL, NNA10),
         '((((%s > %s) * 0 + 6 and on () (min(up{job="celestia-app"}) == 0)) or ((max(%s) * 0 + 4) unless on () %s) '
         "or (%s > %s) * 0 + 3) + on () %s)" % (BLOCKS_SINCE, n, POWER, IN_SET_OR_NEW, BLOCKS_SINCE, n, VNS10),
-        "(max(max by (host) (increase(%s[1h])) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
-        % (MISSED, num(s.R), H),
+        "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
+        % (MISSED_1H, num(s.R), H),
         "max(%s) * 0 + 1" % H)
     words = [(1, "Signing", "text"), (2, "Missed blocks", "orange"),
              (3, "Not signing", "orange"), (13, "Not signing", "red"),
@@ -2806,8 +2998,8 @@ def validator_row(s):
            % POWER)
     # SignaturesMissed's own expression: per node, the blocks of the last hour without the validator's
     # signature over the blocks of that hour; a node that has missed none since its start reads 0.
-    share = ("max((max by (host) (increase(%s[1h])) or max by (host) (%s) * 0) / (max by (host) (delta(%s[1h])) > 0))"
-             % (MISSED, LSH, H))
+    share = ("max((max by (host) (%s) or max by (host) (%s) * 0) / (max by (host) (delta(%s[1h])) > 0))"
+             % (MISSED_1H, LSH, H))
     # The blocks of the last 24 hours: the height 24 hours ago, or the lowest one Prometheus has.
     day = "(max(%s) - (max(%s offset 24h) or max(min_over_time(%s[24h]))))" % (H, H, H)
     # A count of the last 24 hours reads "No data" when no node answered in that time, not 0.
@@ -3900,6 +4092,7 @@ def build(cfg):
             p["fieldConfig"]["overrides"] = colors + p["fieldConfig"]["overrides"]
     check_variables(every)
     check_surfaces(s, every)
+    check_words(s, every)
     ids = {p["id"]: p["type"] for p in every}
 
     return {

@@ -74,7 +74,7 @@ tests:
         exp_alerts: []
 
   # A restart at 20m clears the count: the series goes stale and comes back at 1 with the next
-  # miss. increase() reads the drop as a reset, so the misses on both sides of the restart count.
+  # miss. The minute sums read the drop as a reset, so the misses on both sides of the restart count.
   - name: Node restarts while the validator misses every other block; SignaturesMissed stays firing
     interval: 1m
     input_series:
@@ -96,3 +96,24 @@ tests:
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+
+  # The count stands at 500 from misses long ago, and none falls in this hour. The node restarts at
+  # 30m (the series goes stale) and counts its next miss at 40m: 1. The drop from 500 is a reset, not
+  # a rise, and the hour holds one miss in about 500 blocks: no SignaturesMissed.
+  - name: Node restarts with an old count and misses one block; no SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x29 stale _x9 1400+10x40'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '500x29 stale _x9 1x40'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: SignaturesMissed
+        exp_alerts: []
+    promql_expr_test:
+      - expr: count_over_time(ALERTS{alertname="SignaturesMissed"}[80m])
+        eval_time: 80m
+        exp_samples: []
