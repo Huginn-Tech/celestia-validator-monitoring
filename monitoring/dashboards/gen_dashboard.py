@@ -2941,7 +2941,7 @@ def fibre_now(s):
             % q(s.units["fibre"]))
 
 
-def spark_fact(s, pid, label, desc, expr, extra=(), low=0, high=None, **kw):
+def fibre_spark_fact(s, pid, label, desc, expr, extra=(), low=0, high=None, **kw):
     """A Fibre fact over a range query (expr, one series without labels), with a sparkline of it over
     the selected time, drawn from low (and up to high) so a small change does not fill the cell. A
     labels expr for the whole selected time with the host whose Fibre runs at its end, and an override
@@ -2995,7 +2995,7 @@ def fibre_row(s):
     accepted = "(round(sum(increase(%s[24h]))) or on () vector(0))" % ok
     samples = {}
 
-    budget = spark_fact(
+    budget = fibre_spark_fact(
         s, 204, "Storage budget used",
         "Share of this server's stake-based storage budget held by shards (on disk plus in flight); the sparkline "
         "shows it over the selected time. At 100% Fibre refuses uploads (the Fibre tile reads Storage full). It "
