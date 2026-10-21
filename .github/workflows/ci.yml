@@ -947,7 +947,8 @@ jobs:
       # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
       # row starts; the top strip's six cells and the answer tiles below them share their column edges.
       # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
-      # many rows, over one lower panel per column (ids 34-37) of four bars, all 5 rows high; the
+      # many rows, over one lower panel per column (ids 34-37) of four bars, all 4 rows high with the
+      # names left of the bars (5 with the names above them, where no name size fits the left); the
       # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
       # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
@@ -1024,7 +1025,7 @@ jobs:
                           ($cg | map(.w) | unique | length) == 1 and ($cg | map(.w) | add) == 24
                           and ($cg | map(.x)) == [range(0; $n) * $cg[0].w] and ($lg | map(.x)) == ($cg | map(.x))
                           and ($lg | map(.w) | unique) == [$cg[0].w] and ($lg | map(.y) | unique) == [6 + $cg[0].h]
-                          and ($lg | map(.h) | unique) == [5]
+                          and ([$l[] | [.gridPos.h, .options.namePlacement]] | unique | . == [[4, "left"]] or . == [[5, "top"]])
                         end)' "build/$s/dashboard.json"
             jq -e '[.panels[] | select(.id >= 20 and .id < 30)] as $b | ($b | map(.id) | sort) == [20, 21, 24, 25]
                    and (INDEX($b[]; .id | tostring) | map_values(.gridPos)) as $g
