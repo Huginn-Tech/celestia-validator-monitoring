@@ -961,9 +961,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 34
-          test "$(count split)" = 62
-          test "$(count mainnet)" = 65
-          test "$(count five)" = 59
+          test "$(count split)" = 61
+          test "$(count mainnet)" = 64
+          test "$(count five)" = 58
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1034,23 +1034,49 @@ jobs:
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
           jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
-      # The Fibre row (ids 201-249): one line of facts of width 4 across the 24 columns, at one height
-      # and at least 4 rows where a fact draws a sparkline (Grafana draws it only above 100 px), then
-      # charts two to a line on columns 0 and 12, an even number of them, all of one height.
+      # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
+      # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
+      # three charts of one height: two side by side on columns 0 and 12, then one across the row.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
-                   | [$f[] | select(.type == "stat") | .gridPos] as $s
+                   | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
-                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique | length) == 1
+                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
-                     and ([$f[] | select(.type == "stat" and .options.graphMode == "area") | .gridPos.h] | all(. >= 4))
-                     and ($c | length) > 0 and ($c | length) % 2 == 0
-                     and ($c | map(.w) | unique) == [12] and ($c | map(.x) | unique) == [0, 12]
-                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)' \
+                     and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
+                                   and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
+                     and ($p | map(.options.text.valueSize) | unique | length) == 1
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)
+                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
               "build/$s/dashboard.json"
           done
+      # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
+      # compares, which is the rule's expression without its comparison, and its dashed line at the
+      # rule's number, so neither side can change alone.
+      - name: Fibre behind the network draws the missed_uploads rule
+        run: |
+          python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
+          import json
+          import re
+          import sys
+
+          import yaml
+
+          dash = json.load(open(sys.argv[1]))
+          rules = [r for g in yaml.safe_load(open(sys.argv[2]))["groups"] for r in g["rules"]
+                   if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
+          assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
+          m = re.fullmatch(r"(.*) > (\d+) (and on .*)", " ".join(rules[0]["expr"].split()))
+          assert m, rules[0]["expr"]
+          chart = next(p for p in dash["panels"] if p.get("id") == 210)
+          drawn = " ".join(chart["targets"][0]["expr"].split())
+          assert drawn == "((%s %s) > 0) / 60" % (m.group(1), m.group(3)), (drawn, m.groups())
+          level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+          assert level * 60 == int(m.group(2)), (level, m.group(2))
+          print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
+          EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       - name: Every panel query parses in Prometheus
