@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has nineteen alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has twenty alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -8,7 +8,7 @@ celestia-validator-monitoring has nineteen alerts and a heartbeat, and can pass 
 
 Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, FibreDown and FibreBothActive name no host, and neither do the Watchdog and the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon). Every other alert names the host it is about.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog and the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon). Every other alert names the host it is about.
 
 | Alert | Severity | Catches |
 |---|---|---|
@@ -17,10 +17,11 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [NodeBehind](#nodebehind) | message | One node lags the others: a backup node that could not take over signing |
 | [ValidatorNotSigning](#validatornotsigning) | page | The chain moves but the validator's key signs on no node |
 | [SignaturesMissed](#signaturesmissed) | message | The validator signs, but misses more than 5% of the blocks of the last hour |
+| [ValidatorSigningTwice](#validatorsigningtwice) | page | Two nodes keep getting the validator's signatures from a remote signer, for about 3 minutes: a double sign can follow (remote signer only) |
 | [RemoteSignerProblem](#remotesignerproblem) | message | Remote signer too slow, or unable to sign proposals |
 | [FibreDown](#fibredown) | page | No Fibre unit active on any Fibre host for 10 minutes; with the outside check, also the registered endpoint unreachable from outside, not registered, or not the host where Fibre runs |
 | [FibreBothActive](#fibrebothactive) | message | Fibre active on more than one host for 5 minutes |
-| [FibreNotServing](#fibrenotserving) | message | Fibre running but accepting no uploads, failing every upload (often its signer), or sending no metrics |
+| [FibreNotServing](#fibrenotserving) | message | Fibre running but missing blobs sent to the validator or not serving rows it signed for (with the outside check), failing every upload (often its signer), or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
 | [UpgradeSignalMissing](#upgradesignalmissing) | page | Validators signal the next app version, and yours has not (only with upgrade signalling on) |
 | [UpgradeScheduled](#upgradescheduled) | message, when scheduled (again after 4 days while it waits) | A network upgrade scheduled: version, height, when, and whether yours signalled (only with upgrade signalling on) |
@@ -69,8 +70,6 @@ celestia_mon_receivers:
 | `signatures_missed_ratio` | 0.05 | SignaturesMissed |
 | `node_behind_blocks` | 20 | NodeBehind |
 | `signer_median_seconds` | 0.010 | RemoteSignerProblem |
-| `fibre_stale_uploads` | 10 | FibreNotServing |
-| `fibre_stale_min_seconds` | 3600 | FibreNotServing |
 | `disk_page_free_ratio` | 0.05 | DiskLow (page) |
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
 | `crashloop_restarts` | 2 | ServiceDown (crash loop) |
@@ -180,13 +179,29 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/), [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#key-management-systems-kms).
 
+## ValidatorSigningTwice
+
+Only with `celestia_mon_signer: remote`, and not with `celestia_mon_signer_multi_node: true`.
+
+**What it means.** Two or more nodes of this install keep receiving votes or proposals signed with the validator's key from a remote signer; the description names them. Two signers with one key can sign two different votes for one height: a double sign, which the chain slashes and for which it tombstones the validator, so it can never sign again. Typically a second tmkms with the same key was started, for example on a standby KMS host. Each node counts only the signatures it got back from its signer, so a node that tmkms left counts none, although it keeps reporting the validator's signatures from the chain. A node counts once it has such signatures both in the last 2 minutes and in the 2 minutes before, so a tmkms repoint never matches, and the alert comes about 3 minutes after a second signer started. The alert names no host.
+
+**Severity.** page: at any height where the two nodes vote differently, for a block and for nil for example, the validator double-signs.
+
+**Check first.**
+
+1. On each KMS host, `systemctl status tmkms` and `journalctl -u tmkms -n 50`: which tmkms runs and which node it connects to. Stop the one that should not sign.
+2. The dashboard's role band shows which nodes signed, and since when.
+3. If one tmkms signs through several nodes on purpose (several `[[validator]]` entries), set `celestia_mon_signer_multi_node: true` and run `install.sh` on the monitor: this alert is then left out.
+
+**Links.** [tmkms](https://github.com/iqlusioninc/tmkms), [Cosmos SDK x/slashing](https://github.com/cosmos/cosmos-sdk/tree/main/x/slashing).
+
 ## RemoteSignerProblem
 
 Only with `celestia_mon_signer: remote`.
 
 **What it means.** One of two things, named in the summary:
 
-- **Slower than 10 ms:** the median of the last 50 signatures has been above 10 ms for 15 minutes. Celestia requires the median signing latency to stay at or below 10 ms.
+- **Slower than 10 ms:** the median of the last 50 signatures has been above 10 ms for 15 minutes, on a node that got signatures from the remote signer in the last 5 minutes. Celestia requires the median signing latency to stay at or below 10 ms. A node that tmkms left keeps its last median; the alert ends for it within 5 minutes of the repoint.
 - **Fails to sign proposals:** proposal signing failed in the last 6 hours for a reason other than a timeout or a lost connection. The KMS still signs votes, so ValidatorNotSigning stays quiet, but it cannot propose. Link blips are left out because every failed signature is retried up to 50 times and each attempt counts. The alert fires on the second failed proposal.
 
 **Severity.** message: slower signing is a performance problem. When it turns into missed signatures, SignaturesMissed sends a message, and ValidatorNotSigning pages once no signature has arrived for more than 10 blocks.
@@ -211,7 +226,7 @@ Only with `celestia_mon_fibre_enabled: true`.
 - Fibre runs on a host whose `celestia_mon_fibre_public_endpoint` is not the endpoint registered on chain: after a failover, `set-host` was not sent, and clients dial the old host;
 - no Fibre host is registered on chain at all.
 
-celestia-mon-tensile on the monitor reads Tensile's verdict for your validator every minute and serves it as metrics; Tensile is used only for this check. Set it up in the inventory, on the monitor host: `celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "<celestiavalcons1...>"}` (Tensile's API for your network; check 4 of `celestia-mon-doctor` on the validator prints the consensus address), and set `celestia_mon_fibre_public_endpoint` on every Fibre host. [TensileUnreadable](#tensileunreadable) tells you when the outside check stops.
+celestia-mon-tensile on the monitor reads Tensile's verdict for your validator every minute and serves it as metrics; Tensile is used only for this check and for the blobs [FibreNotServing](#fibrenotserving) compares with Fibre's uploads. Set it up in the inventory, on the monitor host: `celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "<celestiavalcons1...>"}` (Tensile's API for your network; check 4 of `celestia-mon-doctor` on the validator prints the consensus address), and set `celestia_mon_fibre_public_endpoint` on every Fibre host. [TensileUnreadable](#tensileunreadable) tells you when the outside check stops.
 
 **Severity.** page. While it fires, FibreNotServing is held back.
 
@@ -227,7 +242,7 @@ celestia-mon-tensile on the monitor reads Tensile's verdict for your validator e
 
 Only with `celestia_mon_tensile` set and Fibre on.
 
-**What it means.** For 30 minutes, then 10 more, celestia-mon-tensile has not read Tensile's API, Tensile has not checked your Fibre endpoint, or the service is down. Meanwhile FibreDown cannot see an endpoint that is unreachable from outside; the unit check still works.
+**What it means.** For 30 minutes, then 10 more, celestia-mon-tensile has not read Tensile's API, Tensile has not checked your Fibre endpoint, or the service is down. Meanwhile FibreDown cannot see an endpoint that is unreachable from outside, and FibreNotServing reports neither blobs Fibre misses nor rows it does not serve (`missed_uploads` already stops 15 minutes after the last read); the unit check still works.
 
 **Severity.** message.
 
@@ -249,24 +264,29 @@ Only with `celestia_mon_fibre_enabled: true`.
 
 ## FibreNotServing
 
-Only with `celestia_mon_fibre_enabled: true`.
+Only with `celestia_mon_fibre_enabled: true`; `missed_uploads` and `not_served` also need the outside check (`celestia_mon_tensile`).
 
-**What it means.** Fibre runs but is not doing its job. Only a host whose Fibre unit is active can fire it: a stopped standby sends no Fibre metrics and is not expected to. The `reason` label says how:
+**What it means.** Fibre runs but does not do its job. Only a host whose Fibre unit is active can fire it: a stopped standby sends no Fibre metrics and is not expected to. A network that sends no blobs never fires it: when no blob comes, nothing is missed. The `reason` label says how:
 
-- `stale`: for 10 minutes, the time since the last accepted upload has been longer than 10 uploads take at this server's 7-day average rate, and longer than 1 hour. Before the first accepted upload after a start, the time counts from Fibre's start. The alert is silent when the server had no upload in 7 days. A quiet network also makes the time grow: after a burst of uploads followed by a network-wide lull, it can fire until the burst leaves the 7-day window. To tell a quiet network from a fault, check on [Tensile](https://tensile.huginn.tech) whether the network is carrying Fibre uploads. These values are starting points until real mainnet traffic exists; tune `fibre_stale_uploads` and `fibre_stale_min_seconds` if needed.
+- `missed_uploads`: a blob that assigned rows to your validator settled more than 5 minutes after Fibre last accepted an upload (before its first one, after Fibre started), and for 5 minutes no later upload was accepted. A blob's publisher uploads its rows to every validator it assigns before the blob settles, and keeps sending to the slower ones after the 2/3 quorum, so a working Fibre has accepted the upload by then. [Tensile](https://tensile.huginn.tech) records which blobs assigned rows to your validator, and celestia-mon-tensile reads that every minute; the alert compares it with Fibre's own last accepted upload, and counts only Tensile reads of the last 15 minutes. It comes about 7 minutes after the missed blob settled. From a Tensile that does not send the time of that blob (`signing.last_assigned_at`), celestia-mon-tensile takes the time of the read at which the number of blobs assigned to your validator rose, while Tensile is in step with the chain: up to a minute later. Whether your signature made it into a blob is not checked: the publisher stops waiting once 2/3 of the voting power has signed, so a healthy validator is sometimes left out.
 - `uploads_failing`: for 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing. Most often the signer: Fibre signs every accepted upload through the node at its signer address, and after tmkms is pointed at another node, a Fibre that still dials the old node fails every upload while its unit stays active and its port answers, so FibreDown and an external port check stay quiet.
+- `not_served`: Tensile read rows of a blob your validator signed for, while Fibre must still keep them (the retention window), and Fibre did not return them: a client would not get your share of that blob. Tensile reads each blob once, late in the window, so this comes hours after the blob. It fires at once and resolves an hour after the last such reading.
 - `no_telemetry`: the Fibre unit has been active for 30 minutes but no Fibre metrics arrive. Fibre's OTLP endpoint is not set, or the collector is not receiving.
+
+Without the outside check nothing on your hosts tells a network that sends no blobs from a Fibre that receives none, so no alert covers that case: the dashboard's Last accepted upload shows when Fibre last took one, and Tensile shows whether the network carries blobs. Set up `celestia_mon_tensile` to be told.
 
 Possible causes: the host is not registered or not reachable from outside, the validator is not bonded, the node is not synced, the signer is unreachable or cannot sign raw bytes, or the listener died while the process kept running.
 
-**Severity.** message: a quiet network is not an outage, and not serving Fibre carries no on-chain penalty. FibreDown pages when Fibre itself is down.
+**Severity.** message: not serving Fibre carries no on-chain penalty. FibreDown pages when Fibre itself is down.
 
 **Check first.**
 
-1. For `no_telemetry`: `sudo celestia-mon-doctor` on the Fibre host (check 7) shows where the unit sends its metrics, and check 13 on the monitor shows whether they arrive. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT` ([quickstart step 6](quickstart.md#6-point-fibre-at-its-collector)).
-2. Registration and reachability: `sudo celestia-mon-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) shows your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
-3. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures add to the "Signing failures, 24 h" panel).
-4. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([mainnet layout](quickstart.md#mainnet-layout)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
+1. For `missed_uploads`: Tensile's page for your validator lists the recent blobs. `journalctl -u <fibre unit> -n 100` shows the uploads Fibre received and why any failed; no upload lines at all point at the registration (`doctor` check 5 on the validator host) or at a port that publishers cannot reach.
+2. For `not_served`: `journalctl -u <fibre unit>` for "failed to retrieve blob shard" (a store error; a shard Fibre does not hold is logged only at debug level), the Fibre store's disk (read-only, full, I/O errors in `journalctl -k`), and Failed clean-ups on the dashboard.
+3. For `no_telemetry`: `sudo celestia-mon-doctor` on the Fibre host (check 7) shows where the unit sends its metrics, and check 13 on the monitor shows whether they arrive. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT` ([quickstart step 6](quickstart.md#6-point-fibre-at-its-collector)).
+4. Registration and reachability: `sudo celestia-mon-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) shows your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
+5. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures add to the "Signing failures, 24 h" panel).
+6. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([mainnet layout](quickstart.md#mainnet-layout)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
 
 **Links.** [Fibre server guide: server runs but no uploads arrive](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#server-runs-but-no-uploads-arrive), [registration](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#registration), [tracing and metrics](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#tracing--metrics).
 
@@ -389,7 +409,7 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 
 1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several). Keep your alert receivers out of it: a `discord` receiver posts into a channel of its own.
 2. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) (or reuse one): turn on **Message Content Intent**, invite it to your server, and give it **View Channel** and **Read Message History** in that channel. Copy its token.
-3. In the inventory, on the monitor host: `celestia_mon_announcements: [{channel_id: "<channel ID>", severity: page}]` (Developer Mode, then right-click the channel, Copy Channel ID). `page` reaches PagerDuty and every chat channel, `message` the chat channels only.
+3. In the inventory, on the monitor host: `celestia_mon_announcements: [{channel_id: "<channel ID>", severity: page}]` (Developer Mode, then right-click the channel, Copy Channel ID). `page` reaches PagerDuty and every chat channel, `message` the chat channels only. A channel that follows only testnet announcements is best set to `message`, so routine testnet news does not page.
 4. In the monitor's vault (`sudo ./install.sh --edit-vault <file>`): `celestia_mon_discord_bot_token: "<token>"`. Then run `install.sh` on the monitor.
 
 **Severity.** The one you set per channel (`page` by default).
@@ -416,6 +436,8 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 - for one hour after a page or message notification failed (Telegram, Discord, Slack, PagerDuty or a `webhook` receiver), so a broken alert channel reaches you through the dead-man service. Failed heartbeats to the dead-man URL itself do not count: [DeadmanFailing](#deadmanfailing) reports them.
 
 Connect the dead-man check to PagerDuty and to email or another channel than your alert chat. A dead monitor host, or a whole data centre gone, then still rings your phone, and when the alert chat is what broke, the dead-man service is the one left to tell you. If the dead-man service alerts you, assume that no other celestia-validator-monitoring alert can reach you until you find the cause.
+
+When the monitor runs on the Fibre host, as in the [mainnet layout](quickstart.md#mainnet-layout), a dead-man alert also means that the active Fibre and the backup node on that host are probably down, and nothing else can tell you so: start the standby Fibre on the validator host and send `set-host` ([FibreDown](#fibredown)).
 
 **Severity.** heartbeat.
 

@@ -11,6 +11,8 @@
 {% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
 {% set tmkms = (celestia_mon_units.tmkms | default('')) ~ '.service' %}
 {% set remote = celestia_mon_signer == 'remote' %}
+{# tmkms signs through several nodes on purpose (several [[validator]] entries). #}
+{% set multi = remote and celestia_mon_signer_multi_node | default(false) | bool %}
 {% set fibre_on = celestia_mon_fibre_enabled | bool %}
 {% set th = celestia_mon_thresholds %}
 {% set behind = th.node_behind_blocks | default(20) %}
@@ -207,12 +209,40 @@ groups:
           summary: "The validator misses signatures"
           description: "{{ tmkms_first }}For 10 minutes more than {{ '%g' | format(missed_ratio * 100) }}% of the blocks of the last hour have been committed without a signature from the validator."
           runbook: "{{ docs }}#signaturesmissed"
+{% if remote and not multi %}
+
+      # ValidatorSigningTwice: two nodes of this install keep receiving votes or proposals signed with
+      # the validator's key from a remote signer. Two signers with one key can sign two different
+      # votes for one height, a double sign that the chain slashes and tombstones. The histogram
+      # counts only the signatures a node got back (celestia-core v0.42.3 privval/signer_client.go);
+      # a node that tmkms left keeps the key it last read but gets none. A node counts once it got
+      # signatures both in the last 2 minutes and in the 2 minutes before, so a tmkms repoint, after
+      # which the node tmkms left gets none within 2 minutes, never matches (not even as pending), and
+      # the alert fires about 3 minutes after a second signer started. Not rendered with
+      # celestia_mon_signer_multi_node, where tmkms signs through several nodes on purpose.
+      - alert: ValidatorSigningTwice
+        expr: >-
+          count(
+            sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type=~"prevote|precommit|proposal"}[2m])) > 0
+            and on (host) sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type=~"prevote|precommit|proposal"}[2m] offset 2m)) > 0
+          ) > 1
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "The validator signs through two nodes"
+          description: "{% raw %}For about 3 minutes votes or proposals signed with the validator's key have reached more than one node: {{ range $i, $s := query `sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job='celestia-app',message_type=~'prevote|precommit|proposal'}[2m])) > 0` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }}{{ end }}{% endraw %}. Two signers with one key can sign two different votes for one height, and the chain slashes such a double sign and tombstones the validator. Stop the signer that should not sign now, for example a second tmkms with the same key on a standby KMS host. If one tmkms signs through several nodes on purpose, set celestia_mon_signer_multi_node: true."
+          runbook: "{{ docs }}#validatorsigningtwice"
+{% endif %}
 {% if remote %}
 
       # RemoteSignerProblem: the remote signer is too slow, or cannot sign proposals. Per node: the
-      # series move with the signer.
+      # series move with the signer. Only nodes that signed through the remote signer in the last
+      # 5 minutes count: the median of a node that tmkms left stays at its last value.
       - alert: RemoteSignerProblem
-        expr: cometbft_privval_signing_latency_median_seconds > {{ th.signer_median_seconds }}
+        expr: >-
+          cometbft_privval_signing_latency_median_seconds > {{ th.signer_median_seconds }}
+          and on (host) sum by (host) (increase(cometbft_privval_signing_latency_seconds_count[5m])) > 0
         for: 15m
         labels:
           severity: message
@@ -305,24 +335,57 @@ groups:
           description: "For 5 minutes {{ fibre }} has been active on {% raw %}{{ range $i, $s := query `node_systemd_unit_state{name='{% endraw %}{{ fibre }}{% raw %}',state='active'} == 1` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }}{{ end }}{% endraw %}. Fibre runs on one host at a time: stop the one that should be the standby."
           runbook: "{{ docs }}#fibrebothactive"
 
-      # FibreNotServing: Fibre runs but accepts no uploads, fails every upload, or sends no metrics.
-      # A quiet network also makes the time since the last accepted upload grow, so this stays a
-      # message. Only the host whose Fibre unit is active can match: a stopped unit reports a start
-      # time of 0, and a standby sends no Fibre metrics.
+      # FibreNotServing: Fibre runs but does not do its job: it misses blobs sent to the validator,
+      # fails every upload, does not serve rows it signed for, or sends no metrics. A network that
+      # sends no blobs never fires it. Only the host whose Fibre unit is active can match: a stopped
+      # unit reports a start time of 0, and a standby sends no Fibre metrics.
+{% if tensile_on %}
+      # Blobs came for the validator, but Fibre accepted none of them. Tensile records each settled
+      # blob that assigned rows to the validator. The publisher uploads those rows to every assigned
+      # validator before the blob settles, and keeps sending to the slower ones after the 2/3 quorum
+      # (celestia-app v10.4.0 fibre/client_upload.go), so the newest assignment settling more than
+      # 5 minutes after Fibre's last accepted upload (or after Fibre started, before its first one) is
+      # an upload that never arrived or never completed. Without blobs neither time moves, so a quiet
+      # network cannot fire it; neither can a blob that settled while no Fibre ran (the new one counts
+      # from its start). Only a host whose Fibre unit is active and sends Fibre metrics matches
+      # (no_telemetry covers the rest), and only Tensile reads of the last 15 minutes count
+      # (TensileUnreadable reports older ones).
       - alert: FibreNotServing
         expr: >-
-          time() - max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
+          max(celestia_mon_fibre_last_assigned_timestamp_seconds)
+          - on () group_right max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
           or on (host) (node_systemd_unit_start_time_seconds{name="{{ fibre }}"} > 0))
-          > on (host) clamp_min({{ th.fibre_stale_uploads }} / sum by (host) (rate(fibre_server_upload_shard_duration_seconds_count[7d])),
-          {{ th.fibre_stale_min_seconds }})
-        for: 10m
+          > 300
+          and on (host) max by (host) (node_systemd_unit_state{name="{{ fibre }}",state="active"}) == 1
+          and on (host) count by (host) (fibre_server_upload_shard_budget_bytes)
+          and on () time() - max(celestia_mon_tensile_last_success_timestamp_seconds) < 900
+        for: 5m
         labels:
           severity: message
-          reason: stale
+          reason: missed_uploads
         annotations:
-          summary: "{% raw %}Fibre on {{ $labels.host }} has no recent accepted upload{% endraw %}"
-          description: "No upload has been accepted for longer than {{ th.fibre_stale_uploads }} uploads take at the 7-day average rate, and for over {{ '%g' | format(th.fibre_stale_min_seconds / 60) }} minutes."
+          summary: "{% raw %}Fibre on {{ $labels.host }} misses blobs sent to the validator{% endraw %}"
+          description: "{% raw %}For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has settled {{ $value | humanizeDuration }} after Fibre last accepted an upload (or started, if it has accepted none since): the network sends blobs and this Fibre did not take that one. Fibre's log names the cause; check first that the chain registers this host and that its port answers from outside.{% endraw %}"
           runbook: "{{ docs }}#fibrenotserving"
+      # Tensile read rows of a blob the validator signed for, while Fibre must still keep them, and
+      # Fibre did not return them: clients cannot fetch the validator's share of that blob. Tensile
+      # reads each settled blob once, late in the retention window, and counts the failed reads of
+      # its last 24 hours, so a new one shows as a rise from one minute to the next (a reading that
+      # leaves the 24 hours lowers the count). The alert fires at the rise and resolves an hour after
+      # the last one; it names the host whose Fibre runs now.
+      - alert: FibreNotServing
+        expr: >-
+          max by (host) (node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1)
+          and on () max_over_time((max(celestia_mon_fibre_obligations_24h{outcome="broken"})
+          - max(celestia_mon_fibre_obligations_24h{outcome="broken"} offset 1m))[1h:1m]) > 0
+        labels:
+          severity: message
+          reason: not_served
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} did not serve rows the validator signed for{% endraw %}"
+          description: "In the last hour Tensile could not read rows of a blob the validator signed for, within the time Fibre must keep them, so clients could not fetch the validator's share of it. Fibre's log names a store error (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups."
+          runbook: "{{ docs }}#fibrenotserving"
+{% endif %}
       # Every upload fails and none is accepted. Fibre fetches the validator's public key for each
       # upload and then signs through the node at its signer_grpc_address (celestia-app v10.4.0
       # fibre/server_upload.go). An unreachable signer fails the upload before the signature is
@@ -465,7 +528,8 @@ groups:
 {% if tensile_on %}
       # TensileUnreadable: for 30 minutes celestia-mon-tensile has not read Tensile, or Tensile has
       # not checked the endpoint, or the service is down, for 10 minutes more: FibreDown cannot see
-      # an endpoint that is unreachable from outside meanwhile.
+      # an endpoint that is unreachable from outside meanwhile, and FibreNotServing neither blobs
+      # Fibre misses nor rows it does not serve.
       - alert: TensileUnreadable
         expr: >-
           time() - celestia_mon_tensile_last_success_timestamp_seconds > 1800
@@ -477,7 +541,7 @@ groups:
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
           summary: "Fibre is not checked from outside"
-          description: "For 30 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre endpoint, or the service is down, so an endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on the monitor: it names the cause."
+          description: "For 30 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre endpoint, or the service is down, so an endpoint unreachable from outside would not page, and blobs Fibre misses would not be reported. Run journalctl -u celestia-mon-tensile on the monitor: it names the cause."
           runbook: "{{ docs }}#tensileunreadable"
 
 {% endif %}

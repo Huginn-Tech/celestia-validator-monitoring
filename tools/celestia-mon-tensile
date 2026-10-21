@@ -1,11 +1,20 @@
 #!/usr/bin/python3 -I
-"""celestia-mon-tensile: the validator's Fibre endpoint as seen from outside, from Tensile.
+"""celestia-mon-tensile: the validator's Fibre endpoint as seen from outside, and its blobs, from Tensile.
 
 Tensile (https://tensile.huginn.tech) is a Fibre observer that dials every validator's Fibre
-endpoint, the host registered on chain in x/valaddr, from outside the validator's network. This
-service reads the validator's status from Tensile's API every interval and serves it as
-Prometheus metrics: the registered endpoint, whether Tensile reached it (TCP, TLS and the
-validator's identity) at its last check, and when that check ran. FibreDown uses them.
+endpoint, the host registered on chain in x/valaddr, from outside the validator's network, and
+records every settled blob: the validators it assigned rows to, the endorsements it carries, and
+whether each validator later returned the rows it signed for. This service reads the validator's
+status from Tensile's API every interval and serves it as Prometheus metrics: the registered
+endpoint, whether Tensile reached it (TCP, TLS and the validator's identity) at its last check,
+and when that check ran, which FibreDown uses; and the blobs the network assigned to the
+validator, which FibreNotServing compares with Fibre's own uploads.
+
+A Tensile that does not send signing.last_assigned_at gives only the number of blobs assigned in
+its last 24 hours. The time of the newest one is then the time of the read at which that number
+rose, counted only when Tensile's record reached the chain's head (/tip) at that read and at the
+one before, so a Tensile catching up after its own outage cannot look like new blobs. It can be up
+to a read late, and is absent after a start until the first rise: nothing is kept on disk.
 
   celestia-mon-tensile --config FILE [--once]
 
@@ -33,7 +42,7 @@ def log(msg):
 
 def epoch(text):
     """RFC 3339 time (nanoseconds allowed) as Unix seconds; None when absent or unreadable."""
-    if not text:
+    if not text or not isinstance(text, str):
         return None
     m = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", text)
     if not m:
@@ -55,6 +64,10 @@ class State:
         self.last_success = 0.0
         self.errors = {}
         self.status = None
+        # Without Tensile's last_assigned_at: the number of assigned blobs at the previous read, None
+        # when that read's record was not current, and the time of the last read at which it rose.
+        self.assigned = None
+        self.assigned_at = None
 
     def ok(self, status):
         with self.lock:
@@ -64,6 +77,15 @@ class State:
     def error(self, reason):
         with self.lock:
             self.errors[reason] = self.errors.get(reason, 0) + 1
+
+    def count_assigned(self, assigned, current):
+        """The newest assigned blob is now when the number of assigned blobs rose since the previous
+        read and Tensile's record was current at both reads. A rise can be missed, when as many
+        assignments leave Tensile's 24 hours as arrive between two reads, but never invented."""
+        with self.lock:
+            if current and self.assigned is not None and assigned > self.assigned:
+                self.assigned_at = time.time()
+            self.assigned = assigned if current else None
 
     def render(self):
         with self.lock:
@@ -107,6 +129,38 @@ class State:
                     "# TYPE celestia_mon_fibre_last_check_info gauge",
                     f'celestia_mon_fibre_last_check_info{{endpoint="{endpoint}",outcome="{esc(check.get("outcome") or "")}"}} 1',
                 ]
+            # The validator's blobs: facts about the validator, not the endpoint, so no endpoint label
+            # (a new host must not split the series).
+            sig = s.get("signing") if isinstance(s.get("signing"), dict) else {}
+            obl = s.get("obligations") if isinstance(s.get("obligations"), dict) else {}
+            if "last_assigned_at" in sig:
+                assigned_at = epoch(sig["last_assigned_at"])
+            else:
+                assigned_at = self.assigned_at if sig else None
+            for name, at, text in (
+                    ("celestia_mon_fibre_last_assigned_timestamp_seconds", assigned_at,
+                     "Unix time of the newest settled blob that assigned rows to the validator, from Tensile "
+                     "(from a Tensile without last_assigned_at, the time of the read that saw their number rise)."),
+                    ("celestia_mon_fibre_last_endorsed_timestamp_seconds", epoch(sig.get("last_endorsed_at")),
+                     "Unix time of the newest settled blob that carries the validator's endorsement, from Tensile.")):
+                if at is not None:
+                    out += [f"# HELP {name} {text}", f"# TYPE {name} gauge", f"{name} {at}"]
+            if isinstance(sig.get("assigned"), int):
+                out += [
+                    "# HELP celestia_mon_fibre_blobs_assigned_24h Blobs settled in Tensile's last 24 hours that assigned rows to the validator.",
+                    "# TYPE celestia_mon_fibre_blobs_assigned_24h gauge",
+                    f"celestia_mon_fibre_blobs_assigned_24h {sig['assigned']}",
+                    "# HELP celestia_mon_fibre_blobs_endorsed_24h Of those, blobs that settled with the validator's endorsement.",
+                    "# TYPE celestia_mon_fibre_blobs_endorsed_24h gauge",
+                    f"celestia_mon_fibre_blobs_endorsed_24h {int(sig.get('signed') or 0)}",
+                ]
+            if isinstance(obl.get("served"), int):
+                out += [
+                    "# HELP celestia_mon_fibre_obligations_24h Tensile's reads of rows the validator signed for, of blobs settled in its last 24 hours, by outcome.",
+                    "# TYPE celestia_mon_fibre_obligations_24h gauge",
+                    f'celestia_mon_fibre_obligations_24h{{outcome="served"}} {obl["served"]}',
+                    f'celestia_mon_fibre_obligations_24h{{outcome="broken"}} {int(obl.get("broken") or 0)}',
+                ]
             return "\n".join(out) + "\n"
 
 
@@ -132,12 +186,33 @@ def serve(listen, state):
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
-def read(cfg, state):
-    url = cfg["api"].rstrip("/") + "/validators/" + urllib.parse.quote(cfg["validator"]) + "/status"
+def get(url):
+    """The JSON answer to a GET of url."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return json.load(resp)
+
+
+def current(api, state):
+    """Whether Tensile's record reaches the chain's head: the newest block it has read (/tip) is less
+    than 2 minutes older than Tensile's clock. False when the tip cannot be read."""
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            status = json.load(resp)
+        tip = get(api + "/tip")
+    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+        state.error("tip")
+        log(f"cannot read Tensile's tip at {api}/tip: {e}")
+        return False
+    if not isinstance(tip, dict):
+        return False
+    server, block = epoch(tip.get("server_time")), epoch(tip.get("block_time"))
+    return server is not None and block is not None and server - block < 120
+
+
+def read(cfg, state):
+    api = cfg["api"].rstrip("/")
+    url = api + "/validators/" + urllib.parse.quote(cfg["validator"]) + "/status"
+    try:
+        status = get(url)
     except urllib.error.HTTPError as e:
         state.error("not_found" if e.code == 404 else "http")
         hint = ": check celestia_mon_tensile.validator and the network of celestia_mon_tensile.api" if e.code == 404 else ""
@@ -151,6 +226,9 @@ def read(cfg, state):
         state.error("format")
         log(f"Tensile's answer for {url} has no host field")
         return
+    sig = status.get("signing")
+    if isinstance(sig, dict) and "last_assigned_at" not in sig and isinstance(sig.get("assigned"), int):
+        state.count_assigned(sig["assigned"], current(api, state))
     state.ok(status)
 
 

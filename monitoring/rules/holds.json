@@ -9,7 +9,7 @@
     "ServiceDown unreachable": {"alert": "ServiceDown", "labels": {"unit": "celestia_app|node_exporter|otelcol"}, "for": "3m"},
     "FibreDown": {"alert": "FibreDown", "for": "10m"},
     "FibreBothActive": {"alert": "FibreBothActive", "for": "5m"},
-    "FibreNotServing stale": {"alert": "FibreNotServing", "labels": {"reason": "stale"}, "for": "10m"},
+    "FibreNotServing missed_uploads": {"alert": "FibreNotServing", "labels": {"reason": "missed_uploads"}, "for": "5m"},
     "FibreNotServing uploads_failing": {"alert": "FibreNotServing", "labels": {"reason": "uploads_failing"}, "for": "10m"},
     "FibreNotServing no_telemetry": {"alert": "FibreNotServing", "labels": {"reason": "no_telemetry"}, "for": "30m"},
     "DiskLow low space": {"alert": "DiskLow", "labels": {"severity": "message"}, "expr": "node_filesystem_size_bytes", "for": "10m"},

@@ -1476,8 +1476,8 @@ metric_expected() {
 
 # The event after which a metric first appears, for the metrics that do not exist
 # until it happens (celestia-core privval/metrics.go and consensus/state.go, celestia-app
-# fibre/server_metrics.go, Alertmanager notify/metrics.go, tools/celestia-mon-signal, Prometheus's
-# ALERTS); empty for the others.
+# fibre/server_metrics.go, Alertmanager notify/metrics.go, tools/celestia-mon-signal,
+# tools/celestia-mon-tensile, Prometheus's ALERTS); empty for the others.
 metric_event() {
   case $1 in
     cometbft_privval_signing_failures_total) echo "the first failed signing request" ;;
@@ -1491,6 +1491,8 @@ metric_event() {
     fibre_server_download_shard_duration_seconds*) echo "the first download" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
     celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;
+    celestia_mon_fibre_last_assigned_timestamp_seconds) echo "a blob Tensile records for the validator (from a Tensile without last_assigned_at, the first since celestia-mon-tensile started)" ;;
+    celestia_mon_fibre_obligations_24h) echo "Tensile's first answer with the validator's obligations" ;;
     ALERTS) echo "the first alert that is pending or firing" ;;
   esac
 }
