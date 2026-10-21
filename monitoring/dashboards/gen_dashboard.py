@@ -471,9 +471,9 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
                color=NETWORK):
     """Filled lines over time: 2 px lines over a fill that fades downwards, in color unless an
     override (host_colors, a fixed part colour) gives a series its own. threshold: (value, colour)
-    of an alert rule's threshold, drawn as a dashed line with the zone past it faintly tinted, so
-    colour appears only where the alert's condition holds (low_bad: the zone is below the value);
-    scheme: a single series that takes the threshold's colour where it crosses it. soft_max,
+    of an alert rule's threshold, drawn as a dashed line at the value and nothing more, so a healthy
+    chart carries no block of warning colour (low_bad: the alert holds below the value; the line is
+    the same); scheme: a single series that takes the threshold's colour where it crosses it. soft_max,
     soft_min: the range the axis always shows (a soft max stops Grafana's 0..100 axis on flat data);
     minimum, maximum: hard limits, None for none. step: counts drawn as steps; smooth: smooth curves.
     span_nulls: False, or the longest gap in ms a line bridges. centered: zero in the middle of the
@@ -482,11 +482,11 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     of a whole, stacked in flat fills (a total drawn over them needs an override with
     custom__stacking={"mode": "none", "group": "A"}). fill: the fill opacity, when the default does
     not suit. legend False: one series, without a legend."""
-    custom = {"axisBorderShow": False, "drawStyle": "bars" if bars else "line",
+    custom = {"axisBorderShow": False, "axisWidth": AXIS_PX, "drawStyle": "bars" if bars else "line",
               "fillOpacity": 20, "gradientMode": "opacity",
               "lineInterpolation": "stepAfter" if step else "smooth" if smooth else "linear",
               "lineWidth": 2, "showPoints": "never", "spanNulls": span_nulls,
-              "thresholdsStyle": {"mode": "dashed+area" if threshold else "off"}}
+              "thresholdsStyle": {"mode": "dashed" if threshold else "off"}}
     if bars:
         custom.update({"barAlignment": 0, "barWidthFactor": 0.7, "fillOpacity": 80, "gradientMode": "none",
                        "lineWidth": 1})
@@ -508,9 +508,8 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
             defaults["color"] = {"mode": "thresholds"}
             custom["gradientMode"] = "scheme"
             defaults["thresholds"] = steps((color, None), (tone, value))
-        elif low_bad:
-            defaults["thresholds"] = steps((tone, None), ("transparent", value))
         else:
+            # Grafana draws a line at every step but the base one, in that step's colour.
             defaults["thresholds"] = steps(("transparent", None), (tone, value))
     if minimum is not None and not mirror and not centered:
         defaults["min"] = minimum
@@ -2819,7 +2818,7 @@ def validator_row(s):
                    override("byFrameRefID", "D", custom__lineWidth=2, **shares),
                    override("byFrameRefID", "E", color=fixed(NETWORK), custom__lineWidth=1,
                             custom__lineStyle=dash([6, 4]), thresholds=steps(("transparent", None), ("orange", s.R)),
-                            custom__thresholdsStyle={"mode": "dashed+area"}, **shares)])
+                            custom__thresholdsStyle={"mode": "dashed"}, **shares)])
     missed_chart["fieldConfig"]["defaults"]["custom"]["axisPlacement"] = "hidden"
 
     # Proposals: each hour's proposals per node, missed ones on top, against the expected count.
@@ -3326,12 +3325,13 @@ def alerts_row(s):
 # Ids: the open row 400, the closed row 450, and for each line of charts a base (410, 420, ...) plus the
 # server's place in servers order.
 SERVERS_MAX = 10                         # servers the ids leave room for
+AXIS_PX = 76                             # every chart's value axis width, so plots in a column start at one x
 TITLE_PX, TITLE_ROOM = 14, 34            # a chart title's text, and its title bar's padding and (i) icon
 LEGEND_PX, LEGEND_ITEM = 12, 28          # a legend entry's text, and its swatch, gaps and margin (measured: 6
                                          # entries of 51 letters take 465 px; this estimate gives 486)
-# The width of every Servers chart's value axis, so the plots of a column start at one x down the section
+# The width of every chart's value axis, so the plots of a column start at one x down the page
 # whatever their labels ("100%", "96 GiB", "-300 Mb/s").
-SERVER_AXIS_PX = 76
+SERVER_AXIS_PX = AXIS_PX
 # Shades of the server's colour for the parts of a whole, strongest first, the same for a part on every server:
 # the consensus node, Fibre, monitoring, and everything else. Each is (hex alpha of the line and the legend
 # swatch, "" for the full colour; fill opacity), since Grafana fills at the fill opacity whatever the colour's
@@ -3354,6 +3354,12 @@ def server_hue(s, host):
 def shade(hue, pair):
     """Override properties of a shade (alpha, fill opacity) of a server's colour."""
     return {"color": fixed(hue + pair[0]), "custom__fillOpacity": pair[1]}
+
+
+def darker(hue, k):
+    """A '#RRGGBB' colour with each channel scaled by k (0.7: a darker part of the same hue), opaque, so
+    its legend swatch differs from the full colour's where alpha alone would not show."""
+    return "#" + "".join("%02X" % round(int(hue[i:i + 2], 16) * k) for i in (1, 3, 5))
 
 
 def server_title(host, long_name, short_name, width):
@@ -3485,7 +3491,7 @@ def network_chart(s, h, pid, width, variant):
 
 
 def disk_space_chart(s, h, pid, width, variant):
-    """Free space on each disk DiskLow watches on server h, with DiskLow's levels as zones at the bottom."""
+    """Free space on each disk DiskLow watches on server h, with DiskLow's levels as dashed lines."""
     hue = server_hue(s, h)
     # (mount, legend word, Fibre store): the word goes before the mount point, so no legend reads as a lone "/".
     data, store = ("Data disk", "Fibre store") if variant == 0 else ("Data", "Fibre")
@@ -3502,19 +3508,19 @@ def disk_space_chart(s, h, pid, width, variant):
                    threshold=(s.DM, "orange") if watched else None, low_bad=True, maximum=1, fill=15, color=hue,
                    overrides=overrides)
     if watched and paging:
-        p["fieldConfig"]["defaults"]["thresholds"] = steps(("red", None), ("orange", s.DP), ("transparent", s.DM))
+        p["fieldConfig"]["defaults"]["thresholds"] = steps(("transparent", None), ("red", s.DP), ("orange", s.DM))
     if not watched:
         desc = ("Free space on %s's root filesystem. No disk of this server is listed in celestia_mon_data_mounts, so "
                 "no alert watches its space." % h)
     else:
         stores = any(fibre for _, _, fibre in mounts)
-        desc = ("Free space on each disk DiskLow watches on %s. Amber zone: below %g%% free, where DiskLow sends a "
+        desc = ("Free space on each disk DiskLow watches on %s. Amber dashed line: %g%% free; below it DiskLow sends a "
                 "message after %s%s." % (h, s.DM * 100, s.hold("DiskLow low space"),
                                           " (on the Fibre store only while Fibre reports no storage budget; with a "
                                           "budget the Fibre row's disk chart shows the rule that watches it)" if stores
                                           else ""))
         if paging:
-            desc += " Red zone: below %g%% free, or a read-only disk, where DiskLow pages." % (s.DP * 100)
+            desc += " Red dashed line: %g%% free; below it, or on a read-only disk, DiskLow pages." % (s.DP * 100)
     p["description"] = desc + more(["DiskLow"], [NODE_EXPORTER_FULL])
     return p, [t["legendFormat"] for t in targets]
 
