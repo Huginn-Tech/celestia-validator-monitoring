@@ -482,7 +482,7 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     of a whole, stacked in flat fills (a total drawn over them needs an override with
     custom__stacking={"mode": "none", "group": "A"}). fill: the fill opacity, when the default does
     not suit. legend False: one series, without a legend."""
-    custom = {"axisBorderShow": False, "axisWidth": AXIS_PX, "drawStyle": "bars" if bars else "line",
+    custom = {"axisBorderShow": False, "axisWidth": VALUE_AXIS_PX, "drawStyle": "bars" if bars else "line",
               "fillOpacity": 20, "gradientMode": "opacity",
               "lineInterpolation": "stepAfter" if step else "smooth" if smooth else "linear",
               "lineWidth": 2, "showPoints": "never", "spanNulls": span_nulls,
@@ -3325,13 +3325,13 @@ def alerts_row(s):
 # Ids: the open row 400, the closed row 450, and for each line of charts a base (410, 420, ...) plus the
 # server's place in servers order.
 SERVERS_MAX = 10                         # servers the ids leave room for
-AXIS_PX = 76                             # every chart's value axis width, so plots in a column start at one x
+VALUE_AXIS_PX = 76                       # every chart's value axis width, so plots in a column start at one x
 TITLE_PX, TITLE_ROOM = 14, 34            # a chart title's text, and its title bar's padding and (i) icon
 LEGEND_PX, LEGEND_ITEM = 12, 28          # a legend entry's text, and its swatch, gaps and margin (measured: 6
                                          # entries of 51 letters take 465 px; this estimate gives 486)
 # The width of every chart's value axis, so the plots of a column start at one x down the page
 # whatever their labels ("100%", "96 GiB", "-300 Mb/s").
-SERVER_AXIS_PX = AXIS_PX
+SERVER_AXIS_PX = VALUE_AXIS_PX
 # Shades of the server's colour for the parts of a whole, strongest first, the same for a part on every server:
 # the consensus node, Fibre, monitoring, and everything else. Each is (hex alpha of the line and the legend
 # swatch, "" for the full colour; fill opacity), since Grafana fills at the fill opacity whatever the colour's
