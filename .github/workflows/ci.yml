@@ -950,19 +950,20 @@ jobs:
       # many rows, over one lower panel per column (ids 34-37) of four bars, all of one height; the
       # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
       # halves, of one height); up to four columns, so no Servers now table (id 26). The Servers rows
-      # (open, then closed) hold eight charts per server (single: one server, mainnet and five: two,
-      # split: three, its KMS host scraped): each line one kind of chart, at one width and height,
+      # (open, then closed) hold six charts per server (single: one server, mainnet and five: two,
+      # split: three, its KMS host scraped), each line one kind of chart, at one width and height,
       # filling the 24 columns; each server's charts in one column, titled with its name first; its
-      # out-of-memory marker on its own memory chart.
+      # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
+      # server in one chart across the full width.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 34
-          test "$(count split)" = 66
-          test "$(count mainnet)" = 66
-          test "$(count five)" = 61
+          test "$(count split)" = 62
+          test "$(count mainnet)" = 65
+          test "$(count five)" = 59
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -986,8 +987,10 @@ jobs:
                    and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
             jq -e --slurpfile cfg "build/$s/dashboard-config.json" '
                    ($cfg[0].nodes + ([$cfg[0].links[].host] - $cfg[0].nodes)) as $servers | ($servers | length) as $n
-                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $p
-                   | ($p | length) == 8 * $n
+                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $all
+                   | ($all | map(select(.id < 480))) as $p
+                   | ($p | length) == 6 * $n
+                   and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
                    and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
                    and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
                                                         and (map(.gridPos.w) | unique | length) == 1
@@ -996,14 +999,14 @@ jobs:
                    and ($p | all(. as $c | $c.title | startswith($servers[$c.id % 10] + " · ")))
                    and ([.annotations.list[] | select(.name | startswith("Out of memory on ")) | .filter.ids]
                         == [range(0; $n) | [420 + .]])' "build/$s/dashboard.json"
-            # The Validator row: six facts on the top strip's column edges, tall enough for their
-            # sparklines, then charts of one height, of one width on each line and filling it.
+            # The Validator row: six cells on the top strip's column edges and of its height (3 rows),
+            # then charts of one height, of one width on each line and filling it.
             jq -e '(.panels[] | select(.id == 100) | .gridPos.y) as $y
                    | [.panels[] | select(.id > 100 and .id < 200)] as $v
                    | ($v | map(select(.type == "stat"))) as $f | ($v | map(select(.type == "timeseries"))) as $c
                    | ($f | map(.id)) == [109,117,118,101,102,103]
                    and ($f | map([.gridPos.x, .gridPos.y, .gridPos.w, .gridPos.h]))
-                       == [[0,$y+1,4,4],[4,$y+1,4,4],[8,$y+1,4,4],[12,$y+1,4,4],[16,$y+1,4,4],[20,$y+1,4,4]]
+                       == [[0,$y+1,4,3],[4,$y+1,4,3],[8,$y+1,4,3],[12,$y+1,4,3],[16,$y+1,4,3],[20,$y+1,4,3]]
                    and ($c | map(.gridPos.h) | unique) == [7]
                    and ($c | group_by(.gridPos.y) | all(map(.gridPos.w) | (unique | length) == 1 and add == 24))
                    and ($v | length) == ($f | length) + ($c | length)' "build/$s/dashboard.json"
