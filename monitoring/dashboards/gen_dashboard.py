@@ -2775,6 +2775,21 @@ def grown(sel, agg, job="celestia-app"):
     return "(((%s - %s) >= 0) or (%s < %s))" % (end, x, end, x)
 
 
+def shade(s, host, k):
+    """darker() of a server's identity colour; the reference grey for a server past the palette."""
+    hue = s.color(host)[0]
+    return darker(hue, k) if hue.startswith("#") else REFERENCE
+
+
+def grown_before(sel, agg, job="celestia-app"):
+    """grown() for a bar that ends at its time (barAlignment -1): how much the counter grew in the
+    $__interval before the bar's time, so the newest bar is the last whole block and none is half
+    full. The start value is x one block earlier, read in 1-minute steps (sel may be an expression)."""
+    x = "(%s by (host) (%s) or on (host) (max by (host) (up{job=%s}) == 1) * 0)" % (agg, sel, q(job))
+    start = "last_over_time(%s[1m:1m] offset $__interval)" % x
+    return "(((%s - %s) >= 0) or (%s < %s))" % (x, start, x, start)
+
+
 # A chart legend's entry: its text at LEGEND_PX and LEGEND_ITEM_PX for the colour mark and the gap
 # to the next, as Grafana 12.4 draws a list legend. LEGEND_HOST stands for {{host}}: the longest of
 # the server names the docs use.
@@ -2822,7 +2837,7 @@ def validator_row(s):
             % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem"]),
             one('max(max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) '
                 'and on (host) %s)' % sig_now),
-            unit="s", decimals=1, color_mode="value", thresholds=steps(("text", None), ("orange", s.S)),
+            unit="s", decimals=2, color_mode="value", thresholds=steps(("text", None), ("orange", s.S)),
             no_value="No reading")
     else:
         third = cell(
@@ -2849,12 +2864,13 @@ def validator_row(s):
              thresholds=steps(("text", None), ("orange", s.R)), no_value="No data"),
         third,
         cell(101, prop_label,
-             "Block proposals the validator %s in the last 24 hours; close to Expected proposals is good. It counts "
+             "Block proposals the validator %s in the last 24 hours; close to Proposals due, 24 h is good. It counts "
              "across node restarts, from the start of monitoring if that is more recent. A signer that signs votes but "
              "not proposals shows here as far fewer." % prop_word,
              one("(%s) and on () %s" % (count_24h(prop, "sum"), seen_24h)), no_value="No data"),
-        # "Expected proposals, 24 h" would wrap at 1440 px; the cells beside it say 24 h.
-        cell(102, "Expected proposals",
+        # "Expected proposals, 24 h" measures 156 px at 13 px in Grafana's font, and the cell has 152 at
+        # the 1440-docked width, so it would wrap.
+        cell(102, "Proposals due, 24 h",
              "The proposals the validator's voting power should bring in 24 hours; good when %s is close. "
              "Proposers take turns by stake: it is the blocks of the last 24 hours times today's share of voting "
              "power, so a share that changed makes it less exact. Out of set: the validator is not in the active set."
@@ -2881,6 +2897,12 @@ def validator_row(s):
     # the alert level near the top. Grafana ranges a symlog axis by its data alone (a soft max does
     # nothing there), so the axis ends at twice the alert level, and a higher share runs along the top.
     net = 'max(avg_over_time(cometbft_consensus_missing_validators_power{job="celestia-app"}[1h])) / max(%s)' % TOTAL
+    # The legend names the level the dashed line stands for, as Signing time's does.
+    missed_level = "alert at %g%%" % (s.R * 100)
+    # A log axis draws a grid line at every 2-9 between its labels, a band of stripes; the value
+    # axes of Missed blocks and Signing time draw none (the time axis keeps its lines), and the labels
+    # and the dashed alert line carry the scale.
+    no_value_grid = override("byType", "number", custom__axisGridShow=False)
     missed_chart = timeseries(
         111, "Missed blocks",
         "The share of the last hour's blocks the validator did not sign, over time; a line near 0 is good. It is "
@@ -2889,12 +2911,12 @@ def validator_row(s):
         "share of voting power missing; yours high and the network low points at this setup. The axis ends at %g%%; "
         "a higher share runs along the top."
         % (s.R * 100, s.hold("SignaturesMissed"), 2 * s.R * 100) + more(["SignaturesMissed"]),
-        refs([(as_signer(share, sig_now), "{{host}} missed, 1 h"),
-              (unsigned(share, sig_now), "Missed, 1 h"),
+        refs([(as_signer(share, sig_now), "{{host}} missed, 1 h (%s)" % missed_level),
+              (unsigned(share, sig_now), "Missed, 1 h (%s)" % missed_level),
               (net, "Network, 1 h")]),
         "percentunit", threshold=(s.R, "orange"), decimals=2, maximum=2 * s.R,
         overrides=[override("byFrameRefID", "C", color=fixed(NETWORK), custom__lineWidth=1, custom__fillOpacity=0,
-                            custom__lineStyle=dash([6, 4]))])
+                            custom__lineStyle=dash([6, 4])), no_value_grid])
     missed_chart["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"type": "symlog", "log": 10,
                                                                              "linearThreshold": 0.001}
     # uPlot always gives a symlog axis a tick at minus its linear threshold, here just under the plot,
@@ -2902,22 +2924,25 @@ def validator_row(s):
     # reads as nothing (Grafana formats axis labels through the mappings).
     missed_chart["fieldConfig"]["defaults"]["mappings"] = range_map(-1, -1e-9, ZERO_WIDTH)
 
-    # Proposals per hour, per node, missed ones on top in grey, against the expected number.
+    # Proposals per whole hour, per node, missed ones on top in grey, against the expected number. Each
+    # bar ends at its time, so the newest is the last whole hour: a running hour would show a short bar
+    # and a short Expected, which read as "no proposals now". Expected steps before each point, so its
+    # level spans the bar it belongs to.
     props = timeseries(
         116, "Proposals per hour",
         "Block proposals the validator %s per hour; bars that reach the dashed Expected line are good. Each node's "
         "bars take its colour, and missed proposals stack on top in grey. Expected is what the validator's share of "
         "voting power should bring; proposers take turns by stake, so hours differ by one or two. A signer that signs "
-        "votes but not proposals leaves the bars short. The last bar is the hour that runs now: it grows until the "
-        "hour ends, and Expected drops there to what is due so far." % prop_word,
-        refs([("%s > 0" % grown(prop, "sum"), "{{host}} proposals"),
-              ("max(%s) > 0" % grown("(%s and on (proposer_address) %s)" % (mpp, own), "max"), "Missed"),
-              ("(%s - max(%s)) * max(%s) / max(%s) and on () %s" % (block_end("max(%s)" % H), H, POWER, TOTAL, IN_SET),
+        "votes but not proposals leaves the bars short. Each bar is a whole hour, so the hour that runs now shows "
+        "once it ends." % prop_word,
+        refs([("%s > 0" % grown_before(prop, "sum"), "{{host}} proposals"),
+              ("max(%s) > 0" % grown_before("(%s and on (proposer_address) %s)" % (mpp, own), "max"), "Missed"),
+              ("(max(%s) - max(%s offset $__interval)) * max(%s) / max(%s) and on () %s" % (H, H, POWER, TOTAL, IN_SET),
                "Expected")]),
         "none", bars=True, stack=True, fill=60, decimals=0,
         overrides=[override("byFrameRefID", "B", color=fixed(GREY)),
                    override("byFrameRefID", "C", color=fixed(NETWORK), decimals=1, custom__drawStyle="line",
-                            custom__lineInterpolation="stepAfter", custom__lineWidth=1, custom__fillOpacity=0,
+                            custom__lineInterpolation="stepBefore", custom__lineWidth=1, custom__fillOpacity=0,
                             custom__lineStyle=dash([6, 4]), custom__stacking={"group": "A", "mode": "none"})])
 
     # Block processing time per node over each point's own time ($__interval, at least 10 minutes):
@@ -2942,40 +2967,45 @@ def validator_row(s):
 
     missed_chart["maxDataPoints"] = 150
     missed_chart["interval"] = "1m"
-    # A proposals bar covers the hour that starts at its time, so the newest is the hour that runs now.
-    props["fieldConfig"]["defaults"]["custom"]["barAlignment"] = 1
+    props["fieldConfig"]["defaults"]["custom"]["barAlignment"] = -1
     props["maxDataPoints"] = 1000
     props["interval"] = "1h"
     lines = [[missed_chart], [props, processing]]
     if s.remote:
-        bucket_le = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type=~"prevote|precommit"}'
         median = "%s median (alert at %s ms)" % ("{{host}}", s.ms())
+        # The slowest 1% of vote signatures, one query per node so each draws in a darker shade of
+        # its node's colour under the fixed legend "Slowest 1%, votes"; only the signing node's has data.
+        slow = [("histogram_quantile(0.99, sum by (host, le) (rate(cometbft_privval_signing_latency_seconds_bucket"
+                 '{job="celestia-app",host=%s,message_type=~"prevote|precommit"}[5m]))) and on (host) %s'
+                 % (q(h), sig_now), chr(66 + i), h) for i, h in enumerate(s.nodes)]
+        failed = chr(66 + len(slow))
         latency = timeseries(
             112, "Signing time",
             "How fast the remote signer answers on the node the validator signs through; a median under %s ms is good. "
             "Solid: the median of the last 50 signatures, the value RemoteSignerProblem watches; above the dashed %s ms "
-            "line for %s it sends a warning. Grey dashed: the slowest 1%% of vote signatures over 5 minutes, context "
+            "line for %s it sends a warning. Dotted, darker: the slowest 1%% of vote signatures over 5 minutes, context "
             "only. Grey bars, right axis: failed signing requests (timeouts, lost connections, every retry). The axis is "
             "logarithmic, 0.1 to 100 ms."
             % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem"]),
-            refs([('max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) and on (host) %s'
-                   % sig_now, median),
-                  ("histogram_quantile(0.99, sum by (host, le) (rate(%s[5m]))) and on (host) %s" % (bucket_le, sig_now),
-                   "Slowest 1%, votes"),
-                  ("sum(%s) > 0" % grown('cometbft_privval_signing_failures_total{job="celestia-app"}', "sum"),
-                   "Failures")]),
+            [target("A", 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) '
+                         'and on (host) %s' % sig_now, median)]
+            + [target(ref, expr, "Slowest 1%, votes") for expr, ref, _ in slow]
+            + [target(failed, "sum(%s) > 0" % grown('cometbft_privval_signing_failures_total{job="celestia-app"}', "sum"),
+                      "Failures")],
             "s",
             overrides=[
                 # The alert's level belongs to the median alone. Grafana widens a log axis to whole
                 # decades, so 0.5-20 ms becomes 0.1-100 ms: the median mid-chart, the 10 ms line above.
                 override("byFrameRefID", "A", thresholds=steps(("transparent", None), ("orange", s.S)),
-                         custom__thresholdsStyle={"mode": "dashed"}, min=0.0005, max=0.02),
-                override("byFrameRefID", "B", color=fixed(REFERENCE), custom__lineStyle=dash([6, 4]),
-                         custom__lineWidth=1, custom__fillOpacity=0, min=0.0005, max=0.02),
-                override("byFrameRefID", "C", color=fixed(GREY), unit="none", decimals=0, min=0,
-                         custom__axisSoftMax=4, custom__axisPlacement="right", custom__drawStyle="bars",
-                         custom__fillOpacity=60, custom__gradientMode="none", custom__lineWidth=1,
-                         custom__barAlignment=1, custom__scaleDistribution={"type": "linear"})])
+                         custom__thresholdsStyle={"mode": "dashed"}, min=0.0005, max=0.02)]
+            + [override("byFrameRefID", ref, color=fixed(shade(s, h, 0.6)),
+                        custom__lineStyle={"fill": "dot", "dash": [2, 2]}, custom__lineWidth=1, custom__fillOpacity=0,
+                        min=0.0005, max=0.02) for _, ref, h in slow]
+            + [override("byFrameRefID", failed, color=fixed(GREY), unit="none", decimals=0, min=0,
+                        custom__axisSoftMax=4, custom__axisPlacement="right", custom__drawStyle="bars",
+                        custom__fillOpacity=60, custom__gradientMode="none", custom__lineWidth=1,
+                        custom__barAlignment=1, custom__scaleDistribution={"type": "linear"}),
+               no_value_grid])
         # Medians near a millisecond and a slow one on one log axis, so a slow median stays in sight
         # and the 10 ms line sits in the upper part; the failures keep a linear axis of their own.
         latency["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"log": 10, "type": "log"}
@@ -2985,7 +3015,7 @@ def validator_row(s):
     # The legend entries each chart can show at once (a miss adds "Missed" to the proposals, a
     # failure "Failures" to the signing time), with {{host}} for the node's name: one line each, so
     # the plots of a line stay level.
-    shown = {111: ["{{host}} missed, 1 h", "Network, 1 h"],
+    shown = {111: ["{{host}} missed, 1 h (%s)" % missed_level, "Network, 1 h"],
              116: ["{{host}} proposals", "Missed", "Expected"],
              115: ["{{host}}"] + ["{{host}} backup"] * (len(s.nodes) - 1),
              112: ["{{host}} median (alert at %s ms)" % s.ms(), "Slowest 1%, votes", "Failures"]}
