@@ -1063,8 +1063,8 @@ jobs:
               "build/$s/dashboard.json"
           done
       # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
-      # compares, which is the rule's expression without its comparison, and its dashed line at the
-      # rule's number, so neither side can change alone.
+      # compares, which is the rule's expression without its comparison (inside the clamp that draws an
+      # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
       - name: Fibre behind the network draws the missed_uploads rule
         run: |
           python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
@@ -1082,7 +1082,9 @@ jobs:
           assert m, rules[0]["expr"]
           chart = next(p for p in dash["panels"] if p.get("id") == 210)
           drawn = " ".join(chart["targets"][0]["expr"].split())
-          assert drawn == "((%s %s) > 0) / 60" % (m.group(1), m.group(3)), (drawn, m.groups())
+          value = "%s %s" % (m.group(1), m.group(3))
+          # A gap up to 60 s (an upload settling) draws as 0, a larger one as it is, in minutes.
+          assert drawn == "clamp_min(%s, 0) * ((%s) > bool 60) / 60" % (value, value), (drawn, value)
           level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
           assert level * 60 == int(m.group(2)), (level, m.group(2))
           print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
