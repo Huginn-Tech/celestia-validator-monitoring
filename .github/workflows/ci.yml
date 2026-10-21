@@ -289,6 +289,39 @@ jobs:
             fi
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
+      # The dashboard's descriptions print the hold times in monitoring/rules/holds.json
+      # (gen_dashboard.py reads them); each must be the for: of every rule it names.
+      - name: The hold times the dashboard prints match the rules
+        run: |
+          python - monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml <<'EOF'
+          import json
+          import re
+          import sys
+
+          import yaml
+
+
+          def seconds(text):
+              return sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+)([hms])", text))
+
+
+          holds = json.load(open(sys.argv[1]))["holds"]
+          rules = [r for path in sys.argv[2:] for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if "alert" in r]
+          failed = False
+          for name, h in sorted(holds.items()):
+              found = [r for r in rules if r["alert"] == h["alert"] and h.get("expr", "") in r["expr"]
+                       and all(re.fullmatch(v, str(r.get("labels", {}).get(k, ""))) for k, v in h.get("labels", {}).items())]
+              wrong = sorted({str(r.get("for", "0s")) for r in found if seconds(str(r.get("for", "0s"))) != seconds(h["for"])})
+              if not found:
+                  failed = True
+                  print("%s: the dashboard prints %s, but no rule matches" % (name, h["for"]))
+              elif wrong:
+                  failed = True
+                  print("%s: the dashboard prints %s, but the rules hold for %s" % (name, h["for"], ", ".join(wrong)))
+              else:
+                  print("%s: %s in %d rules" % (name, h["for"], len(found)))
+          sys.exit(1 if failed else 0)
+          EOF
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
@@ -557,8 +590,9 @@ jobs:
           if grep -qF "$token" "$d/log"; then echo "the log holds the token"; exit 1; fi
 
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
-  # files): a reachable endpoint, a validator with no Fibre host registered, an unknown validator
-  # (404) and an unreachable API.
+  # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
+  # an unknown validator (404), an unreachable API, and a Tensile without signing.last_assigned_at,
+  # whose time the running service takes from Tensile's newest block (/tip) at its reads.
   tensile:
     runs-on: ubuntu-24.04
     steps:
@@ -568,11 +602,14 @@ jobs:
           set -euo pipefail
           d="$RUNNER_TEMP/tensile"
           v="$d/api/api/v1/validators"
-          mkdir -p "$v/celestiavalcons1ok" "$v/celestiavalcons1none"
+          mkdir -p "$v/celestiavalcons1ok" "$v/celestiavalcons1none" "$v/celestiavalcons1old"
           cat >"$v/celestiavalcons1ok/status" <<'EOF'
           {"host": "203.0.113.7:7980", "jailed": false, "bond_status": "BOND_STATUS_BONDED", "endpoint_state": "reachable",
            "reachable": true, "identity_status": "verified", "last_reachable_at": "2026-10-18T06:25:11.680342473Z",
-           "last_endpoint_check": {"at": "2026-10-18T06:25:11.680342473Z", "outcome": "REACHABLE"}}
+           "last_endpoint_check": {"at": "2026-10-18T06:25:11.680342473Z", "outcome": "REACHABLE"},
+           "obligations": {"served": 215, "broken": 0, "rate": {"num": 215, "den": 215, "value": 1}},
+           "signing": {"assigned": 216, "signed": 215, "last_endorsed_at": "2026-10-18T06:20:27.865311985Z",
+                       "last_assigned_at": "2026-10-18T06:24:27.865311985Z"}}
           EOF
           cat >"$v/celestiavalcons1none/status" <<'EOF'
           {"host": "", "jailed": false, "reachable": null, "identity_status": "", "last_endpoint_check": null}
@@ -592,16 +629,63 @@ jobs:
           grep -Eq '^celestia_mon_fibre_last_check_timestamp_seconds\{endpoint="203\.0\.113\.7:7980"\} 1792304711\.68' <<<"$m"
           grep -qx 'celestia_mon_fibre_last_check_info{endpoint="203.0.113.7:7980",outcome="REACHABLE"} 1' <<<"$m"
           grep -Eq '^celestia_mon_tensile_last_success_timestamp_seconds [1-9]' <<<"$m"
-          if grep -q 'jailed\|bonded' <<<"$m"; then echo "Tensile is used for the outside check only"; exit 1; fi
+          grep -Eq '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304667\.86' <<<"$m"
+          grep -Eq '^celestia_mon_fibre_last_endorsed_timestamp_seconds 1792304427\.86' <<<"$m"
+          grep -qx 'celestia_mon_fibre_blobs_assigned_24h 216' <<<"$m"
+          grep -qx 'celestia_mon_fibre_blobs_endorsed_24h 215' <<<"$m"
+          grep -qx 'celestia_mon_fibre_obligations_24h{outcome="served"} 215' <<<"$m"
+          grep -qx 'celestia_mon_fibre_obligations_24h{outcome="broken"} 0' <<<"$m"
+          if grep -q 'jailed\|bonded' <<<"$m"; then echo "Tensile is used for the outside check and the blob record only"; exit 1; fi
           m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1none)
           grep -qx 'celestia_mon_fibre_registered{endpoint=""} 0' <<<"$m"
           if grep -q '^celestia_mon_fibre_reachable' <<<"$m"; then echo "reachability without a registered host"; exit 1; fi
+          if grep -Eq '^celestia_mon_fibre_(last_assigned|last_endorsed|blobs|obligations)' <<<"$m"; then
+            echo "a blob record without Tensile's signing object"; exit 1
+          fi
           m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1unknown)
           grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
           grep -qx 'celestia_mon_tensile_errors_total{reason="not_found"} 1' <<<"$m"
           grep -q 'check celestia_mon_tensile.validator' "$d/err"
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
+          # Without last_assigned_at, the time of the newest assigned blob is the time of Tensile's newest
+          # block (/tip) at the read at which the number of assigned blobs rose, only while that block is
+          # under 2 minutes older than Tensile's clock at that read and the one before. The service reads
+          # every second here.
+          tip() {
+            printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip"
+          }
+          old() {
+            printf '{"host": "203.0.113.7:7980", "reachable": true, "identity_status": "verified", "signing": {"assigned": %s, "signed": 0}}' \
+              "$1" >"$v/celestiavalcons1old/status"
+          }
+          tip 2026-10-18T06:25:15Z
+          old 216
+          printf '{"api": "http://127.0.0.1:8766/api/v1", "validator": "celestiavalcons1old", "listen": "127.0.0.1:9917", "interval_seconds": 1}' \
+            >"$d/config.json"
+          python3 -I tools/celestia-mon-tensile --config "$d/config.json" 2>"$d/err" &
+          svc=$!
+          scrape() { curl -fsS http://127.0.0.1:9917/metrics 2>/dev/null || true; }
+          wait_for() {
+            for _ in $(seq 30); do grep -Eq "$1" <<<"$(scrape)" && return 0; sleep 1; done
+            scrape; echo "no line matching $1"; return 1
+          }
+          wait_for '^celestia_mon_fibre_blobs_assigned_24h 216$'
+          sleep 3
+          if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a blob time without a rise"; exit 1; fi
+          # Tensile catches up after its own outage (its newest block 10 minutes old): the blobs it
+          # finds meanwhile are not new, and the first read in step again only notes the number.
+          tip 2026-10-18T06:15:20Z
+          sleep 3
+          old 230
+          wait_for '^celestia_mon_fibre_blobs_assigned_24h 230$'
+          tip 2026-10-18T06:25:15Z
+          sleep 3
+          if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a Tensile catch-up taken for new blobs"; exit 1; fi
+          # A rise between two reads in step sets the time: Tensile's newest block then, 06:25:15.
+          old 231
+          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304715\.0$'
+          kill "$svc"
 
   # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with
   # mainnet's x/signal answers of 19 October 2026 (app v9; v10 signalled by 396393243 of 463776854
@@ -826,13 +910,39 @@ jobs:
           python tools/ci/pins.py >> "$GITHUB_ENV"
       - name: Install Ansible
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
-      # A throwaway Prometheus container that only parses the panel queries; it is not celestia-mon's.
+      # A throwaway Prometheus container that runs the panel queries; it is not celestia-mon's. It
+      # scrapes the stub series written further down (one for each selector of the dashboards) on
+      # loopback, so a query that would carry a PromQL warning or info on real data carries it here.
       - name: Start a throwaway Prometheus at the version in versions.yml
-        run: docker run -d --name prometheus -p 127.0.0.1:9090:9090 "prom/prometheus:v$PROMETHEUS_VERSION"
+        run: |
+          mkdir -p build/stub
+          cat > build/stub/prometheus.yml <<'EOF'
+          global:
+            scrape_interval: 2s
+            scrape_timeout: 2s
+          scrape_configs:
+            - job_name: stub
+              honor_labels: true
+              metrics_path: /metrics.txt
+              fallback_scrape_protocol: PrometheusText0.0.4
+              static_configs:
+                - targets: ["127.0.0.1:9099"]
+          EOF
+          docker run -d --name prometheus --network host -v "$PWD/build/stub:/stub:ro" "prom/prometheus:v$PROMETHEUS_VERSION" \
+            --config.file=/stub/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090
+      # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
+      # job, and a validator name, so every optional panel and query is generated and checked.
       - name: Render the dashboard settings for the example inventories
         run: |
           for s in single split mainnet; do
-            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s"
+            extra=()
+            if [ "$s" = mainnet ]; then
+              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
+                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"},
+                          "celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"},
+                          "celestia_mon_validator_name": "CI validator"}')
+            fi
+            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
       - name: Generate the dashboards
         run: |
@@ -842,28 +952,226 @@ jobs:
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
-      # mainnet: a backup node and a standby Fibre on top of split, so Node progress is a table
-      # with one row per node, and Blocks behind the highest node is added (19 panels).
+          # mainnet without upgrade signalling has four answers, which the Servers and Monitoring tiles make six.
+          mkdir -p build/five
+          jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
+          python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
+      # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
+      # side by side). split: remote signer and Fibre (the Fibre row; three columns, the scraped KMS
+      # host's last). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
+      # on top (six answer tiles, the Network upgrade row; three columns,
+      # the last the remote signer's, which is not scraped). five: mainnet without signalling (the Servers
+      # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
+      # row starts; the top strip's six cells and the answer tiles below them share their column edges.
+      # Every six-cell row (the strip, the answers and the Validator, Fibre and Network upgrade facts: the
+      # stats 3 rows high, untitled, labelled at 13 px) has one value size, 22, 20 or 18 px.
+      # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
+      # many rows, over one lower panel per column (ids 34-37) of four bars, all 4 rows high with the
+      # names left of the bars (5 with the names above them, where no name size fits the left); the
+      # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
+      # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
+      # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
+      # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
+      # (open, then closed) hold six charts per server (single: one server, mainnet and five: two,
+      # split: three, its KMS host scraped), each line one kind of chart, at one width and height,
+      # filling the 24 columns; each server's charts in one column, titled with its name first; its
+      # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
+      # server in one chart across the full width.
       - name: Panels match the switches
         run: |
-          count() { jq '[.panels[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
-          kind() { jq -r '.panels[] | select(.id == 1) | .type' "build/$1/dashboard.json"; }
-          test "$(count single)" = 11
-          test "$(count split)" = 18
-          test "$(count mainnet)" = 19
-          test "$(kind single)" = stat
-          test "$(kind split)" = stat
-          test "$(kind mainnet)" = table
+          count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
+          tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
+          columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
+          test "$(count single)" = 32
+          test "$(count split)" = 59
+          test "$(count mainnet)" = 62
+          test "$(count five)" = 56
+          test "$(tiles single)" = '[11,12]'
+          test "$(tiles split)" = '[11,12,14]'
+          test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
+          test "$(tiles five)" = '[11,12,17,14,15,18]'
+          charts() { jq -c '[.panels[] | select(.id > 100 and .id < 200 and .type == "timeseries") | .id]' "build/$1/dashboard.json"; }
+          test "$(charts single)" = '[111,116,115]'
+          test "$(charts split)" = '[111,112,116,115]'
+          test "$(charts mainnet)" = '[111,112,116,115]'
+          test "$(columns single)" = 1
+          test "$(columns split)" = 3
+          test "$(columns mainnet)" = 3
+          test "$(columns five)" = 3
+          for s in single split mainnet five; do
+            jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
+            jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
+                   == (.panels[] | select(.id == 100) | .gridPos.y)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.gridPos.y == 0) | [.gridPos.x, .gridPos.w, .gridPos.h]]
+                   == [[0,4,3],[4,4,3],[8,4,3],[12,4,3],[16,4,3],[20,4,3]]' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .gridPos] as $t
+                   | ($t | map(.w) | unique | length) == 1 and ($t | map(.h) | unique) == [3]
+                   and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
+            jq -e '[.panels[] | ., (.panels // [])[] | select(.type == "stat" and .gridPos.h == 3)]
+                   | all(.title == "" and .options.text.titleSize == 13)
+                     and (map(.options.text.valueSize) | unique | length == 1 and (.[0] | IN(22, 20, 18)))' \
+              "build/$s/dashboard.json"
+            jq -e --slurpfile cfg "build/$s/dashboard-config.json" '
+                   ($cfg[0].nodes + ([$cfg[0].links[].host] - $cfg[0].nodes)) as $servers | ($servers | length) as $n
+                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $all
+                   | ($all | map(select(.id < 480))) as $p
+                   | ($p | length) == 6 * $n
+                   and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
+                   and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
+                   and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
+                                                        and (map(.gridPos.w) | unique | length) == 1
+                                                        and (map(.gridPos.w) | add) == 24))
+                   and ($n == 1 or ($p | group_by(.id % 10) | all(map(.gridPos.x) | unique | length == 1)))
+                   and ($p | all(. as $c | $c.title | startswith($servers[$c.id % 10] + " · ")))
+                   and ([.annotations.list[] | select(.name | startswith("Out of memory on ")) | .filter.ids]
+                        == [range(0; $n) | [420 + .]])' "build/$s/dashboard.json"
+            # The Validator row: six cells on the top strip's column edges and of its height (3 rows),
+            # then charts of one height, of one width on each line and filling it.
+            jq -e '(.panels[] | select(.id == 100) | .gridPos.y) as $y
+                   | [.panels[] | select(.id > 100 and .id < 200)] as $v
+                   | ($v | map(select(.type == "stat"))) as $f | ($v | map(select(.type == "timeseries"))) as $c
+                   | ($f | map(.id)) == [109,117,118,101,102,103]
+                   and ($f | map([.gridPos.x, .gridPos.y, .gridPos.w, .gridPos.h]))
+                       == [[0,$y+1,4,3],[4,$y+1,4,3],[8,$y+1,4,3],[12,$y+1,4,3],[16,$y+1,4,3],[20,$y+1,4,3]]
+                   and ($c | map(.gridPos.h) | unique) == [7]
+                   and ($c | group_by(.gridPos.y) | all(map(.gridPos.w) | (unique | length) == 1 and add == 24))
+                   and ($v | length) == ($f | length) + ($c | length)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.id >= 30 and .id < 34)] as $c | [.panels[] | select(.id >= 34 and .id < 38)] as $l
+                   | ($c | length) as $n | ($c | map(.gridPos)) as $cg | ($l | map(.gridPos)) as $lg
+                   | $n >= 1 and ($l | length) == $n and ([.panels[] | select(.id == 26)] | length) == 0
+                   and ($cg | map(.y) | unique) == [6] and ($cg | map(.h) | unique | length) == 1
+                   and ($lg | map(.h) | unique | length) == 1
+                   and ($c | map(.targets | length) | unique | length) == 1 and ($l | map(.targets | length) | unique) == [4]
+                   and (if $n == 1 then
+                          [$cg[0].x, $cg[0].w, $lg[0].x, $lg[0].w, $lg[0].y, $lg[0].h] == [0, 12, 12, 12, 6, $cg[0].h]
+                        else
+                          ($cg | map(.w) | unique | length) == 1 and ($cg | map(.w) | add) == 24
+                          and ($cg | map(.x)) == [range(0; $n) * $cg[0].w] and ($lg | map(.x)) == ($cg | map(.x))
+                          and ($lg | map(.w) | unique) == [$cg[0].w] and ($lg | map(.y) | unique) == [6 + $cg[0].h]
+                          and ([$l[] | [.gridPos.h, .options.namePlacement]] | unique | . == [[4, "left"]] or . == [[5, "top"]])
+                        end)' "build/$s/dashboard.json"
+            jq -e '[.panels[] | select(.id >= 20 and .id < 30)] as $b | ($b | map(.id) | sort) == [20, 21, 24, 25]
+                   and (INDEX($b[]; .id | tostring) | map_values(.gridPos)) as $g
+                   | ([$g["20"].y, $g["20"].h] == [$g["21"].y, $g["21"].h]) and $g["21"].x == $g["20"].x + $g["20"].w
+                   and $g["21"].x + $g["21"].w == 24
+                   and ([$g["20"], $g["25"], $g["24"]] | map([.x, .w]) | unique | length) == 1
+                   and $g["25"].y == $g["20"].y + $g["20"].h and $g["24"].y == $g["25"].y + $g["25"].h
+                   and $g["24"].h == 1' "build/$s/dashboard.json"
+          done
+          jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
+                 and .kms_names == ["kms-1"] and .monitor_host == "fibre-1" and .name == "CI validator"' \
+            build/mainnet/dashboard-config.json
+          jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
+                 and .name == ""' build/split/dashboard-config.json
+          jq -e '.kms_names == []' build/single/dashboard-config.json
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
           jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
+      # SignaturesMissed is max(A > on (host) R * B): A the blocks each node counted as missed in the last
+      # hour, B the blocks it committed in that hour, R the share. The Validator tile holds the whole
+      # comparison, and Missed blocks (the fact and the chart) draws A over B with its level at R, so
+      # neither side can change alone.
+      - name: Missed blocks read the SignaturesMissed rule
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("single", "split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              rule = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                      if r.get("alert") == "SignaturesMissed"]
+              assert len(rule) == 1, "%s: one SignaturesMissed rule, not %d" % (s, len(rule))
+              expr = " ".join(rule[0]["expr"].split())
+              m = re.fullmatch(r"max\((max by \(host\) \(.+\)) > on \(host\) ([0-9.]+) \* "
+                               r"(max by \(host\) \(delta\(cometbft_consensus_height\{[^}]*\}\[1h\]\)\))\)", expr)
+              assert m, expr
+              a, r, b = m.groups()
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              text = lambda i: [" ".join(t["expr"].split()) for t in panels[i]["targets"]]
+              assert any(expr in t for t in text(11)), "%s: tile 11 lacks %s" % (s, expr)
+              for i in (117, 111):
+                  shares = [t for t in text(i) if a in t and b in t]
+                  assert shares, "%s: %d draws no %s over %s" % (s, i, a, b)
+                  level = panels[i]["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+                  assert level == float(r), "%s: %d's level %s, the rule's %s" % (s, i, level, r)
+              print("%s: tile 11, 117 and 111 read %s over %s at %s" % (s, a[:60] + "...", b, r))
+          EOF
+      # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
+      # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
+      # three charts of one height: two side by side on columns 0 and 12, then one across the row.
+      - name: The Fibre row is symmetric
+        run: |
+          for s in split mainnet five; do
+            jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
+                   | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
+                   | [$f[] | select(.type == "timeseries") | .gridPos] as $c
+                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
+                     and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
+                     and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
+                                   and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
+                     and ($p | map(.options.text.valueSize) | unique | length) == 1
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)
+                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
+              "build/$s/dashboard.json"
+          done
+      # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
+      # compares, which is the rule's expression without its comparison (inside the clamp that draws an
+      # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
+      - name: Fibre behind the network draws the missed_uploads rule
+        run: |
+          python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
+          import json
+          import re
+          import sys
+
+          import yaml
+
+          dash = json.load(open(sys.argv[1]))
+          rules = [r for g in yaml.safe_load(open(sys.argv[2]))["groups"] for r in g["rules"]
+                   if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
+          assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
+          m = re.fullmatch(r"(.*) > (\d+) (and on .*)", " ".join(rules[0]["expr"].split()))
+          assert m, rules[0]["expr"]
+          chart = next(p for p in dash["panels"] if p.get("id") == 210)
+          drawn = " ".join(chart["targets"][0]["expr"].split())
+          value = "%s %s" % (m.group(1), m.group(3))
+          # A gap up to 60 s (an upload settling) draws as 0, a larger one as it is, in minutes.
+          assert drawn == "clamp_min(%s, 0) * ((%s) > bool 60) / 60" % (value, value), (drawn, value)
+          level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+          assert level * 60 == int(m.group(2)), (level, m.group(2))
+          print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
+          EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
-      - name: Every panel query parses in Prometheus
+      # The stub series, served on loopback; the check waits until a minute step of Prometheus holds
+      # them, so the queries' 1-minute subqueries read data too.
+      - name: Serve the dashboards' series to Prometheus
+        run: |
+          python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
+            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+          nohup python -m http.server 9099 --bind 127.0.0.1 --directory build/stub > build/stub/http.log 2>&1 &
+          for _ in $(seq 60); do
+            reply=$(curl -sS http://127.0.0.1:9090/api/v1/query \
+              --data-urlencode 'query=count_over_time((up{job="stub"} == 1)[5m:1m]) > 0' || true)
+            case "$reply" in *'"value"'*) exit 0 ;; esac
+            sleep 3
+          done
+          echo "Prometheus did not scrape the stub series"
+          docker logs prometheus 2>&1 | tail -20
+          exit 1
+      - name: Every panel query runs in Prometheus without an error, warning or info
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
-          build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json
+          build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
 
   doctor:
     runs-on: ubuntu-24.04

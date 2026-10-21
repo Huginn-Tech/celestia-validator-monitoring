@@ -1,6 +1,6 @@
-# What the example-single switches leave out: with a local key there is no
-# RemoteSignerProblem, with Fibre off there is no FibreDown or FibreNotServing. Watchdog fires without
-# Alertmanager metrics.
+# What the example-single switches leave out: with a local key there is no RemoteSignerProblem or
+# ValidatorSigningTwice, with Fibre off there is no FibreDown or FibreNotServing. Watchdog fires
+# without Alertmanager metrics.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -18,6 +18,20 @@ tests:
     alert_rule_test:
       - eval_time: 40m
         alertname: RemoteSignerProblem
+        exp_alerts: []
+
+  - name: Local key renders no ValidatorSigningTwice, even if two nodes reported remote signatures
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",message_type="prevote"}
+        values: '0+40x40'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.12:26660",host="node-2",role="validator",message_type="prevote"}
+        values: '0+40x40'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ValidatorSigningTwice
         exp_alerts: []
 
   - name: Fibre off renders no FibreNotServing, even with an active Fibre unit and no metrics

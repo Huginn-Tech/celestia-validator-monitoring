@@ -4,6 +4,17 @@
 # Signer in use on the validator: local (key file on the node) or remote (tmkms).
 celestia_mon_signer: local
 
+# With a remote signer: true when tmkms is set up to sign through several nodes at once (several
+# [[validator]] entries in tmkms.toml). Two nodes signing is then normal: the dashboard reads
+# "Two nodes" instead of the amber "Two signers" it shows when two nodes sign for 3 minutes, and
+# the page alert ValidatorSigningTwice is left out.
+celestia_mon_signer_multi_node: false
+
+# The validator's name at the top of the dashboard (for example its moniker): up to 13 characters
+# at full size; 14 to 17 characters make the whole top strip's values a little smaller; longer
+# names stop the dashboard build. Empty: the dashboard reads "Validator" under the network's name.
+celestia_mon_validator_name: ""
+
 # Install and render everything Fibre-related. Keep false on networks where
 # Fibre is not active (mainnet runs app v9 as of 2026-10).
 celestia_mon_fibre_enabled: false
@@ -55,8 +66,6 @@ celestia_mon_thresholds:
   signatures_missed_ratio: 0.05
   node_behind_blocks: 20
   signer_median_seconds: 0.010
-  fibre_stale_uploads: 10
-  fibre_stale_min_seconds: 3600
   disk_page_free_ratio: 0.05
   disk_message_free_ratio: 0.10
   crashloop_restarts: 2
@@ -162,7 +171,7 @@ celestia_mon_memory:
 #                                       a range no wider than its private block (10.0.0.0/8,
 #                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7)
 #   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
-#                                       Link load panel (every node_exporter host). Set it when
+#                                       dashboard's Network peak (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one
 #                                       physical NIC, or buys less than its port speed
 #   celestia_mon_node_home              celestia-appd home for celestia-mon-doctor (validator and

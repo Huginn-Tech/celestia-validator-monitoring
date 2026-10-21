@@ -2,7 +2,7 @@
     Uses only the shared celestia_mon_* settings and vars, groups and hostvars, so tools/ci/render.yml
     can render it too. Per-host values come from hostvars with defaults, because
     role defaults are not part of other hosts' hostvars. -#}
-{%- set ns = namespace(fibre=[], endpoints=[], data=[], links=[]) -%}
+{%- set ns = namespace(fibre=[], endpoints=[], data=[], links=[], kms=[]) -%}
 {#- nodes: the celestia-appd hosts, the validator first, then the backup nodes. -#}
 {%- set nodes = celestia_mon_appd_hosts | list -%}
 {#- Every fibre host, the active one and the standbys: which one is active is read from systemd at runtime.
@@ -25,13 +25,32 @@
 {%-     endfor -%}
 {%-   endif -%}
 {%- endfor -%}
+{#- kms_hosts: the KMS hosts whose node_exporter runs (celestia_mon_kms_scrape), where tmkms is watched as a unit. -#}
+{%- for h in groups.get('kms', []) -%}
+{%-   if hostvars[h].celestia_mon_kms_scrape | default(false) | bool -%}
+{%-     set ns.kms = ns.kms + [h] -%}
+{%-   endif -%}
+{%- endfor -%}
+{#- kms_names: every kms host, with a remote signer. The dashboard names the remote signer's column of the
+    Servers band after the ones it does not scrape (it only reads their signing, through the nodes). -#}
+{#- The switches below are the alert rules' own (tensile_on, signal_on in celestia-mon.rules.yml.j2), so the
+    dashboard shows exactly the checks that have rules. -#}
 {{ {
   'datasource_uid': 'celestia-mon-prometheus',
+  'name': celestia_mon_validator_name | default('', true) | string | trim,
   'signer': celestia_mon_signer,
+  'signer_multi_node': celestia_mon_signer_multi_node | default(false) | bool,
   'fibre_enabled': celestia_mon_fibre_enabled | bool,
+  'tensile_enabled': (celestia_mon_fibre_enabled | bool) and (celestia_mon_tensile.validator | default('') | length > 0),
+  'signal_enabled': celestia_mon_signal | default({}, true) | length > 0,
+  'announcements_enabled': celestia_mon_announcements | default([]) | length > 0,
   'units': celestia_mon_units,
   'thresholds': celestia_mon_thresholds,
   'nodes': nodes,
+  'kms_hosts': ns.kms,
+  'kms_names': (groups.get('kms', []) | list) if celestia_mon_signer == 'remote' else [],
+  'monitor_host': celestia_mon_monitor_host,
+  'prometheus_retention': celestia_mon_prometheus_retention | default('30d') | string,
   'fibre_mounts': ns.fibre,
   'fibre_endpoints': ns.endpoints,
   'data_mounts': ns.data,
