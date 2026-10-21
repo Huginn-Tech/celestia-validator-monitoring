@@ -240,6 +240,8 @@ TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 1800, 900, 300
 TITLES = [
     ("NodeNotAdvancing:.*", "No new blocks on any node", "Nodes stalled", None),
     ("ValidatorNotSigning:.*", "Validator not signing", "Not signing", None),
+    # The same words as the Status cell's own two-signers item, which the firing alert replaces.
+    ("ValidatorSigningTwice:.*", "Validator signs through two nodes", "Two signers", "remote"),
     ("SignaturesMissed:.*", "Validator missed blocks", "Missed blocks", None),
     ("NodeBehind:.*:([^:]*)", "Node behind on $1", "Node behind", None),
     ("RemoteSignerProblem:message::::.*", "Remote signer slow", "Signer slow", "remote"),
@@ -248,7 +250,8 @@ TITLES = [
     ("FibreDown:page:::reachability:.*", "Fibre unreachable from outside", "Fibre offline", "tensile"),
     ("FibreDown:page:::registration:.*", "Fibre not registered or wrong host", "Unregistered", "tensile"),
     ("FibreBothActive:.*", "Fibre running on two servers", "Two Fibres", "fibre"),
-    ("FibreNotServing:message::stale::([^:]*)", "No Fibre uploads on $1", "No uploads", "fibre"),
+    ("FibreNotServing:message::missed_uploads::([^:]*)", "Fibre misses blobs on $1", "Missed blobs", "tensile"),
+    ("FibreNotServing:message::not_served::([^:]*)", "Fibre did not serve rows on $1", "Unserved rows", "tensile"),
     ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "Upload errors", "fibre"),
     ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre data", "fibre"),
     ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", None),
@@ -283,8 +286,8 @@ SERVER_OTHERS = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|Notificat
 # The heartbeat goes to the dead-man service only and is never shown as an alert.
 UNTITLED = {"Watchdog"}
 # Worst first between alerts of one level, so the order stays the same between refreshes.
-PRIORITY = {"NodeNotAdvancing": 0.09, "ValidatorNotSigning": 0.08, "FibreDown": 0.07, "DiskLow": 0.06,
-            "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04, "SignaturesMissed": 0.035,
+PRIORITY = {"ValidatorSigningTwice": 0.095, "NodeNotAdvancing": 0.09, "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
+            "DiskLow": 0.06, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04, "SignaturesMissed": 0.035,
             "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025, "NodeBehind": 0.02,
             "FibreBothActive": 0.015, "UpgradeSoon": 0.012}
 
@@ -652,8 +655,6 @@ class Setup:
         self.DP = t["disk_page_free_ratio"]
         self.DM = t["disk_message_free_ratio"]
         self.CL = t["crashloop_restarts"]
-        self.SU = t["fibre_stale_uploads"]
-        self.SM = t["fibre_stale_min_seconds"]
         self.holds, self.alert_names = load_rules()
 
     def has(self, need):
@@ -2284,30 +2285,26 @@ def fibre_row(s):
         mappings=special_map("nan", "No uploads"))
 
     last_ok = "max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds)"
+    # B3: this chart becomes "Since the last blob: network and Fibre" (r3 §3.8). Its alert level line
+    # (target C, from the removed thresholds fibre_stale_uploads and fibre_stale_min_seconds) went with
+    # FibreNotServing's stale rule.
     since = timeseries(
         210, "Since last accepted upload",
         "Is Fibre serving, not just running? Time since the server last accepted an upload, in hours. Until its first "
-        "accepted upload after a start, the line is labelled no accepted upload yet and counts from Fibre start. Dashed amber "
-        "line: the alert level, the time %g uploads take at this server's 7-day average and never under %g minutes; no "
-        "line when the server had no upload in 7 days. FibreNotServing sends a message when the line stays above the "
-        "alert level for %s. A sawtooth that drops at each upload is healthy. The axis stops at %g hours; in the first "
-        "days of upload data the 7-day average is still young, so the alert level can sit above the chart. A quiet "
-        "network also makes the time grow: to tell it from a fault, check on Tensile whether the network is carrying "
-        "Fibre uploads." % (s.SU, s.SM / 60.0, s.hold("FibreNotServing stale"), 3 * s.SM / 3600.0)
+        "accepted upload after a start, the line is labelled no accepted upload yet and counts from Fibre start. A "
+        "sawtooth that drops at each upload is healthy; on a network that sends no blobs the line climbs, which is "
+        "normal. With the outside check, FibreNotServing sends a message when a blob assigned to the validator settled "
+        "more than 5 minutes after the last accepted upload and none follows for %s."
+        % s.hold("FibreNotServing missed_uploads")
         + more(["FibreNotServing"], [TENSILE, FIBRE_DASHBOARD]),
         # The timestamp is not reported before the first accepted upload after each Fibre
         # start, so B counts from the unit start until A has a value. Every line is in hours, so the
         # axis ticks fall on half hours.
         refs([("(time() - %s) / 3600" % last_ok, "{{host}}"),
               ("((time() - max by (host) (node_systemd_unit_start_time_seconds{name=%s} > 0)) unless on (host) %s) / 3600"
-               % (q(s.units["fibre"]), last_ok), "{{host}} no accepted upload yet (since Fibre start)")])
-        # The 7-day rate barely moves; a 5 min step keeps this query cheap for Prometheus.
-        + [target("C", "clamp_min(%s / (sum by (host) (rate(%s[7d])) > 0), %s) / 3600" % (num(s.SU), count, num(s.SM)),
-                  "{{host}} alert level", interval="5m")],
-        # A hard top: the alert level counts from a 7-day rate, which starts weeks high on young data.
-        "suffix: h", maximum=3 * s.SM / 3600.0, decimals=1,
-        overrides=[override("byFrameRefID", "C", color=fixed("orange"), custom__lineStyle=dash([10, 10]),
-                            custom__lineWidth=1)])
+               % (q(s.units["fibre"]), last_ok), "{{host}} no accepted upload yet (since Fibre start)")]),
+        # B3: a neutral top of 3 hours (it was 3 times fibre_stale_min_seconds) until the chart is rebuilt.
+        "suffix: h", maximum=3.0, decimals=1)
     last_upload = fact(
         201, "Last accepted upload",
         "When the active Fibre server last accepted an upload. Fibre pushes its metrics at its OTLP export interval "

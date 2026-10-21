@@ -1,89 +1,36 @@
-# FibreNotServing on the example-split inventory (Fibre on fibre-1). Fibre starts at
-# 1m (start time 60 s) and gets its first upload at 2m. The last-success gauge holds
-# the Unix time of the last accepted upload; at 30 uploads a minute the 7-day
-# average puts the stale threshold at its 1 h floor.
+# FibreNotServing on the example-split inventory (Fibre on fibre-1). This inventory has no outside
+# check, so missed_uploads and not_served are not rendered: from the hosts alone, a network that
+# sends no blobs and a Fibre that receives none look alike. Fibre starts at 1m (start time 60 s)
+# and gets its first upload at 2m. The last-success gauge holds the Unix time of the last accepted
+# upload.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
-  - name: Uploads stop; stale after the 1 h floor plus 10 minutes
+  # Without the outside check a quiet network and a Fibre that receives nothing look alike: no alert.
+  - name: Uploads stop for hours without the outside check; no FibreNotServing
     interval: 1m
     input_series:
       - series: >-
           node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
-        values: '0 1x140'
+        values: '0 1x300'
       - series: >-
           node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
-        values: '0 60x140'
+        values: '0 60x300'
       - series: >-
           fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
-        values: '_x2 120+60x58 3600x80'
+        values: '_x2 120+60x58 3600x240'
       - series: >-
           fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
-        values: '_x2 30+30x58 1770x80'
+        values: '_x2 30+30x58 1770x240'
       - series: >-
           fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
-        values: '_ 1000000000000x140'
-      - series: >-
-          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
-        values: '_ 400000000000x140'
+        values: '_ 1000000000000x300'
     alert_rule_test:
-      - eval_time: 60m
+      - eval_time: 300m
         alertname: FibreNotServing
         exp_alerts: []
-      - eval_time: 130m
-        alertname: FibreNotServing
-        exp_alerts: []
-      - eval_time: 131m
-        alertname: FibreNotServing
-        exp_alerts:
-          - exp_labels:
-              host: fibre-1
-              reason: stale
-              severity: message
-            exp_annotations:
-              summary: "Fibre on fibre-1 has no recent accepted upload"
-              description: "No upload has been accepted for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
-
-  - name: Fibre restarts and gets no upload since; time counts from the new start
-    interval: 1m
-    input_series:
-      - series: >-
-          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
-        values: '0 1x179'
-      - series: >-
-          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
-        values: '0 60x98 6000x81'
-      # The last-success gauge lives in Fibre's memory: gone after the restart at 100m.
-      - series: >-
-          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
-        values: '_x2 120+60x97 stale'
-      - series: >-
-          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
-        values: '_x2 30+30x97 stale'
-      - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
-        values: '_ 1000000000000x179'
-    alert_rule_test:
-      - eval_time: 160m
-        alertname: FibreNotServing
-        exp_alerts: []
-      - eval_time: 170m
-        alertname: FibreNotServing
-        exp_alerts: []
-      - eval_time: 171m
-        alertname: FibreNotServing
-        exp_alerts:
-          - exp_labels:
-              host: fibre-1
-              reason: stale
-              severity: message
-            exp_annotations:
-              summary: "Fibre on fibre-1 has no recent accepted upload"
-              description: "No upload has been accepted for longer than 10 uploads take at the 7-day average rate, and for over 60 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   - name: Fibre restarts and uploads resume; no alert
     interval: 1m

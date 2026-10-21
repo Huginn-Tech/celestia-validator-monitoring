@@ -1,4 +1,5 @@
-# RemoteSignerProblem on the example-split inventory (remote signer, validator val-1).
+# RemoteSignerProblem on the example-split inventory (remote signer, validator val-1). The slow rule
+# counts only a node that got signatures from the signer in the last 5 minutes (the count series).
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -10,6 +11,9 @@ tests:
       - series: >-
           cometbft_privval_signing_latency_median_seconds{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
         values: '0.004x10 0.012x30'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator",message_type="prevote"}
+        values: '0+40x40'
     alert_rule_test:
       - eval_time: 25m
         alertname: RemoteSignerProblem
@@ -35,6 +39,9 @@ tests:
       - series: >-
           cometbft_privval_signing_latency_median_seconds{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
         values: '0.01x40'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator",message_type="prevote"}
+        values: '0+40x40'
     alert_rule_test:
       - eval_time: 40m
         alertname: RemoteSignerProblem

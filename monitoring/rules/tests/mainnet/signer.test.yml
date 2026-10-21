@@ -1,0 +1,97 @@
+# RemoteSignerProblem and ValidatorSigningTwice on the example-mainnet inventory: val-1 is the
+# validator node, fibre-1 a backup node without a key; tmkms on kms-1 signs through one of them.
+# Each node counts the votes and proposals it got signed by tmkms (the latency histogram's count),
+# so the rules read which node signs from it. Samples are one minute apart; a node that signs adds
+# 40 signatures a minute.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # val-1's median rises to 12 ms at 6m; tmkms is pointed at fibre-1 at 10m, and val-1 keeps that
+  # median while it gets no more signatures. fibre-1 signs at 2 ms. The slow rule counts only nodes
+  # with signatures in the last 5 minutes, so val-1's frozen median ends the condition by 15m, before
+  # the 15-minute hold.
+  - name: tmkms moves to fibre-1 and val-1 keeps a median of 12 ms; no RemoteSignerProblem
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_latency_median_seconds{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '0.004x5 0.012x55'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",message_type="prevote"}
+        values: '0+40x10 400x50'
+      - series: >-
+          cometbft_privval_signing_latency_median_seconds{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '_x10 0.002x50'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node",message_type="prevote"}
+        values: '_x10 0+40x50'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: RemoteSignerProblem
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: RemoteSignerProblem
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: ValidatorSigningTwice
+        exp_alerts: []
+
+  # A repoint: fibre-1 gets its first signatures at 9m, val-1 its last at 11m, so both nodes have
+  # signatures within 2 minutes from 10m to 12m. A node counts only once it also had signatures
+  # 2 to 4 minutes ago, which fibre-1 has from 13m, when val-1 has had none for 2 minutes: the
+  # alert is never even pending.
+  - name: Repoint with an overlap under 2 minutes; no ValidatorSigningTwice
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",message_type="prevote"}
+        values: '0+40x11 440x49'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node",message_type="prevote"}
+        values: '_x9 0+40x51'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ValidatorSigningTwice
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ValidatorSigningTwice
+        exp_alerts: []
+      - eval_time: 60m
+        alertname: ValidatorSigningTwice
+        exp_alerts: []
+    promql_expr_test:
+      - expr: count_over_time(ALERTS{alertname="ValidatorSigningTwice"}[1h])
+        eval_time: 60m
+        exp_samples: []
+
+  # A second tmkms with the same key starts signing through fibre-1 at 10m while val-1 keeps signing:
+  # fibre-1 counts from 13m, and the page goes out a minute later.
+  - name: Two nodes keep signing; ValidatorSigningTwice pages about 3 minutes after the second began
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",message_type="prevote"}
+        values: '0+40x30'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node",message_type="precommit"}
+        values: '_x10 0+40x20'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: ValidatorSigningTwice
+        exp_alerts: []
+      - eval_time: 14m
+        alertname: ValidatorSigningTwice
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator signs through two nodes
+              description: >-
+                For about 3 minutes votes or proposals signed with the validator's key have reached more than one
+                node: fibre-1, val-1. Two signers with one key can sign two different votes for one height, and
+                the chain slashes such a double sign and tombstones the validator. Stop the signer that should not
+                sign now, for example a second tmkms with the same key on a standby KMS host. If one tmkms signs
+                through several nodes on purpose, set celestia_mon_signer_multi_node: true.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatorsigningtwice

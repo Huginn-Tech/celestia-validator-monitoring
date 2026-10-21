@@ -590,8 +590,9 @@ jobs:
           if grep -qF "$token" "$d/log"; then echo "the log holds the token"; exit 1; fi
 
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
-  # files): a reachable endpoint, a validator with no Fibre host registered, an unknown validator
-  # (404) and an unreachable API.
+  # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
+  # an unknown validator (404), an unreachable API, and a Tensile without signing.last_assigned_at,
+  # whose time the running service derives from its own reads.
   tensile:
     runs-on: ubuntu-24.04
     steps:
@@ -601,11 +602,14 @@ jobs:
           set -euo pipefail
           d="$RUNNER_TEMP/tensile"
           v="$d/api/api/v1/validators"
-          mkdir -p "$v/celestiavalcons1ok" "$v/celestiavalcons1none"
+          mkdir -p "$v/celestiavalcons1ok" "$v/celestiavalcons1none" "$v/celestiavalcons1old"
           cat >"$v/celestiavalcons1ok/status" <<'EOF'
           {"host": "203.0.113.7:7980", "jailed": false, "bond_status": "BOND_STATUS_BONDED", "endpoint_state": "reachable",
            "reachable": true, "identity_status": "verified", "last_reachable_at": "2026-10-18T06:25:11.680342473Z",
-           "last_endpoint_check": {"at": "2026-10-18T06:25:11.680342473Z", "outcome": "REACHABLE"}}
+           "last_endpoint_check": {"at": "2026-10-18T06:25:11.680342473Z", "outcome": "REACHABLE"},
+           "obligations": {"served": 215, "broken": 0, "rate": {"num": 215, "den": 215, "value": 1}},
+           "signing": {"assigned": 216, "signed": 215, "last_endorsed_at": "2026-10-18T06:20:27.865311985Z",
+                       "last_assigned_at": "2026-10-18T06:24:27.865311985Z"}}
           EOF
           cat >"$v/celestiavalcons1none/status" <<'EOF'
           {"host": "", "jailed": false, "reachable": null, "identity_status": "", "last_endpoint_check": null}
@@ -625,16 +629,62 @@ jobs:
           grep -Eq '^celestia_mon_fibre_last_check_timestamp_seconds\{endpoint="203\.0\.113\.7:7980"\} 1792304711\.68' <<<"$m"
           grep -qx 'celestia_mon_fibre_last_check_info{endpoint="203.0.113.7:7980",outcome="REACHABLE"} 1' <<<"$m"
           grep -Eq '^celestia_mon_tensile_last_success_timestamp_seconds [1-9]' <<<"$m"
-          if grep -q 'jailed\|bonded' <<<"$m"; then echo "Tensile is used for the outside check only"; exit 1; fi
+          grep -Eq '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304667\.86' <<<"$m"
+          grep -Eq '^celestia_mon_fibre_last_endorsed_timestamp_seconds 1792304427\.86' <<<"$m"
+          grep -qx 'celestia_mon_fibre_blobs_assigned_24h 216' <<<"$m"
+          grep -qx 'celestia_mon_fibre_blobs_endorsed_24h 215' <<<"$m"
+          grep -qx 'celestia_mon_fibre_obligations_24h{outcome="served"} 215' <<<"$m"
+          grep -qx 'celestia_mon_fibre_obligations_24h{outcome="broken"} 0' <<<"$m"
+          if grep -q 'jailed\|bonded' <<<"$m"; then echo "Tensile is used for the outside check and the blob record only"; exit 1; fi
           m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1none)
           grep -qx 'celestia_mon_fibre_registered{endpoint=""} 0' <<<"$m"
           if grep -q '^celestia_mon_fibre_reachable' <<<"$m"; then echo "reachability without a registered host"; exit 1; fi
+          if grep -Eq '^celestia_mon_fibre_(last_assigned|last_endorsed|blobs|obligations)' <<<"$m"; then
+            echo "a blob record without Tensile's signing object"; exit 1
+          fi
           m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1unknown)
           grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
           grep -qx 'celestia_mon_tensile_errors_total{reason="not_found"} 1' <<<"$m"
           grep -q 'check celestia_mon_tensile.validator' "$d/err"
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
+          # Without last_assigned_at, the time of the newest assigned blob is the read at which the
+          # number of assigned blobs rose, only while Tensile's newest block (/tip) is under 2 minutes
+          # older than its clock at that read and the one before. The service reads every second here.
+          tip() {
+            printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip"
+          }
+          old() {
+            printf '{"host": "203.0.113.7:7980", "reachable": true, "identity_status": "verified", "signing": {"assigned": %s, "signed": 0}}' \
+              "$1" >"$v/celestiavalcons1old/status"
+          }
+          tip 2026-10-18T06:25:15Z
+          old 216
+          printf '{"api": "http://127.0.0.1:8766/api/v1", "validator": "celestiavalcons1old", "listen": "127.0.0.1:9917", "interval_seconds": 1}' \
+            >"$d/config.json"
+          python3 -I tools/celestia-mon-tensile --config "$d/config.json" 2>"$d/err" &
+          svc=$!
+          scrape() { curl -fsS http://127.0.0.1:9917/metrics 2>/dev/null || true; }
+          wait_for() {
+            for _ in $(seq 30); do grep -Eq "$1" <<<"$(scrape)" && return 0; sleep 1; done
+            scrape; echo "no line matching $1"; return 1
+          }
+          wait_for '^celestia_mon_fibre_blobs_assigned_24h 216$'
+          sleep 3
+          if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a blob time without a rise"; exit 1; fi
+          # Tensile catches up after its own outage (its newest block 10 minutes old): the blobs it
+          # finds meanwhile are not new, and the first read in step again only notes the number.
+          tip 2026-10-18T06:15:20Z
+          sleep 3
+          old 230
+          wait_for '^celestia_mon_fibre_blobs_assigned_24h 230$'
+          tip 2026-10-18T06:25:15Z
+          sleep 3
+          if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a Tensile catch-up taken for new blobs"; exit 1; fi
+          # A rise between two reads in step sets the time.
+          old 231
+          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds [1-9]'
+          kill "$svc"
 
   # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with
   # mainnet's x/signal answers of 19 October 2026 (app v9; v10 signalled by 396393243 of 463776854
