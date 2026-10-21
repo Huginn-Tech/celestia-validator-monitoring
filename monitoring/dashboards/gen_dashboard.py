@@ -58,9 +58,10 @@ alert must have a plain sentence and a short name in TITLES, and monitoring/rule
 hold times the descriptions print (CI checks them against the rules' for:). It stops with a message
 rather than write a dashboard whose words would miss an alert or not fit their panel at 1440 px.
 
-There are no dashboard variables. Only Grafana's built-in $__interval and $__range appear, and only
-in the status board, the role band and the uptime columns; tools/ci/check_queries.py replaces
-them before it sends each query to Prometheus.
+There are no dashboard variables. Only Grafana's built-in $__interval and $__range appear: both in
+the status board, the role band and the uptime columns, and $__interval in the charts and
+sparklines that count per time block; tools/ci/check_queries.py replaces them before it sends each
+query to Prometheus.
 """
 import argparse
 import json
@@ -2108,138 +2109,344 @@ def one(expr):
     return [target("A", expr, "", instant=True)]
 
 
+# The Validator row. Its facts and charts carry the host label of the node the validator signs
+# through, so host_colors() draws them in that server's colour and a repoint shows as a colour
+# change; what belongs to the whole network keeps the text colour.
+
+# A fact with a sparkline: an untitled h4 cell, the label over the value and the sparkline under
+# them. Grafana draws a stacked stat's sparkline only above 100 px of content, which h3 does not
+# have at 1440 px. SPARK_POINTS: the sparkline's steps (15 minutes on 24 hours), so the counts of
+# the last 24 hours stay cheap for Prometheus.
+SPARK_ROWS, SPARK_POINTS, SPARK_MIN_PX = 4, 96, 40
+# The charts: one height, with a legend line.
+CHART_ROWS = 7
+
+
+def as_signer(expr, sig):
+    """expr, one series without labels, with the host label of each node of sig (a signing_nodes()
+    expression), so host_colors() draws it in that server's colour; empty while sig is."""
+    return "(%s) * on () group_right () (%s * 0 + 1)" % (expr, sig)
+
+
+def unsigned(expr, sig):
+    """expr, without a host, while sig is empty: the same reading while no node signs."""
+    return "(%s) unless on () %s" % (expr, sig)
+
+
+def grown(fn, agg, job="celestia-app"):
+    """How much a counter grew per host in each time block of a chart ($__interval): its value at the
+    block's end minus its value at its start. fn(offset) is the counter's selector followed by the
+    offset text; agg (sum or max) combines a host's series. A host that is up but has not counted
+    yet reads 0, so a counter that appears with its first increment counts it, as in count_24h();
+    after a restart the block counts from the restart, never a negative number."""
+    def at(off):
+        return ("(%s by (host) (%s) or on (host) (max by (host) (up{job=%s}%s) == 1) * 0)"
+                % (agg, fn(off), q(job), off))
+    end, start = at(""), at(" offset $__interval")
+    return "(((%s - %s) >= 0) or (%s < %s))" % (end, start, end, start)
+
+
+def spark_fact(s, pid, label, desc, expr, kind="signer", spark=None, unit="none", decimals=0, minimum=None,
+               maximum=None, mappings=(), no_value="No data"):
+    """A fact of the Validator row: the label over the value now, and under them a sparkline of the
+    selected time, the value in the text colour and the sparkline in a server's colour. kind
+    "signer": expr is one reading of the validator, drawn in the colour of the node it signs through
+    at the end of the selected time (a fact names the node that signs now), or in the text colour
+    while no node signs; "own": expr has a series per host, and the signing node's own is shown, in
+    its colour; "network": a reading of the whole network, in the text colour. A range query's newest
+    step lies up to one step before now, so an instant query reads the value now and the merge
+    transformation appends it to the sparkline. spark: the sparkline's expression when it should
+    differ from expr, e.g. the worst moment of each step. minimum, maximum: the sparkline's range."""
+    spark = spark or expr
+    sig = signing_nodes(s, "[2m] @ end()")
+    overrides = []
+    if kind == "network":
+        targets = [target("A", spark, label), target("C", expr, label, instant=True)]
+    elif kind == "own":
+        targets = [target("A", "(%s) and on (host) %s" % (spark, sig), "{{host}}"),
+                   target("C", "(%s) and on (host) %s" % (expr, sig), "{{host}}", instant=True)]
+    else:
+        targets = [target("A", as_signer(spark, sig), "{{host}}"), target("B", unsigned(spark, sig), label),
+                   target("C", as_signer(expr, sig), "{{host}}", instant=True),
+                   target("D", unsigned(expr, sig), label, instant=True)]
+    if kind != "network":
+        # Matched on the host name the legend gives; the override then names the field.
+        overrides = [override("byRegexp", "/^%s$/" % js_regex(h), color=fixed(s.color(h)[0]), displayName=label)
+                     for h in s.servers]
+    p = stat(pid, "", desc, targets, unit=unit, decimals=decimals, mappings=mappings, no_value=no_value,
+             overrides=overrides, size=FACT_PX, text_mode="value_and_name", color_mode="none", graph="area",
+             wide=False, title_size=FACT_LABEL_PX)
+    defaults = p["fieldConfig"]["defaults"]
+    defaults["color"] = fixed(NETWORK)
+    if minimum is not None:
+        defaults["min"] = minimum
+    if maximum is not None:
+        defaults["max"] = maximum
+    p["maxDataPoints"] = SPARK_POINTS
+    p["transformations"] = [{"id": "merge", "options": {}}]
+    return p, label
+
+
+def fit_sparks(items, what):
+    """Pins one value size on a strip of spark_fact() cells ((panel, label), width), as fit_strip()
+    does for plain facts: FACT_PX when every value fits its cell, else FACT_SMALL_PX. Stops when a
+    label or a value does not fit, or when the label and the value leave the sparkline less than
+    SPARK_MIN_PX, or Grafana's stacked layout would drop it (100 px of content)."""
+    texts = []
+    for (p, label), w in items:
+        check_fit(what, [label], FACT_LABEL_PX, w)
+        texts += [(t, w) for t in panel_texts(p)]
+    size = FACT_PX if all(text_px(t, FACT_PX) <= inner_px(w) for t, w in texts) else FACT_SMALL_PX
+    for t, w in texts:
+        check_fit(what, [t], size, w)
+    content = grid_px(SPARK_ROWS) - CHROME_UNTITLED
+    if content <= 100 or content - stack_px(FACT_LABEL_PX, size, False) < SPARK_MIN_PX:
+        raise SystemExit("%s: an untitled h%d panel has %d px, too little for a label, a value and a sparkline"
+                         % (what, SPARK_ROWS, content))
+    for (p, _), _ in items:
+        p["options"]["text"]["valueSize"] = size
+    return [(p, w) for (p, _), w in items]
+
+
+# A chart legend's entry: its text at LEGEND_PX and LEGEND_ITEM_PX for the colour mark and the gap
+# to the next, as Grafana 12.4 draws a list legend. LEGEND_HOST stands for {{host}}: the longest of
+# the server names the docs use.
+LEGEND_PX, LEGEND_ITEM_PX, LEGEND_HOST = 12, 30, "validator-server"
+
+
+def check_legend(what, entries, width):
+    """Stops unless a chart's legend entries fit one line of a panel width columns wide at 1440 px."""
+    need = sum(LEGEND_ITEM_PX + text_px(e.replace("{{host}}", LEGEND_HOST), LEGEND_PX) for e in entries)
+    if need > inner_px(width):
+        raise SystemExit("%s: the legend needs %d px on one line, and its panel has %d" % (what, need, inner_px(width)))
+
+
 def validator_row(s):
-    """The Validator row: facts, then the charts that explain the Validator and Signing through answers,
-    each the home of one alert with its threshold drawn."""
+    """The Validator row: six facts (the three about signing now, with sparklines that top out at the
+    alert levels, then the proposals of the last 24 hours), then the charts behind the Validator and Signing through answers, two to a line
+    (three with a local key, which has no signer chart)."""
+    n = s.N
+    sig_now = signing_nodes(s)
+    sig_block = signing_nodes(s, "[$__interval]")
     span = "over the last 24 hours, or since monitoring started when that is less"
     if s.remote:
-        pvp = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="proposal"}'
-        proposals = count_24h(pvp, "sum")
-        proposals_desc = "remote signer: proposals tmkms actually signed"
+        prop = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="proposal"}'
+        prop_label, prop_word, prop_desc = "Proposals signed, 24 h", "signed", "the proposals tmkms actually signed"
     else:
-        proposals = count_24h('cometbft_consensus_proposal_create_count{job="celestia-app"}', "sum")
-        proposals_desc = "local key: proposals the node built"
+        prop = 'cometbft_consensus_proposal_create_count{job="celestia-app"}'
+        prop_label, prop_word, prop_desc = "Proposals built, 24 h", "built", "with a local key, the proposals the node built"
     mpp = 'cometbft_consensus_proposer_missed_proposals{job="celestia-app"}'
     own = ('label_replace(max by (validator_address) (%s), "proposer_address", "$1", "validator_address", "(.+)")'
            % POWER)
-    facts = [
-        fact(101, "Proposals signed, 24 h",
-             "Block proposals the validator signed %s (%s), across node restarts. Compare with Expected: a signer that "
-             "signs votes but not proposals shows here as far fewer." % (span, proposals_desc),
-             one(proposals)),
-        fact(102, "Expected, 24 h",
-             "Proposals the validator's share of voting power should bring %s: the blocks in that time times that "
-             "share. Proposers take turns by stake, so Proposals signed should be close. Assumes the share stayed the "
-             "same." % span,
-             one(chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
-                       "(round((max(%s) - max(min_over_time(%s[24h]))) * max(%s) / max(%s)) and on () %s)"
-                       % (H, H, POWER, TOTAL, IN_SET_OR_NEW), "(max(%s) * 0 - 3)" % H)),
-             mappings=mapping((-1, "No node", GREY), (-2, "No new blocks", GREY), (-3, "Out of set", GREY))),
-        fact(103, "Missed proposals, 24 h",
-             "Times %s when it was this validator's turn to propose and no proposal reached the nodes in time, so the "
-             "block went to another round. Causes: the remote signer could not sign the proposal, the node built the "
-             "block too slowly, or the upload to peers was too slow. Occasional misses on a busy network are normal; "
-             "several a day are not." % span,
-             one(count_24h("%s and on (proposer_address) %s" % (mpp, own), "max"))),
-    ]
-    if s.remote:
-        facts.append(fact(
-            113, "Signing failures, 24 h",
-            "Failed signing requests %s, every kind and reason (votes, proposals, Fibre's raw bytes; timeout, "
-            "no_connection and others); 0 on a healthy setup. Every retry counts, so a short KMS outage shows as many. "
-            "Proposals that fail for another reason than a timeout are RemoteSignerProblem: the Servers now table shows "
-            "'Proposals fail' on that node. raw_bytes failures only: tmkms is too old for Fibre. The first failure of "
-            "each kind after a node start is counted too." % span + more(["RemoteSignerProblem"]),
-            one(count_24h('cometbft_privval_signing_failures_total{job="celestia-app"}', "sum"))))
-    if s.signal:
-        facts += [
-            fact(104, "App version",
-                 "The app version the chain runs now, read through a node's RPC by celestia-mon-signal (the last "
-                 "reading of the past 7 days, as the upgrade alerts use).",
-                 one(last(s, "celestia_mon_app_version")), unit="prefix:v", no_value="Not checked"),
-            fact(106, "Our signal",
-                 "The version this validator signalled; None until it signals. It should equal the app version plus "
-                 "one while a round is open (the Network upgrade tile turns amber, then red, when it does not).",
-                 one(last(s, "celestia_mon_signal_validator_version")), unit="prefix:v",
-                 mappings=mapping((0, "None", "text")), no_value="Not checked"),
-        ]
-    strip = fit_strip(list(zip(facts, strip_widths(len(facts)))), FACT_ROWS, "Validator facts")
-
-    n = s.N
-    charts = [timeseries(
-        110, "Blocks since last signature",
-        "Is the validator signing right now? Blocks since its last signature, counted across all nodes as "
-        "ValidatorNotSigning does, so the line carries on after a repoint. Near 0 while it signs. The dashed line is "
-        "ValidatorNotSigning's threshold (%g blocks): above it the line turns amber, and the alert pages %s later (the "
-        "Validator tile turns red). It works through restarts and jails, when missed-block counters freeze. The line "
-        "stops at %g; right after a node start it reads that until the first signature. The alert uses the uncapped "
-        "value."
-        % (n, s.hold("ValidatorNotSigning"), 10 * n) + more(["ValidatorNotSigning"]),
-        refs([(blocks_since_signature(10 * n), "blocks since last signature")]), "none",
-        threshold=(n, "orange"), scheme=True, soft_max=2 * n, decimals=0, step=True, legend=False)]
-    # As SignaturesMissed, per node. A node that knows the validator's key but has missed no
-    # block since its start has no missed-block count yet: it reads 0 once it has seen a signature.
+    # As SignaturesMissed, per node: the share of the last hour's blocks without the validator's
+    # signature. A node that knows the validator's key but has missed no block since its start has
+    # no missed-block count yet: it reads 0 once it has seen a signature.
     missed = ("(max by (host) (%s) or max by (host) (%s) * 0) / (max by (host) (delta(%s[1h])) > 0)"
               % (missed_in("1h"), LSH, H))
-    network = 'max(avg_over_time(cometbft_consensus_missing_validators_power{job="celestia-app"}[1h])) / max(%s)' % TOTAL
-    charts.append(timeseries(
-        111, "Missed blocks, 1 h",
-        "Per node, the share of the last hour's blocks committed without the validator's signature, as "
-        "SignaturesMissed computes it (dashed line %g%%, message after %s). Grey dashed: the whole network, the average "
-        "share of all stake missing from recent blocks (sampled about one block in five). The validator's line high and "
-        "the network's low: a problem on this setup's side (signer, its link, the node). Both high: the network is "
-        "struggling. A node reads 0 until its first miss since it started. This is how often blocks are missed, not "
-        "how close the validator is to being jailed." % (s.R * 100, s.hold("SignaturesMissed"))
-        + more(["SignaturesMissed"]),
-        refs([(missed, "{{host}}"), (network, "whole network")]), "percentunit",
-        threshold=(s.R, "orange"), soft_max=2 * s.R, decimals=1,
-        overrides=[override("byFrameRefID", "B", color=fixed(GREY), custom__lineStyle=dash([6, 6]),
-                            custom__lineWidth=1)]))
+    share = "max(%s)" % missed
+    # The blocks of the last 24 hours: the height 24 hours ago, or the lowest one Prometheus has.
+    day = "(max(%s) - (max(%s offset 24h) or max(min_over_time(%s[24h]))))" % (H, H, H)
     if s.remote:
-        sig = signing_nodes(s)
-        bucket = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type%s}'
-        charts.append(timeseries(
-            112, "Signer latency",
-            "How long the remote signer takes, on the node the validator signs through now (the Signing through tile "
-            "names it). Solid: the median of the last 50 signatures, which Celestia requires to stay at or under %s ms "
-            "(dashed line; RemoteSignerProblem sends a message after %s above it). Dashed: the slowest 1%% of vote "
-            "signatures over 5 minutes. Dotted: the slowest 1%% of Fibre's signatures (raw bytes) through that node. "
-            "The median appears after the 50th signature since the node started."
+        # The signer's median on the node the validator signs through, as RemoteSignerProblem reads it.
+        third = spark_fact(
+            s, 118, "Signer time",
+            "How fast the remote signer answers now: the median of the last 50 signatures on the node the validator "
+            "signs through, in its colour. Celestia requires it to stay at or under %s ms; above that for %s "
+            "RemoteSignerProblem sends a message, and the sparkline tops out there. No reading: no node has signed in "
+            "the last 2 minutes, or the node has made fewer than 50 signatures since it started."
             % (s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem"]),
-            refs([('max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) and on (host) %s'
-                   % sig, "{{host}} median"),
-                  ("histogram_quantile(0.99, sum by (host, le) (rate(%s[5m]))) and on (host) %s"
-                   % (bucket % '=~"prevote|precommit"', sig), "{{host}} slowest 1%, votes"),
-                  ("histogram_quantile(0.99, sum by (host, le) (rate(%s[5m]))) and on (host) "
-                   "(sum by (host) (increase(%s[5m])) > 0)" % (bucket % '="raw_bytes"', RAW),
-                   "{{host}} slowest 1%, Fibre")]),
-            "s", threshold=(s.S, "orange"), soft_max=2 * s.S,
-            overrides=[override("byFrameRefID", "A", custom__lineWidth=2),
-                       override("byFrameRefID", "B", custom__lineStyle=dash([6, 6])),
-                       override("byFrameRefID", "C", custom__lineStyle=dash([2, 4]))]))
-    # Like NodeBehind, only with more than one node.
-    if len(s.nodes) > 1:
-        charts.append(timeseries(
-            114, "Blocks behind the highest node",
-            "Is every node keeping up? Blocks each node trails the highest node of this setup. A backup node must stay "
-            "near 0 to take over signing. Above the dashed line (%g blocks) NodeBehind sends a message after %s; it also "
-            "fires for a node that stops while another advances." % (s.NB, s.hold("NodeBehind")) + more(["NodeBehind"]),
-            refs([("max(%s) - on () group_right %s" % (H, H), "{{host}}")]), "none",
-            threshold=(s.NB, "orange"), soft_max=2 * s.NB, decimals=0, step=True))
+            'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"})', kind="own",
+            unit="s", decimals=1, minimum=0, maximum=s.S, no_value="No reading")
+    else:
+        # With a local key there is no signer; the signing node's peers. A count from 40 to 50 has no
+        # trend worth a sparkline, so the fact carries none.
+        third = spark_fact(
+            s, 118, "Peers",
+            "Peers of the node the validator signs through now. A node with few peers receives blocks and votes "
+            "late, which shows as missed blocks; no alert watches the count. No node signing: no node has signed in "
+            "the last 2 minutes.",
+            'max by (host) (cometbft_p2p_peers{job="celestia-app"})', kind="own", no_value="No node signing")
+        third[0]["options"]["graphMode"] = "none"
+
+    facts = [
+        spark_fact(
+            s, 109, "Blocks since signature",
+            "Is the validator signing right now? Blocks since its last signature on any node, as ValidatorNotSigning "
+            "counts them, so the count carries on after a repoint: 0 or 1 while it signs. Above %g blocks for %s that "
+            "alert pages and the Validator tile turns red. The value stops at %g; right after a node start it reads that "
+            "until the first signature. The sparkline shows the highest count of each step and tops out at %g. In the "
+            "colour of the node the validator signs through now." % (n, s.hold("ValidatorNotSigning"), 10 * n, n)
+            + more(["ValidatorNotSigning"]),
+            blocks_since_signature(10 * n), spark="max_over_time(%s[$__interval:1m])" % blocks_since_signature(10 * n),
+            minimum=0, maximum=n),
+        spark_fact(
+            s, 117, "Missed blocks, 1 h",
+            "The share of the last hour's blocks committed without the validator's signature, as SignaturesMissed "
+            "computes it: above %g%% for %s that alert sends a message, and the sparkline tops out there. The Missed "
+            "blocks chart below shows each miss. In the colour of the node the validator signs through now."
+            % (s.R * 100, s.hold("SignaturesMissed")) + more(["SignaturesMissed"]),
+            share, unit="percentunit", decimals=1, minimum=0, maximum=s.R),
+        third,
+        (fact(101, prop_label,
+              "Block proposals the validator %s %s (%s), across node restarts. Compare with Expected: a signer that "
+              "signs votes but not proposals shows here as far fewer. Proposals per hour below has them hour by hour."
+              % (prop_word, span, prop_desc), one(count_24h(prop, "sum"))), prop_label),
+        (fact(102, "Expected, 24 h",
+              "Proposals the validator's share of voting power should bring %s: the blocks in that time times that "
+              "share. Proposers take turns by stake, so %s should be close. Assumes the share stayed the same."
+              % (span, prop_label),
+              one(chain("(max(absent(%s)) * 0 - 1)" % H, "(%s * 0 - 2)" % STALL,
+                        "(round(%s * max(%s) / max(%s)) and on () %s)" % (day, POWER, TOTAL, IN_SET_OR_NEW),
+                        "(max(%s) * 0 - 3)" % H)),
+              mappings=mapping((-1, "No node", GREY), (-2, "No new blocks", GREY), (-3, "Out of set", GREY))),
+         "Expected, 24 h"),
+        (fact(103, "Missed proposals, 24 h",
+              "Times %s when it was this validator's turn to propose and no proposal reached the nodes in time, so the "
+              "block went to another round. Causes: the remote signer could not sign the proposal, the node built the "
+              "block too slowly, or the upload to peers was too slow. Occasional misses on a busy network are normal; "
+              "several a day are not. Proposals per hour below shows each one." % span,
+              one(count_24h("%s and on (proposer_address) %s" % (mpp, own), "max"))), "Missed proposals, 24 h"),
+    ]
+    strip = fit_sparks(list(zip(facts, strip_widths(len(facts)))), "Validator facts")
+
+    # Missed blocks: each miss as a bar in its time block, the share of the last hour and the network.
+    bucket = "max(%s) > 0" % grown(lambda off: MISSED + off, "max")
+    net = 'max(avg_over_time(cometbft_consensus_missing_validators_power{job="celestia-app"}[1h])) / max(%s)' % TOTAL
+    # One visible axis, the shares, with SignaturesMissed's zone at its top; the bars are events on a
+    # hidden axis of their own, a bar of 10 missed blocks (a twentieth of a 10-minute block) as high
+    # as the chart, so a single miss shows; their count is in the tooltip.
+    shares = dict(custom__axisPlacement="left", unit="percentunit", decimals=1, min=0, custom__axisSoftMax=1.25 * s.R,
+                  custom__drawStyle="line", custom__fillOpacity=0, custom__gradientMode="none")
+    missed_chart = timeseries(
+        111, "Missed blocks",
+        "Is the validator signing every block, and is a miss this setup's fault? Bars: blocks committed without the "
+        "validator's signature in each bar's time (10 minutes on 24 hours, 1 hour on 7 days), in the colour of the "
+        "node it signed through; hover a bar for its count. None while every block is signed. Solid line (missed, "
+        "1 h): the share of the last hour's blocks without its signature, as SignaturesMissed computes it; above the "
+        "dashed %g%% line it sends a message after %s. Dashed line (network, 1 h): the whole network, the share of all "
+        "stake missing from recent blocks. The validator's line high and the network's low: a problem on this setup's "
+        "side (signer, its link, a node). Both high: the network is struggling. Not signing at all shows as tall bars "
+        "and a line climbing out of the chart; ValidatorNotSigning pages after %g blocks without a signature (the "
+        "Validator tile turns red)."
+        % (s.R * 100, s.hold("SignaturesMissed"), n) + more(["SignaturesMissed", "ValidatorNotSigning"]),
+        refs([(as_signer(bucket, sig_block), "{{host}} missed blocks"),
+              (unsigned(bucket, sig_block), "missed blocks, no node signing"),
+              (as_signer(share, sig_now), "{{host}} missed, 1 h"),
+              (unsigned(share, sig_now), "missed, 1 h, no node signing"),
+              (net, "network, 1 h")]),
+        "none", decimals=0, soft_max=10, bars=True,
+        # The bars are what the title names: the legend keeps one line for the two lines.
+        overrides=[override("byFrameRefID", r, custom__hideFrom={"legend": True, "tooltip": False, "viz": False})
+                   for r in "AB"] + [
+                   override("byFrameRefID", "C", custom__lineWidth=2, **shares),
+                   override("byFrameRefID", "D", custom__lineWidth=2, **shares),
+                   override("byFrameRefID", "E", color=fixed(NETWORK), custom__lineWidth=1,
+                            custom__lineStyle=dash([6, 4]), thresholds=steps(("transparent", None), ("orange", s.R)),
+                            custom__thresholdsStyle={"mode": "dashed+area"}, **shares)])
+    missed_chart["fieldConfig"]["defaults"]["custom"]["axisPlacement"] = "hidden"
+
+    # Proposals: each hour's proposals per node, missed ones on top, against the expected count.
+    props = timeseries(
+        116, "Proposals per hour",
+        "Is the validator proposing its share of blocks? Bars: proposals %s through each node per hour, in that "
+        "server's colour, with missed proposals stacked on top in grey (its turn came and no proposal reached the "
+        "nodes in time). Dashed line: the proposals its share of voting power should bring in that hour, the blocks "
+        "times that share. Proposers take turns by stake, so the bars should reach the line; a signer that signs "
+        "votes but not proposals leaves them short. The newest bar is the last full hour; the facts above count the "
+        "last 24 hours." % prop_word,
+        refs([("%s > 0" % grown(lambda off: prop + off, "sum"), "{{host}} proposals"),
+              ("max(%s) > 0" % grown(lambda off: "(%s%s and on (proposer_address) %s)" % (mpp, off, own), "max"),
+               "missed"),
+              ("(max(%s) - max(%s offset $__interval)) * max(%s) / max(%s) and on () %s" % (H, H, POWER, TOTAL, IN_SET),
+               "expected")]),
+        "none", decimals=0, bars=True, stack=True, fill=80,
+        overrides=[override("byFrameRefID", "B", color=fixed("#CCCCDC73")),
+                   override("byFrameRefID", "C", color=fixed(NETWORK), custom__drawStyle="line",
+                            custom__lineInterpolation="stepBefore", custom__lineWidth=1, custom__fillOpacity=0,
+                            custom__lineStyle=dash([6, 4]), custom__stacking={"group": "A", "mode": "none"})])
+
+    # One line per node: the slowest 1% of checking a proposed block plus the slowest 1% of applying
+    # a committed one, the time a block costs a node at worst.
     handling = timeseries(
         115, "Block handling time",
-        "How long each node takes, at worst (slowest 1% over 10 minutes), to check a proposed block and to apply a "
-        "committed one. A node that is too slow votes late or against the block, which shows as missed blocks. Blocks "
-        "arrive about every 3 seconds; times near a second leave too little room. All nodes slow: a heavy block. One "
-        "node slow: its CPU or disk.",
-        refs([('histogram_quantile(0.99, sum by (host, method, le) (rate(cometbft_abci_connection_method_timing_seconds_bucket'
-               '{job="celestia-app",method=~"process_proposal|finalize_block"}[10m])))', "{{host}} {{method}}")]),
-        "s", soft_max=0.5, overrides=[override("byRegexp", "/ applying a block$/", custom__lineStyle=dash([10, 10]))])
-    handling["transformations"] = [
-        {"id": "renameByRegex", "options": {"regex": "(.*) process_proposal", "renamePattern": "$1 checking a block"}},
-        {"id": "renameByRegex", "options": {"regex": "(.*) finalize_block", "renamePattern": "$1 applying a block"}}]
-    charts.append(handling)
-    return [(FACT_ROWS, strip)] + flow(charts)
+        "Is a node too slow to keep up? How long each node takes, at worst, to handle a block: the slowest 1% of "
+        "checking a proposed block plus the slowest 1% of applying a committed one, over 10 minutes, one line per "
+        "node in its server's colour, the backup node's too. A node that is too slow votes late or against the block, "
+        "which shows as missed blocks. Blocks arrive about every 3 seconds; times near a second leave too little "
+        "room. All nodes slow: a heavy block. One node slow: its CPU or disk.",
+        refs([('sum by (host) (histogram_quantile(0.99, sum by (host, method, le) (rate('
+               'cometbft_abci_connection_method_timing_seconds_bucket{job="celestia-app",'
+               'method=~"process_proposal|finalize_block"}[10m]))))', "{{host}}")]),
+        "s", soft_max=0.1, fill=10)
+
+    # Counts per time block: a bar covers the block that ends at its time. The missed blocks share the
+    # status board's blocks (10 minutes on 24 hours); proposals are counted per hour.
+    for p, points, step in [(missed_chart, 150, "1m"), (props, 1000, "1h")]:
+        p["fieldConfig"]["defaults"]["custom"]["barAlignment"] = -1
+        p["maxDataPoints"] = points
+        p["interval"] = step
+    lines = [[missed_chart, props, handling]]
+    if s.remote:
+        bucket_le = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type%s}'
+        targets = [
+            ('max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) and on (host) %s'
+             % sig_now, "{{host}} median"),
+            ("histogram_quantile(0.99, sum by (host, le) (rate(%s[5m]))) and on (host) %s"
+             % (bucket_le % '=~"prevote|precommit"', sig_now), "{{host}} votes")]
+        if s.fibre:
+            targets.append(("histogram_quantile(0.99, sum by (host, le) (rate(%s[5m]))) and on (host) "
+                            "(sum by (host) (increase(%s[5m])) > 0)" % (bucket_le % '="raw_bytes"', RAW),
+                            "{{host}} Fibre"))
+        targets.append(("sum(%s) > 0" % grown(lambda off: 'cometbft_privval_signing_failures_total{job="celestia-app"}'
+                                              + off, "sum"), "signing failures"))
+        fails = chr(65 + len(targets) - 1)
+        styles = [override("byFrameRefID", "B", custom__lineStyle=dash([6, 4]), custom__lineWidth=1, custom__fillOpacity=0)]
+        if s.fibre:
+            styles.append(override("byFrameRefID", "C", custom__lineStyle=dash([2, 4]), custom__lineWidth=1,
+                                   custom__fillOpacity=0))
+        latency = timeseries(
+            112, "Signer latency",
+            "How fast does the remote signer answer? On the node the validator signs through, in that server's colour: "
+            "the median of the last 50 signatures (solid, median), which Celestia requires to stay at or under %s ms "
+            "(dashed line; RemoteSignerProblem sends a message after %s above it), and the slowest 1%% of vote "
+            "signatures over 5 minutes (dashed, votes).%s The axis is logarithmic, from 0.1 to 100 ms, so a rare slow "
+            "signature (up to a second) does not flatten the rest; one above 100 ms rises out of the top edge. Grey "
+            "bars: failed signing requests in each bar's time (timeouts, lost connections and others; every retry "
+            "counts), hover a bar for its count; none on a healthy setup. Proposals that fail for another reason than "
+            "a timeout are RemoteSignerProblem too. A node that tmkms left is not drawn. The median appears after the "
+            "50th signature since the node started."
+            % (s.ms(), s.hold("RemoteSignerProblem slow"),
+               " Dotted (Fibre): the slowest 1% of Fibre's signatures (raw bytes) through its node." if s.fibre else "")
+            + more(["RemoteSignerProblem"]),
+            refs(targets), "s", threshold=(s.S, "orange"),
+            overrides=styles + [
+                       override("byFrameRefID", fails, color=fixed("#CCCCDC73"), unit="none", decimals=0, min=0,
+                                custom__drawStyle="bars", custom__fillOpacity=80, custom__gradientMode="none",
+                                custom__lineWidth=1, custom__barAlignment=-1, custom__axisPlacement="hidden",
+                                max=10, custom__scaleDistribution={"type": "linear"},
+                                custom__thresholdsStyle={"mode": "off"},
+                                custom__hideFrom={"legend": True, "tooltip": False, "viz": False})])
+        custom = latency["fieldConfig"]["defaults"]["custom"]
+        # Medians near a millisecond and a rare slow signature of up to a second (the histogram's top
+        # bucket) on one axis: logarithmic over three whole decades (Grafana rounds a log axis to them),
+        # 0.1 ms to 100 ms, so the lines run mid-chart, the zone holds the top third and a slow median
+        # stays in sight; the rare signature above 100 ms rises out of the top edge. A log axis draws
+        # eight minor grid lines a decade, which stripe the zone: this chart draws none.
+        custom["scaleDistribution"] = {"log": 10, "type": "log"}
+        custom["axisGridShow"] = False
+        latency["fieldConfig"]["defaults"].update({"min": 0.0001, "max": 0.1})
+        latency["maxDataPoints"] = 150
+        latency["interval"] = "1m"
+        lines = [[missed_chart, latency], [props, handling]]
+    # The legend entries each chart can show at once (a miss adds "missed" to the proposals), with
+    # {{host}} for the node's name: one line each, so the plots of a line stay level.
+    shown = {111: ["{{host}} missed, 1 h", "network, 1 h"], 116: ["{{host}} proposals", "missed", "expected"],
+             115: ["{{host}}"] * len(s.nodes),
+             112: ["{{host}} median", "{{host}} votes"] + (["{{host}} Fibre"] if s.fibre else [])}
+    for line in lines:
+        for p in line:
+            check_legend("Validator chart %r" % p["title"], shown[p["id"]], 24 // len(line))
+    return [(SPARK_ROWS, strip)] + [(CHART_ROWS, [(p, 24 // len(line)) for p in line]) for line in lines]
 
 
 def fibre_row(s):
@@ -2387,8 +2594,20 @@ def fibre_row(s):
 
 
 def upgrade_row(s):
-    """The collapsed Network upgrade row: the numbers behind the Network upgrade tile."""
+    """The collapsed Network upgrade row: the numbers behind the Network upgrade tile, in one strip of
+    five facts, the support bar twice as wide in the middle."""
     pending = last(s, "celestia_mon_upgrade_pending")
+    version = fact(
+        104, "App version",
+        "The app version the chain runs now, read through a node's RPC by celestia-mon-signal (the last reading of "
+        "the past 7 days, as the upgrade alerts use).",
+        one(last(s, "celestia_mon_app_version")), unit="prefix:v", no_value="Not checked")
+    signal = fact(
+        106, "Our signal",
+        "The version this validator signalled; None until it signals. It should equal the app version plus one while "
+        "a round is open (the Network upgrade tile turns amber, then red, when it does not)." + more(["UpgradeSignalMissing"]),
+        one(last(s, "celestia_mon_signal_validator_version")), unit="prefix:v",
+        mappings=mapping((0, "None", "text")), no_value="Not checked")
     support = bargauge(
         105, "Support for next version",
         "Share of all voting power that has signalled the next version. At 5/6 (83.3%, rounded up to whole voting "
@@ -2416,8 +2635,8 @@ def upgrade_row(s):
         unit="dtdurations", color_mode="value", thresholds=steps(("orange", None), ("text", 86400)),
         mappings=mapping((-1, "None pending", "text"), (-2, "Unknown", "text")), no_value="Not checked")
     # A duration as Grafana writes it, which no mapping names.
-    strip = fit_strip([(support, 8), (height, 8), (eta, 8)], FACT_ROWS, "Network upgrade facts",
-                      samples={108: ["6 days, 23 hours"]})
+    strip = fit_strip([(version, 4), (signal, 4), (support, 8), (height, 4), (eta, 4)], FACT_ROWS,
+                      "Network upgrade facts", samples={108: ["6 days, 23 hours"]})
     return [(FACT_ROWS, strip)]
 
 
@@ -2824,8 +3043,8 @@ def annotations(s, ids):
         # Comparing with the value one step earlier catches every start once at a 60 s step and
         # ignores stops (the start time drops to 0).
         note("Service starts", "node_systemd_unit_start_time_seconds > node_systemd_unit_start_time_seconds offset 1m",
-             "{{name}} started on {{host}}", GREY, [110, 111, 112, 114, 115, 210, 211, 212, 213]),
-        note("Signing through", moved, "Signing through {{host}}", GREY, [25, 110, 111, 112, 114, 115]),
+             "{{name}} started on {{host}}", GREY, [111, 112, 115, 116, 210, 211, 212, 213]),
+        note("Signing through", moved, "Signing through {{host}}", GREY, [25, 111, 112, 115, 116]),
     ]
     # The Servers section's charts each show one server: its markers come from that server only.
     for i, h in enumerate(s.servers):
@@ -2848,14 +3067,15 @@ def annotations(s, ids):
 
 
 def check_variables(panels):
-    """Grafana's built-in $__interval and $__range only in the status board, the role band and the uptime
-    columns, which CI knows to replace."""
+    """Only Grafana's built-in variables that CI knows to replace: $__interval and $__range in the status
+    board, the role band and the uptime columns; elsewhere only $__interval, in charts and sparklines that
+    count per time block."""
     for p in panels:
-        if p["id"] in BOARD_PANELS:
-            continue
+        allowed = "interval|range" if p["id"] in BOARD_PANELS else "interval"
         for t in p.get("targets", []):
-            if "$__" in t["expr"]:
-                raise SystemExit("panel %d (%s) uses a Grafana variable outside the status board" % (p["id"], p["title"]))
+            if re.search(r"\$__(?!(?:%s)\b)" % allowed, t["expr"]):
+                raise SystemExit("panel %d (%s) uses a Grafana variable other than %s" % (
+                    p["id"], p["title"], " and ".join("$__" + v for v in allowed.split("|"))))
 
 
 def build(cfg):
