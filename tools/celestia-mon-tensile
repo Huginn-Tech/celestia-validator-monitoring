@@ -11,10 +11,12 @@ and when that check ran, which FibreDown uses; and the blobs the network assigne
 validator, which FibreNotServing compares with Fibre's own uploads.
 
 A Tensile that does not send signing.last_assigned_at gives only the number of blobs assigned in
-its last 24 hours. The time of the newest one is then the time of the read at which that number
-rose, counted only when Tensile's record reached the chain's head (/tip) at that read and at the
-one before, so a Tensile catching up after its own outage cannot look like new blobs. It can be up
-to a read late, and is absent after a start until the first rise: nothing is kept on disk.
+its last 24 hours. The time of the newest one is then the time of Tensile's newest block (/tip) at
+the read at which that number rose: the blob settled in a block after the one of the read before,
+so that time is late by at most the time between two reads. A rise counts only when Tensile's record
+reached the chain's head at that read and at the one before, so a Tensile catching up after its own
+outage cannot look like new blobs. The time is absent after a start until the first rise: nothing
+is kept on disk.
 
   celestia-mon-tensile --config FILE [--once]
 
@@ -65,7 +67,8 @@ class State:
         self.errors = {}
         self.status = None
         # Without Tensile's last_assigned_at: the number of assigned blobs at the previous read, None
-        # when that read's record was not current, and the time of the last read at which it rose.
+        # when that read's record was not current, and the time of Tensile's newest block at the last
+        # read at which it rose.
         self.assigned = None
         self.assigned_at = None
 
@@ -78,14 +81,15 @@ class State:
         with self.lock:
             self.errors[reason] = self.errors.get(reason, 0) + 1
 
-    def count_assigned(self, assigned, current):
-        """The newest assigned blob is now when the number of assigned blobs rose since the previous
-        read and Tensile's record was current at both reads. A rise can be missed, when as many
-        assignments leave Tensile's 24 hours as arrive between two reads, but never invented."""
+    def count_assigned(self, assigned, tip):
+        """tip: the time of Tensile's newest block when its record is current, else None. The newest
+        assigned blob settled at the latest by that block when the number of assigned blobs rose since
+        the previous read and the record was current at both reads. A rise can be missed, when as
+        many assignments leave Tensile's 24 hours as arrive between two reads, but never invented."""
         with self.lock:
-            if current and self.assigned is not None and assigned > self.assigned:
-                self.assigned_at = time.time()
-            self.assigned = assigned if current else None
+            if tip is not None and self.assigned is not None and assigned > self.assigned:
+                self.assigned_at = tip
+            self.assigned = assigned if tip is not None else None
 
     def render(self):
         with self.lock:
@@ -140,7 +144,8 @@ class State:
             for name, at, text in (
                     ("celestia_mon_fibre_last_assigned_timestamp_seconds", assigned_at,
                      "Unix time of the newest settled blob that assigned rows to the validator, from Tensile "
-                     "(from a Tensile without last_assigned_at, the time of the read that saw their number rise)."),
+                     "(from a Tensile without last_assigned_at, the time of Tensile's newest block at the read "
+                     "that saw their number rise)."),
                     ("celestia_mon_fibre_last_endorsed_timestamp_seconds", epoch(sig.get("last_endorsed_at")),
                      "Unix time of the newest settled blob that carries the validator's endorsement, from Tensile.")):
                 if at is not None:
@@ -194,18 +199,18 @@ def get(url):
 
 
 def current(api, state):
-    """Whether Tensile's record reaches the chain's head: the newest block it has read (/tip) is less
-    than 2 minutes older than Tensile's clock. False when the tip cannot be read."""
+    """The time of Tensile's newest block (/tip) when its record reaches the chain's head: that block is
+    less than 2 minutes older than Tensile's clock. None when it does not, or the tip cannot be read."""
     try:
         tip = get(api + "/tip")
     except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
         state.error("tip")
         log(f"cannot read Tensile's tip at {api}/tip: {e}")
-        return False
+        return None
     if not isinstance(tip, dict):
-        return False
+        return None
     server, block = epoch(tip.get("server_time")), epoch(tip.get("block_time"))
-    return server is not None and block is not None and server - block < 120
+    return block if server is not None and block is not None and server - block < 120 else None
 
 
 def read(cfg, state):

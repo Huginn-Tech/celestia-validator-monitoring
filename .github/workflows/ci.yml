@@ -592,7 +592,7 @@ jobs:
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
   # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
   # an unknown validator (404), an unreachable API, and a Tensile without signing.last_assigned_at,
-  # whose time the running service derives from its own reads.
+  # whose time the running service takes from Tensile's newest block (/tip) at its reads.
   tensile:
     runs-on: ubuntu-24.04
     steps:
@@ -648,9 +648,10 @@ jobs:
           grep -q 'check celestia_mon_tensile.validator' "$d/err"
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
-          # Without last_assigned_at, the time of the newest assigned blob is the read at which the
-          # number of assigned blobs rose, only while Tensile's newest block (/tip) is under 2 minutes
-          # older than its clock at that read and the one before. The service reads every second here.
+          # Without last_assigned_at, the time of the newest assigned blob is the time of Tensile's newest
+          # block (/tip) at the read at which the number of assigned blobs rose, only while that block is
+          # under 2 minutes older than Tensile's clock at that read and the one before. The service reads
+          # every second here.
           tip() {
             printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip"
           }
@@ -681,9 +682,9 @@ jobs:
           tip 2026-10-18T06:25:15Z
           sleep 3
           if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a Tensile catch-up taken for new blobs"; exit 1; fi
-          # A rise between two reads in step sets the time.
+          # A rise between two reads in step sets the time: Tensile's newest block then, 06:25:15.
           old 231
-          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds [1-9]'
+          wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304715\.0$'
           kill "$svc"
 
   # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with

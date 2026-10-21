@@ -254,55 +254,67 @@ LIVE = '(time() - max(timestamp(up{job="prometheus"})) < 60)'
 BOARD_PANELS = {20, 21, 22, 23, 25}
 
 # How long after a check stopped the alert that reports it fires, on top of its hold time: the
-# 30 minutes in TensileUnreadable's expression and the 15 in SignalUnreadable's. FibreNotServing
+# 15 minutes in TensileUnreadable's and SignalUnreadable's expressions. FibreNotServing
 # (uploads_failing) reads a 5-minute window before its hold.
-TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 1800, 900, 300
+TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 900, 900, 300
 
 # Plain sentences for the alerts, the words of the notifications, for the alert list, and short
-# names for the Status cell: (key, sentence, short, needs). The key is a regex over
+# names for the Status cell: (key, sentence, short, part, needs). The key is a regex over
 # alertname:severity:unit:reason:check:host of a series grouped by by_alert(); Prometheus anchors it,
-# and $1 is the host at the end of the key. short: the Status cell's words, without a host, at most
-# what the cell holds (the intro strip's fit check). needs: the switch the alert needs (Setup.has).
+# and $1 is the host at the end of the key. short: the Status cell's words, without a host, the same
+# words the tiles, cards and lines use for the state, at most what the cell holds (the intro strip's
+# fit check). part: what the item is about, which the Status cell's label line names ("Status ·
+# Fibre"), one of PARTS. needs: the switch the alert needs (Setup.has).
+P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_CELESTIA = (
+    "Validator", "Signing", "Signer", "Fibre", "Servers", "Monitoring", "Upgrade", "Celestia")
+PARTS = (P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_CELESTIA)
 TITLES = [
-    ("NodeNotAdvancing:.*", "No new blocks on any node", "Nodes stalled", None),
-    ("ValidatorNotSigning:.*", "Validator not signing", "Not signing", None),
-    # The same words as the Status cell's own two-signers item, which the firing alert replaces.
-    ("ValidatorSigningTwice:.*", "Validator signs through two nodes", "Two signers", "remote"),
-    ("SignaturesMissed:.*", "Validator missed blocks", "Missed blocks", None),
-    ("NodeBehind:.*:([^:]*)", "Node behind on $1", "Node behind", None),
-    ("RemoteSignerProblem:message::::.*", "Remote signer slow", "Signer slow", "remote"),
-    ("RemoteSignerProblem:message::[^:]+::.*", "Remote signer fails proposals", "Bad proposals", "remote"),
-    ("FibreDown:page::::", "No Fibre server running", "Fibre down", "fibre"),
-    ("FibreDown:page:::reachability:.*", "Fibre unreachable from outside", "Fibre offline", "tensile"),
-    ("FibreDown:page:::registration:.*", "Fibre not registered or wrong host", "Unregistered", "tensile"),
-    ("FibreBothActive:.*", "Fibre running on two servers", "Two Fibres", "fibre"),
-    ("FibreNotServing:message::missed_uploads::([^:]*)", "Fibre misses blobs on $1", "Missed blobs", "tensile"),
-    ("FibreNotServing:message::not_served::([^:]*)", "Fibre did not serve rows on $1", "Unserved rows", "tensile"),
-    ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "Upload errors", "fibre"),
-    ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre data", "fibre"),
-    ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", None),
-    ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "Node silent", None),
-    ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "No Fibre data", "fibre"),
-    ("ServiceDown:message:appd:::([^:]*)", "Celestia node stopped on $1", "Node stopped", None),
-    ("ServiceDown:message:appd:crashloop::([^:]*)", "Node keeps restarting on $1", "Node crashing", None),
-    ("ServiceDown:message:appd:not_loaded::([^:]*)", "Node service missing on $1", "Node missing", None),
-    ("ServiceDown:message:tmkms:::([^:]*)", "Remote signer stopped on $1", "Signer down", "tmkms"),
-    ("ServiceDown:message:tmkms:crashloop::([^:]*)", "Signer keeps restarting on $1", "Signer crash", "tmkms"),
-    ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "No signer", "tmkms"),
-    ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", "fibre"),
-    ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", None),
-    ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", None),
-    ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", None),
-    ("NotificationsFailing:.*", "Alerts not delivered", "Alerts unsent", None),
-    ("DeadmanFailing:.*", "Dead-man service not reached", "No heartbeat", None),
-    ("TensileUnreadable:.*", "Outside check stopped", "Check stopped", "tensile"),
-    ("AnnouncementsUnreadable:.*", "Announcements not read", "Feed stopped", "announcements"),
-    ("UpgradeSignalMissing:.*", "Upgrade signal needed", "Not signalled", "signal"),
-    ("UpgradeScheduled:.*", "Network upgrade scheduled", "Upgrade set", "signal"),
-    ("UpgradeSoon:.*", "Network upgrade within 24 hours", "Upgrade soon", "signal"),
-    ("SignalUnreadable:.*", "Upgrade check stopped", "Signal stale", "signal"),
+    ("NodeNotAdvancing:.*", "No new blocks on any node", "Nodes stalled", P_VAL, None),
+    ("ValidatorNotSigning:.*", "Validator not signing", "Not signing", P_VAL, None),
+    ("ValidatorSigningTwice:.*", "Validator signs through two nodes", "Two signers", P_SIGNING, "two_signers"),
+    ("SignaturesMissed:.*", "Validator missed blocks", "Missed blocks", P_VAL, None),
+    ("NodeBehind:.*:([^:]*)", "Node behind on $1", "Node behind", P_SERVERS, None),
+    ("RemoteSignerProblem:message::::.*", "Remote signer slow", "Signer slow", P_SIGNER, "remote"),
+    ("RemoteSignerProblem:message::[^:]+::.*", "Remote signer fails proposals", "Bad proposals", P_SIGNER, "remote"),
+    ("FibreDown:page::::", "No Fibre server running", "Not running", P_FIBRE, "fibre"),
+    ("FibreDown:page:::reachability:.*", "Fibre unreachable from outside", "Unreachable", P_FIBRE, "tensile"),
+    ("FibreDown:page::not_registered:registration:.*", "No Fibre host registered on chain", "Not registered",
+     P_FIBRE, "tensile"),
+    ("FibreDown:page::wrong_host:registration:.*", "Chain points to another Fibre host", "Wrong host", P_FIBRE,
+     "tensile"),
+    ("FibreBothActive:.*", "Fibre running on two servers", "Two Fibres", P_FIBRE, "fibre"),
+    ("FibreNotServing:message::missed_uploads::([^:]*)", "Fibre missed uploads on $1", "Uploads missed", P_FIBRE,
+     "tensile"),
+    ("FibreNotServing:message::not_served::([^:]*)", "Fibre did not serve rows on $1", "Rows not served", P_FIBRE,
+     "tensile"),
+    ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "Uploads failing", P_FIBRE,
+     "fibre"),
+    ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre data", P_FIBRE, "fibre"),
+    ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", P_SERVERS, None),
+    ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "No node data", P_SERVERS, None),
+    ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "No Fibre data", P_FIBRE, "fibre"),
+    ("ServiceDown:message:appd:::([^:]*)", "Celestia node stopped on $1", "Node stopped", P_SERVERS, None),
+    ("ServiceDown:message:appd:crashloop::([^:]*)", "Node keeps restarting on $1", "Node crashing", P_SERVERS, None),
+    ("ServiceDown:message:appd:not_loaded::([^:]*)", "Node service missing on $1", "Node missing", P_SERVERS, None),
+    ("ServiceDown:message:tmkms:::([^:]*)", "Remote signer stopped on $1", "Signer down", P_SIGNER, "tmkms"),
+    ("ServiceDown:message:tmkms:crashloop::([^:]*)", "Signer keeps restarting on $1", "Signer crash", P_SIGNER,
+     "tmkms"),
+    ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "No signer", P_SIGNER, "tmkms"),
+    ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
+    ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
+    ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
+    ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", P_MON, None),
+    ("NotificationsFailing:.*", "Alerts not delivered", "Alerts unsent", P_MON, None),
+    ("DeadmanFailing:.*", "Dead-man service not reached", "No heartbeat", P_MON, None),
+    ("TensileUnreadable:.*", "Outside check stopped", "Check stopped", P_FIBRE, "tensile"),
+    ("AnnouncementsUnreadable:.*", "Announcements not read", "Feed stopped", P_MON, "announcements"),
+    ("UpgradeSignalMissing:.*", "Upgrade signal needed", "Not signalled", P_UPGRADE, "signal"),
+    ("UpgradeScheduled:.*", "Network upgrade scheduled", "Upgrade set", P_UPGRADE, "signal"),
+    ("UpgradeSoon:.*", "Network upgrade within 24 hours", "Upgrade soon", P_UPGRADE, "signal"),
+    ("SignalUnreadable:.*", "Upgrade check stopped", "Signal stale", P_UPGRADE, "signal"),
 ]
-# The Status cell's words for an alert whose labels match no key of TITLES.
+# The Status cell's words for an alert whose labels match no key of TITLES (its label line then
+# reads "Status" alone).
 SHORT_FALLBACK = "See alerts"
 # Message alerts with a host label that colour a line of their own, not the generic warning of a
 # server's line (and of the Servers tile).
@@ -311,6 +323,15 @@ SERVER_OTHERS = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|Notificat
                  "UpgradeSoon")
 # The heartbeat goes to the dead-man service only and is never shown as an alert.
 UNTITLED = {"Watchdog"}
+# The Status cell's panel id.
+STATUS_ID = 10
+# The alerts that no tile, History line, role band lane or server card names (check_surfaces), each
+# with the reason. Every other alert of the rules must have such a place, so the first screen shows
+# its state with the alert's own words, and a query change cannot cut the link unnoticed.
+NO_SURFACE = {
+    "UpgradeScheduled": "a scheduled upgrade is no fault: the Network upgrade tile shows it, its version, height "
+                        "and time to go, from the same signalling metrics the rule reads",
+}
 # Worst first between alerts of one level, so the order stays the same between refreshes.
 PRIORITY = {"ValidatorSigningTwice": 0.095, "NodeNotAdvancing": 0.09, "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
             "DiskLow": 0.06, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04, "SignaturesMissed": 0.035,
@@ -482,7 +503,7 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     of a whole, stacked in flat fills (a total drawn over them needs an override with
     custom__stacking={"mode": "none", "group": "A"}). fill: the fill opacity, when the default does
     not suit. legend False: one series, without a legend."""
-    custom = {"axisBorderShow": False, "axisWidth": AXIS_PX, "drawStyle": "bars" if bars else "line",
+    custom = {"axisBorderShow": False, "axisWidth": VALUE_AXIS_PX, "drawStyle": "bars" if bars else "line",
               "fillOpacity": 20, "gradientMode": "opacity",
               "lineInterpolation": "stepAfter" if step else "smooth" if smooth else "linear",
               "lineWidth": 2, "showPoints": "never", "spanNulls": span_nulls,
@@ -686,8 +707,9 @@ class Setup:
 
     def has(self, need):
         """Whether the alerts that need need exist in this install (None: always)."""
-        return {None: True, "remote": self.remote, "fibre": self.fibre, "tensile": self.tensile,
-                "signal": self.signal, "announcements": self.announcements, "tmkms": bool(self.kms_hosts)}[need]
+        return {None: True, "remote": self.remote, "two_signers": self.remote and not self.multi, "fibre": self.fibre,
+                "tensile": self.tensile, "signal": self.signal, "announcements": self.announcements,
+                "tmkms": bool(self.kms_hosts)}[need]
 
     def color(self, host):
         """(named colour, hex) of a server's identity colour; the text colour past the list."""
@@ -930,27 +952,67 @@ def by_alert(x):
 
 def titled(s, x, short=False):
     """x (grouped by by_alert) with a title label: a plain sentence, else the alert's name; with
-    short, also a short label: the Status cell's words, else SHORT_FALLBACK."""
+    short, also a short label (the Status cell's words, else SHORT_FALLBACK) and a part label (what
+    the item is about, none for SHORT_FALLBACK)."""
     expr = 'label_join(%s, "key", ":", "alertname", "severity", "unit", "reason", "check", "host")' % x
     expr = 'label_replace(%s, "title", "$1", "alertname", "(.+)")' % expr
     if short:
         expr = label(expr, "short", SHORT_FALLBACK)
-    for key, sentence, words, need in TITLES:
+    for key, sentence, words, part, need in TITLES:
         if s.has(need):
             expr = "label_replace(%s, %s, %s, %s, %s)" % (expr, q("title"), q(sentence), q("key"), q(key))
             if short:
                 expr = "label_replace(%s, %s, %s, %s, %s)" % (expr, q("short"), q(words), q("key"), q(key))
+                expr = "label_replace(%s, %s, %s, %s, %s)" % (expr, q("part"), q(part), q("key"), q(key))
     return expr
 
 
 def check_titles(s):
-    """Every alert of the rules template has a sentence and a short name."""
-    named = {key.split(":")[0] for key, sentence, words, _ in TITLES if sentence and words}
+    """Every alert of the rules template has a sentence, a short name and a part."""
+    named = {key.split(":")[0] for key, sentence, words, part, _ in TITLES if sentence and words and part in PARTS}
     missing = [a for a in s.alert_names if a not in named and a not in UNTITLED]
     if missing:
-        raise SystemExit("gen_dashboard.py has no sentence and short name in TITLES for the alert(s) %s of %s; add "
-                         "them, so the Status cell and the alert list name it in plain words"
+        raise SystemExit("gen_dashboard.py has no sentence, short name and part in TITLES for the alert(s) %s of %s; "
+                         "add them, so the Status cell and the alert list name it in plain words"
                          % (", ".join(missing), RULES_TEMPLATE))
+
+
+def rendered(s, alert):
+    """Whether this install's rules hold the alert: a TITLES entry for it whose switch is on."""
+    return any(key.split(":")[0] == alert and s.has(need) for key, _, _, _, need in TITLES)
+
+
+def alert_matchers(expr):
+    """The alertname matchers of every ALERTS and ALERTS_FOR_STATE selector in expr: (operator, value)."""
+    found = []
+    for sel in re.findall(r"\bALERTS(?:_FOR_STATE)?\{([^}]*)\}", expr):
+        found += re.findall(r'alertname\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"', sel)
+    return found
+
+
+def check_surfaces(s, panels):
+    """Every alert this install's rules hold reaches a place on the first screen beside the Status cell
+    and the alert list: a tile, a line of the History board, the role band or a server card whose
+    queries name it (alertname="X", or a regex that matches X). Selectors that name no alert, or only
+    exclude some, do not count: the link must stay when a query is changed. The alerts with no such
+    place are in NO_SURFACE, each with its reason."""
+    exprs = [t["expr"] for p in panels if p["id"] < 100 and p["id"] != STATUS_ID for t in p.get("targets", [])]
+    named = set()
+    for e in exprs:
+        for op, value in alert_matchers(e):
+            for a in s.alert_names:
+                if (op == "=" and value == a) or (op == "=~" and re.fullmatch(value, a)):
+                    named.add(a)
+    required = [a for a in s.alert_names if a in UNTITLED or rendered(s, a)]
+    missing = [a for a in required if a not in named and a not in NO_SURFACE]
+    if missing:
+        raise SystemExit("No tile, History line, role band lane or server card names the alert(s) %s: give each a "
+                         "state on the first screen beside the Status cell, or list it in NO_SURFACE with the reason"
+                         % ", ".join(missing))
+    stale = [a for a in NO_SURFACE if a in named]
+    if stale:
+        raise SystemExit("NO_SURFACE lists %s, which the first screen now names: remove it from NO_SURFACE"
+                         % ", ".join(stale))
 
 
 def message(sel, quiet=None):
@@ -1002,46 +1064,47 @@ def alert_items(s):
     # "group_left ()" names no labels to copy; a bare "group_left (" would read the operand as that list.
     prio = "(%s)" % " or ".join(label("vector(%s)" % num(PRIORITY.get(a, 0)), "alertname", a) for a in s.alert_names)
     alerts = "(%s) + on (alertname) group_left () %s" % (" or ".join("(%s)" % i for i in items), prio)
-    return "(max by (title, short) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
+    return "(max by (title, short, part) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
 
 
 def synth_items(s):
-    """(level, sentence, short, condition) of the Status cell's items no alert rule carries."""
+    """(level, sentence, short, part, condition) of the Status cell's items no alert rule carries."""
     evaluated = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
     items = [
-        (2.95, "Alert rules are not running", "Rules stopped", "(time() - max(%s) > 120)" % evaluated),
-        (2.95, "Alert rules are not running", "Rules stopped", "max(absent(%s))" % evaluated),
-        (2.9, "Alertmanager down, alerts not sent", "Alerting down", '(min(up{job="alertmanager"}) == 0)'),
+        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "(time() - max(%s) > 120)" % evaluated),
+        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "max(absent(%s))" % evaluated),
+        (2.9, "Alertmanager down, alerts not sent", "Alerting down", P_MON, '(min(up{job="alertmanager"}) == 0)'),
         # Not while Alertmanager is down: "Alerting down" already says so, as one item.
-        (2.85, "Alerts not reaching Alertmanager", "Alerts unsent",
+        (2.85, "Alerts not reaching Alertmanager", "Alerts unsent", P_MON,
          '(%s unless on () (min(up{job="alertmanager"}) == 0))' % unsent("3m")),
         # A failed notification stops the Watchdog for an hour, also after NotificationsFailing cleared.
-        (2.8, "A notification failed in the last hour", "No heartbeat",
+        (2.8, "A notification failed in the last hour", "No heartbeat", P_MON,
          '(((((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 1) '
          "and on () (time() - max(%s) <= 120)) unless on () max(ALERTS{alertname=\"NotificationsFailing\"}))"
          % evaluated),
     ]
     if s.remote and not s.multi:
-        items.append((2.45, "Validator signs through two nodes", "Two signers", two_signers(s)))
+        items.append((2.45, "Validator signs through two nodes", "Two signers", P_SIGNING, two_signers(s)))
     if s.announcements:
         # A Celestia announcement goes to Alertmanager directly, not through the rules.
-        items.append((2.3, "New Celestia announcement, see your alerts", "Announcement",
+        items.append((2.3, "New Celestia announcement, see your alerts", "Announcement", P_CELESTIA,
                       "(sum(increase(celestia_mon_announcements_forwarded_total[30m])) > 0)"))
     return items
 
 
 def synth(s):
     """The Status cell's items no alert rule carries: the monitoring itself, two signers, an announcement."""
-    return "(%s)" % " or ".join(label(label("%s * 0 + %s" % (cond, num(level)), "title", text), "short", words)
-                                for level, text, words, cond in synth_items(s))
+    return "(%s)" % " or ".join(label(label(label("%s * 0 + %s" % (cond, num(level)), "title", text), "short", words),
+                                      "part", part)
+                                for level, text, words, part, cond in synth_items(s))
 
 
 def status_words(s):
     """(short name, sentence) of every item the Status cell can show in this install, each once, in
     TITLES order and then the items no rule carries. A scheduled upgrade is no item (alert_items)."""
-    pairs = [(words, sentence) for key, sentence, words, need in TITLES
+    pairs = [(words, sentence) for key, sentence, words, _, need in TITLES
              if s.has(need) and not key.startswith("UpgradeScheduled:")]
-    pairs += [(words, sentence) for _, sentence, words, _ in synth_items(s)]
+    pairs += [(words, sentence) for _, sentence, words, _, _ in synth_items(s)]
     unique = []
     for p in pairs:
         if p not in unique:
@@ -1236,9 +1299,16 @@ def intro(s):
                  text_mode="value_and_name", justify="auto", wide=False, title_size=INTRO_LABEL_PX, **kw)
         what = "The top strip's %s cell" % {1: "identity", 10: "Status"}.get(pid, repr(legend))
         check_fit(what + " (label)", labels.get(pid, [legend]), INTRO_LABEL_PX, w)
-        # Every word but the name fits at the largest size, so a long name alone sets a smaller one.
-        check_fit(what, [t for t in panel_texts(p) if t != name] + samples.get(pid, []), INTRO_VALUE_SIZES[0], w)
         panels.append((p, w))
+    # One value size for the strip: the largest at which the name and every word of every cell fit.
+    texts = [(t, w, p["id"]) for p, w in panels for t in panel_texts(p) + samples.get(p["id"], [])]
+    fits = [v for v in INTRO_VALUE_SIZES if v <= size and all(text_px(t, v) <= inner_px(w) for t, w, _ in texts)]
+    if not fits:
+        t, w, pid = max(texts, key=lambda x: text_px(x[0], INTRO_VALUE_SIZES[-1]) - inner_px(x[1]))
+        check_fit("The top strip's %s cell" % {1: "identity", 10: "Status"}.get(pid, "panel %d" % pid), [t],
+                  INTRO_VALUE_SIZES[-1], w)
+    for p, _ in panels:
+        p["options"]["text"]["valueSize"] = fits[0]
     return panels
 
 
@@ -2001,9 +2071,9 @@ def servers_table(s):
     ]
     if s.remote:
         columns.append(
-            ("D", "Signer time", signer, ["Proposals fail", stale_word, "No signing", "9.99 ms"] + [w for _, w, _ in shared],
+            ("D", "Signer time", signer, ["Bad proposals", stale_word, "No signing", "9.99 ms"] + [w for _, w, _ in shared],
              dict(unit="s", decimals=2, custom__align="right", thresholds=steps(("text", None), ("orange", s.S)),
-                  mappings=mapping((-5, "Proposals fail", "orange"), (-6, stale_word, "orange"),
+                  mappings=mapping((-5, "Bad proposals", "orange"), (-6, stale_word, GREY),
                                    (-7, "No signing", "orange"), *shared))))
     columns += [
         ("E", "CPU", cpu, None, dict(thresholds=steps((GREY, None)), mappings=mapping(*shared))),
@@ -2090,9 +2160,10 @@ def servers_table(s):
             % (behind, s.NB, s.hold("NodeBehind")))
     if s.remote:
         desc += ("Signer time: median of the last 50 signatures on the node that signs now; amber from %s ms, Celestia's "
-                 "limit (RemoteSignerProblem after %s); '%s': a node tmkms left keeps its last median, and the alert "
-                 "keeps firing for it until that node restarts; 'No signing': the validator is asked to sign and no node "
-                 "signs; 'Proposals fail': proposal signing failed for another reason than a timeout in 6 hours. "
+                 "limit (RemoteSignerProblem after %s); '%s': a node tmkms left keeps its last median, which the alert "
+                 "leaves out 5 minutes after the repoint; 'No signing': the validator is asked to sign and no node "
+                 "signs; 'Bad proposals': proposal signing failed for another reason than a timeout or a lost "
+                 "connection in 6 hours (RemoteSignerProblem). "
                  % (s.ms(), s.hold("RemoteSignerProblem slow"), stale_word))
     desc += "CPU, Memory and Network peak: share in use, in grey; no alert watches them. "
     if watched:
@@ -3325,13 +3396,13 @@ def alerts_row(s):
 # Ids: the open row 400, the closed row 450, and for each line of charts a base (410, 420, ...) plus the
 # server's place in servers order.
 SERVERS_MAX = 10                         # servers the ids leave room for
-AXIS_PX = 76                             # every chart's value axis width, so plots in a column start at one x
+VALUE_AXIS_PX = 76                       # every chart's value axis width, so plots in a column start at one x
 TITLE_PX, TITLE_ROOM = 14, 34            # a chart title's text, and its title bar's padding and (i) icon
 LEGEND_PX, LEGEND_ITEM = 12, 28          # a legend entry's text, and its swatch, gaps and margin (measured: 6
                                          # entries of 51 letters take 465 px; this estimate gives 486)
 # The width of every chart's value axis, so the plots of a column start at one x down the page
 # whatever their labels ("100%", "96 GiB", "-300 Mb/s").
-SERVER_AXIS_PX = AXIS_PX
+SERVER_AXIS_PX = VALUE_AXIS_PX
 # Shades of the server's colour for the parts of a whole, strongest first, the same for a part on every server:
 # the consensus node, Fibre, monitoring, and everything else. Each is (hex alpha of the line and the legend
 # swatch, "" for the full colour; fill opacity), since Grafana fills at the fill opacity whatever the colour's
@@ -3767,6 +3838,7 @@ def build(cfg):
         if p["type"] == "timeseries":
             p["fieldConfig"]["overrides"] = colors + p["fieldConfig"]["overrides"]
     check_variables(every)
+    check_surfaces(s, every)
     ids = {p["id"]: p["type"] for p in every}
 
     return {

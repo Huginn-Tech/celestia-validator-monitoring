@@ -109,7 +109,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active"
+              summary: "Fibre is not running on any host"
               description: >-
                 For 10 minutes no Fibre host (fibre-1, val-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
