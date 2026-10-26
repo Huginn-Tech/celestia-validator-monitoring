@@ -204,3 +204,178 @@ tests:
       - eval_time: 40m
         alertname: FibreNotServing
         exp_alerts: []
+
+  # Fibre's own health check, read by the blackbox exporter's grpc prober (job fibre_health): each
+  # answer sets one serving_status series to 1 and the others to 0, with the gRPC status code. From
+  # 5m Fibre answers NOT_SERVING (one of its six checks fails): the message goes out at 8m, the page
+  # at 15m, and the message stays out next to it.
+  - name: Fibre answers NOT_SERVING; not_ready message after 3 minutes and page after 10
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x30'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 0x26'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x4 1x26'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="UNKNOWN"}
+        values: '0x30'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVICE_UNKNOWN"}
+        values: '0x30'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+      - eval_time: 14m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+      - eval_time: 15m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: page
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 10 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  - name: Fibre answers SERVING; no not_ready
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: FibreNotServing
+        exp_alerts: []
+
+  # A Fibre older than v10.5.0 has no health service: the probe gets Unimplemented (status code 12)
+  # and every serving_status series stays 0. The dashboard says Not reported; no alert.
+  - name: Fibre without the health check answers Unimplemented; no not_ready
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '12x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: FibreNotServing
+        exp_alerts: []
+
+  # A restart: Fibre answers NOT_SERVING while it shuts down (10m), does not answer for a minute
+  # (status code 14, every serving_status 0), then answers NOT_SERVING from its start until its
+  # checks have passed (12m to 14m) and SERVING from 15m. Each stretch is under 3 minutes: no alert.
+  - name: Fibre restarts; NOT_SERVING for under 3 minutes raises no not_ready
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x30'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x9 0x4 1x16'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x9 1 0 1 1 1 0x15'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x10 14 0x19'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreNotServing
+        exp_alerts: []

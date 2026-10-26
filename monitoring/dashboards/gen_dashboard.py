@@ -34,7 +34,7 @@ worst alert in a few words); up to six one-word answers; the Servers band, one c
 (and one for a remote signer whose host is not scraped) with what runs there now and its hardware
 now; History, one line of bars per check and, after a gap, per server, with each line's uptime;
 the role band, which server held each role; and the key line (the range's ends and the colours).
-Then the rows Validator, Fibre and Servers
+Then the rows Validator, Fibre (its facts, the Upload readiness band and its charts) and Servers
 (expanded; Servers has a column of hardware charts per server) and Servers: restarts, disk
 activity and clocks, Network upgrade and All firing alerts (collapsed). Panels that do not apply to
 the install are left out.
@@ -315,6 +315,8 @@ TITLES = [
     ("FibreNotServing:message::uploads_failing::([^:]*)", "Fibre uploads fail on $1", "Uploads failing", P_FIBRE,
      "fibre"),
     ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre data", P_FIBRE, "fibre"),
+    # Fibre's own health check: a message after 3 minutes, a page after 10, one sentence for both.
+    ("FibreNotServing:[a-z]+::not_ready::([^:]*)", "Fibre not ready on $1", "Not ready", P_FIBRE, "fibre"),
     ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", P_SERVERS, None),
     ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "No node data", P_SERVERS, None),
     ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "No Fibre data", P_FIBRE, "fibre"),
@@ -1280,19 +1282,27 @@ def alert_items(s):
     fires (red), 2.5 a page is pending, 2 to 2.95 a message or monitoring trouble (amber); plus a
     priority between alerts of one level. Alertmanager's inhibitions are mirrored, and follow-on alerts
     are grouped into their cause. A scheduled upgrade is no item: the Network upgrade tile shows it."""
-    pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) (%s and on () %s)"
-             % (by_alert('ALERTS{alertstate="firing",severity="page"}'),
-                by_alert('ALERTS{alertstate="pending",severity="page"}'),
-                label("vector(1)", "alertname", "ValidatorNotSigning"), NNA))
     drop = " or ".join("(%s and on () %s)" % (label("vector(1)", "alertname", a), cond) for a, cond in [
         ("SignaturesMissed", 'max(ALERTS{alertname=~"NodeNotAdvancing|ValidatorNotSigning"})'),
         ("RemoteSignerProblem", NNA),
         ("NodeBehind", NNA),
         ("FibreNotServing", 'max(ALERTS{alertname=~"NodeNotAdvancing|FibreDown"})')])
-    messages = ("%s unless on (alertname) (%s) unless on (alertname, host) %s"
+    # FibreNotServing on one host: a crash-looping Fibre holds back every reason, a collector that is
+    # down every reason but not_ready (Fibre's own health check, which the monitor asks Fibre directly),
+    # and ValidatorNotSigning holds back not_ready, as the inhibitions do.
+    fibre_held = ("unless on (alertname, host) %s unless on (alertname, host, reason) (max by (alertname, host, reason) "
+                  '(ALERTS{alertname="FibreNotServing",reason!="not_ready"}) and on (host) max by (host) '
+                  '(ALERTS{alertname="ServiceDown",unit="otelcol"})) unless on (alertname, reason) (max by (alertname, '
+                  'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
+                  'max(ALERTS{alertname="ValidatorNotSigning"}))'
+                  % label('max by (host) (ALERTS{alertname="ServiceDown",unit="fibre"})', "alertname", "FibreNotServing"))
+    pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) ((%s and on () %s) or %s) %s"
+             % (by_alert('ALERTS{alertstate="firing",severity="page"}'),
+                by_alert('ALERTS{alertstate="pending",severity="page"}'),
+                label("vector(1)", "alertname", "ValidatorNotSigning"), NNA, drop, fibre_held))
+    messages = ("%s unless on (alertname) (%s) %s"
                 % (message('severity="message",alertname!~"UpgradeScheduled|ServiceDown|DiskLow"', restarting(s)), drop,
-                   label('max by (host) (ALERTS{alertname="ServiceDown",unit=~"fibre|otelcol"})',
-                         "alertname", "FibreNotServing")))
+                   fibre_held))
     # A host whose node_exporter does not answer shows once; a stopped celestia-appd not also as lost metrics.
     reporting = message('alertname="ServiceDown",unit="node_exporter"')
     service = ("%s or ((%s unless on (host) %s) unless on (host, unit) %s)"
@@ -1640,8 +1650,14 @@ def signing_tile(s):
 
 
 # FibreNotServing's reasons, the Fibre tile's and the cards' words for them (D2), and the switch each needs.
+# The surfaces read them in this order: what failed first, then Fibre's own health check, then no metrics.
 NOT_SERVING = [("missed_uploads", "Uploads missed", "tensile"), ("not_served", "Rows not served", "tensile"),
-               ("uploads_failing", "Uploads failing", "fibre"), ("no_telemetry", "No Fibre data", "fibre")]
+               ("uploads_failing", "Uploads failing", "fibre"), ("not_ready", "Not ready", "fibre"),
+               ("no_telemetry", "No Fibre data", "fibre")]
+# FibreNotServing (not_ready) once it pages: red on the Fibre tile, the History line and the cards.
+NOT_READY_PAGE = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
+# Its place in NOT_SERVING: the amber code of each surface plus 10 is its red code.
+NOT_READY_AT = [r for r, _, _ in NOT_SERVING].index("not_ready")
 
 
 def fibre_tile(s):
@@ -1662,6 +1678,7 @@ def fibre_tile(s):
         ['(max(ALERTS{alertname="FibreDown",check="",alertstate="firing"}) * 0 + 15) + on () '
          "((count(%s) > 0) * 0 + 4 or vector(0))" % lost]
         + (check(',alertstate="firing"', 20) if s.tensile else [])
+        + ['max(ALERTS{%s,alertstate="firing"}) * 0 + %d' % (NOT_READY_PAGE, 41 + NOT_READY_AT)]
         + ['((count(%s) > 0) and on () max(ALERTS{alertname="FibreDown",check=""})) * 0 + 9' % lost,
            '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(up{job="node"} == 1) > 0))' % seen_f,
            "(count(%s) > 1) * 0 + 3" % seen_f]
@@ -1672,14 +1689,16 @@ def fibre_tile(s):
     words = [(1, "Serving", "text"), (3, "Two Fibres", "orange"), (5, "Not running", "orange"),
              (15, "Not running", "red"), (9, "Not seen", "orange"), (19, "Not seen", "red")]
     words += [(31 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)]
+    words += [(41 + NOT_READY_AT, "Not ready", "red")]
     if s.tensile:
         words += [(10, "Unreachable", "orange"), (20, "Unreachable", "red"), (12, "Wrong host", "orange"),
                   (22, "Wrong host", "red"), (13, "Not registered", "orange"), (23, "Not registered", "red")]
     desc = ("Is Fibre, the service that stores and serves this validator's share of blob data, running and taking "
             "uploads? Serving: one Fibre runs and no Fibre alert is due; a quiet network sends no blob for hours, "
-            "and that is fine. Amber: FibreNotServing by its reason, Two Fibres (FibreBothActive) or Not running; red "
-            "once FibreDown pages. Not seen: a Fibre host is not reporting, so its Fibre may still run. Which server "
-            "runs it: the cards below. Every word: the panel guide.")
+            "and that is fine. Amber: FibreNotServing by its reason (Not ready: Fibre's own health check fails), Two "
+            "Fibres (FibreBothActive) or Not running; red once FibreDown or Not ready pages. Not seen: a Fibre host "
+            "is not reporting, so its Fibre may still run. Which server runs it: the cards below. Every word: the "
+            "panel guide.")
     return 14, "Fibre", desc + more(["FibreDown", "FibreNotServing", "FibreBothActive"], [PANEL_GUIDE, FIBRE_DASHBOARD]), \
         expr, words
 
@@ -1937,9 +1956,12 @@ def check_lanes(s):
         # Uptime leaves out every minute the line is amber or red: a Fibre alert firing, or no Fibre running.
         fibre_alert = 'max(ALERTS{alertname=~"FibreNotServing|FibreBothActive",alertstate="firing"})'
         reasons = [(r, w) for r, w, need in NOT_SERVING if s.has(need)]
+        # A reason shows once its alert fires, never while pending only, so a Fibre restart, which answers
+        # its health check NOT_SERVING for seconds, leaves the line green. Not ready is red once it pages.
         lanes.append(
             ("D", "Fibre serving",
              chain(*(["%s * 0 + 3" % firing('alertname="FibreDown",check=""'),
+                      "%s * 0 + 6" % firing(NOT_READY_PAGE),
                       "%s * 0 + 2" % active('alertname="FibreDown",check=""')]
                      + ["%s * 0 + %d" % (firing('alertname="FibreNotServing",reason=%s' % q(r)), 21 + i)
                         for i, (r, _) in enumerate(reasons)]
@@ -1949,7 +1971,7 @@ def check_lanes(s):
                         nodata()])),
              uptime("((((count(%s) > bool 0) or on () (%s * 0)) unless on () %s) or on () (%s * 0)) and on () %s"
                     % (fibre_active(s), PROM, fibre_alert, PROM, PROM)),
-             [(1, "Serving", OK), (2, "Not running", WARN), (3, "Not running", ALERT)]
+             [(1, "Serving", OK), (2, "Not running", WARN), (3, "Not running", ALERT), (6, "Not ready", ALERT)]
              + [(21 + i, w, WARN) for i, (_, w) in enumerate(reasons)]
              + [(5, "Two Fibres", WARN), (0, "No data", NODATA)]))
     if s.tensile:
@@ -2577,15 +2599,17 @@ def node_row(s, host):
 def fibre_part(s):
     """What each Fibre host does now, one series per host, as a code of fibre_words(s). A standby stopped
     by design is plain text; it turns amber only where it could not take over (its collector is down).
-    FibreNotServing shows by its reason while pending or firing, as the Status cell and the Fibre tile."""
+    FibreNotServing shows by its reason while pending or firing, as the Status cell and the Fibre tile; Not
+    ready is red once it pages."""
     seen_f = fibre_seen(s)
     loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'
     collector = '(max by (host) (up{job="otelcol"}) == 1)'
     down10 = '(max(ALERTS{alertname="FibreDown",check="",alertstate="firing"}) * 10 or vector(0))'
     reasons = ['max by (host) (ALERTS{alertname="FibreNotServing",reason=%s}) * 0 + %d' % (q(r), 21 + i)
                for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
+    not_ready = 'max by (host) (ALERTS{%s,alertstate="firing"}) * 0 + %d' % (NOT_READY_PAGE, 31 + NOT_READY_AT)
     return chain(*(
-        ["%s * 0 + 11" % loop, "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f)] + reasons
+        ["%s * 0 + 11" % loop, not_ready, "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f)] + reasons
         + ["%s * 0 + 1" % seen_f,
            "(((%s * 0 + 8) unless on () count(%s)) + on () group_left () %s)" % (NE_UP, seen_f, down10),
            "(%s unless on (host) %s) * 0 + 9" % (NE_UP, collector),
@@ -2598,7 +2622,8 @@ def fibre_words(s):
     return ([(1, "Active, serving", "text"), (7, "Two Fibres", "orange"), (6, "Standby, stopped", "text"),
              (9, "No Fibre data", "orange"), (8, "Not running", "orange"), (18, "Not running", "red"),
              (10, "Not reporting", "orange"), (11, "Fibre crash", "orange")]
-            + [(21 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)] + NOTHING)
+            + [(21 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)]
+            + [(31 + NOT_READY_AT, "Not ready", "red")] + NOTHING)
 
 
 def fibre_signer(s):
@@ -3380,14 +3405,63 @@ def of_fact(pid, name, desc, x, y, zero, missing, alarm=None):
     return p
 
 
+# Fibre's own health check, as the blackbox exporter's grpc prober reads it (job fibre_health, one target
+# per Fibre host, service ""): per answer one serving_status series is 1 and the others 0, and the gRPC
+# status code says whether Fibre answered at all (12, Unimplemented: a Fibre older than v10.5.0, which has
+# no health service; 14 and the rest: no answer, as from a stopped standby, whose series are all 0).
+READY = 'probe_grpc_healthcheck_response{job="fibre_health",serving_status="SERVING"}'
+NOT_READY = 'probe_grpc_healthcheck_response{job="fibre_health",serving_status="NOT_SERVING"}'
+PROBE_CODE = 'probe_grpc_status_code{job="fibre_health"}'
+READINESS_WORDS = [(1, "Ready", OK), (2, "Not ready", WARN), (3, "Not ready", ALERT), (-1, "Not reported", NODATA),
+                   (0, "Not checked", NODATA), (-99, "No data", NODATA)]
+
+
+def readiness_band(s, axis):
+    """Upload readiness: one lane of what the running Fibre answered its health check, per time block and
+    worst moment first, as History reads its lines: red once FibreNotServing (not ready) paged, amber
+    where Fibre answered NOT_SERVING (as the rule's condition; a restart shows for its seconds), Ready
+    where it answered SERVING, grey Not reported (Unimplemented) or Not checked (no answer). The answers
+    of every Fibre host count together: a stopped standby answers nothing, so it adds nothing beside the
+    Fibre that runs. Grey No data wherever the alert rules did not run. Untitled, its lane named on the
+    left in a column as wide as the role band's, without a time axis: the charts under it carry one."""
+    expr = "((%s) and on () %s) or %s * 0 - 99" % (chain(
+        "%s * 0 + 3" % firing(NOT_READY_PAGE),
+        "(%s == 1) * 0 + 2" % seen(NOT_READY),
+        "(%s == 1) * 0 + 1" % seen(READY),
+        "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "(%s == bool 12)" % PROBE_CODE, sub=True),
+        "%s * 0" % seen('up{job="prometheus"}')), evaluated(), seen('up{job="prometheus"}'))
+    desc = ("Whether the running Fibre reports itself ready for uploads, over the selected time; Ready all along is "
+            "good. Fibre is ready while six checks pass: app node, Fibre module, signer, validator in the active set, "
+            "provider registration and store. Not ready: one fails, or Fibre is starting or stopping; "
+            "FibreNotServing sends a message after %s, red once it pages after %s. Fibre's log names the check. "
+            "Not reported: Fibre older than v10.5.0. Not checked: no answer. A stopped standby is left out."
+            % (s.hold("FibreNotServing not_ready message"), s.hold("FibreNotServing not_ready page"))
+            + more(["FibreNotServing"], [PANEL_GUIDE]))
+    lane = ("A", "Upload readiness", expr, READINESS_WORDS)
+    height = grid_rows(LANE_PX + PLOT_INSET, CHROME_UNTITLED)
+    defaults = {"color": {"fixedColor": "#8E8E8E26", "mode": "fixed"},
+                "custom": {"axisWidth": axis, "fillOpacity": 100, "lineWidth": 0},
+                "mappings": special_map("null", "No data", NODATA)}
+    overrides = [override("byType", "time", custom__axisPlacement="hidden"),
+                 override("byFrameRefID", "A", mappings=lane_map(READINESS_WORDS))]
+    options = {"alignValue": "left", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
+               "mergeValues": True, "rowHeight": board_row_height("", height, [lane]), "showValue": "always",
+               "tooltip": {"mode": "single", "sort": "none"}}
+    p = panel(215, "state-timeline", "", desc, [target("A", expr, "Upload readiness", interval="1m")], defaults,
+              overrides, options)
+    p.update({"interval": "1m", "maxDataPoints": 1500, "transparent": True})
+    return height, p
+
+
 def fibre_row(s):
     """The Fibre row: six facts over the last 24 hours, so a network that sends no blobs for hours
-    leaves them readable, then three charts: the two that the Fibre alerts read, side by side, and
-    Fibre's requests across the row. With the outside check the facts set Fibre's own count next to
-    Tensile's record of the blobs sent to the validator, and the first chart draws what FibreNotServing
-    (uploads missed) watches; without it, the facts are Fibre's own uploads and the first chart draws
-    what FibreNotServing (uploads failing) watches. A chart of the upload's steps is left out: it was
-    empty whenever no blob came, and its total is the Upload time fact."""
+    leaves them readable, then the Upload readiness band (readiness_band) and three charts: the two that
+    the Fibre alerts read, side by side, and Fibre's requests across the row. With the outside check the
+    facts set Fibre's own count next to Tensile's record of the blobs sent to the validator, and the
+    first chart draws what FibreNotServing (uploads missed) watches; without it, the facts are Fibre's
+    own uploads and the first chart draws what FibreNotServing (uploads failing) watches. A chart of the
+    upload's steps is left out: it was empty whenever no blob came, and its total is the Upload time
+    fact."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
     unit = q(s.units["fibre"])
@@ -3625,7 +3699,9 @@ def fibre_row(s):
     shards["fieldConfig"]["defaults"]["thresholds"] = steps(("transparent", None), (REFERENCE, 0))
     # At most 200 blocks, so bars stay bars on a 7-day range (about 50 minutes each) instead of hairlines.
     shards["maxDataPoints"] = 200
-    return [(INTRO_ROWS, strip), (CHART_ROWS, [(first_chart, 12), (store, 12)]), (CHART_ROWS, [(shards, 24)])]
+    band_h, band = readiness_band(s, axis_width(s, check_lanes(s), server_lanes(s), role_lanes(s)))
+    return [(INTRO_ROWS, strip), (band_h, [(band, 24)]), (CHART_ROWS, [(first_chart, 12), (store, 12)]),
+            (CHART_ROWS, [(shards, 24)])]
 
 
 def upgrade_row(s):
@@ -4138,7 +4214,7 @@ def annotations(s, ids):
         # Comparing with the value one step earlier catches every start once at a 60 s step and
         # ignores stops (the start time drops to 0).
         note("Service starts", "node_systemd_unit_start_time_seconds > node_systemd_unit_start_time_seconds offset 1m",
-             "{{name}} started on {{host}}", GREY, [111, 112, 115, 116, 210, 211, 212, 213, 480]),
+             "{{name}} started on {{host}}", GREY, [111, 112, 115, 116, 210, 211, 212, 213, 215, 480]),
         note("Validator signs through", moved, "Validator signs through {{host}}", GREY, [25, 111, 112, 115, 116]),
     ]
     # The Servers section's charts each show one server: its markers come from that server only.

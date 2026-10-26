@@ -467,6 +467,10 @@ jobs:
           am=build/split/alertmanager.yml
           amtool check-config "$am"
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page
+          amtool config routes test --config.file="$am" --verify.receivers=page \
+            alertname=FibreNotServing severity=page reason=not_ready host=fibre-1
+          amtool config routes test --config.file="$am" --verify.receivers=message \
+            alertname=FibreNotServing severity=message reason=not_ready host=fibre-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
@@ -492,6 +496,13 @@ jobs:
           assert (r["receiver"], r["group_by"], r["group_wait"], r["repeat_interval"]) == ("message", ["..."], "0s", "96h"), r
           assert "routes" not in r and not r.get("continue", False), r
           assert upgrade[0] < [i for i, r in enumerate(routes) if r.get("receiver") == "message" and i != upgrade[0]][0], routes
+          # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
+          # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready.
+          inhibit = config["inhibit_rules"]
+          assert {"source_matchers": ['alertname="ValidatorNotSigning"'],
+                  "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
+          assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
+                  "target_matchers": ['alertname="FibreNotServing"', 'reason!="not_ready"'], "equal": ["host"]} in inhibit, inhibit
           receivers = {r["name"]: r for r in config["receivers"]}
           def count(name):
               return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
@@ -993,9 +1004,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 59
-          test "$(count mainnet)" = 62
-          test "$(count five)" = 56
+          test "$(count split)" = 60
+          test "$(count mainnet)" = 63
+          test "$(count five)" = 57
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1117,22 +1128,62 @@ jobs:
           EOF
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
-      # three charts of one height: two side by side on columns 0 and 12, then one across the row.
+      # the Upload readiness band (215: one untitled lane across the row, 2 rows high, right under the
+      # facts), then three charts of one height, right under the band: two side by side on columns 0 and
+      # 12, then one across the row.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
                    | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
+                   | [$f[] | select(.type == "state-timeline")] as $b
                    | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
                      and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
                                    and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
                      and ($p | map(.options.text.valueSize) | unique | length) == 1
-                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)
+                     and ($b | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h]))
+                         == [[215, "", 1, 0, 24, 2]]
+                     and $b[0].gridPos.y == ($s | map(.y + .h) | max)
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) == $b[0].gridPos.y + 2
                      and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
               "build/$s/dashboard.json"
           done
+      # Upload readiness (215) and the Fibre tile, History and cards read the not_ready rules: both rules
+      # (a message after 3 minutes, a page after 10) watch one NOT_SERVING selector, which the band's
+      # amber reads, and its red is the page firing.
+      - name: Upload readiness reads the not_ready rules
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                       if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "not_ready"]
+              assert sorted((r["labels"]["severity"], r["for"]) for r in found) == [("message", "3m"), ("page", "10m")], found
+              exprs = {" ".join(r["expr"].split()) for r in found}
+              assert len(exprs) == 1, exprs
+              m = re.fullmatch(r"max by \(host\) \((probe_grpc_healthcheck_response\{[^}]*\})\) == 1", exprs.pop())
+              assert m, found
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              band = " ".join(panels[215]["targets"][0]["expr"].split())
+              assert "max_over_time(%s[$__interval] offset -$__interval)" % m.group(1) in band, band
+              page = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
+              assert 'ALERTS{alertstate="firing",%s}' % page in band, band
+              for i in (14, 20):
+                  assert any(page in t["expr"] for t in panels[i]["targets"]), "%s: %d lacks the page" % (s, i)
+              print("%s: 215 reads %s; 14 and 20 the page" % (s, m.group(1)))
+          EOF
       # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
       # compares, which is the rule's expression without its comparison (inside the clamp that draws an
       # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.

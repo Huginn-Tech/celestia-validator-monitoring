@@ -34,7 +34,7 @@ tests:
         alertname: ValidatorSigningTwice
         exp_alerts: []
 
-  - name: Fibre off renders no FibreNotServing, even with an active Fibre unit and no metrics
+  - name: Fibre off renders no FibreNotServing, even with an active Fibre unit, no metrics and a NOT_SERVING answer
     interval: 1m
     input_series:
       - series: >-
@@ -43,6 +43,9 @@ tests:
       - series: >-
           node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="fibre.service"}
         values: '60x200'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.11:7980",host="node-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '1x200'
     alert_rule_test:
       - eval_time: 200m
         alertname: FibreNotServing
