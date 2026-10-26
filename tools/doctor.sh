@@ -2138,7 +2138,7 @@ probe_metric() { # blackbox /probe reply, series as blackbox prints it -> its va
 # and a standby's port is closed. doctor asks celestia-mon-blackbox for each target of the scrape
 # job fibre_health, as Prometheus does, and reads the answer now.
 check_fibre_ready() {
-  local name="fibre ready" bb=${C[blackbox_url]%/} unit=${C[fibre_unit]} h addr line code out st why fix detail
+  local name="fibre ready" bburl=${C[blackbox_url]%/} unit=${C[fibre_unit]} h addr line code out st why fix detail
   local re_host='"host":"([^"]*)"' re_instance='"instance":"([^"]*)"'
   local -a hosts=() ready=() notready=() noans=() notrep=() standby=() bberr=() parts=() nr=()
   local -A addr_of=()
@@ -2154,16 +2154,16 @@ check_fibre_ready() {
     report FAIL 24 "$name" "Fibre is on, but Prometheus has no readiness target (job fibre_health), so nothing reads whether Fibre is ready. Fix: re-run install.sh on this host"
     return
   fi
-  code=$(http_code "$bb/-/healthy")
+  code=$(http_code "$bburl/-/healthy")
   if [[ $code != 200 ]]; then
-    report FAIL 24 "$name" "celestia-mon-blackbox does not answer at $bb ($(answer "$code")), so Fibre's readiness is not checked. Fix: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host, then re-run install.sh on this host"
+    report FAIL 24 "$name" "celestia-mon-blackbox does not answer at $bburl ($(answer "$code")), so Fibre's readiness is not checked. Fix: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host, then re-run install.sh on this host"
     return
   fi
   fibre_states
   mapfile -t hosts < <(printf '%s\n' "${!addr_of[@]}" | sort)
   for h in "${hosts[@]}"; do
     addr=${addr_of[$h]}
-    out=$(curl -fsS -g --max-time 10 -G --data-urlencode module=fibre_health --data-urlencode "target=$addr" "$bb/probe" 2>/dev/null) || out=""
+    out=$(curl -fsS -g --max-time 10 -G --data-urlencode module=fibre_health --data-urlencode "target=$addr" "$bburl/probe" 2>/dev/null) || out=""
     if [[ -z $out ]]; then
       bberr+=("$h")
       continue
