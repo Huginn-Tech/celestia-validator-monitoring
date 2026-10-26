@@ -104,6 +104,29 @@ scrape_configs:
           host: {{ h | to_json }}
           role: fibre
 {% endfor %}
+
+  # Fibre's upload readiness, on every Fibre host, active or standby: celestia-mon-blackbox on
+  # this host asks each one's own port for the standard gRPC health check (Fibre v10.5.0 and
+  # newer). instance keeps the Fibre address; the request goes to blackbox on 127.0.0.1.
+  - job_name: fibre_health
+    metrics_path: /probe
+    params:
+      module: [fibre_health]
+    static_configs:
+{% for h in fibres %}
+      - targets:
+          - "{{ target(h, hostvars[h].celestia_mon_fibre_port | default(celestia_mon_fibre_port)) }}"
+        labels:
+          host: {{ h | to_json }}
+          role: fibre
+{% endfor %}
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: "127.0.0.1:{{ celestia_mon_ports.blackbox }}"
 {% endif %}
 {% if celestia_mon_tensile.validator | default('') | length > 0 %}
 

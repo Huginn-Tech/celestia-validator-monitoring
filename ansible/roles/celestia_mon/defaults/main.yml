@@ -29,12 +29,16 @@ celestia_mon_units:
 celestia_mon_node_metrics_port: 26660
 celestia_mon_node_rpc_port: 26657
 
+# Fibre's own port (--server-listen-address), on each Fibre host's private address: the monitor
+# asks it for Fibre's upload readiness (Fibre v10.5.0 and newer). Set it per host where it differs.
+celestia_mon_fibre_port: 7980
+
 # Ports of the services celestia-mon installs: one block that common tools do not use, so
 # celestia-mon runs next to an existing node_exporter, Prometheus, Grafana or collector.
 # node_exporter and otelcol_prometheus listen on celestia_mon_private_ip, grafana on
-# celestia_mon_grafana_listen; prometheus, alertmanager and otelcol_otlp listen on
-# 127.0.0.1 only. otelcol_otlp is the collector's OTLP/HTTP receiver, where Fibre pushes
-# its metrics (--otel-endpoint http://127.0.0.1:9915 with the default below).
+# celestia_mon_grafana_listen; the others listen on 127.0.0.1 only. otelcol_otlp is the
+# collector's OTLP/HTTP receiver, where Fibre pushes its metrics (--otel-endpoint
+# http://127.0.0.1:9915 with the default below).
 # The playbook stops if another process already listens on one of them.
 # Overriding celestia_mon_ports replaces the whole map, so list every key.
 celestia_mon_ports:
@@ -47,6 +51,8 @@ celestia_mon_ports:
   announcements: 9916
   tensile: 9917
   signal: 9918
+  # celestia-mon-blackbox on the monitor host, with Fibre on: asks each Fibre host for its readiness.
+  blackbox: 9919
 
 # The address Grafana listens on, on the monitor host. The default, 127.0.0.1, keeps it off
 # every network: reach it through an SSH tunnel from your machine
@@ -149,6 +155,7 @@ celestia_mon_memory:
   announcements: {high: 64M, max: 128M}
   tensile: {high: 64M, max: 128M}
   signal: {high: 64M, max: 128M}
+  blackbox: {high: 128M, max: 256M}
 
 # Inventory groups (a host may be in several):
 #   validator    exactly one host: the celestia-appd node the signer normally connects to
@@ -164,6 +171,7 @@ celestia_mon_memory:
 #   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts, active or standby)
 #   celestia_mon_fibre_public_endpoint  host:port that valaddr set-host registers while this host's
 #                                       Fibre is the active one (fibre hosts)
+#   celestia_mon_fibre_port             Fibre's own port on that host, when it is not 7980 (fibre hosts)
 #   celestia_mon_kms_scrape             install node_exporter on a kms host (default false)
 #   celestia_mon_firewall_sources       optional list of addresses ufw lets reach this host's scraped
 #                                       ports, when ufw is active (default: the monitor's

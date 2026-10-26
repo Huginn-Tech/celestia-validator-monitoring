@@ -1,0 +1,268 @@
+---
+# Fibre's upload readiness, on the monitor host. Fibre v10.5.0 and newer answers the standard
+# gRPC health check on its own port: SERVING when all of its own checks pass, NOT_SERVING when
+# one fails. celestia-mon-blackbox (blackbox_exporter) asks each Fibre host on Prometheus's
+# behalf (scrape job fibre_health) and listens on 127.0.0.1 only. On while Fibre is on; turned
+# off after it ran, it is removed again.
+- name: Install celestia-mon-blackbox
+  when: celestia_mon_blackbox_enabled | bool
+  block:
+    - name: Check that nothing else listens on the blackbox port
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: port_check
+      vars:
+        celestia_mon_port_check_port: "{{ celestia_mon_ports.blackbox }}"
+        celestia_mon_port_check_unit: celestia-mon-blackbox
+
+    - name: Create the celestia-mon-blackbox user
+      ansible.builtin.user:
+        name: celestia-mon-blackbox
+        system: true
+        shell: /usr/sbin/nologin
+        home: /nonexistent
+        create_home: false
+
+    - name: Look for blackbox_exporter {{ celestia_mon_blackbox_version }}
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_blackbox_binary }}"
+        checksum_algorithm: sha256
+        get_mime: false
+        get_attributes: false
+      register: celestia_mon_blackbox_installed
+
+    # The install below records the sha256 of the binary it copied from the checked release. A
+    # binary that differs from its record, or an install without one, is installed again.
+    - name: Read the checksum recorded when blackbox_exporter was installed
+      ansible.builtin.slurp:
+        src: "{{ celestia_mon_blackbox_sums_file }}"
+      register: celestia_mon_blackbox_sums
+      failed_when: false
+
+    - name: Note whether the pinned blackbox_exporter is installed and unchanged
+      ansible.builtin.set_fact:
+        celestia_mon_blackbox_present: >-
+          {{ celestia_mon_blackbox_installed.stat.exists
+             and (celestia_mon_blackbox_sums.content | default('') | b64decode | trim)
+                 == (celestia_mon_blackbox_installed.stat.checksum | default('') ~ '  blackbox_exporter') }}
+
+    # In check mode nothing is downloaded, so the tasks that need the binary or the unit are
+    # skipped until the pinned version is installed. This task reports the pending install as a
+    # change instead.
+    - name: Report the pending install of blackbox_exporter {{ celestia_mon_blackbox_version }}
+      ansible.builtin.debug:
+        msg: Would install {{ celestia_mon_blackbox_binary }} and restart celestia-mon-blackbox.
+      changed_when: true
+      when: ansible_check_mode and not celestia_mon_blackbox_present
+
+    - name: Install blackbox_exporter {{ celestia_mon_blackbox_version }}
+      when: not celestia_mon_blackbox_present and not ansible_check_mode
+      block:
+        - name: Create the download directory
+          ansible.builtin.file:
+            path: /var/cache/celestia-mon
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+
+        - name: Download blackbox_exporter and verify its checksum
+          ansible.builtin.get_url:
+            url: "{{ celestia_mon_blackbox_url }}/{{ celestia_mon_blackbox_release }}.tar.gz"
+            dest: "/var/cache/celestia-mon/{{ celestia_mon_blackbox_release }}.tar.gz"
+            checksum: "sha256:{{ celestia_mon_blackbox_sha256 }}"
+            owner: root
+            group: root
+            mode: "0644"
+          # Release hosts sometimes reset a connection; retry before giving up.
+          register: celestia_mon_blackbox_download
+          until: celestia_mon_blackbox_download is succeeded
+          retries: 5
+          delay: 10
+
+        # The first step clears what an interrupted run left behind.
+        - name: Clear the blackbox_exporter staging directory
+          ansible.builtin.file:
+            path: "{{ celestia_mon_blackbox_staging }}"
+            state: absent
+
+        - name: Create the blackbox_exporter staging directory
+          ansible.builtin.file:
+            path: "{{ celestia_mon_blackbox_staging }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0700"
+
+        # The release stores its files under another owner, and tar running as root keeps stored
+        # owners. --no-same-owner makes them root's, and the 0700 staging directory keeps every
+        # other account away from the binary until it is copied.
+        - name: Unpack blackbox_exporter
+          ansible.builtin.unarchive:
+            src: "/var/cache/celestia-mon/{{ celestia_mon_blackbox_release }}.tar.gz"
+            dest: "{{ celestia_mon_blackbox_staging }}"
+            include:
+              - "{{ celestia_mon_blackbox_release }}/blackbox_exporter"
+            extra_opts:
+              - --no-same-owner
+            remote_src: true
+
+        - name: Create the install directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: directory
+            owner: root
+            group: root
+            mode: "0755"
+          loop:
+            - /opt/celestia-mon
+            - "{{ celestia_mon_blackbox_dir }}"
+
+        - name: Install the blackbox_exporter binary
+          ansible.builtin.copy:
+            src: "{{ celestia_mon_blackbox_staging }}/{{ celestia_mon_blackbox_release }}/blackbox_exporter"
+            dest: "{{ celestia_mon_blackbox_binary }}"
+            remote_src: true
+            owner: root
+            group: root
+            mode: "0755"
+          notify: Restart celestia-mon-blackbox
+
+        - name: Read the checksum of the installed blackbox_exporter binary
+          ansible.builtin.stat:
+            path: "{{ celestia_mon_blackbox_binary }}"
+            checksum_algorithm: sha256
+            get_mime: false
+            get_attributes: false
+          register: celestia_mon_blackbox_copied
+
+        # In sha256sum's format: cd <dir> && sha256sum -c SHA256SUMS checks it by hand.
+        - name: Record the checksum of the installed blackbox_exporter binary
+          ansible.builtin.copy:
+            dest: "{{ celestia_mon_blackbox_sums_file }}"
+            content: >-
+              {{ celestia_mon_blackbox_copied.stat.checksum ~ '  blackbox_exporter' ~ celestia_mon_newline }}
+            owner: root
+            group: root
+            mode: "0644"
+
+      # Also after a failed step, so no unpacked release is left behind.
+      always:
+        - name: Remove the downloaded blackbox_exporter release and the staging directory
+          ansible.builtin.file:
+            path: "{{ item }}"
+            state: absent
+          loop:
+            - "/var/cache/celestia-mon/{{ celestia_mon_blackbox_release }}.tar.gz"
+            - "{{ celestia_mon_blackbox_staging }}"
+
+    - name: Create the blackbox settings directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+      loop:
+        - /etc/celestia-mon
+        - "{{ celestia_mon_blackbox_config_dir }}"
+
+    # One module, fibre_health. It holds no secret.
+    - name: Write the blackbox_exporter configuration
+      ansible.builtin.template:
+        src: blackbox.yml.j2
+        dest: "{{ celestia_mon_blackbox_config }}"
+        owner: root
+        group: root
+        mode: "0644"
+        validate: "{{ celestia_mon_blackbox_binary }} --config.check --config.file=%s"
+      notify: Restart celestia-mon-blackbox
+
+    - name: Write the celestia-mon-blackbox service
+      ansible.builtin.template:
+        src: celestia-mon-blackbox.service.j2
+        dest: /etc/systemd/system/celestia-mon-blackbox.service
+        owner: root
+        group: root
+        mode: "0644"
+      register: celestia_mon_blackbox_unit_file
+      notify: Restart celestia-mon-blackbox
+
+    # Reload systemd only when celestia-mon's unit changed: a reload also loads unit files
+    # that someone else edited on disk and has not reloaded yet.
+    - name: Enable and start celestia-mon-blackbox
+      ansible.builtin.systemd_service:
+        name: celestia-mon-blackbox
+        enabled: true
+        state: started
+        daemon_reload: "{{ celestia_mon_blackbox_unit_file is changed }}"
+      when: celestia_mon_blackbox_present or not ansible_check_mode
+
+    - name: Apply a pending celestia-mon-blackbox restart
+      ansible.builtin.meta: flush_handlers
+
+    # systemctl returns before the service binds, so a crash loop would otherwise go unnoticed.
+    - name: Wait for celestia-mon-blackbox on {{ celestia_mon_blackbox_listen_address }}
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ celestia_mon_ports.blackbox }}"
+        timeout: 30
+        msg: celestia-mon-blackbox does not listen on {{ celestia_mon_blackbox_listen_address }}. See journalctl -u celestia-mon-blackbox.
+      when: not ansible_check_mode
+
+    - name: Find older blackbox_exporter versions
+      ansible.builtin.find:
+        paths: /opt/celestia-mon
+        patterns: blackbox_exporter-*
+        excludes: blackbox_exporter-{{ celestia_mon_blackbox_version }}
+        file_type: directory
+      register: celestia_mon_blackbox_old
+      when: celestia_mon_blackbox_present or not ansible_check_mode
+
+    - name: Remove older blackbox_exporter versions
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ celestia_mon_blackbox_old.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path }}"
+
+# Fibre turned off after it ran: stop it and remove its unit, binary and settings.
+- name: Remove celestia-mon-blackbox
+  when: not (celestia_mon_blackbox_enabled | bool)
+  block:
+    - name: Look for an earlier celestia-mon-blackbox
+      ansible.builtin.stat:
+        path: /etc/systemd/system/celestia-mon-blackbox.service
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_blackbox_old_unit
+
+    - name: Stop and disable celestia-mon-blackbox
+      ansible.builtin.systemd_service:
+        name: celestia-mon-blackbox
+        state: stopped
+        enabled: false
+      when: celestia_mon_blackbox_old_unit.stat.exists
+
+    - name: Find the installed blackbox_exporter versions
+      ansible.builtin.find:
+        paths: /opt/celestia-mon
+        patterns: blackbox_exporter-*
+        file_type: directory
+      register: celestia_mon_blackbox_installed_dirs
+
+    - name: Remove celestia-mon-blackbox's unit, binary and settings
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop: "{{ celestia_mon_blackbox_remove + celestia_mon_blackbox_installed_dirs.files | default([]) | map(attribute='path') | list }}"
+      vars:
+        celestia_mon_blackbox_remove:
+          - /etc/systemd/system/celestia-mon-blackbox.service
+          - "{{ celestia_mon_blackbox_config_dir }}"
+
+    - name: Reload systemd after removing the unit
+      ansible.builtin.systemd_service:
+        daemon_reload: true
+      when: celestia_mon_blackbox_old_unit.stat.exists and not ansible_check_mode

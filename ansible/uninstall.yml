@@ -52,7 +52,7 @@
     celestia_mon_uninstall_units: >-
       {{ (['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service', 'celestia-mon-prometheus.service',
            'celestia-mon-alertmanager.service', 'celestia-mon-grafana.service', 'celestia-mon-announcements.service',
-           'celestia-mon-tensile.service', 'celestia-mon-signal.service']
+           'celestia-mon-tensile.service', 'celestia-mon-signal.service', 'celestia-mon-blackbox.service']
           + (celestia_mon_uninstall_unit_files.files | map(attribute='path') | map('basename') | map('regex_replace', '[.]d$', '')
              | select('match', '.*[.]service$') | list)) | unique }}
     celestia_mon_uninstall_loaded: >-

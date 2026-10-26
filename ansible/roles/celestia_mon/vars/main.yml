@@ -49,10 +49,11 @@ celestia_mon_services:
   announcements: {unit: celestia-mon-announcements, ports: [announcements], dir: announcements, version: "", disk_mb: 1}
   tensile: {unit: celestia-mon-tensile, ports: [tensile], dir: tensile, version: "", disk_mb: 1}
   signal: {unit: celestia-mon-signal, ports: [signal], dir: signal, version: "", disk_mb: 1}
+  blackbox: {unit: celestia-mon-blackbox, ports: [blackbox], dir: blackbox_exporter, version: blackbox_exporter, disk_mb: 100}
 
 # Ports that listen on 127.0.0.1; grafana listens on celestia_mon_grafana_listen, the others
 # on celestia_mon_private_ip.
-celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager, announcements, tensile, signal]
+celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager, announcements, tensile, signal, blackbox]
 
 # HTTP basic auth of Prometheus's and Alertmanager's APIs on the monitor host (tasks/api_password.yml).
 # Each password is generated once on the monitor host, never kept in the repository or the vault;
@@ -78,7 +79,8 @@ celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 
 # The services site.yml installs on this host (keys of celestia_mon_services): node_exporter
 # on Celestia hosts, the collector on every Fibre host (the standby too, so Fibre's metrics
-# arrive the moment it is started), the stack on the monitor.
+# arrive the moment it is started), the stack on the monitor, and there with Fibre on blackbox_exporter,
+# which asks each Fibre host for its readiness.
 celestia_mon_host_services: >-
   {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) else [])
      + (['otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
@@ -87,4 +89,6 @@ celestia_mon_host_services: >-
      + (['tensile'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_tensile.validator | default('') | length > 0
         else [])
      + (['signal'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_signal | default({}, true) | length > 0
-        else []) }}
+        else [])
+     + (['blackbox'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_fibre_enabled
+        and groups.get('fibre', []) | length > 0 else []) }}

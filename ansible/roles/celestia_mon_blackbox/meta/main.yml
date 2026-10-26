@@ -1,0 +1,12 @@
+---
+galaxy_info:
+  author: Huginn Tech
+  description: blackbox_exporter on the monitor host, on 127.0.0.1, asking each Fibre host for its upload readiness (the standard gRPC health check)
+  license: MIT
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - noble
+dependencies:
+  - role: celestia_mon
