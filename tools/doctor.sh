@@ -22,8 +22,9 @@
 # <node home>/bin, as the node itself does at every start.
 #
 # Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15,
-# 16, 18, 19 and 21 to 23 run on the monitor host and ask them there, with the API
-# password that only root can read (api_password_file).
+# 16, 18, 19 and 21 to 24 run on the monitor host and ask them there, with the API
+# password that only root can read (api_password_file). Check 24 also asks
+# celestia-mon-blackbox there (blackbox_url).
 #
 # signer and fibre_enabled tell doctor the install type: with signer=local it
 # never expects the remote signer's metrics, with fibre_enabled=false never
@@ -60,6 +61,7 @@ declare -A C=(
   [node_hosts]=""
   [prometheus_url]="http://127.0.0.1:9912"
   [alertmanager_url]="http://127.0.0.1:9913"
+  [blackbox_url]="http://127.0.0.1:9919"
   [api_user]="celestia-mon"
   [api_password_file]="/etc/celestia-mon/api-password"
   [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
@@ -119,6 +121,9 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          (default http://127.0.0.1:9912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
                          (default http://127.0.0.1:9913)
+  blackbox_url           celestia-mon-blackbox, which asks the Fibre hosts for
+                         their readiness, on the monitor host (default
+                         http://127.0.0.1:9919)
   api_user, api_password_file  HTTP basic auth for those two (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)
@@ -1130,12 +1135,12 @@ firewall_state() {
 # The systemd units celestia-mon installs. Check 8 looks only at the sockets of their
 # main processes, so other software on the host (a node_exporter, Prometheus,
 # Grafana or collector of its own) is left alone. Every one of them must listen
-# on a private address; Prometheus, Alertmanager, celestia-mon-announcements, celestia-mon-tensile and
-# celestia-mon-signal on 127.0.0.1 only.
+# on a private address; Prometheus, Alertmanager, celestia-mon-announcements, celestia-mon-tensile,
+# celestia-mon-signal and celestia-mon-blackbox on 127.0.0.1 only.
 CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-grafana
-  celestia-mon-announcements celestia-mon-tensile celestia-mon-signal)
+  celestia-mon-announcements celestia-mon-tensile celestia-mon-signal celestia-mon-blackbox)
 CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements celestia-mon-tensile
-  celestia-mon-signal)
+  celestia-mon-signal celestia-mon-blackbox)
 
 check_binds() {
   local name="private binds" fw unit pid addr detail
@@ -1338,6 +1343,7 @@ target_fix() { # scrape job -> what to check when its target is down
     otelcol) printf '%s' "otelcol: on that Fibre host read \"systemctl status celestia-mon-otelcol\" and \"journalctl -u celestia-mon-otelcol -n 100\"" ;;
     prometheus | alertmanager) printf '%s' "$1: read \"journalctl -u celestia-mon-$1 -n 100\" on this host" ;;
     signal) printf '%s' "signal: read \"systemctl status celestia-mon-signal\" and \"journalctl -u celestia-mon-signal -n 50\" on this host" ;;
+    fibre_health) printf '%s' "fibre_health: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host" ;;
     *) printf '%s' "$1: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where)" ;;
   esac
 }
@@ -1462,6 +1468,7 @@ metric_source() {
     prometheus_*) echo prometheus ;;
     alertmanager_*) echo alertmanager ;;
     celestia_mon_signal_* | celestia_mon_upgrade_* | celestia_mon_app_version | celestia_mon_chain_*) echo signal ;;
+    probe_*) echo fibre_health ;;
   esac
 }
 
@@ -1469,7 +1476,7 @@ metric_source() {
 metric_expected() {
   case $1 in
     cometbft_privval_*) [[ ${C[signer]} != local ]] ;;
-    fibre_* | otelcol_*) fibre_on ;;
+    fibre_* | otelcol_* | probe_*) fibre_on ;;
     *) true ;;
   esac
 }
@@ -2121,6 +2128,98 @@ check_signal() {
   fi
 }
 
+probe_metric() { # blackbox /probe reply, series as blackbox prints it -> its value, empty when absent
+  awk -v s="$2" '$1 == s { print $2; exit }' <<<"$1"
+}
+
+# Fibre's upload readiness, on the monitor. Fibre v10.5.0 and newer answers the standard gRPC
+# health check on its own port: SERVING (Ready) when all of its own checks pass, NOT_SERVING
+# (Not ready) when one fails. An older Fibre answers Unimplemented (gRPC code 12: Not reported),
+# and a standby's port is closed. doctor asks celestia-mon-blackbox for each target of the scrape
+# job fibre_health, as Prometheus does, and reads the answer now.
+check_fibre_ready() {
+  local name="fibre ready" bb=${C[blackbox_url]%/} unit=${C[fibre_unit]} h addr line code out st why fix detail
+  local re_host='"host":"([^"]*)"' re_instance='"instance":"([^"]*)"'
+  local -a hosts=() ready=() notready=() noans=() notrep=() standby=() bberr=() parts=() nr=()
+  local -A addr_of=()
+  if ! has_role monitor; then report SKIP 24 "$name" "not the monitor host"; return; fi
+  if ! fibre_on; then report SKIP 24 "$name" "Fibre is disabled"; return; fi
+  if ((!PROM_OK)); then report SKIP 24 "$name" "Prometheus not answering (check 11)"; return; fi
+  while IFS= read -r line; do
+    [[ $line =~ $re_host ]] || continue
+    h=${BASH_REMATCH[1]}
+    [[ $line =~ $re_instance ]] && addr_of[$h]=${BASH_REMATCH[1]}
+  done < <(prom_query 'max by (host, instance) (up{job="fibre_health"})' | sed 's/{"metric":/\n&/g')
+  if ((${#addr_of[@]} == 0)); then
+    report FAIL 24 "$name" "Fibre is on, but Prometheus has no readiness target (job fibre_health), so nothing reads whether Fibre is ready. Fix: re-run install.sh on this host"
+    return
+  fi
+  code=$(http_code "$bb/-/healthy")
+  if [[ $code != 200 ]]; then
+    report FAIL 24 "$name" "celestia-mon-blackbox does not answer at $bb ($(answer "$code")), so Fibre's readiness is not checked. Fix: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host, then re-run install.sh on this host"
+    return
+  fi
+  fibre_states
+  mapfile -t hosts < <(printf '%s\n' "${!addr_of[@]}" | sort)
+  for h in "${hosts[@]}"; do
+    addr=${addr_of[$h]}
+    out=$(curl -fsS -g --max-time 10 -G --data-urlencode module=fibre_health --data-urlencode "target=$addr" "$bb/probe" 2>/dev/null) || out=""
+    if [[ -z $out ]]; then
+      bberr+=("$h")
+      continue
+    fi
+    st=$(probe_metric "$out" probe_grpc_status_code)
+    if [[ $(probe_metric "$out" 'probe_grpc_healthcheck_response{serving_status="SERVING"}') == 1 ]]; then
+      ready+=("$h ($addr)")
+    elif [[ $(probe_metric "$out" 'probe_grpc_healthcheck_response{serving_status="NOT_SERVING"}') == 1 ]]; then
+      notready+=("$h ($addr)")
+      nr+=("$h")
+    elif [[ $st == 12 ]]; then
+      notrep+=("$h ($addr)")
+    elif [[ ${FIBRE_STATE[$h]:-} == standby ]]; then
+      standby+=("$h")
+    else
+      if [[ $addr == "["* ]]; then
+        why="the readiness probe cannot reach an IPv6 address yet"
+      else
+        case $st in
+          14) why="no connection" ;;
+          4) why="no answer within 5 seconds" ;;
+          *) why="gRPC status ${st:-unknown}" ;;
+        esac
+      fi
+      noans+=("$h: the monitor cannot reach Fibre's port at $addr ($why), so readiness is not checked")
+    fi
+  done
+  if ((${#bberr[@]} > 0)); then
+    report FAIL 24 "$name" "celestia-mon-blackbox did not answer the readiness probe of $(join "${bberr[@]}"). Fix: read \"journalctl -u celestia-mon-blackbox -n 50\" on this host, then re-run install.sh on this host"
+    return
+  fi
+  if ((${#notready[@]} > 0)); then parts+=("Not ready: $(join "${notready[@]}"): Fibre reports that at least one of its own checks fails, so uploads to it may fail"); fi
+  if ((${#noans[@]} > 0)); then parts+=("Not checked: $(join "${noans[@]}")"); fi
+  if ((${#notrep[@]} > 0)); then parts+=("Not reported: $(join "${notrep[@]}"): Fibre older than v10.5.0 does not report readiness"); fi
+  if ((${#ready[@]} > 0)); then parts+=("Ready: $(join "${ready[@]}")"); fi
+  if ((${#standby[@]} > 0)); then parts+=("standby (Fibre unit not active, port closed): $(join "${standby[@]}")"); fi
+  detail=$(printf '%s; ' "${parts[@]}")
+  detail=${detail%; }
+  if ((${#notready[@]} > 0)); then
+    report FAIL 24 "$name" "$detail. Fix: on $(join "${nr[@]}"), \"journalctl -u $unit | grep 'health check failed' | tail -n 5\" names the failing check (app, fibre_module, signer, validator, registration or store) and what to do about it; Fibre turns Ready again by itself once that check passes"
+  elif ((${#noans[@]} + ${#notrep[@]} > 0)); then
+    fix=""
+    if ((${#noans[@]} > 0)); then
+      fix+="Fibre must listen on the address named (check 6 on that host shows where it listens), and any firewall or tailnet policy between the hosts must let the monitor reach that port; if Fibre uses another port there, set celestia_mon_fibre_port for that host and re-run install.sh on this host"
+    fi
+    if ((${#notrep[@]} > 0)); then
+      fix+="${fix:+; }upgrade Fibre to v10.5.0 or newer to get its readiness"
+    fi
+    report WARN 24 "$name" "$detail. Fix: $fix"
+  elif ((${#ready[@]} == 0)); then
+    report SKIP 24 "$name" "no Fibre unit is active, so no readiness is expected (check 19); $detail"
+  else
+    report OK 24 "$name" "$detail"
+  fi
+}
+
 # ------------------------------------------------------------------- main
 
 conf=/etc/celestia-mon/doctor.conf
@@ -2214,6 +2313,7 @@ check_signer_binds
 check_silences
 check_deadman
 check_signal
+check_fibre_ready
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."
