@@ -1,0 +1,17 @@
+# Managed by celestia-mon (role celestia_mon_blackbox). Local changes are overwritten.
+modules:
+  # Fibre's upload readiness: the standard gRPC health check (grpc.health.v1, the server as a
+  # whole) on Fibre's own port, which Fibre v10.5.0 and newer answers. Fibre's certificate is
+  # its own self-signed identity certificate, made at every start and signed by no authority,
+  # so it is not verified: this probe reads readiness, not identity. It sends no key and no
+  # client certificate.
+  fibre_health:
+    prober: grpc
+    timeout: 5s
+    grpc:
+      service: ""
+      tls: true
+      tls_config:
+        insecure_skip_verify: true
+      preferred_ip_protocol: ip4
+      ip_protocol_fallback: true

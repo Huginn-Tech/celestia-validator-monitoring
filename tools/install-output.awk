@@ -6,6 +6,7 @@
 BEGIN {
   label["celestia_mon_node_exporter"] = "node_exporter"
   label["celestia_mon_otelcol"] = "Fibre collector (otelcol)"
+  label["celestia_mon_blackbox"] = "Fibre upload readiness"
   label["celestia_mon_prometheus"] = "Prometheus"
   label["celestia_mon_alertmanager"] = "Alertmanager"
   label["celestia_mon_announcements"] = "Celestia announcements"

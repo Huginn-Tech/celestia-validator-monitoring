@@ -1,0 +1,59 @@
+# Managed by celestia-mon (role celestia_mon_blackbox). Local changes are overwritten.
+[Unit]
+Description=blackbox_exporter for Fibre's upload readiness (celestia-mon)
+Documentation=https://github.com/prometheus/blackbox_exporter
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=celestia-mon-blackbox
+Group=celestia-mon-blackbox
+ExecStart={{ celestia_mon_blackbox_binary }} \
+  --config.file={{ celestia_mon_blackbox_config }} \
+  --web.listen-address={{ celestia_mon_blackbox_listen_address }}
+Restart=on-failure
+RestartSec=5s
+# Lower CPU and disk priority than the Celestia services when they compete (no CPU quota),
+# a soft memory target (MemoryHigh) and a hard limit well above it (MemoryMax).
+Nice={{ celestia_mon_nice }}
+CPUWeight={{ celestia_mon_cpu_weight }}
+IOWeight={{ celestia_mon_io_weight }}
+MemoryHigh={{ celestia_mon_memory.blackbox.high }}
+MemoryMax={{ celestia_mon_memory.blackbox.max }}
+# When the whole host runs out of memory, the kernel ends this service before celestia-appd,
+# Fibre or tmkms.
+OOMScoreAdjust=500
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# of an ordinary service (a call outside the set fails with EPERM).
+CapabilityBoundingSet=
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# Network traffic only with 127.0.0.1 (Prometheus and doctor) and the Fibre hosts' private
+# addresses: a probe cannot reach any other host.
+IPAddressDeny=any
+IPAddressAllow=localhost
+{% for ip in celestia_mon_blackbox_fibre_ips %}
+IPAddressAllow={{ ip }}
+{% endfor %}
+# Every probe that does not end in SERVING logs two errors, every 15 seconds for each Fibre
+# host: a standby's closed port would fill the journal. journald drops them; the result is
+# in Prometheus (probe_* of job fibre_health), and doctor check 24 shows it with its reason.
+LogFilterPatterns=~msg="(Probe failed|can't connect grpc server:)" module=fibre_health
+
+[Install]
+WantedBy=multi-user.target

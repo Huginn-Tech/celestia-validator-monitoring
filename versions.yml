@@ -28,6 +28,13 @@ celestia_mon_versions:
     sha256:
       amd64: "265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8"
       arm64: "d98d6cbaf52151c7e76e24355fec88b11cebcb9875d4cdd8b76ddce7a7e5535c"
+  # blackbox_exporter-<version>.linux-<arch>.tar.gz (sha256sums.txt). On the monitor host with Fibre
+  # on: asks each Fibre host for its upload readiness (the standard gRPC health check).
+  blackbox_exporter:
+    version: "0.29.0"
+    sha256:
+      amd64: "5512929259bb6164f68ebe20ce433ec43b8609e3a79c95324f5020e931488fb4"
+      arm64: "743c490a2386c5b77ad13e7af30cde48651c03ffe9f61d39b99c578baa7e8e34"
   # Grafana OSS grafana-<version>.linux-<arch>.tar.gz from dl.grafana.com/oss/release/ (the .sha256
   # file next to it). 12.4 is the last minor of Grafana 12, supported until 2027-05-24.
   grafana:

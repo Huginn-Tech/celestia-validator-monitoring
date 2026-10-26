@@ -28,6 +28,7 @@ GITHUB_REPOS = {
     "otelcol_contrib": "open-telemetry/opentelemetry-collector-releases",
     "prometheus": "prometheus/prometheus",
     "alertmanager": "prometheus/alertmanager",
+    "blackbox_exporter": "prometheus/blackbox_exporter",
     "grafana": "grafana/grafana",
     "uv": "astral-sh/uv",
 }

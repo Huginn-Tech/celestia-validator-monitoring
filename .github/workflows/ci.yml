@@ -429,7 +429,17 @@ jobs:
           assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
           assert hosts("signal") == [("fibre-1", "monitor")], hosts("signal")
           assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
-          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal")})
+          # Fibre's readiness: every Fibre host's own port, asked through celestia-mon-blackbox on the monitor.
+          fh = jobs["fibre_health"]
+          assert hosts("fibre_health") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("fibre_health")
+          assert sorted(c["targets"] for c in fh["static_configs"]) == [["10.20.0.1:7980"], ["10.20.0.2:7980"]], fh
+          assert fh["metrics_path"] == "/probe" and fh["params"] == {"module": ["fibre_health"]}, fh
+          assert fh["relabel_configs"] == [
+              {"source_labels": ["__address__"], "target_label": "__param_target"},
+              {"source_labels": ["__param_target"], "target_label": "instance"},
+              {"target_label": "__address__", "replacement": "127.0.0.1:9919"},
+          ], fh["relabel_configs"]
+          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal", "fibre_health")})
           EOF
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
@@ -457,6 +467,10 @@ jobs:
           am=build/split/alertmanager.yml
           amtool check-config "$am"
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page
+          amtool config routes test --config.file="$am" --verify.receivers=page \
+            alertname=FibreNotServing severity=page reason=not_ready host=fibre-1
+          amtool config routes test --config.file="$am" --verify.receivers=message \
+            alertname=FibreNotServing severity=message reason=not_ready host=fibre-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
@@ -482,6 +496,13 @@ jobs:
           assert (r["receiver"], r["group_by"], r["group_wait"], r["repeat_interval"]) == ("message", ["..."], "0s", "96h"), r
           assert "routes" not in r and not r.get("continue", False), r
           assert upgrade[0] < [i for i, r in enumerate(routes) if r.get("receiver") == "message" and i != upgrade[0]][0], routes
+          # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
+          # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready.
+          inhibit = config["inhibit_rules"]
+          assert {"source_matchers": ['alertname="ValidatorNotSigning"'],
+                  "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
+          assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
+                  "target_matchers": ['alertname="FibreNotServing"', 'reason!="not_ready"'], "equal": ["host"]} in inhibit, inhibit
           receivers = {r["name"]: r for r in config["receivers"]}
           def count(name):
               return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
@@ -983,9 +1004,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 59
-          test "$(count mainnet)" = 62
-          test "$(count five)" = 56
+          test "$(count split)" = 60
+          test "$(count mainnet)" = 63
+          test "$(count five)" = 57
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1107,22 +1128,62 @@ jobs:
           EOF
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
-      # three charts of one height: two side by side on columns 0 and 12, then one across the row.
+      # the Upload readiness band (215: one untitled lane across the row, 2 rows high, right under the
+      # facts), then three charts of one height, right under the band: two side by side on columns 0 and
+      # 12, then one across the row.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
                    | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
+                   | [$f[] | select(.type == "state-timeline")] as $b
                    | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
                      and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
                                    and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
                      and ($p | map(.options.text.valueSize) | unique | length) == 1
-                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) > ($s | map(.y) | max)
+                     and ($b | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h]))
+                         == [[215, "", 1, 0, 24, 2]]
+                     and $b[0].gridPos.y == ($s | map(.y + .h) | max)
+                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) == $b[0].gridPos.y + 2
                      and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
               "build/$s/dashboard.json"
           done
+      # Upload readiness (215) and the Fibre tile, History and cards read the not_ready rules: both rules
+      # (a message after 3 minutes, a page after 10) watch one NOT_SERVING selector, which the band's
+      # amber reads, and its red is the page firing.
+      - name: Upload readiness reads the not_ready rules
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                       if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "not_ready"]
+              assert sorted((r["labels"]["severity"], r["for"]) for r in found) == [("message", "3m"), ("page", "10m")], found
+              exprs = {" ".join(r["expr"].split()) for r in found}
+              assert len(exprs) == 1, exprs
+              m = re.fullmatch(r"max by \(host\) \((probe_grpc_healthcheck_response\{[^}]*\})\) == 1", exprs.pop())
+              assert m, found
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              band = " ".join(panels[215]["targets"][0]["expr"].split())
+              assert "max_over_time(%s[$__interval] offset -$__interval)" % m.group(1) in band, band
+              page = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
+              assert 'ALERTS{alertstate="firing",%s}' % page in band, band
+              for i in (14, 20):
+                  assert any(page in t["expr"] for t in panels[i]["targets"]), "%s: %d lacks the page" % (s, i)
+              print("%s: 215 reads %s; 14 and 20 the page" % (s, m.group(1)))
+          EOF
       # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
       # compares, which is the rule's expression without its comparison (inside the clamp that draws an
       # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
@@ -1459,6 +1520,138 @@ jobs:
         if: failure()
         run: cat "$RUNNER_TEMP/monitor/prometheus.log" || true
 
+  # Fibre's readiness probe end to end on the runner: the module the install writes, at the pinned
+  # blackbox_exporter, against stand-ins of Fibre's port with TLS and a self-signed certificate
+  # (tools/ci/grpc_health_stub.py: Ready, Not ready, a Fibre without readiness) and a closed port,
+  # then Prometheus at the pinned version with the install's scrape job and relabelling, and doctor
+  # check 24 on it. A static file stands in for node_exporter's unit states: fibre-d's Fibre unit is
+  # active (its closed port is Not checked), fibre-e's is not (a standby).
+  doctor-readiness:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Read the pinned versions
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyyaml
+          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - name: Install the gRPC packages of the stand-ins
+        run: pip install "grpcio>=1.66,<2" "grpcio-health-checking>=1.66,<2"
+      - name: The readiness probe and doctor check 24
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/readiness"
+          mkdir -p "$dir/data" "$dir/am/-" "$dir/node"
+          cd "$dir"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj /CN=fibre-ci \
+            -keyout key.pem -out cert.pem 2>/dev/null
+          python "$GITHUB_WORKSPACE/tools/ci/grpc_health_stub.py" cert.pem key.pem >stub.log 2>&1 &
+          bb="blackbox_exporter-$BLACKBOX_EXPORTER_VERSION.linux-amd64"
+          curl -fsSLO "https://github.com/prometheus/blackbox_exporter/releases/download/v$BLACKBOX_EXPORTER_VERSION/$bb.tar.gz"
+          echo "$BLACKBOX_EXPORTER_SHA256  $bb.tar.gz" | sha256sum -c -
+          tar -xzf "$bb.tar.gz" --strip-components=1 "$bb/blackbox_exporter"
+          # The template holds no variable: it is the file the install writes.
+          cp "$GITHUB_WORKSPACE/ansible/roles/celestia_mon_blackbox/templates/blackbox.yml.j2" blackbox.yml
+          ./blackbox_exporter --config.check --config.file=blackbox.yml
+          ./blackbox_exporter --config.file=blackbox.yml --web.listen-address=127.0.0.1:9919 >blackbox.log 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9919/-/healthy
+          for _ in $(seq 30); do grep -qx ready stub.log && break; sleep 1; done
+          grep -qx ready stub.log || { cat stub.log; exit 1; }
+
+          # The four states, as the alert rules and the dashboard read them.
+          probe() { curl -fsS "http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:$1"; }
+          out=$(probe 7981)
+          printf '%s\n' "$out"
+          grep -qx 'probe_success 1' <<<"$out"
+          grep -qx 'probe_grpc_healthcheck_response{serving_status="SERVING"} 1' <<<"$out"
+          out=$(probe 7982)
+          grep -qx 'probe_success 0' <<<"$out"
+          grep -qx 'probe_grpc_healthcheck_response{serving_status="NOT_SERVING"} 1' <<<"$out"
+          grep -qx 'probe_grpc_healthcheck_response{serving_status="SERVING"} 0' <<<"$out"
+          out=$(probe 7983)
+          grep -qx 'probe_grpc_status_code 12' <<<"$out"
+          if grep -q '^probe_grpc_healthcheck_response{.*} 1$' <<<"$out"; then echo "a Fibre without readiness reads as answered"; exit 1; fi
+          out=$(probe 7984)
+          grep -qx 'probe_success 0' <<<"$out"
+          grep -qx 'probe_grpc_status_code 14' <<<"$out"
+
+          rel="prometheus-$PROMETHEUS_VERSION.linux-amd64"
+          curl -fsSLO "https://github.com/prometheus/prometheus/releases/download/v$PROMETHEUS_VERSION/$rel.tar.gz"
+          echo "$PROMETHEUS_SHA256  $rel.tar.gz" | sha256sum -c -
+          tar -xzf "$rel.tar.gz" --strip-components=1 "$rel/prometheus"
+          for h in a b c d e; do
+            v=1
+            if [ "$h" = e ]; then v=0; fi
+            printf 'node_systemd_unit_state{host="fibre-%s",name="fibre.service",state="active"} %s\n' "$h" "$v"
+          done >node/metrics.txt
+          python3 -m http.server 9100 --bind 127.0.0.1 --directory node >/dev/null 2>&1 &
+          cat > prometheus.yml <<'EOF'
+          global:
+            scrape_interval: 5s
+          scrape_configs:
+            - job_name: node
+              honor_labels: true
+              metrics_path: /metrics.txt
+              fallback_scrape_protocol: PrometheusText0.0.4
+              static_configs:
+                - targets: ["127.0.0.1:9100"]
+            # As the install renders it (prometheus.yml.j2), for five Fibre hosts.
+            - job_name: fibre_health
+              metrics_path: /probe
+              params:
+                module: [fibre_health]
+              static_configs:
+                - {targets: ["127.0.0.1:7981"], labels: {host: fibre-a, role: fibre}}
+                - {targets: ["127.0.0.1:7982"], labels: {host: fibre-b, role: fibre}}
+                - {targets: ["127.0.0.1:7983"], labels: {host: fibre-c, role: fibre}}
+                - {targets: ["127.0.0.1:7984"], labels: {host: fibre-d, role: fibre}}
+                - {targets: ["127.0.0.1:7985"], labels: {host: fibre-e, role: fibre}}
+              relabel_configs:
+                - source_labels: [__address__]
+                  target_label: __param_target
+                - source_labels: [__param_target]
+                  target_label: instance
+                - target_label: __address__
+                  replacement: "127.0.0.1:9919"
+          EOF
+          ./prometheus --config.file=prometheus.yml --storage.tsdb.path=data \
+            --web.listen-address=127.0.0.1:9912 >prometheus.log 2>&1 &
+          touch am/-/ready
+          python3 -m http.server 9913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9912/-/ready
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9913/-/ready
+          for _ in $(seq 60); do
+            if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up==1)' | grep -q '"value":[[0-9.]*,"6"]'; then break; fi
+            sleep 1
+          done
+
+          rc=0
+          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>stderr.txt) || rc=$?
+          printf '%s\n' "$out"
+          cat stderr.txt
+          if [ "$rc" -ne 1 ] || [ -s stderr.txt ]; then
+            echo "doctor exited $rc (expected 1: fibre-b is Not ready) or wrote to stderr"
+            exit 1
+          fi
+          grep -Eq '^OK +11 +monitor stack +.* 6 of 6 scrape targets up' <<<"$out"
+          line=$(grep -E '^FAIL +24 +fibre ready +Not ready: fibre-b \(127\.0\.0\.1:7982\): ' <<<"$out")
+          for want in 'Fibre reports that at least one of its own checks fails, so uploads to it may fail;' \
+                      "Not checked: fibre-d: the monitor cannot reach Fibre's port at 127.0.0.1:7984 (no connection)" \
+                      'Not reported: fibre-c (127.0.0.1:7983): Fibre older than v10.5.0' \
+                      'Ready: fibre-a (127.0.0.1:7981)' \
+                      'standby (Fibre unit not active, port closed): fibre-e.' \
+                      "Fix: on fibre-b, \"journalctl -u fibre | grep 'health check failed' | tail -n 5\""; do
+            grep -qF -- "$want" <<<"$line" || { echo "check 24 does not say: $want"; exit 1; }
+          done
+      - name: Show the logs
+        if: failure()
+        run: |
+          cd "$RUNNER_TEMP/readiness" || exit 0
+          tail -n 50 stub.log blackbox.log prometheus.log || true
+
   # install.sh end to end on the runner, as an operator runs it on a host: a dry run that
   # changes nothing, the install, a second run that changes nothing, root-owned binaries that
   # match their recorded sha256, Prometheus and Alertmanager behind the API password, doctor on
@@ -1695,11 +1888,12 @@ jobs:
             exit 1
           fi
           sums=0
-          for d in /opt/celestia-mon/node_exporter-* /opt/celestia-mon/otelcol-contrib-* /opt/celestia-mon/prometheus-* /opt/celestia-mon/alertmanager-*; do
+          for d in /opt/celestia-mon/node_exporter-* /opt/celestia-mon/otelcol-contrib-* /opt/celestia-mon/prometheus-* /opt/celestia-mon/alertmanager-* \
+                   /opt/celestia-mon/blackbox_exporter-*; do
             (cd "$d" && sudo sha256sum --check --strict SHA256SUMS)
             sums=$((sums + 1))
           done
-          test "$sums" = 4
+          test "$sums" = 5
           if sudo find /var/cache/celestia-mon /opt/celestia-mon -maxdepth 1 -name '*staging*' 2>/dev/null | grep .; then
             echo "a staging directory was left behind"
             exit 1
@@ -1766,6 +1960,27 @@ jobs:
           poll 'up{job="signal"}' '.data.result[0].value[1] == "1"'
           poll 'ALERTS{alertname="UpgradeScheduled",alertstate="firing"}' '.data.result | length == 1'
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
+      # Prometheus asks celestia-mon-blackbox for Fibre's readiness. Nothing listens on Fibre's port
+      # here (127.0.0.1:7980), so every probe fails, and journald keeps neither of the two error
+      # lines blackbox logs for each failed probe.
+      - name: Fibre's readiness is asked through celestia-mon-blackbox
+        run: |
+          set -euo pipefail
+          systemctl is-active celestia-mon-blackbox
+          systemctl show celestia-mon-blackbox -p IPAddressDeny -p IPAddressAllow -p LogFilterPatterns
+          curl -fsS 'http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980' | grep -qx 'probe_grpc_status_code 14'
+          login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
+          ok=0
+          for _ in $(seq 30); do
+            if jq -e '.data.result[0].value[1] == "14"' >/dev/null \
+              <<<"$(query 'probe_grpc_status_code{job="fibre_health",host="ci",role="fibre",instance="127.0.0.1:7980"}')"; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" != 1 ]; then echo "Prometheus has no readiness probe of 127.0.0.1:7980 through celestia-mon-blackbox"; exit 1; fi
+          if sudo journalctl -u celestia-mon-blackbox --no-pager | grep -E 'Probe failed|connect grpc server'; then
+            echo "journald keeps the error lines of failed probes"; exit 1
+          fi
       - name: Celestia announcements reach Alertmanager
         run: |
           set -euo pipefail
@@ -1784,7 +1999,7 @@ jobs:
           login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="announcements"}' | jq -e '.data.result[0].value[1] == "1"'
       - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
         run: |
-          for u in node-exporter otelcol prometheus alertmanager grafana; do
+          for u in node-exporter otelcol prometheus alertmanager grafana blackbox; do
             systemctl is-active "celestia-mon-$u"
             systemctl show "celestia-mon-$u" -p Nice -p CPUWeight -p IOWeight -p MemoryHigh -p MemoryMax
           done
@@ -1804,7 +2019,7 @@ jobs:
         run: |
           out=$(sudo celestia-mon-doctor || true)
           printf '%s\n' "$out"
-          grep -Eq '^FAIL +11 +monitor stack +1 of 8 scrape targets down: celestia-app ' <<<"$out"
+          grep -Eq '^FAIL +11 +monitor stack +1 of 9 scrape targets down: celestia-app ' <<<"$out"
           line=$(grep -E '^(OK|WARN) +12 +rule metrics ' <<<"$out")
           for m in up node_filesystem_avail_bytes alertmanager_notifications_failed_total prometheus_rule_evaluation_failures_total; do
             # Names in the list follow ": " or ", "; the Fix text also says "is up (check 11)".
@@ -1819,6 +2034,9 @@ jobs:
           grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-signal 127\.0\.0\.1:9918' <<<"$out"
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
+          # systemd-logind stands in for an active Fibre, and nothing listens on 127.0.0.1:7980.
+          grep -Eq "^WARN +24 +fibre ready +Not checked: ci: the monitor cannot reach Fibre's port at 127\.0\.0\.1:7980 \(no connection\)" <<<"$out"
           line=$(grep -E '^OK +23 +upgrade signal +read through http://127\.0\.0\.1:8767 ' <<<"$out")
           grep -qF 'v10 signalled by 85.5% of the voting power, an upgrade needs 83.3%; your validator signalled v10;' <<<"$line"
           grep -qF 'upgrade to v10 scheduled at height 15116658, in about 3.9 days' <<<"$line"
@@ -1831,7 +2049,7 @@ jobs:
       - name: Every unit's peak memory stays at or below half its MemoryHigh
         run: |
           fail=0
-          for u in node-exporter otelcol prometheus alertmanager grafana; do
+          for u in node-exporter otelcol prometheus alertmanager grafana blackbox; do
             unit=celestia-mon-$u
             high=$(systemctl show -P MemoryHigh "$unit")
             current=$(systemctl show -P MemoryCurrent "$unit")

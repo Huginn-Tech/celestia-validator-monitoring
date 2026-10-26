@@ -108,17 +108,33 @@ inhibit_rules:
       - 'alertname="ValidatorNotSigning"'
     target_matchers:
       - 'alertname="SignaturesMissed"'
+  # A validator out of the active set or a signer that does not answer also fails Fibre's checks:
+  # the page for the signatures covers Fibre not ready.
+  - source_matchers:
+      - 'alertname="ValidatorNotSigning"'
+    target_matchers:
+      - 'alertname="FibreNotServing"'
+      - 'reason="not_ready"'
   # No Fibre unit active anywhere explains FibreNotServing. FibreDown names no host.
   - source_matchers:
       - 'alertname="FibreDown"'
     target_matchers:
       - 'alertname="FibreNotServing"'
-  # A crash-looping Fibre or a collector that is down explains the same host's FibreNotServing.
+  # A crash-looping Fibre explains the same host's FibreNotServing.
   - source_matchers:
       - 'alertname="ServiceDown"'
-      - 'unit=~"fibre|otelcol"'
+      - 'unit="fibre"'
     target_matchers:
       - 'alertname="FibreNotServing"'
+    equal: [host]
+  # A collector that is down explains missing Fibre metrics, not Fibre's own health check, which
+  # the monitor asks Fibre directly.
+  - source_matchers:
+      - 'alertname="ServiceDown"'
+      - 'unit="otelcol"'
+    target_matchers:
+      - 'alertname="FibreNotServing"'
+      - 'reason!="not_ready"'
     equal: [host]
 
 receivers:

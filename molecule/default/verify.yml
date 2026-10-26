@@ -21,6 +21,9 @@
       celestia-mon-grafana.service:
         memory_high: 536870912 # 512M
         memory_max: 1073741824 # 1G
+      celestia-mon-blackbox.service:
+        memory_high: 134217728 # 128M
+        memory_max: 268435456 # 256M
     # Unit names and binaries other installs on the host use; celestia-mon must leave them alone.
     celestia_mon_verify_foreign_units:
       - node_exporter.service
@@ -29,6 +32,8 @@
       - prometheus.service
       - alertmanager.service
       - grafana-server.service
+      - blackbox_exporter.service
+      - prometheus-blackbox-exporter.service
     celestia_mon_verify_foreign_binaries:
       - node_exporter
       - otelcol-contrib
@@ -38,6 +43,7 @@
       - amtool
       - grafana
       - grafana-server
+      - blackbox_exporter
     # celestia-mon's default ports (celestia_mon_ports).
     celestia_mon_verify_ports:
       node_exporter: 9910
@@ -46,6 +52,7 @@
       alertmanager: 9913
       grafana: 9914
       otelcol_otlp: 9915
+      blackbox: 9919
     # Services the monitor reaches on the private address.
     celestia_mon_verify_private_ports:
       - node_exporter
@@ -57,6 +64,7 @@
       - alertmanager
       - otelcol_otlp
       - grafana
+      - blackbox
     celestia_mon_verify_grafana: "http://127.0.0.1:{{ celestia_mon_verify_ports.grafana }}"
     # Scrape jobs Prometheus must have, with the role label of this host's target.
     celestia_mon_verify_jobs:
@@ -69,6 +77,8 @@
       - job: node
         role: validator
       - job: otelcol
+        role: fibre
+      - job: fibre_health
         role: fibre
     celestia_mon_verify_prometheus: "http://127.0.0.1:{{ celestia_mon_verify_ports.prometheus }}"
     celestia_mon_verify_alertmanager: "http://127.0.0.1:{{ celestia_mon_verify_ports.alertmanager }}"
@@ -156,7 +166,7 @@
         timeout: 60
       loop: "{{ celestia_mon_verify_private_ports }}"
 
-    - name: Check that Prometheus, Alertmanager, the OTLP receiver and Grafana answer on loopback
+    - name: Check that Prometheus, Alertmanager, the OTLP receiver, Grafana and blackbox_exporter answer on loopback
       ansible.builtin.wait_for:
         host: 127.0.0.1
         port: "{{ celestia_mon_verify_ports[item] }}"
@@ -164,7 +174,7 @@
       loop: "{{ celestia_mon_verify_loopback_ports }}"
 
     # 9094 is Alertmanager's default cluster port, which celestia-mon turns off.
-    - name: Check that Prometheus, Alertmanager, Grafana and Alertmanager's cluster port are closed on the private address
+    - name: Check that Prometheus, Alertmanager, Grafana, blackbox_exporter and Alertmanager's cluster port are closed on the private address
       ansible.builtin.wait_for:
         host: "{{ celestia_mon_private_ip }}"
         port: "{{ item }}"
@@ -174,6 +184,7 @@
         - "{{ celestia_mon_verify_ports.prometheus }}"
         - "{{ celestia_mon_verify_ports.alertmanager }}"
         - "{{ celestia_mon_verify_ports.grafana }}"
+        - "{{ celestia_mon_verify_ports.blackbox }}"
         - 9094
 
     - name: Read the API password
@@ -253,6 +264,24 @@
       loop: "{{ celestia_mon_verify_jobs }}"
       loop_control:
         label: "{{ item.job }}"
+
+    # Prometheus asks celestia-mon-blackbox on 127.0.0.1 for this host's readiness. No Fibre runs
+    # here, so the probe itself fails, but blackbox answers it and the target is up.
+    - name: Wait until Prometheus has scraped the readiness probe through celestia-mon-blackbox
+      ansible.builtin.uri:
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/targets?state=active"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: celestia_mon_verify_probe_target
+      until: >-
+        celestia_mon_verify_probe_target.json.data.activeTargets | default([])
+        | selectattr('labels.job', 'equalto', 'fibre_health') | selectattr('health', 'equalto', 'up')
+        | selectattr('scrapeUrl', 'match', 'http://127.0.0.1:9919/probe')
+        | list | length == 1
+      retries: 12
+      delay: 5
 
     # Prometheus reports the retention it applies from prometheus.yml as a metric of its own.
     - name: Read the retention size Prometheus applies

@@ -67,6 +67,9 @@
   vars_files:
     - ../versions.yml
   roles:
+    # With Fibre on: asks each Fibre host for its upload readiness. Before Prometheus, so the
+    # fibre_health job finds it from its first scrape.
+    - role: celestia_mon_blackbox
     - role: celestia_mon_prometheus
     - role: celestia_mon_alertmanager
     - role: celestia_mon_announcements

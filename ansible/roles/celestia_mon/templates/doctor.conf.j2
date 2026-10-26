@@ -34,6 +34,7 @@ fibre_hosts={{ fibre_hosts | join(',') }}
 {% if inventory_hostname in groups.get('monitor', []) %}
 prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
 alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
+blackbox_url=http://127.0.0.1:{{ celestia_mon_ports.blackbox }}
 {# The login of Prometheus's and Alertmanager's APIs (role celestia_mon's api_password.yml). #}
 api_user={{ celestia_mon_api_user }}
 api_password_file={{ celestia_mon_api_password_file }}
