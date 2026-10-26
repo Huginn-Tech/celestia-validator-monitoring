@@ -349,9 +349,10 @@ groups:
           runbook: "{{ docs }}#fibrebothactive"
 
       # FibreNotServing: Fibre runs but does not do its job: it misses blobs sent to the validator,
-      # fails every upload, does not serve rows it signed for, or sends no metrics. A network that
-      # sends no blobs never fires it. Only the host whose Fibre unit is active can match: a stopped
-      # unit reports a start time of 0, and a standby sends no Fibre metrics.
+      # fails every upload, does not serve rows it signed for, reports itself not ready, or sends no
+      # metrics. A network that sends no blobs never fires it. Only the host whose Fibre unit is
+      # active can match: a stopped unit reports a start time of 0, and a standby sends no Fibre
+      # metrics and does not answer the health check.
 {% if tensile_on %}
       # Uploads missed: blobs came for the validator, but Fibre accepted none of them. Tensile records
       # each settled blob that assigned rows to the validator. The publisher's client sends an upload
@@ -425,6 +426,41 @@ groups:
         annotations:
           summary: "{% raw %}Fibre on {{ $labels.host }} fails every upload{% endraw %}"
           description: "For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing. Check the signer first: Fibre signs through the node at its signer_grpc_address, so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error."
+          runbook: "{{ docs }}#fibrenotserving"
+      # Not ready: Fibre's own gRPC health check (service "") answers NOT_SERVING. Fibre answers
+      # SERVING only while six checks pass, run every 10 seconds by default (celestia-app v10.5.0
+      # fibre/server_health.go): app (the app node answers on the expected chain, is not syncing,
+      # and its newest block is younger than max_block_age, 2 minutes by default), fibre_module
+      # (the app node has the Fibre module), signer (the signer answers with the public key Fibre
+      # started with), validator (in the active set), registration (a valid provider host on chain)
+      # and store (a small write and read). Uploads do not read the state, but they need what the
+      # checks test. Fibre logs each failing check with what to do and never serves it, so the probe
+      # reads the state alone (job fibre_health, the blackbox exporter's grpc prober). Fibre answers
+      # NOT_SERVING from its start until the first round passes and while it shuts down: the
+      # 3 minutes let a restart pass. A Fibre older than v10.5.0 answers Unimplemented (status code
+      # 12) and a stopped standby does not answer (14, every serving_status 0): neither matches. The
+      # page follows at 10 minutes, FibreDown's delay. ValidatorNotSigning holds both back
+      # (Alertmanager): a validator out of the active set or a dead signer is one cause.
+{% set not_ready_text = " Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails: app (the app node answers on the right chain, synced, with a recent block), fibre_module, signer (answers with the key Fibre started with), validator (in the active set), registration (a valid provider host on chain) or store (a small write and read). Uploads to it may fail. Fibre's log names the check and what to do: journalctl -u " ~ fibre ~ " | grep 'health check failed'." %}
+      - alert: FibreNotServing
+        expr: max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status="NOT_SERVING"}) == 1
+        for: 3m
+        labels:
+          severity: message
+          reason: not_ready
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} is not ready for uploads{% endraw %}"
+          description: "For 3 minutes{{ not_ready_text }}"
+          runbook: "{{ docs }}#fibrenotserving"
+      - alert: FibreNotServing
+        expr: max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status="NOT_SERVING"}) == 1
+        for: 10m
+        labels:
+          severity: page
+          reason: not_ready
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} is not ready for uploads{% endraw %}"
+          description: "For 10 minutes{{ not_ready_text }}"
           runbook: "{{ docs }}#fibrenotserving"
 {% for h in fibres %}
       - alert: FibreNotServing
