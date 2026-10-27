@@ -412,8 +412,10 @@ jobs:
           test "$out" = "$(printf "$want")"
           test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
       # Alerts leave Prometheus without instance (a target's address), which nothing in Alertmanager
-      # reads: no rule label, inhibition or template names it.
-      - name: Alerts leave Prometheus without instance
+      # reads: no rule label, inhibition or template names it. Every scrape job caps its samples and
+      # labels (a scrape over a cap fails, so the caps sit far above what the jobs send; the install
+      # and molecule jobs see every target up).
+      - name: Alerts leave Prometheus without instance, and every scrape job has its limits
         run: |
           set -euo pipefail
           for s in single split mainnet; do
@@ -422,6 +424,12 @@ jobs:
           import yaml
           config = yaml.safe_load(open(sys.argv[1]))
           assert config["alerting"]["alert_relabel_configs"] == [{"action": "labeldrop", "regex": "instance"}], config["alerting"]
+          want = {"prometheus": 20000, "alertmanager": 10000, "celestia-app": 100000, "node": 50000, "otelcol": 20000,
+                  "fibre_health": 1000, "tensile": 1000, "signal": 1000, "announcements": 1000}
+          for job in config["scrape_configs"]:
+              name = job["job_name"]
+              assert (job.get("sample_limit"), job.get("label_limit")) == (want[name], 128), job
+          print(sys.argv[1], sorted(j["job_name"] for j in config["scrape_configs"]))
           EOF
           done
           # A label reference: $labels.instance, .Labels.instance, a matcher, or a by, on, without or equal list.
