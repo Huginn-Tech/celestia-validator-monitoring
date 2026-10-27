@@ -21,6 +21,7 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
       "kms_hosts": ["..."],                        # kms hosts with celestia_mon_kms_scrape
       "kms_names": ["..."],                        # every kms host, with a remote signer: names the signer's column
       "monitor_host": "...",                       # celestia_mon_monitor_host
+      "monitor_only": true | false,                # the monitor host runs no Celestia service
       "prometheus_retention": "30d",               # celestia_mon_prometheus_retention
       "fibre_mounts": [{"host": "...", "mount": "..."}],  # every fibre host, active or standby
       "fibre_endpoints": [{"host": "...", "endpoint": "..."}],  # every fibre host; celestia_mon_fibre_public_endpoint or ""
@@ -32,7 +33,8 @@ Layout (docs/panels.md): a first screen without a row header that reads like a s
 to bottom: one framed strip with the validator's name and network, four facts and the Status (the
 worst alert in a few words); up to six one-word answers; the Servers band, one column per server
 (and one for a remote signer whose host is not scraped) with what runs there now and its hardware
-now; History, one line of bars per check and, after a gap, per server, with each line's uptime;
+now; History, one line of bars per check and, after a gap, per server (the monitor's line also
+carries the monitoring's own alerts), with each line's uptime;
 the role band, which server held each role; and the key line (the range's ends and the colours).
 Then the rows Validator, Fibre (its facts, the Upload readiness band and its charts) and Servers
 (expanded; Servers has a column of hardware charts per server) and Servers: restarts, disk
@@ -330,6 +332,8 @@ TITLES = [
     ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
     ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
     ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
+    ("MonitorCannotReach:message::::([^:]*)", "Monitor cannot reach $1", "Not reached", P_SERVERS, "reached"),
+    ("MonitorCannotReach:page::::", "Monitor cannot reach any server", "Not reached", P_SERVERS, "monitor_only"),
     ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", P_MON, None),
     ("NotificationsFailing:.*", "Alerts not delivered", "Alerts unsent", P_MON, None),
     ("DeadmanFailing:.*", "Dead-man service not reached", "No heartbeat", P_MON, None),
@@ -343,8 +347,9 @@ TITLES = [
 # The Status cell's words for an alert whose labels match no key of TITLES (its label line then
 # reads "Status" alone).
 SHORT_FALLBACK = "See alerts"
-# Message alerts with a host label that colour a line of their own, not the generic warning of a
-# server's line (and of the Servers tile).
+# Message alerts with a host label that colour a line of their own (or, the monitoring's, the
+# monitor's line in their own words), not the generic warning of a server's line (and of the Servers
+# tile).
 SERVER_OTHERS = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|NotificationsFailing|DeadmanFailing|"
                  "TensileUnreadable|AnnouncementsUnreadable|SignalUnreadable|UpgradeSignalMissing|UpgradeScheduled|"
                  "UpgradeSoon")
@@ -361,8 +366,8 @@ NO_SURFACE = {
 }
 # Worst first between alerts of one level, so the order stays the same between refreshes.
 PRIORITY = {"ValidatorSigningTwice": 0.095, "NodeNotAdvancing": 0.09, "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
-            "DiskLow": 0.06, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04, "SignaturesMissed": 0.035,
-            "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025, "NodeBehind": 0.02,
+            "DiskLow": 0.06, "MonitorCannotReach": 0.055, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04,
+            "SignaturesMissed": 0.035, "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025, "NodeBehind": 0.02,
             "FibreBothActive": 0.015, "UpgradeSoon": 0.012}
 
 # The Role column: a server's parts add up to one code. (code, words, short words).
@@ -686,12 +691,13 @@ def load_rules():
 class Setup:
     """The settings, with what the panels derive from them.
 
-    remote, multi (tmkms signs through several nodes on purpose), fibre, tensile, signal and
-    announcements are the switches. nodes are the celestia-appd hosts, the validator first;
-    fibre_hosts every Fibre host; kms_hosts the KMS hosts whose node_exporter runs, with a remote
-    signer; servers the nodes, then the other node_exporter hosts, in inventory order: the order of
-    the status board, the table and the host colours. data_mounts and stores are the disks DiskLow
-    watches as data mounts and as Fibre stores, as the rules template picks them."""
+    remote, multi (tmkms signs through several nodes on purpose), fibre, tensile, signal,
+    announcements and mon_only (the monitor on a host of its own) are the switches. nodes are the
+    celestia-appd hosts, the validator first; fibre_hosts every Fibre host; kms_hosts the KMS hosts
+    whose node_exporter runs, with a remote signer; servers the nodes, then the other node_exporter
+    hosts (the monitor's among them), in inventory order: the order of the status board, the table
+    and the host colours. data_mounts and stores are the disks DiskLow watches as data mounts and as
+    Fibre stores, as the rules template picks them."""
 
     def __init__(self, cfg):
         t = cfg["thresholds"]
@@ -712,6 +718,12 @@ class Setup:
         self.links = list(cfg["links"])
         hosts = [link["host"] for link in self.links]
         self.servers = self.nodes + [h for h in hosts if h not in self.nodes]
+        # The monitor on a host of its own (no Celestia service): its Prometheus reaches every other
+        # server over the network, and its own node_exporter answers even while it reaches none of them,
+        # so node_up, "a server reports", leaves it out. reached: the servers MonitorCannotReach watches.
+        self.mon_only = bool(cfg.get("monitor_only")) and self.monitor in self.servers
+        self.reached = [h for h in self.servers if h != self.monitor]
+        self.node_up = 'up{job="node",host!=%s}' % q(self.monitor) if self.mon_only else 'up{job="node"}'
         self.fibre_mounts = list(cfg.get("fibre_mounts", [])) if self.fibre else []
         self.fibre_hosts = [m["host"] for m in self.fibre_mounts]
         if self.fibre and not self.fibre_hosts:
@@ -745,7 +757,7 @@ class Setup:
         """Whether the alerts that need need exist in this install (None: always)."""
         return {None: True, "remote": self.remote, "two_signers": self.remote and not self.multi, "fibre": self.fibre,
                 "tensile": self.tensile, "signal": self.signal, "announcements": self.announcements,
-                "tmkms": bool(self.kms_hosts)}[need]
+                "tmkms": bool(self.kms_hosts), "reached": bool(self.reached), "monitor_only": self.mon_only}[need]
 
     def color(self, host):
         """(named colour, hex) of a server's identity colour; the text colour past the list."""
@@ -1680,7 +1692,7 @@ def fibre_tile(s):
         + (check(',alertstate="firing"', 20) if s.tensile else [])
         + ['max(ALERTS{%s,alertstate="firing"}) * 0 + %d' % (NOT_READY_PAGE, 41 + NOT_READY_AT)]
         + ['((count(%s) > 0) and on () max(ALERTS{alertname="FibreDown",check=""})) * 0 + 9' % lost,
-           '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(up{job="node"} == 1) > 0))' % seen_f,
+           '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(%s == 1) > 0))' % (seen_f, s.node_up),
            "(count(%s) > 1) * 0 + 3" % seen_f]
         + ['max(ALERTS{alertname="FibreNotServing",reason=%s}) * 0 + %d' % (q(r), 31 + i)
            for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
@@ -1777,10 +1789,12 @@ def service_down(s):
     return out
 
 
-# The words of a server's line and of the Servers tile beyond ServiceDown's (codes 30 and up).
-SERVER_WORDS = [(1, "OK", OK), (2, "Warning", WARN), (3, "Disk critical", ALERT), (6, "Disk low", WARN),
-                (7, "Node behind", WARN), (0, "No data", NODATA)]
+# The words of a server's line and of the Servers tile beyond ServiceDown's (codes 30 and up). Not
+# reached: MonitorCannotReach, amber for one server, red once no server answers and it pages.
+SERVER_WORDS = [(1, "OK", OK), (2, "Warning", WARN), (3, "Disk critical", ALERT), (4, "Not reached", WARN),
+                (5, "Not reached", ALERT), (6, "Disk low", WARN), (7, "Node behind", WARN), (0, "No data", NODATA)]
 DISK_PAGE = 'alertname="DiskLow",severity="page"'
+UNREACHED_PAGE = 'alertname="MonitorCannotReach",severity="page"'
 
 
 def servers_tile(s):
@@ -1797,8 +1811,11 @@ def servers_tile(s):
     rules = ('((time() - max(prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}) <= 120) '
              'unless on () max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}))')
     down = service_down(s)
+    # MonitorCannotReach's page names no server.
+    unreached = (['max(ALERTS{alertstate="firing",%s}) * 0 + 5' % UNREACHED_PAGE] if s.mon_only else []) + (
+        ['%s * 0 + 4' % alert('alertname="MonitorCannotReach"')] if s.reached else [])
     expr = chain(*(
-        ["%s * 0 + 3" % alert(DISK_PAGE)]
+        ["%s * 0 + 3" % alert(DISK_PAGE)] + unreached
         + ["%s * 0 + %d" % (alert(m), 30 + i) for i, (m, _) in enumerate(down)]
         + ["%s * 0 + 6" % alert('alertname="DiskLow"'),
            "%s * 0 + 7" % alert('alertname="NodeBehind"'),
@@ -1810,15 +1827,18 @@ def servers_tile(s):
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
             "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
-            "Status cell's words, such as Disk critical (DiskLow pages); Warning: another warning names a server. "
-            "Which server: its card below and its line in History. Every word: the panel guide.")
-    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind"], [PANEL_GUIDE]), expr, words
+            "Status cell's words, such as Disk critical (DiskLow pages)%s; Warning: another warning names a server. "
+            "Which server: its card below and its line in History. Every word: the panel guide."
+            % ((" or Not reached (MonitorCannotReach: the monitor reaches none of a server's metrics%s)"
+                % (", red once it reaches no server" if s.mon_only else "")) if s.reached else ""))
+    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind"]
+                                      + (["MonitorCannotReach"] if s.reached else []), [PANEL_GUIDE]), expr, words
 
 
 def monitoring_now(s):
     """The monitoring itself now, as a code of MONITOR_WORDS: the alert rules run and none fails,
-    Alertmanager is up and reached, notifications and the heartbeat go out. The same items as the
-    Status cell's monitoring words, and the alerts that watch them."""
+    Alertmanager is up and reached, notifications and the heartbeat go out, and the announcements are
+    read (when on). The same items as the Status cell's monitoring words, and the alerts that watch them."""
     evaluated = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
     return chain(
         "(time() - max(%s) > 120) * 0 + 5" % evaluated,
@@ -1830,11 +1850,13 @@ def monitoring_now(s):
         # A failed notification stops the heartbeat for an hour (synth_items' "No heartbeat").
         'max(ALERTS{alertname="DeadmanFailing",alertstate="firing"}) * 0 + 6',
         '((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 6',
+        'max(ALERTS{alertname="AnnouncementsUnreadable",alertstate="firing"}) * 0 + 7' if s.announcements else None,
         'max(up{job="prometheus"}) * 0 + 1')
 
 
 MONITOR_WORDS = [(1, "Working", "text"), (2, "Rules failing", "orange"), (3, "Alerting down", "orange"),
-                 (4, "Alerts unsent", "orange"), (5, "Rules stopped", "orange"), (6, "No heartbeat", "orange")]
+                 (4, "Alerts unsent", "orange"), (5, "Rules stopped", "orange"), (6, "No heartbeat", "orange"),
+                 (7, "Feed stopped", "orange")]
 
 
 def monitoring_tile(s):
@@ -1844,8 +1866,11 @@ def monitoring_tile(s):
             "alert rules ran in the last 2 minutes and none failed, Alertmanager is up and reached, and the heartbeat "
             "goes to your dead-man service. Otherwise the word names what failed: Rules stopped, Rules failing "
             "(MonitoringBroken), Alerting down, Alerts unsent (NotificationsFailing) or No heartbeat "
-            "(DeadmanFailing). The history: the Monitoring line of History.")
-    return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]), \
+            "(DeadmanFailing)%s. The history: the line of %s, the monitor's server, in History."
+            % (", or Feed stopped: the Celestia announcements are not read (AnnouncementsUnreadable)"
+               if s.announcements else "", s.monitor))
+    return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]
+                                         + (["AnnouncementsUnreadable"] if s.announcements else [])), \
         monitoring_now(s), MONITOR_WORDS
 
 
@@ -1998,62 +2023,47 @@ def check_lanes(s):
              [(1, "Reachable", OK), (2, "Unreachable", WARN), (8, "Not registered", WARN), (10, "Wrong host", WARN),
               (3, "Unreachable", ALERT), (4, "Wrong host", ALERT), (9, "Not registered", ALERT),
               (5, "Check stopped", WARN), (6, "Not checked", NODATA), (0, "No data", NODATA)]))
-    # Monitoring is a function, not a server: the last check line. Alertmanager down or not reached is
-    # read from Prometheus's own metrics; no rule watches it (the Watchdog keeps firing meanwhile).
-    lanes.append(
-        ("M", "Monitoring",
-         chain("%s * 0 + 4" % firing('alertname="MonitoringBroken"'),
-               "%s * 0 + 5" % firing('alertname="NotificationsFailing"'),
-               "%s * 0 + 10" % firing('alertname="DeadmanFailing"'),
-               "%s * 0 + 6" % down("alertmanager"),
-               # Alerts not handed over in the block and none handed over, as unsent(), except in the
-               # block in which Prometheus started, before it has found Alertmanager.
-               "(((((sum(%s) > 0) or (sum(%s) > 0)) unless on () (sum(%s) > 0)) or (max(%s) == 0)) * 0 + 9 "
-               "unless on () %s)"
-               % (in_block("increase", NOTIFY_ERRORS), in_block("increase", NOTIFY_DROPPED),
-                  in_block("increase", NOTIFY_SENT), in_block("min_over_time", AM_DISCOVERED), prom_started()),
-               "%s * 0 + 7" % firing('alertname="AnnouncementsUnreadable"') if s.announcements else None,
-               # No heartbeat in the block, except the block in which Prometheus started: its rules
-               # have not run yet.
-               "((%s * 0 + 8 unless on () %s) unless on () %s)"
-               % (seen('up{job="prometheus"}'), seen('ALERTS{alertname="Watchdog",alertstate="firing"}'),
-                  prom_started()),
-               "%s * 0 + 1" % seen('ALERTS{alertname="Watchdog",alertstate="firing"}'),
-               "%s * 0" % seen('up{job="prometheus"}')),
-         uptime('(((max(ALERTS{alertname="Watchdog",alertstate="firing"}) * 0 + 1) unless on () '
-                'max(ALERTS{alertname=~"MonitoringBroken|NotificationsFailing|DeadmanFailing|AnnouncementsUnreadable",'
-                'alertstate="firing"}) unless on () (min(up{job="alertmanager"}) == 0) unless on () %s) '
-                "or on () (%s * 0)) and on () %s" % (unsent("2m"), PROM, PROM)),
-         [(1, "Working", OK), (4, "Rules failing", WARN), (5, "Alerts unsent", WARN), (10, "No heartbeat", WARN),
-          (6, "Alerting down", WARN), (9, "Alerts unsent", WARN), (7, "Feed stopped", WARN),
-          (8, "No heartbeat", WARN), (0, "No data", NODATA)]))
+    # The monitoring has no check line: its alerts colour the monitor's server line (server_lanes).
     return lanes
 
 
 def server_lanes(s):
     """One status line per server, in servers order: (refId, label, bars, uptime, words). The alerts
-    excluded from the generic warning colour lines Remote signer, Fibre serving, Fibre from outside
-    and Monitoring instead; the upgrade alerts colour no line (the Network upgrade tile shows them).
-    NodeBehind colours its server's line and Node in sync."""
+    excluded from the generic warning colour lines Remote signer, Fibre serving and Fibre from outside
+    instead, and the monitoring's own alerts the monitor's line in the Monitoring row's words; the upgrade
+    alerts colour no line (the Network upgrade tile shows them). NodeBehind colours its server's line and
+    Node in sync. Not reached: MonitorCannotReach on each server the monitor reaches over the network."""
     others = SERVER_OTHERS
-    down = service_down(s)
-    words = SERVER_WORDS + [(30 + i, w, WARN) for i, (_, w) in enumerate(down)]
+    services = service_down(s)
+    words = SERVER_WORDS + [(30 + i, w, WARN) for i, (_, w) in enumerate(services)]
+    # The monitor's line: the monitoring's alerts (MONITOR_WORDS), then Alertmanager down, which only
+    # Prometheus's own metrics show (no rule watches it; the heartbeat keeps going meanwhile).
+    watching = ([("MonitoringBroken", "Rules failing"), ("NotificationsFailing", "Alerts unsent"),
+                 ("DeadmanFailing", "No heartbeat")]
+                + ([("AnnouncementsUnreadable", "Feed stopped")] if s.announcements else []))
+    own = (["%s * 0 + %d" % (firing("alertname=%s" % q(a)), 11 + j) for j, (a, _) in enumerate(watching)]
+           + ["%s * 0 + 19" % down("alertmanager")])
+    own_words = [(11 + j, w, WARN) for j, (_, w) in enumerate(watching)] + [(19, "Alerting down", WARN)]
     lanes = []
     for i, h in enumerate(s.servers):
         sel = "host=%s" % q(h)
         up = 'up{%s,job=~"node|celestia-app|otelcol"}' % sel
         page = 'max(ALERTS{%s,%s,alertstate="firing"})' % (DISK_PAGE, sel)
+        unreached = ((["%s * 0 + 5" % firing(UNREACHED_PAGE)] if s.mon_only else [])
+                     + ["%s * 0 + 4" % firing('%s,alertname="MonitorCannotReach"' % sel)]) if h in s.reached else []
+        mine = h == s.monitor
         lanes.append((
             "S%d" % (i + 1), h,
-            chain(*(["%s * 0 + 3" % firing("%s,%s" % (sel, DISK_PAGE))]
-                    + ["%s * 0 + %d" % (firing("%s,%s" % (sel, m)), 30 + j) for j, (m, _) in enumerate(down)]
+            chain(*(["%s * 0 + 3" % firing("%s,%s" % (sel, DISK_PAGE))] + unreached
+                    + ["%s * 0 + %d" % (firing("%s,%s" % (sel, m)), 30 + j) for j, (m, _) in enumerate(services)]
                     + ["%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
-                       "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel),
-                       "%s * 0 + 2" % firing('%s,severity="message",alertname!~"%s"' % (sel, others)),
+                       "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel)]
+                    + (own if mine else [])
+                    + ["%s * 0 + 2" % firing('%s,severity="message",alertname!~"%s"' % (sel, others)),
                        "((%s == 1) and on () %s) * 0 + 1" % (seen('up{job="node",%s}' % sel), rules_ran()),
                        nodata()])),
             uptime("((min(%s) unless on () %s) or on () (min(%s) * 0)) and on () %s" % (up, page, up, PROM)),
-            words))
+            words + (own_words if mine else [])))
     return lanes
 
 
@@ -2158,11 +2168,11 @@ def role_lanes(s):
             "%s * 0 - 4" % firing('alertname="FibreDown",check=""'),
             "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "(count(%s) > bool 1)" % seen_f, sub=True),
             # No Fibre at some step of the block, so a short outage still shows on long ranges.
-            '((min(%s) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))'
-            % in_block("min_over_time", "(count(%s) or vector(0))" % seen_f, sub=True),
+            '((min(%s) == 0) * 0 and on () (count(%s == 1) > 0))'
+            % (in_block("min_over_time", "(count(%s) or vector(0))" % seen_f, sub=True), s.node_up),
             "max(%s and on (host) %s)" % (lookup(s.fibre_hosts), seen_f),
             "(count(%s) > 0) * 0 - 5" % fibre_lost(s),
-            '(((count(%s) or vector(0)) == 0) * 0 and on () (count(up{job="node"} == 1) > 0))' % seen_f)),
+            '(((count(%s) or vector(0)) == 0) * 0 and on () (count(%s == 1) > 0))' % (seen_f, s.node_up))),
             [(i + 1, h, s.tint(h)) for i, h in enumerate(s.fibre_hosts)]
             + [(-1, "Two Fibres", WARN), (0, "Not running", WARN), (-4, "Not running", ALERT),
                (-5, "Not seen", WARN)] + no_data))
@@ -2245,8 +2255,8 @@ def key_line(s, axis, width):
 
 def role_codes(s, short, hosts=None):
     """(code, words, colour) of every Role the servers (or hosts) can show. A server's parts add up to
-    one code: node 1-3, Fibre 4 or 8, KMS 16-64. Amber while the node does not sign or tmkms is
-    stopped or not loaded; grey for a standby Fibre alone."""
+    one code: node 1-3, Fibre 4 or 8, KMS 16-64; 128 the monitor on a host of its own. Amber while the
+    node does not sign or tmkms is stopped or not loaded; grey for a standby Fibre alone."""
     hosts = s.servers if hosts is None else hosts
     pick = 2 if short else 1
     node = [(0, None)] + ([(p[0], p[pick]) for p in NODE_PARTS] if set(hosts) & set(s.nodes) else [])
@@ -2259,6 +2269,8 @@ def role_codes(s, short, hosts=None):
                 if n + f + k:
                     color = "orange" if n == 3 or k in (32, 64) else GREY if n + f + k == 8 else "text"
                     codes.append((n + f + k, ", ".join(w for w in (nw, fw, kw) if w), color))
+    if s.mon_only and s.monitor in hosts:
+        codes.append((128, "Monitoring", "text"))
     return codes
 
 
@@ -2300,6 +2312,9 @@ def servers_table(s):
             kms += (' or (absent(node_systemd_unit_state{host=%s,name=%s}) and on () (up{job="node",host=%s} == 1)) '
                     "* 0 + 64" % (q(k), q(s.units["tmkms"]), q(k)))
         parts.append(label(kms, "part", "kms"))
+    if s.mon_only:
+        # The monitor on a host of its own runs no Celestia service: its role is the monitoring.
+        parts.append(label("%s * 0 + 128" % lookup([s.monitor]), "part", "monitor"))
     # A server whose node_exporter does not answer never shows a role it may no longer hold.
     role = ("((%s unless on (host) %s) * 0 - 1) or on (host) sum by (host) (%s) or on (host) (%s * 0)"
             % (order, NE_UP, " or ".join(parts), order))
@@ -2866,8 +2881,13 @@ def card_desc(s, kind, rows):
             desc += " Two signers: ValidatorSigningTwice; stop one signer."
         if s.fibre:
             desc += " Fibre: Active or Standby, or a Fibre alert's words."
+        watched = any(name == "Monitoring" for name, _, _, _ in rows)
+        if watched:
+            desc += (" Monitoring, on %s, the monitor: Working while the alert rules run and alerts go out, else "
+                     "what failed." % s.monitor)
         return desc + " Not here: the part does not run on this server. Every word: the panel guide." + more(
-            ["NodeBehind", "ServiceDown"] + (["FibreNotServing"] if s.fibre else []), [PANEL_GUIDE])
+            ["NodeBehind", "ServiceDown"] + (["FibreNotServing"] if s.fibre else [])
+            + (["MonitoringBroken"] if watched else []), [PANEL_GUIDE])
     shown = len(rows)
     desc = ("Where the remote signer signs now: the node the validator's signatures go through")
     if s.fibre and shown > 1:

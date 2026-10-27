@@ -411,8 +411,9 @@ jobs:
           want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
           test "$out" = "$(printf "$want")"
           test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
-      # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
-      # active or standby, in the otelcol job.
+      # The mainnet example scrapes its backup node in the celestia-app job, every Fibre host,
+      # active or standby, in the otelcol job, and the monitor host mon-1, which runs no Celestia
+      # service, in the node job (role monitor).
       - name: The mainnet scrape targets follow the inventory groups
         run: |
           set -euo pipefail
@@ -423,11 +424,12 @@ jobs:
           def hosts(job):
               return sorted((c["labels"]["host"], c["labels"]["role"]) for c in jobs[job]["static_configs"])
           assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
-          assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
+          assert hosts("node") == [("fibre-1", "fibre"), ("mon-1", "monitor"), ("val-1", "validator")], hosts("node")
+          assert [c["targets"] for c in jobs["node"]["static_configs"] if c["labels"]["host"] == "mon-1"] == [["10.20.0.3:9910"]], jobs["node"]
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
-          assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
-          assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
-          assert hosts("signal") == [("fibre-1", "monitor")], hosts("signal")
+          assert hosts("announcements") == [("mon-1", "monitor")], hosts("announcements")
+          assert hosts("tensile") == [("mon-1", "monitor")], hosts("tensile")
+          assert hosts("signal") == [("mon-1", "monitor")], hosts("signal")
           assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
           # Fibre's readiness: every Fibre host's own port, asked through celestia-mon-blackbox on the monitor.
           fh = jobs["fibre_health"]
@@ -472,6 +474,8 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message \
             alertname=FibreNotServing severity=message reason=not_ready host=fibre-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=MonitorCannotReach severity=message host=kms-1
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=MonitorCannotReach severity=page
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
@@ -978,11 +982,11 @@ jobs:
           jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
           python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
       # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
-      # side by side). split: remote signer and Fibre (the Fibre row; three columns, the scraped KMS
-      # host's last). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
-      # on top (six answer tiles, the Network upgrade row; three columns,
-      # the last the remote signer's, which is not scraped). five: mainnet without signalling (the Servers
-      # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
+      # side by side). split: remote signer and Fibre (the Fibre row; four columns, the scraped KMS
+      # host's third, the monitor's last). mainnet: a backup node, a standby Fibre, the outside check and
+      # upgrade signalling on top (six answer tiles, the Network upgrade row; four columns: val-1,
+      # fibre-1, the monitor mon-1, and last the remote signer's, which is not scraped). five: mainnet
+      # without signalling (the Servers and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
       # row starts; the top strip's six cells and the answer tiles below them share their column edges.
       # Every six-cell row (the strip, the answers and the Validator, Fibre and Network upgrade facts: the
       # stats 3 rows high, untitled, labelled at 13 px) has one value size, 22, 20 or 18 px.
@@ -993,8 +997,8 @@ jobs:
       # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
       # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
-      # (open, then closed) hold six charts per server (single: one server, mainnet and five: two,
-      # split: three, its KMS host scraped), each line one kind of chart, at one width and height,
+      # (open, then closed) hold six charts per server (single: one server, mainnet and five: three, the
+      # monitor's among them, split: four, its KMS host scraped), each line one kind of chart, at one width and height,
       # filling the 24 columns; each server's charts in one column, titled with its name first; its
       # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
       # server in one chart across the full width.
@@ -1004,9 +1008,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 60
-          test "$(count mainnet)" = 63
-          test "$(count five)" = 57
+          test "$(count split)" = 68
+          test "$(count mainnet)" = 71
+          test "$(count five)" = 65
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1016,9 +1020,9 @@ jobs:
           test "$(charts split)" = '[111,112,116,115]'
           test "$(charts mainnet)" = '[111,112,116,115]'
           test "$(columns single)" = 1
-          test "$(columns split)" = 3
-          test "$(columns mainnet)" = 3
-          test "$(columns five)" = 3
+          test "$(columns split)" = 4
+          test "$(columns mainnet)" = 4
+          test "$(columns five)" = 4
           for s in single split mainnet five; do
             jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
             jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
@@ -1080,11 +1084,14 @@ jobs:
                    and $g["24"].h == 1' "build/$s/dashboard.json"
           done
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
-                 and .kms_names == ["kms-1"] and .monitor_host == "fibre-1" and .name == "CI validator"' \
+                 and .kms_names == ["kms-1"] and .monitor_host == "mon-1" and .monitor_only and .name == "CI validator"' \
             build/mainnet/dashboard-config.json
           jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
-                 and .name == ""' build/split/dashboard-config.json
-          jq -e '.kms_names == []' build/single/dashboard-config.json
+                 and .monitor_host == "mon-1" and .monitor_only and .name == ""' build/split/dashboard-config.json
+          jq -e '.kms_names == [] and .monitor_host == "node-1" and (.monitor_only | not)' build/single/dashboard-config.json
+          # The monitor is a server of its own: its node_exporter is a link, and its Prometheus disk a data mount.
+          jq -e '([.links[].host] | index("mon-1")) != null and ([.data_mounts[] | select(.host == "mon-1") | .mount] == ["/"])' \
+            build/mainnet/dashboard-config.json
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'

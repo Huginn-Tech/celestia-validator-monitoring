@@ -167,7 +167,8 @@ celestia_mon_memory:
 # Per-host settings (set them in host_vars or the inventory):
 #   celestia_mon_private_ip             required on every host celestia-mon touches; an address
 #                                       of that host itself (the playbook checks)
-#   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state)
+#   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state, and
+#                                       on the monitor the disk of Prometheus's data)
 #   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts, active or standby)
 #   celestia_mon_fibre_public_endpoint  host:port that valaddr set-host registers while this host's
 #                                       Fibre is the active one (fibre hosts)

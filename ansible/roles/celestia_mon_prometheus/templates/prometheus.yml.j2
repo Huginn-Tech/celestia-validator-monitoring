@@ -6,9 +6,10 @@
 {% macro target(h, port) %}{% set ip = hostvars[h].celestia_mon_private_ip | string %}{{ ('[' ~ ip ~ ']') if ':' in ip else ip }}:{{ port }}{% endmacro %}
 {% set validators = groups.get('validator', []) %}
 {% set fibres = groups.get('fibre', []) if celestia_mon_fibre_enabled else [] %}
-{# The role label names the host's inventory group, not the role it holds after a failover. #}
+{# The role label names the host's inventory group, not the role it holds after a failover;
+   monitor on a host that runs no Celestia service. #}
 {% macro node_role(h) %}{{ 'validator' if h in groups.get('validator', []) else 'fibre' if h in groups.get('fibre', [])
-   else 'backup_node' if h in groups.get('backup_node', []) else 'kms' }}{% endmacro %}
+   else 'backup_node' if h in groups.get('backup_node', []) else 'kms' if h in groups.get('kms', []) else 'monitor' }}{% endmacro %}
 # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
 global:
   scrape_interval: 15s
@@ -79,11 +80,12 @@ scrape_configs:
         target_label: __name__
         replacement: "cometbft_$1"
 
-  # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape).
+  # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape), and on the
+  # monitor host where it runs no Celestia service (role monitor).
   - job_name: node
     static_configs:
-{% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) | unique %}
-{%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
+{% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) | unique %}
+{%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or h in groups.get('monitor', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
       - targets:
           - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_ports)).node_exporter) }}"
         labels:

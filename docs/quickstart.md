@@ -11,7 +11,7 @@ This guide takes you from an empty inventory to a running dashboard, working ale
   - `kms` runs tmkms (optional; nothing is installed there unless you opt in);
   - `monitor` runs Prometheus, Alertmanager and Grafana (exactly one).
 
-  A monitor host of its own keeps alerting when a validator or Fibre host dies ([security.md](security.md#where-to-run-the-monitor)). The monitor may share a host, as on the Fibre host in the [mainnet layout](#mainnet-layout); the dead-man service (step 8) then tells you when that host dies.
+  A monitor host of its own, as `mon-1` in the [mainnet layout](#mainnet-layout), keeps alerting when a validator or Fibre host dies, and may sit in another data centre as long as it reaches the other hosts over WireGuard ([security.md](security.md#where-to-run-the-monitor)). The monitor may also share a host, as in `example-single`; the dead-man service (step 8) then tells you when that host dies.
 - **A private network between the hosts:** RFC 1918, Tailscale (100.64.0.0/10), WireGuard or IPv6 ULA addresses. Everything celestia-validator-monitoring installs listens on these addresses or on 127.0.0.1, and the install fails if one of its services listens on a public address.
 - **Root on each host** (`sudo`), with the `python3` and `curl` (or `wget`) that Ubuntu ships. Nothing is installed with apt or pip: `install.sh` downloads the [uv](https://github.com/astral-sh/uv) binary pinned in `versions.yml`, checks its sha256, and uses it to install the pinned ansible-core and every package it needs, from `ansible/requirements.lock` with the sha256 of each file, into a temporary directory under `/var/tmp/celestia-mon-install`, which it deletes when it ends, also on failure. `/var/tmp` must not be mounted `noexec` and needs 1 GiB free during the run.
 - **Outbound HTTPS** from every host to `github.com` and `release-assets.githubusercontent.com` (uv and the release downloads), `pypi.org` and `files.pythonhosted.org` (ansible-core); from the monitor also to `dl.grafana.com` (Grafana), your alert receivers and the dead-man service, and to the public RPCs in `celestia_mon_signal`, if you list any ([upgrade signalling](#upgrade-signalling)).
@@ -23,7 +23,7 @@ Default ports:
 
 | Service | Host | Port |
 |---|---|---|
-| node_exporter | validator, backup_node, fibre, kms if opted in | 9910 on the private address |
+| node_exporter | validator, backup_node, fibre, kms if opted in, monitor | 9910 on the private address |
 | OpenTelemetry collector | fibre, active and standby | 9911 on the private address (metrics), 9915 on 127.0.0.1 (from Fibre) |
 | Prometheus | monitor | 9912 on 127.0.0.1 |
 | Alertmanager | monitor | 9913 on 127.0.0.1 |
@@ -76,7 +76,7 @@ One inventory describes every host, and every host gets a copy of it. It holds n
 ```sh
 cp -r ansible/inventory/example-single ~/celestia-mon-inventory   # one host: validator and monitor, local key, Fibre off
 cp -r ansible/inventory/example-split ~/celestia-mon-inventory    # separate validator, KMS, Fibre and monitor hosts
-cp -r ansible/inventory/example-mainnet ~/celestia-mon-inventory  # validator with a standby Fibre; Fibre host with a backup node and the monitor
+cp -r ansible/inventory/example-mainnet ~/celestia-mon-inventory  # validator with a standby Fibre; Fibre host with a backup node; the monitor on its own host
 ```
 
 In `hosts.yml`, put each host in its groups (`validator`, `backup_node`, `fibre`, `kms`, `monitor`; step 1) and set its variables. The host names are yours to choose; you pass the name to `install.sh --host` on that host. The groups name where each role is installed. Which node signs and which Fibre runs are read from the node metrics and from systemd, so after a tmkms repoint or a Fibre failover the inventory stays as it is ([mainnet layout](#mainnet-layout)).
@@ -84,12 +84,12 @@ In `hosts.yml`, put each host in its groups (`validator`, `backup_node`, `fibre`
 | Variable | Hosts | Meaning |
 |---|---|---|
 | `celestia_mon_private_ip` | every host celestia-validator-monitoring installs on | Private address where its services listen and Prometheus scrapes. Required, and it must be an address of that host: the install checks it. |
-| `celestia_mon_data_mounts` | validator, backup_node, fibre, kms | Mount points to watch for free space and read-only state, for example the node's data disk. |
+| `celestia_mon_data_mounts` | validator, backup_node, fibre, kms, monitor | Mount points to watch for free space and read-only state, for example the node's data disk; on a monitor with a host of its own, the disk of Prometheus's data (`/var/lib/celestia-mon`). |
 | `celestia_mon_fibre_mount` | fibre | Mount point of the Fibre store, on the standby too. |
 | `celestia_mon_fibre_public_endpoint` | fibre | The `host:port` that `celestia-appd tx valaddr set-host` registers while this host's Fibre is the active one. `doctor` accepts a registration of any Fibre host's endpoint, and on a host with both the validator and a Fibre install it checks that the registration names this host exactly while its Fibre runs. |
 | `celestia_mon_kms_scrape` | kms | `true` installs node_exporter on the KMS host, so tmkms and its disks are watched. Default `false`: nothing is installed there. |
 | `celestia_mon_node_home` | validator, backup_node | celestia-appd home, for `doctor`. Default: found from the unit. |
-| `celestia_mon_link_mbps` | validator, backup_node, fibre, kms | Optional. The link speed in Mbit/s for the dashboard's Network peak. Set it when the host reports no NIC speed (common on VMs), has more than one physical NIC, or its plan is below the port speed. Default: the NIC's port speed. |
+| `celestia_mon_link_mbps` | validator, backup_node, fibre, kms, monitor | Optional. The link speed in Mbit/s for the dashboard's Network peak. Set it when the host reports no NIC speed (common on VMs), has more than one physical NIC, or its plan is below the port speed. Default: the NIC's port speed. |
 | `celestia_mon_firewall_sources` | validator, backup_node, fibre, kms | Optional. The addresses ufw lets reach this host's scraped ports. Default: the monitor's `celestia_mon_private_ip`. |
 
 In `group_vars/all.yml`, set the shared settings:
@@ -119,7 +119,7 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 
 Overriding a map (`celestia_mon_units`, `celestia_mon_ports`, `celestia_mon_thresholds`, `celestia_mon_memory`) replaces the whole map, so list every key.
 
-**Secrets.** The monitor's settings with secrets live in `host_vars/<monitor>/vault.yml` (`host_vars/node-1/vault.yml`, `host_vars/mon-1/vault.yml` or `host_vars/fibre-1/vault.yml` in the examples; rename the directory with the host):
+**Secrets.** The monitor's settings with secrets live in `host_vars/<monitor>/vault.yml` (`host_vars/node-1/vault.yml` in example-single, `host_vars/mon-1/vault.yml` in example-split and example-mainnet; rename the directory with the host):
 
 | Variable | Meaning |
 |---|---|
@@ -401,17 +401,20 @@ An install made before celestia-validator-monitoring recorded its ufw rules has 
 
 ## Mainnet layout
 
-`ansible/inventory/example-mainnet` describes a validator with a backup node and a standby Fibre, signing through tmkms:
+`ansible/inventory/example-mainnet` describes a validator with a backup node and a standby Fibre, signing through tmkms, and a monitor on a host of its own:
 
 | Host | Groups | Runs |
 |---|---|---|
 | `val-1` | `validator`, `fibre` | celestia-appd without a key; tmkms on `kms-1` signs through it. A standby Fibre: installed, stopped and disabled, port 7980 closed (its signer: below). |
-| `fibre-1` | `fibre`, `backup_node`, `monitor` | The active Fibre; a synced celestia-appd without a key that can take over signing; Prometheus, Alertmanager and Grafana. |
+| `fibre-1` | `fibre`, `backup_node` | The active Fibre; a synced celestia-appd without a key that can take over signing. |
 | `kms-1` | `kms` | tmkms only; nothing is installed there. |
+| `mon-1` | `monitor` | Prometheus, Alertmanager and Grafana, and node_exporter for its own disk; no Celestia service and no key. |
 
-Run `install.sh` on `val-1` and on `fibre-1` (with `--ask-vault-pass`, step 5); `kms-1` needs nothing. Set `[instrumentation]` on both nodes (step 2). Both Fibre hosts get the collector, the standby too; on `val-1`, point the standby's OTLP endpoint at it and leave the unit stopped (step 6).
+Run `install.sh` on `val-1`, on `fibre-1` and on `mon-1` (with `--ask-vault-pass` on `mon-1`, whose `host_vars` hold the vault file; step 5); `kms-1` needs nothing. Set `[instrumentation]` on both nodes (step 2). Both Fibre hosts get the collector, the standby too; on `val-1`, point the standby's OTLP endpoint at it and leave the unit stopped (step 6).
 
-**Backup node.** A synced celestia-appd without a key, ready to take the validator role over. tmkms connects to one node at a time; moving it is a change of its `addr` and a restart of tmkms. While the backup node is not the signer's, keep its `priv_validator_laddr` empty: with it set, celestia-appd exits at start when no signer connects (`doctor` check 2 reports it as `INFO`). With it empty, the node signs with its local key file (`config/priv_validator_key.json`), so that file must never be the validator's key: a home copied from the validator still holds it, and the node then double-signs next to tmkms. `doctor` check 2 reads the key's voting power from the node's `/status` and fails when it is above 0. Voting power 0 does not clear the key: a jailed validator's key has none either and signs again after unjail. Check 2 prints the key's address to compare with check 4 on `val-1`, and on `fibre-1`, which is also the monitor, it fails when Prometheus saw that address as the validator's in the last 30 days. Its metrics are scraped like the validator's: its card in the dashboard's Servers band reads "Backup, in sync · 28 peers" (its peer count) while it can take over (amber "Node behind · 35 blocks" while it lags), NodeBehind sends a message when it lags for 10 minutes, and `doctor` check 18 on the monitor shows its lag.
+**Monitor host.** `mon-1` may sit in another data centre, as long as it reaches the other hosts over WireGuard: its `celestia_mon_private_ip` and theirs are WireGuard addresses. Prometheus on `mon-1` pulls every metric; no Celestia host connects to it, and it reaches on them only the metrics ports and Fibre's port, never a signer port, an RPC or SSH ([security.md](security.md#wireguard-only-link)). Its own disk, CPU and memory are watched like the other servers': list the disk of `/var/lib/celestia-mon` in its `celestia_mon_data_mounts`. When it loses its link to one host it sends one message for that host, and when it reaches none, one page ([MonitorCannotReach](alerts.md#monitorcannotreach)). A monitor may also share a host, as in `example-single`.
+
+**Backup node.** A synced celestia-appd without a key, ready to take the validator role over. tmkms connects to one node at a time; moving it is a change of its `addr` and a restart of tmkms. While the backup node is not the signer's, keep its `priv_validator_laddr` empty: with it set, celestia-appd exits at start when no signer connects (`doctor` check 2 reports it as `INFO`). With it empty, the node signs with its local key file (`config/priv_validator_key.json`), so that file must never be the validator's key: a home copied from the validator still holds it, and the node then double-signs next to tmkms. `doctor` check 2 reads the key's voting power from the node's `/status` and fails when it is above 0. Voting power 0 does not clear the key: a jailed validator's key has none either and signs again after unjail. Check 2 prints the key's address to compare with check 4 on `val-1`; on a backup node that shares the monitor's host, it also fails when Prometheus saw that address as the validator's in the last 30 days. Its metrics are scraped like the validator's: its card in the dashboard's Servers band reads "Backup, in sync · 28 peers" (its peer count) while it can take over (amber "Node behind · 35 blocks" while it lags), NodeBehind sends a message when it lags for 10 minutes, and `doctor` check 18 on the monitor shows its lag.
 
 **Standby Fibre.** Every host with a Fibre install is in the `fibre` group, and systemd says which one runs. A stopped Fibre unit is a standby: it raises no alert, reads "Standby, stopped" in its card in the dashboard's Servers band while the other Fibre runs, and is `OK` in `doctor` check 6. Keep the standby unit disabled (`systemctl disable <fibre unit>`), so a reboot does not start it next to the active one; check 6 warns while it is enabled. Its OTLP endpoint must still point at its collector (check 7).
 
@@ -427,9 +430,11 @@ Run `install.sh` on `val-1` and on `fibre-1` (with `--ask-vault-pass`, step 5); 
 | Event | Alerts | Dashboard |
 |---|---|---|
 | Fibre failover: Fibre stops on `fibre-1`, the standby on `val-1` starts, and `x/valaddr` is pointed at `val-1` | FibreDown pages only when no Fibre unit has been active for 10 minutes, so a failover within that time pages nobody. FibreBothActive sends a message when both run for 5 minutes. FibreNotServing watches whichever host's unit is active. | The role band's "Fibre active on" changes from `fibre-1` to `val-1`; in the Servers band, Fibre reads "Active, serving" on `val-1` and "Standby, stopped" on `fibre-1`. During the gap the Fibre tile reads "Not running" in amber (red only if FibreDown pages), and with the outside check "Fibre from outside" reads "Wrong host" until `x/valaddr` names `val-1`. The Fibre panels show `val-1`'s series. |
-| Validator host down, tmkms pointed at the backup node on `fibre-1` | ValidatorNotSigning pages about 2 minutes after the signatures stop (its first step: `journalctl -u tmkms` on the KMS host) and resolves once `fibre-1` signs. ServiceDown sends messages for `val-1`. NodeNotAdvancing stays quiet while `fibre-1` advances. Until Fibre's signer follows (below), FibreNotServing (`uploads_failing`) sends a message for `fibre-1`. | Servers band: `val-1`'s card reads "Not reporting", `fibre-1`'s "Backup, in sync · 28 peers" until it signs. The Validator tile reads "Not seen" until `fibre-1` signs; then Signing through and the signer's card name `fibre-1`, the role band marks the move, and Blocks since signature drops back to 0. |
+| Validator host down, tmkms pointed at the backup node on `fibre-1` | ValidatorNotSigning pages about 2 minutes after the signatures stop (its first step: `journalctl -u tmkms` on the KMS host) and resolves once `fibre-1` signs. MonitorCannotReach sends one message for `val-1` (none of its endpoints answers) in place of its ServiceDown messages. NodeNotAdvancing stays quiet while `fibre-1` advances. Until Fibre's signer follows (below), FibreNotServing (`uploads_failing`) sends a message for `fibre-1`. | Servers band: `val-1`'s card reads "Not reporting", `fibre-1`'s "Backup, in sync · 28 peers" until it signs; `val-1`'s History line reads "Not reached". The Validator tile reads "Not seen" until `fibre-1` signs; then Signing through and the signer's card name `fibre-1`, the role band marks the move, and Blocks since signature drops back to 0. |
 | tmkms pointed at the other node while both run | ValidatorNotSigning pages when no node has signed for more than 10 blocks for 2 minutes; silence it by name for a planned repoint (step 12). If both nodes keep signing, ValidatorSigningTwice pages about 3 minutes after the second one started. | Signing through reads "Switching" for up to 2 minutes, then names the new node, and the role band marks the move. If both nodes keep signing, it reads "Two signers": amber while ValidatorSigningTwice is pending, red once it pages. |
-| `fibre-1` down: the active Fibre, the backup node and the monitor at once | Nothing on `fibre-1` can alert: the dead-man service pages (step 8), and so does the external check on Fibre's port (below) while Fibre stays unreachable. | None until `fibre-1` is back. |
+| `fibre-1` down: the active Fibre and the backup node at once | `mon-1` keeps alerting: MonitorCannotReach sends one message for `fibre-1` after 3 minutes, and FibreDown pages after 10 unless the standby on `val-1` runs by then (start it and send `set-host`). The monitor cannot tell a host that is down from a link that is: a WireGuard fault between `mon-1` and `fibre-1` alerts the same way, so check from outside (Tensile, the external check below) before you fail over. | `fibre-1`'s card reads "Not reporting" and its History line "Not reached"; the Fibre tile reads "Not seen", red once FibreDown pages. |
+| `mon-1` loses its link to every host (its WireGuard, its data centre's network), while it runs | After 3 minutes one page, MonitorCannotReach ("Monitor cannot reach any server"); NodeNotAdvancing and FibreDown's unit check wait for a host that answers, so they do not page for the same cause. The validator may well be signing: check an explorer first. | Every line but `mon-1`'s in History reads "Not reached" in red, and the cards read "Not reporting". |
+| `mon-1` down | Nothing can alert from `mon-1`: the dead-man service pages (step 8). The validator and Fibre are not affected; the external check on Fibre's port (below) still watches Fibre. | None until `mon-1` is back. |
 
 **After a tmkms repoint, repoint Fibre's signer too.** Fibre signs through the privval gRPC of the node tmkms serves. When tmkms moves from `val-1` to the backup node on `fibre-1`, the active Fibre on `fibre-1` still dials `val-1`, and every signature fails while its unit stays active and port 7980 answers. Point its `--signer-grpc-address` (or `signer_grpc_address`) at the backup node's privval gRPC and restart Fibre: `127.0.0.1:26669` without the `signer_grpc_*` files when the backup node serves it in plaintext on loopback, or the backup node's mTLS address with the same client certificate. Set the backup node's `priv_validator_grpc_laddr` ahead of time, because celestia-appd reads it only at start; `doctor` check 20 on the backup node says when it is empty.
 
@@ -449,7 +454,7 @@ celestia-appd tx authz exec set-host.json --from <ops key> --node <RPC of a sync
 
 The fixes `doctor` prints (checks 5 and 19) name the same commands.
 
-**External check on Fibre's port.** celestia-validator-monitoring watches Fibre from inside the hosts; it asks Fibre for its readiness on the private address only, never at its public endpoint. Add a TCP check on the registered `host:port` (port 7980 by default) in an external uptime service, wired to PagerDuty and set to alert after 10 minutes of failure, the delay FibreDown uses. It pages when the monitor host is gone with Fibre, and it catches what the hosts cannot see: a closed firewall, a routing fault, a registration that names the wrong host. After a Fibre failover, point the check at the endpoint now registered. [Tensile](https://tensile.huginn.tech) shows your Fibre server from outside as well.
+**External check on Fibre's port.** celestia-validator-monitoring watches Fibre from inside the hosts; it asks Fibre for its readiness on the private address only, never at its public endpoint. Add a TCP check on the registered `host:port` (port 7980 by default) in an external uptime service, wired to PagerDuty and set to alert after 10 minutes of failure, the delay FibreDown uses. It pages when the monitor cannot (the monitor down, or cut off from the Fibre host), and it catches what the hosts cannot see: a closed firewall, a routing fault, a registration that names the wrong host. After a Fibre failover, point the check at the endpoint now registered. [Tensile](https://tensile.huginn.tech) shows your Fibre server from outside as well.
 
 **KMS standby.** A standby KMS host (tmkms installed without the key, disabled) needs nothing from celestia-validator-monitoring; leave it out of the inventory. The signer's health is read from the node side: signing failures and signer latency (RemoteSignerProblem), missed signatures (SignaturesMissed) and signing that stopped (ValidatorNotSigning).
 
@@ -471,17 +476,19 @@ Optional, on the monitor. Celestia moves to a new app version once 5/6 of the vo
 | `rpc` | CometBFT RPC URLs (`http` or `https`; port 26657 on a node), tried in order: the first one that answers for `chain_id` is read. x/signal's state is the same on every synced node, so put a node of your own first and a public RPC after it, for the time your node is down. An RPC whose node is catching up, or has made no block for 2 minutes, is skipped too. The block time is measured over the last 1000 blocks the node keeps. A URL may hold a provider's key in its path, not in a login or a query string. |
 | `validator` | The validator's operator address, `celestiavaloper1...`. The install checks it, its checksum included. |
 
-In the [mainnet layout](#mainnet-layout), the backup node runs on the monitor host `fibre-1` and answers on its loopback; a public RPC from Celestia's [mainnet page](https://docs.celestia.org/operate/networks/mainnet-beta/) takes over while it is down:
+In the [mainnet layout](#mainnet-layout) the monitor `mon-1` runs no node, so it reads public RPCs from Celestia's [mainnet page](https://docs.celestia.org/operate/networks/mainnet-beta/) over https, and no host opens a port for it:
 
 ```yaml
-    fibre-1:
+    mon-1:
       celestia_mon_signal:
         chain_id: celestia
         rpc:
-          - http://127.0.0.1:26657
           - https://rpc.celestia.pops.one
+          - https://public-celestia-rpc.numia.xyz
         validator: celestiavaloper1...
 ```
+
+To read the backup node on `fibre-1` first, through WireGuard, three changes are yours: set `laddr = "tcp://10.20.0.2:26657"` (its WireGuard address) in the `[rpc]` section of its `config.toml` and restart it at a moment you choose; let the monitor in on `fibre-1`, `sudo ufw allow from 10.20.0.3 to any port 26657 proto tcp` (`mon-1`'s WireGuard address); and put `http://10.20.0.2:26657` first in `rpc`, the public RPCs after it. That opens the node's RPC to the monitor, which the [WireGuard-only link](security.md#wireguard-only-link) otherwise leaves closed.
 
 In the [Mocha layout](#mocha-layout) the monitor runs no node, and a node's RPC listens on its loopback by default (`laddr` in the `[rpc]` section of `config.toml`). Point `rpc` at a node RPC the monitor can reach, or at the public RPCs from Celestia's [Mocha page](https://docs.celestia.org/operate/networks/mocha-testnet/):
 

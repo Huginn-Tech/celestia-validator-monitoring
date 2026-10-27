@@ -78,10 +78,28 @@ The machine you administer the hosts from can reach all of them. Keep it as tigh
 
 ## Where to run the monitor
 
-The monitor holds the alert channels' secrets and the dead-man URL, and has a web login. On a host of its own, none of that sits next to a signing credential, and monitoring keeps running and alerting when the validator or Fibre host goes down. With a remote signer the consensus key is on the KMS host only, so the monitor may share the Fibre host, as in the [mainnet layout](quickstart.md#mainnet-layout). Know what that host then holds:
+Run the monitor on a host of its own, as `mon-1` in the [mainnet layout](quickstart.md#mainnet-layout). It holds the alert channels' secrets and the dead-man URL, and has a web login; on its own host none of that sits next to a signing credential, and monitoring keeps running and alerting when the validator or Fibre host goes down. It may sit in another data centre, with another provider, so that one outage does not take the hosts and their monitor at once, as long as it reaches the other hosts over WireGuard ([below](#wireguard-only-link)).
+
+Not on the validator host: the monitor makes outbound calls of its own (your alert receivers, the dead-man service, and when turned on Tensile, Discord and the public RPCs in `celestia_mon_signal`), which would then leave from the validator's IP and need outbound rules the validator does not otherwise need. Never on the KMS host, which holds the consensus key and should run nothing else.
+
+A shared host works, with less separation: one host for everything, as in `example-single`, or with a remote signer the monitor on the Fibre host (the [Mocha layout](quickstart.md#mocha-layout)), since the consensus key is then on the KMS host only. Know what that host then holds:
 
 - **A signing credential.** Fibre's mTLS client key for the validator node's privval gRPC (26669) can ask the node for raw-bytes signatures with the validator key: payment promises, never votes, because celestia-core prefixes raw bytes before it signs them. Keep the key `0600`, owned by Fibre's user; `doctor` check 17 warns when group or other can read it.
 - **Every alert path.** Root on that host can stop or silence every alert and keep pinging the dead-man service, so nothing from celestia-validator-monitoring tells you. Treat the host like a validator host: no other users, SSH as in the previous section. A check that runs elsewhere with its own paging route, such as the external check on Fibre's port, still reaches you then. After a suspected compromise, rotate the receivers' secrets (routing keys, bot tokens, webhook URLs) and the dead-man URL.
 - **One point of failure.** When that host goes down, monitoring goes with it, and the dead-man service and the external check on Fibre's port are what tell you.
 
-Keep the monitor off the KMS host.
+## WireGuard-only link
+
+With the monitor in another data centre, it and the Celestia hosts reach each other over WireGuard alone. WireGuard is yours to set up; celestia-validator-monitoring neither installs nor changes it, nor any firewall but the ufw rules it adds for the scrapes.
+
+- **Addresses.** Give each host a WireGuard address and set it as that host's `celestia_mon_private_ip`: the collectors listen there and Prometheus scrapes there, so every scrape stays inside the tunnel.
+- **Peers.** On each host, every peer's `AllowedIPs` is that peer's WireGuard address alone, a `/32`: a peer can send only from its own address and routes for no other network.
+- **The WireGuard port.** Each host's firewall lets its WireGuard UDP port (often 51820) in only from its peers' public IPs, and the port stays closed to everyone else.
+- **Plain HTTP inside.** The scrapes are plain HTTP inside the tunnel, which encrypts and authenticates every packet; the metrics endpoints have no TLS of their own.
+- **Grafana** stays on the monitor's loopback, the default, and you reach it through an SSH tunnel ([quickstart step 7](quickstart.md#7-open-grafana)).
+
+**What the monitor reaches, and nothing else.** On each Celestia host, from the monitor's WireGuard address only: 9910 (node_exporter), 26660 (celestia-appd's metrics, on the validator and the backup nodes) and 9911 (the OpenTelemetry collector's metrics, on the Fibre hosts), and Fibre's own port 7980 on the Fibre hosts for the [readiness probe](quickstart.md#upload-readiness), which is public anyway because publishers upload there. On the KMS host, 9910 only, and only with `celestia_mon_kms_scrape: true`. Never the signer ports (26658 for `priv_validator_laddr`, 26669 for `priv_validator_grpc_laddr`), the app gRPC (9090), the RPC (26657) or API, nor SSH on the hosts. Where ufw is active, the install adds exactly those three metrics rules, for the monitor's address; with another firewall, allow those and no more. The hosts never connect to the monitor: Prometheus pulls every metric, and only WireGuard's handshake goes both ways. Which other host connects to which port of the validator: [Ports on the validator: who connects to what](#ports-on-the-validator-who-connects-to-what).
+
+By default the monitor reads upgrade signalling from public RPCs over https, so the nodes' RPC stays closed to it. Reading the backup node's RPC through WireGuard instead is an option that opens one more port: `laddr` on the node's WireGuard address and, on that host, `ufw allow from <monitor's WireGuard address> to any port 26657 proto tcp` ([upgrade signalling](quickstart.md#upgrade-signalling)).
+
+The monitor holds no validator key and no signer certificate: only the alerting secrets in its vault file. A monitor that is taken over can read the hosts' metrics, silence or stop your alerts and send false ones; it cannot sign, move funds, or reach a signer port, a node's RPC or a shell on any host. After a suspected compromise, rotate the receivers' secrets and the dead-man URL, and remove its WireGuard peer from the hosts.
