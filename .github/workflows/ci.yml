@@ -2053,14 +2053,15 @@ jobs:
           test ! -e /var/tmp/celestia-mon-install
       # --edit-vault on a terminal (expect gives it one and types the password at each prompt): it
       # creates an encrypted vault.yml that only its owner reads, and opens it again decrypted. The
-      # editor is a script: it writes the file the first time and copies what it is shown the second.
+      # editor is a script: it writes the file the first time and copies what it is shown the second,
+      # and notes the path of each decrypted copy it is shown, which must be in memory (/run).
       - name: --edit-vault creates and edits an encrypted vault.yml
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq expect >/dev/null
           dir="$RUNNER_TEMP/editvault/host_vars/mon"
           mkdir -p "$dir"
-          printf '%s\n' '#!/bin/sh' \
+          printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>/tmp/ed-paths' \
             'if grep -q celestia_mon_ci "$1"; then cp "$1" /tmp/ed-out; else echo "celestia_mon_ci: 1" >"$1"; fi' >/tmp/ed.sh
           chmod 755 /tmp/ed.sh
           cat >/tmp/ev.exp <<'EOF'
@@ -2079,10 +2080,22 @@ jobs:
           test "$(sudo stat -c %a "$dir/vault.yml")" = 600
           expect /tmp/ev.exp "$dir/vault.yml"
           sudo grep -qx 'celestia_mon_ci: 1' /tmp/ed-out
+          sudo cat /tmp/ed-paths
+          test "$(sudo grep -c '^/run/celestia-mon-install/tmp/' /tmp/ed-paths)" = 2
+          test "$(sudo wc -l </tmp/ed-paths)" = 2
           test ! -e /var/tmp/celestia-mon-install
-          if sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>/dev/null; then
+          test ! -e /run/celestia-mon-install
+          if out=$(sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>&1); then
             echo "--edit-vault accepted a file that is not a vault.yml"; exit 1
           fi
+          grep -qF "edits an inventory's vault.yml" <<<"$out"
+          # A vault.yml that is a symbolic link: ansible-vault, as root, would write wherever it points.
+          mkdir -p "$RUNNER_TEMP/editvault/host_vars/link"
+          ln -s "$dir/vault.yml" "$RUNNER_TEMP/editvault/host_vars/link/vault.yml"
+          if out=$(sudo bash ./install.sh --edit-vault "$RUNNER_TEMP/editvault/host_vars/link/vault.yml" </dev/null 2>&1); then
+            echo "--edit-vault followed a symbolic link"; exit 1
+          fi
+          grep -qF 'is a symbolic link' <<<"$out"
       # A first install sends one test message to the chat receivers; a run that changes nothing does not.
       - name: Install
         run: |
@@ -2101,6 +2114,7 @@ jobs:
           grep -Eq '^  Prometheus +no change$' "$RUNNER_TEMP/second.log"
           if grep -q '^A test message went' "$RUNNER_TEMP/second.log"; then echo "a run that changed nothing sent a test message"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
+          test ! -e /run/celestia-mon-install
       # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
       # collector) or 1000 (Grafana), and root runs some of them (promtool, amtool, the collector's
       # validate): everything under /opt/celestia-mon must belong to root, and nothing there may be
@@ -2394,7 +2408,7 @@ jobs:
           if getent passwd | grep -q '^celestia-mon-'; then echo "users left"; left=1; fi
           if getent group | grep -q '^celestia-mon-'; then echo "groups left"; left=1; fi
           for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon /var/log/celestia-mon \
-                   /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install; do
+                   /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install /run/celestia-mon-install; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
           added=$(sudo ufw show added)
