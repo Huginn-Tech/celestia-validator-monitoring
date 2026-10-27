@@ -7,6 +7,7 @@
     "SignaturesMissed": {"alert": "SignaturesMissed", "for": "10m"},
     "RemoteSignerProblem slow": {"alert": "RemoteSignerProblem", "expr": "cometbft_privval_signing_latency_median_seconds", "for": "15m"},
     "ServiceDown unreachable": {"alert": "ServiceDown", "labels": {"unit": "celestia_app|node_exporter|otelcol"}, "for": "3m"},
+    "MonitorCannotReach": {"alert": "MonitorCannotReach", "for": "3m"},
     "FibreDown": {"alert": "FibreDown", "for": "10m"},
     "FibreBothActive": {"alert": "FibreBothActive", "for": "5m"},
     "FibreNotServing missed_uploads": {"alert": "FibreNotServing", "labels": {"reason": "missed_uploads"}, "for": "5m"},

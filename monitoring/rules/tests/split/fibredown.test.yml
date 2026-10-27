@@ -71,9 +71,13 @@ tests:
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
+  # val-1 still answers, so the monitor reaches the hosts: fibre-1 is down, and Fibre with it.
   - name: Fibre host stops answering; a page after 10 minutes
     interval: 1m
     input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x30'
       - series: >-
           up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
         values: '1x4 0x25'

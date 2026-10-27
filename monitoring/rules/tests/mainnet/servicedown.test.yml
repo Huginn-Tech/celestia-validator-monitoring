@@ -1,6 +1,7 @@
 # ServiceDown on the example-mainnet inventory: val-1 (validator node, standby Fibre), fibre-1
-# (active Fibre, backup node, monitor), kms-1 not scraped. ServiceDown is always a message; the
-# pages come from NodeNotAdvancing, ValidatorNotSigning, FibreDown and DiskLow.
+# (active Fibre, backup node), mon-1 (the monitor), kms-1 not scraped. ServiceDown is always a
+# message; the pages come from NodeNotAdvancing, ValidatorNotSigning, FibreDown and DiskLow. A
+# host none of whose targets answers is MonitorCannotReach's (reach.test.yml).
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -165,6 +166,12 @@ tests:
   - name: The standby's collector down on val-1; a message after 3m
     interval: 1m
     input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
       - series: >-
           up{job="otelcol",instance="10.20.0.1:9911",host="val-1",role="fibre"}
         values: '1x4 0x10'

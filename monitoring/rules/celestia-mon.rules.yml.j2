@@ -40,6 +40,21 @@
 {# Alert template text that prints that value as a whole number (a version or a height). #}
 {% macro number(m) %}{{ '{{' }} with query `{{ last(m) }}` }}{{ '{{' }} . | first | value | printf `%.0f` }}{{ '{{' }} end }}{% endmacro %}
 {% set vf = nodes + groups.get('fibre', []) %}
+{# MonitorCannotReach: the scrape targets on the Celestia hosts (celestia-appd's metrics,
+   node_exporter, the collector) that the monitor reaches over the network, so every host but the
+   monitor's own. The monitor's own jobs, blackbox's probes of Fibre and the node_exporter of a
+   monitor that runs no Celestia service answer locally and are left out. A per-host message
+   stands in for that host's ServiceDown (unreachable) messages when none of its targets answers.
+   Only where the monitor runs no Celestia service (mon_only) can it lose every host at once:
+   then a page stands in for NodeNotAdvancing's "no height" branch and FibreDown's unit branch,
+   which hold back while no target answers, so one cause pages once. #}
+{% set mon = celestia_mon_monitor_host %}
+{% set mon_only = mon not in (vf + ns_kms.scraped) %}
+{% set remote_hosts = (vf + ns_kms.scraped) | unique | reject('equalto', mon) | list %}
+{% set reach = 'up{job=~"celestia-app|node|otelcol",host!="' ~ mon ~ '"}' %}
+{% set host_unreached = 'max by (host) (' ~ reach ~ ') == 0' %}
+{% set none_reached = 'max(' ~ reach ~ ') == 0' %}
+{% set some_reached = 'max(' ~ reach ~ ') == 1' %}
 {# ServiceDown per unit: (key, unit, hosts it must be loaded on). A Fibre unit may be a stopped
    standby, which systemd drops from its list once it is also disabled, so Fibre has only the
    crash loop rule; FibreDown covers "no Fibre runs". #}
@@ -66,9 +81,14 @@ groups:
       # ServiceDown: celestia-appd, tmkms or a collector is down or not loaded, or a Celestia service
       # is crash looping. Always a message: the pages come from the alerts below, which follow the
       # roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a standby is
-      # stopped); FibreDown pages when no Fibre unit is active anywhere.
+      # stopped); FibreDown pages when no Fibre unit is active anywhere. When none of a host's
+      # targets answers, MonitorCannotReach names the host once instead of the three below.
       - alert: ServiceDown
-        expr: up{job="celestia-app"} == 0
+        expr: >-
+          up{job="celestia-app"} == 0
+{% if remote_hosts %}
+          unless on (host) {{ host_unreached }}
+{% endif %}
         for: 3m
         labels:
           severity: message
@@ -78,7 +98,11 @@ groups:
           description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
           runbook: "{{ docs }}#servicedown"
       - alert: ServiceDown
-        expr: up{job="node"} == 0
+        expr: >-
+          up{job="node"} == 0
+{% if remote_hosts %}
+          unless on (host) {{ host_unreached }}
+{% endif %}
         for: 3m
         labels:
           severity: message
@@ -89,7 +113,11 @@ groups:
           runbook: "{{ docs }}#servicedown"
 {% if fibre_on %}
       - alert: ServiceDown
-        expr: up{job="otelcol"} == 0
+        expr: >-
+          up{job="otelcol"} == 0
+{% if remote_hosts %}
+          unless on (host) {{ host_unreached }}
+{% endif %}
         for: 3m
         labels:
           severity: message
@@ -135,6 +163,43 @@ groups:
           runbook: "{{ docs }}#servicedown"
 {% endfor %}
 {% endfor %}
+{% if remote_hosts %}
+
+      # MonitorCannotReach: for 3 minutes Prometheus on the monitor has reached none of a host's
+      # scrape targets (celestia-appd's metrics, node_exporter, the collector), the hold of ServiceDown
+      # (unreachable), which it stands in for: the host is down, or the link to it is (WireGuard, the
+      # provider's network), and the monitor cannot tell which. A message; the page alerts that
+      # follow the roles page for what that host held (ValidatorNotSigning, FibreDown).
+      - alert: MonitorCannotReach
+        expr: >-
+          {{ host_unreached }}
+{% if mon_only %}
+          unless on () {{ none_reached }}
+{% endif %}
+        for: 3m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Monitor cannot reach {{ $labels.host }}{% endraw %}"
+          description: "For 3 minutes Prometheus on {{ mon }} has reached none of this host's metrics endpoints (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between it and the monitor is, or each of those services stopped. Its service and disk alerts are blind until it answers again; this message stands in for its ServiceDown messages."
+          runbook: "{{ docs }}#monitorcannotreach"
+{% endif %}
+{% if mon_only %}
+      # No Celestia host answers: the monitor lost its link to all of them (its WireGuard, its data
+      # centre's network), or every host is down. Its 3 minutes match NodeNotAdvancing's, whose
+      # "no height" branch, like FibreDown's unit branch, needs a target that answers, so the two
+      # never page for one cause; this page stands in for the per-host messages too.
+      - alert: MonitorCannotReach
+        expr: >-
+          {{ none_reached }}
+        for: 3m
+        labels:
+          severity: page
+        annotations:
+          summary: "Monitor cannot reach any server"
+          description: "For 3 minutes Prometheus on {{ mon }} has reached no metrics endpoint on any Celestia host ({{ remote_hosts | join(', ') }}): the link between the monitor and the hosts is down, or every host is. No alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the validator still signs: an explorer shows its recent blocks."
+          runbook: "{{ docs }}#monitorcannotreach"
+{% endif %}
 
       # NodeNotAdvancing: no node of this install committed a new block for 3 minutes (the highest
       # height of all nodes did not change in 2 minutes, and that held for 1 more), or Prometheus
@@ -142,11 +207,18 @@ groups:
       # advances is at the network's head. A window with a single height (the first evaluation
       # after Prometheus starts, or the last height of a node that just stopped) shows no change
       # either way, so it needs two; a node that stopped is caught when its height leaves the window.
+{% if mon_only %}
+      # Reading no height counts only while a target on a Celestia host answers; while none does,
+      # MonitorCannotReach pages instead.
+{% endif %}
       - alert: NodeNotAdvancing
         expr: >-
           (changes(max(cometbft_consensus_height{job="celestia-app"})[2m:]) == 0
             and on () count_over_time(max(cometbft_consensus_height{job="celestia-app"})[2m:]) > 1)
           or sum(absent_over_time(cometbft_consensus_height{job="celestia-app"}[2m]))
+{% if mon_only %}
+          and on () {{ some_reached }}
+{% endif %}
         for: 1m
         labels:
           severity: page
@@ -275,8 +347,15 @@ groups:
       # the active Fibre down (its node_exporter goes with it) and no standby started, or
       # celestia_mon_units.fibre naming the wrong unit. A failover within 10 minutes pages nobody.
       # The branches after it look at the endpoint from outside, through Tensile, when it is set up.
+{% if mon_only %}
+      # While no target on a Celestia host answers, MonitorCannotReach pages instead.
+{% endif %}
       - alert: FibreDown
-        expr: (count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) or vector(0)) == 0
+        expr: >-
+          (count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) or vector(0)) == 0
+{% if mon_only %}
+          and on () {{ some_reached }}
+{% endif %}
         for: 10m
         labels:
           severity: page
@@ -479,10 +558,11 @@ groups:
 {% endif %}
 
       # DiskLow: a watched disk is filling up or turned read-only. Data mounts page on celestia-appd
-      # hosts (validator and backup nodes) and kms hosts, and send messages on Fibre-only hosts. The
-      # Fibre store has its own rules unless it is also a node data mount. Each mount gets one set of
+      # hosts (validator and backup nodes) and kms hosts, and send messages on Fibre-only hosts and
+      # on a monitor host that runs no Celestia service (the disk of Prometheus's data). The Fibre
+      # store has its own rules unless it is also a node data mount. Each mount gets one set of
       # rules.
-{% for h in (vf + kms) | unique if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
+{% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
 {% set store = hostvars[h].celestia_mon_fibre_mount | default('') if h in fibres else '' %}
 {% for m in hostvars[h].celestia_mon_data_mounts | default([]) if node_host or m != store %}

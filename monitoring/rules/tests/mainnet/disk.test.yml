@@ -1,6 +1,7 @@
 # DiskLow on the example-mainnet inventory: data mounts val-1 / and fibre-1 / (the backup node's
-# data); Fibre stores val-1 / (the standby's store shares the node disk) and fibre-1 /var/lib/fibre.
-# Data mounts page on both hosts, as both run celestia-appd; the Fibre store sends messages.
+# data) and mon-1 / (Prometheus's data); Fibre stores val-1 / (the standby's store shares the node
+# disk) and fibre-1 /var/lib/fibre. Data mounts page on val-1 and fibre-1, as both run
+# celestia-appd; mon-1's disk and the Fibre store send messages.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -137,4 +138,72 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
               description: "Fibre cannot store new shards on a read-only filesystem."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+
+  # mon-1 runs no Celestia service: the disk of Prometheus's data sends messages, never a page.
+  - name: The monitor's disk on mon-1 under 5%; a message after 10m and no page
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '100000000000x15'
+      # 4% free.
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '4000000000x15'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.3:9910
+              host: mon-1
+              role: monitor
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: message
+            exp_annotations:
+              summary: "/ on mon-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+
+  - name: The monitor's disk on mon-1 turns read-only; a message at once
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '100000000000x10'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '50000000000x10'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '0x4 1x5'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.3:9910
+              host: mon-1
+              role: monitor
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: message
+            exp_annotations:
+              summary: "/ on mon-1 is read-only"
+              description: "The filesystem is read-only."
               runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
