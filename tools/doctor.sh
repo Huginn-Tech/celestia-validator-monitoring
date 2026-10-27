@@ -36,6 +36,10 @@
 # active is read from systemd, never from the settings: with two or more
 # fibre_hosts, a stopped Fibre unit is a standby.
 #
+# Checks 1, 8, 20 and 25 read where each port listens (ss), the connections to it now, whether
+# the host has a Tailscale interface (ip) and, while ufw is enabled, its rules (ufw status, as
+# root); doctor never connects to those ports and never changes a firewall rule.
+#
 # Needs only bash, coreutils, util-linux (runuser, setsid), curl, ss and ip
 # (iproute2), systemctl, grep, sed and awk.
 
@@ -380,6 +384,253 @@ toml_get() { # file, section ("" = top level), key -> value without quotes
     }' "$1"
 }
 
+toml_has() { # file, section ("" = top level), key -> true when the file sets the key, also to ""
+  awk -v sec="$2" -v key="$3" '
+    /^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[+|\]+[[:space:]]*(#.*)?$/, "", s); next }
+    s == sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" { f = 1; exit }
+    END { exit !f }' "$1"
+}
+
+joins() { # separator, items -> the items joined by the separator
+  local sep=$1 out="" x
+  shift
+  for x in "$@"; do out+="${out:+$sep}$x"; done
+  printf '%s' "$out"
+}
+
+# ------------------------------------------------- who reaches a port
+
+is_tailnet() { # address without port -> true in 100.64.0.0/10, where Tailscale gives its devices addresses
+  [[ $1 =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]]
+}
+
+lock_class() { # address without port -> loopback, private, tailnet (100.64.0.0/10), wildcard or public
+  case $1 in
+    '' | 0.0.0.0 | :: | '*') echo wildcard ;;
+    localhost | 127.* | ::1) echo loopback ;;
+    *)
+      if is_tailnet "$1"; then
+        echo tailnet
+      elif [[ $1 =~ ${C[private_address_regex]} ]]; then
+        echo private
+      else
+        echo public
+      fi
+      ;;
+  esac
+}
+
+# Read once, in the main shell (not in $(...), which would lose them): FW, what firewall_state
+# says; TS_IF, the host's Tailscale interface (tailscale0 by default), empty when it has none:
+# tailscaled accepts what arrives there before ufw sees it; UFW, `ufw status verbose` while ufw is
+# enabled, empty when it cannot be read (doctor not run as root).
+FW="" TS_IF="" UFW="" NET_READ=false
+net_read() {
+  [[ $NET_READ == false ]] || return 0
+  NET_READ=true
+  FW=$(firewall_state)
+  TS_IF=$(ip -o link show 2>/dev/null | awk -F': ' '$2 ~ /^tailscale/ { sub(/@.*/, "", $2); print $2; exit }')
+  if [[ $FW == "ufw enabled" ]]; then
+    UFW=$(LC_ALL=C ufw status verbose 2>/dev/null)
+    if [[ $UFW != "Status: active"* ]]; then UFW=""; fi
+  fi
+}
+
+# The ufw rules in UFW that let TCP port $1 in, one per line: "<kind> TAB <source> TAB <rule>",
+# kind "any" when the rule lets anyone in (Anywhere, a source port only, a whole network, or ufw's
+# default incoming policy allow), else "one". `ufw status verbose` prints a rule as
+# "<to> <ACTION IN> <from>[ # comment]", <to> being "[address ]<ports>[/proto][ (v6)][ on iface]",
+# "Anywhere" or an address; a rule without ports covers every port. DENY, REJECT, outgoing and
+# routed rules are left out.
+ufw_allows() {
+  [[ -n $UFW ]] || return 0
+  awk -v p="$1" '
+    function covers(spec,   n, parts, i, a) {
+      n = split(spec, parts, ",")
+      for (i = 1; i <= n; i++) {
+        if (split(parts[i], a, ":") == 2) {
+          if (p + 0 >= a[1] + 0 && p + 0 <= a[2] + 0) return 1
+        } else if (parts[i] + 0 == p + 0) return 1
+      }
+      return 0
+    }
+    BEGIN { portre = "^[0-9]+(:[0-9]+)?(,[0-9]+(:[0-9]+)?)*(/[a-z][a-z0-9]*)?$" }
+    /^Default:/ { if ($0 ~ /allow \(incoming\)/) printf "any\tAnywhere\tufw default: allow (incoming)\n"; next }
+    /^--/ { t = 1; next }
+    !t || !match($0, / (ALLOW|LIMIT|DENY|REJECT)( (IN|OUT|FWD))? /) { next }
+    {
+      to = substr($0, 1, RSTART - 1)
+      act = substr($0, RSTART + 1, RLENGTH - 2)
+      from = substr($0, RSTART + RLENGTH)
+      if (act !~ /^(ALLOW|LIMIT)( IN)?$/) next
+      sub(/ # .*$/, "", from)
+      sub(/ +\(log(-all)?\)$/, "", from)
+      gsub(/^ +| +$/, "", to)
+      gsub(/^ +| +$/, "", from)
+      x = to
+      gsub(/ \([^)]*\)/, "", x)
+      sub(/ on [^ ]+$/, "", x)
+      n = split(x, w, " ")
+      last = w[n]
+      proto = ""
+      if (last ~ portre) {
+        ports = last
+        if (index(ports, "/")) {
+          proto = substr(ports, index(ports, "/") + 1)
+          ports = substr(ports, 1, index(ports, "/") - 1)
+        }
+        if (!covers(ports)) next
+      } else if (last ~ /\/[a-z][a-z0-9]*$/) {
+        proto = last
+        sub(/^.*\//, "", proto)
+      }
+      if (proto != "" && proto != "tcp") next
+      split(from, f, " ")
+      src = f[1]
+      kind = "one"
+      if (src == "Anywhere" || src ~ portre) {
+        kind = "any"
+        src = "Anywhere"
+      } else if (src ~ /\/[0-9]+$/ && src !~ /\/(32|128)$/) kind = "any"
+      printf "%s\t%s\t%s %s %s\n", kind, src, to, act, from
+    }' <<<"$UFW"
+}
+
+ufw_open() { # TCP port -> the ufw rules that let anyone reach it, comma-separated, empty when none
+  ufw_allows "$1" | awk -F '\t' '$1 == "any" { printf "%s%s", (n++ ? ", " : ""), $3 }'
+}
+
+port_peers() { # port -> the remote addresses (not loopback) connected to this host's port now, comma-separated
+  local a h out=""
+  while read -r a; do
+    h=$(addr_host "$a")
+    [[ -n $h && $h != 127.* && $h != ::1 && ", $out, " != *", $h, "* ]] || continue
+    out+="${out:+, }$h"
+  done < <(ss -Htn 2>/dev/null | awk -v p=":$1" '$1 == "ESTAB" && length($4) > length(p) && substr($4, length($4) - length(p) + 1) == p { print $5 }')
+  printf '%s' "$out"
+}
+
+# Where one of the node's ports listens and who can connect to it, from the listening sockets (the
+# setting itself while nothing listens), the connections now and ufw's rules; doctor never
+# connects to the port. Every port of a node but p2p takes one source. On every interface or a
+# public address the port fails with no firewall active or a Tailscale interface on the host
+# (tailscaled accepts tailnet traffic before ufw sees it), and warns otherwise. On a Tailscale
+# address (100.64.0.0/10) it warns: only the tailnet policy filters it. On a private address it
+# warns with no firewall active. In each of these, it warns when a ufw rule lets anyone reach it.
+# Arguments: the setting as the report names it (such as "[grpc] address"), its value, its key,
+# its section ("" = top level), its file, the value to set (with "<private address>"), who may
+# connect, the placeholder for that source in the ufw command, and optional words for the report
+# line after where it listens (such as ", without mTLS"). Sets:
+#   LOCK_SEV   OK, WARN or FAIL
+#   LOCK_OPEN  wildcard or public when the port listens there, else empty
+#   LOCK_TEXT  what doctor found, for the report line
+#   LOCK_BIND  the change of the setting, when its address is the problem
+#   LOCK_UFW   the ufw commands, when the check is not OK
+LOCK_SEV="" LOCK_OPEN="" LOCK_TEXT="" LOCK_BIND="" LOCK_UFW=""
+port_lock() {
+  local label=$1 value=$2 key=$3 sec=$4 file=$5 want=$6 who=$7 src=$8 after=${9:-}
+  local hp h port l where="" classes="" peers kind s rule del=""
+  local -a anyrules=() ones=()
+  LOCK_SEV=OK LOCK_OPEN="" LOCK_BIND="" LOCK_UFW=""
+  LOCK_TEXT="$label = $value"
+  if [[ $value == unix://* ]]; then
+    LOCK_TEXT+=" (a unix socket)$after"
+    return
+  fi
+  hp=${value#*://}
+  port=${hp##*:}
+  h=${hp%:*}
+  h=${h#\[}
+  h=${h%\]}
+  if [[ $hp != *:* || ! $port =~ ^[0-9]+$ ]]; then
+    LOCK_TEXT+=" (no port in it)$after"
+    return
+  fi
+  while read -r l; do
+    [[ -n $l ]] || continue
+    where+="${where:+, }$l"
+    classes+=" $(lock_class "$(addr_host "$l")")"
+  done <<<"$(listeners "$port")"
+  if [[ -z $where ]]; then
+    where="nothing listens on it now"
+    classes=" $(lock_class "$h")"
+  fi
+  LOCK_TEXT+=" ($where)$after"
+  # On loopback only, no other host reaches it.
+  if [[ $classes != *wildcard* && $classes != *public* && $classes != *tailnet* && $classes != *private* ]]; then return; fi
+  net_read
+  if [[ $classes == *wildcard* || $classes == *public* ]]; then
+    if [[ $classes == *wildcard* ]]; then
+      LOCK_OPEN=wildcard
+      LOCK_TEXT+=" is on every interface"
+    else
+      LOCK_OPEN=public
+      LOCK_TEXT+=" is on a public address"
+    fi
+    if [[ $FW == none* ]]; then
+      LOCK_SEV=FAIL
+      LOCK_TEXT+=", and no firewall is active"
+    elif [[ -n $TS_IF ]]; then
+      LOCK_SEV=FAIL
+      LOCK_TEXT+=", and this host has a Tailscale interface ($TS_IF), whose traffic ufw does not filter"
+    else
+      LOCK_SEV=WARN
+      LOCK_TEXT+=" (firewall: $FW)"
+    fi
+    LOCK_BIND="in $file${sec:+ under [$sec]}, set $key = $want"
+  elif [[ $classes == *tailnet* ]]; then
+    LOCK_SEV=WARN
+    LOCK_TEXT+=" is on a Tailscale address: ufw does not filter tailnet traffic, so only the tailnet policy decides who connects"
+    LOCK_BIND="in $file${sec:+ under [$sec]}, set $key = $want, on a VLAN or WireGuard address (or grant the port to $who only in the tailnet policy)"
+  elif [[ $FW == none* ]]; then
+    LOCK_SEV=WARN
+    LOCK_TEXT+=": no firewall is active, so every host that reaches that private address can connect"
+  fi
+  if [[ -n $UFW ]]; then
+    while IFS=$'\t' read -r kind s rule; do
+      if [[ $kind == any ]]; then
+        anyrules+=("$rule")
+      elif [[ -n $s && " ${ones[*]} " != *" $s "* ]]; then
+        ones+=("$s")
+      fi
+    done < <(ufw_allows "$port")
+    if ((${#anyrules[@]} > 0)); then
+      [[ $LOCK_SEV == FAIL ]] || LOCK_SEV=WARN
+      LOCK_TEXT+="; ufw lets anyone reach it ($(join "${anyrules[@]}"))"
+      del=", then delete the rule that lets anyone in (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\")"
+    elif ((${#ones[@]} > 0)); then
+      LOCK_TEXT+="; ufw lets in $(join "${ones[@]}")"
+    else
+      LOCK_TEXT+="; no ufw rule lets another host reach it"
+    fi
+  elif [[ $FW == "ufw enabled" ]]; then
+    LOCK_TEXT+="; ufw's rules not read (run as root)"
+  elif [[ $FW != none* && -z $LOCK_OPEN ]]; then
+    LOCK_TEXT+="; firewall: $FW, whose rules doctor does not read"
+  fi
+  peers=$(port_peers "$port")
+  if [[ -n $peers ]]; then LOCK_TEXT+="; connected now from $peers"; fi
+  if [[ $LOCK_SEV != OK ]]; then
+    LOCK_UFW="let only $who reach port $port: \"sudo ufw allow from $src to any port $port proto tcp\"$del"
+  fi
+}
+
+# The end of the fix of checks 20 and 25: the setting changes (then a restart of celestia-appd)
+# and the ufw commands, each list joined by "; ".
+lock_fix() { # restart words, setting changes (one string, "; "-joined), ufw commands (the same)
+  local out=""
+  if [[ -n $2 ]]; then out="$2, then restart celestia-appd at a moment you choose$1"; fi
+  if [[ -n $3 ]]; then
+    out+="${out:+; }$3 (look with \"sudo ss -tnp\" first: the source must be the address that host really connects from)"
+    case $FW in
+      none*) out+="; ufw is not active: add your SSH port, p2p (26656) and the other rules of docs/security.md (\"Ports on the validator\") first, then turn it on yourself (\"sudo ufw enable\") and run install.sh again, which adds the monitor's rules" ;;
+      "ufw enabled" | "") ;;
+      *) out+="; those are ufw's commands: write the same rules for ${FW% active}" ;;
+    esac
+  fi
+  printf '%s' "$out"
+}
+
 NODE_HOME=""
 NODE_USER=""
 APPD=""
@@ -434,7 +685,8 @@ home_ok() {
 METRICS=""
 check_metrics() {
   local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
-  local -a bad=()
+  local port open only del=""
+  local -a bad=() tnet=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
   # The address the monitor scrapes, which is where the metrics belong: this host's
   # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660").
@@ -477,15 +729,30 @@ check_metrics() {
     case $(addr_class "$a") in
       wildcard) [[ -n $wild ]] || wild="the port listens on $a" ;;
       public) bad+=("$a") ;;
+      private) if is_tailnet "$(addr_host "$a")"; then tnet+=("$a"); fi ;;
     esac
   done <<<"$(listeners "$(url_port "$url")")"
-  # With no firewall active, nothing but the bind keeps the port off the networks of this host.
-  fw=$(firewall_state)
-  if [[ $fw == none* ]]; then sev=FAIL; fi
+  # With no firewall active, nothing but the bind keeps the port off the networks of this host,
+  # and tailscaled accepts what arrives on its interface before ufw sees it.
+  net_read
+  fw=$FW
+  if [[ -n $TS_IF ]]; then fw+="; Tailscale interface $TS_IF"; fi
+  if [[ $FW == none* || -n $TS_IF ]]; then sev=FAIL; fi
+  port=$(url_port "$url")
+  open=$(ufw_open "$port")
+  only="; let only the monitor reach port $port: \"sudo ufw allow from <monitor address> to any port $port proto tcp\" (install.sh adds this rule while ufw is active)"
+  if [[ -n $open ]]; then
+    del="; delete the ufw rule that lets anyone in (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\"): install.sh lets the monitor's address in with a rule of its own (comment celestia-mon)"
+    open="; ufw lets anyone reach port $port ($open)"
+  fi
   if [[ -n $wild ]]; then
-    report "$sev" 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, a Tailscale interface included, which ufw does not filter (firewall: $fw). Whoever reaches the port can read the node's metrics and hold its few connections (max_open_connections, 3 by default), which blinds the signing alerts. Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (never 0.0.0.0 or an empty host), then restart celestia-appd at a moment you choose; celestia-mon-doctor never edits the config"
+    report "$sev" 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, a Tailscale interface included, which ufw does not filter (firewall: $fw)$open. Whoever reaches the port can read the node's metrics and hold its few connections (max_open_connections, 3 by default), which blinds the signing alerts. Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (never 0.0.0.0 or an empty host), then restart celestia-appd at a moment you choose$only$del; celestia-mon-doctor never edits the config"
   elif ((${#bad[@]} > 0)); then
-    report "$sev" 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address (firewall: $fw). Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or block the port in a firewall), then restart celestia-appd at a moment you choose"
+    report "$sev" 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address (firewall: $fw)$open. Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose$only$del"
+  elif ((${#tnet[@]} > 0)); then
+    report WARN 1 "$name" "enabled at $url$note, but the port listens on $(join "${tnet[@]}"), a Tailscale address: ufw does not filter tailnet traffic, so only the tailnet policy decides who reaches it$open. Fix: grant tcp:$port on this host to the monitor alone in the tailnet policy (docs/security.md, Tailnet policy), or move celestia_mon_private_ip and prometheus_listen_addr to this host's VLAN or WireGuard address$del"
+  elif [[ -n $open ]]; then
+    report WARN 1 "$name" "enabled at $url$note$open. Only the monitor scrapes it. Fix: ${del#; }"
   else
     report OK 1 "$name" "enabled at $url$note"
   fi
@@ -608,44 +875,20 @@ check_signer() {
   fi
 }
 
-signer_port_state() { # address from config.toml -> "ok|wildcard|public TEXT": its listeners now, else the address itself
-  local a=$1 hp h l where="" worst=ok
-  if [[ $a == unix://* ]]; then
-    echo "ok $a (a unix socket)"
-    return
-  fi
-  hp=${a#tcp://}
-  h=${hp%:*}
-  h=${h#\[}
-  h=${h%\]}
-  while read -r l; do
-    [[ -n $l ]] || continue
-    where+="${where:+, }$l"
-    case $(addr_class "$l") in
-      public) worst=public ;;
-      wildcard) [[ $worst == public ]] || worst=wildcard ;;
-    esac
-  done <<<"$(listeners "${hp##*:}")"
-  if [[ -z $where ]]; then
-    where="nothing listens on it now"
-    case $h in
-      '' | 0.0.0.0 | :: | '*') worst=wildcard ;;
-      localhost) ;;
-      *) [[ $h =~ ${C[private_address_regex]} ]] || worst=public ;;
-    esac
-  fi
-  echo "$worst $a ($where)"
-}
-
-# Where the node's two signer ports listen, read from config.toml and ss: doctor never
+# Where the node's two signer ports listen and who can reach them (port_lock): doctor never
 # connects to them. celestia-appd does not authenticate the remote signer that connects to
 # priv_validator_laddr, so whoever reaches that port while tmkms reconnects can take the
-# signer's place (missed blocks, then jailing); ufw does not filter a Tailscale interface.
-# priv_validator_grpc_laddr serves Fibre; celestia-appd refuses it beyond loopback without
-# mTLS unless priv_validator_grpc_allow_insecure = true.
+# signer's place (missed blocks, then jailing): only the KMS host may reach it, and it never
+# belongs on a public address. priv_validator_grpc_laddr serves raw-bytes signatures with the
+# validator key to Fibre: only the Fibre hosts may reach it, always with mTLS (the three
+# priv_validator_grpc_*_file settings, all or none, or celestia-appd refuses to start). Without
+# mTLS every account of the host can ask it for signatures, loopback being no boundary between
+# them, and celestia-appd refuses it beyond loopback unless priv_validator_grpc_allow_insecure =
+# true. celestia-app v10 serves 127.0.0.1:26669 when config.toml lacks the key (a home made
+# before v10).
 check_signer_binds() {
-  local name="signer binds" cfg laddr g gh s note=""
-  local -a fails=() warns=() oks=()
+  local name="signer binds" cfg laddr g gdef="" s sev n f v note="" why="" mtls
+  local -a fails=() warns=() oks=() sets=() ufws=()
   if ! node_host; then report SKIP 20 "$name" "not a validator or backup node host"; return; fi
   cfg=$NODE_HOME/config/config.toml
   if [[ ! -r $cfg ]]; then
@@ -654,41 +897,179 @@ check_signer_binds() {
   fi
   laddr=$(toml_get "$cfg" "" priv_validator_laddr)
   g=$(toml_get "$cfg" "" priv_validator_grpc_laddr)
+  if [[ -z $g ]] && ! toml_has "$cfg" "" priv_validator_grpc_laddr && [[ -n $(listeners 26669) ]]; then
+    g=127.0.0.1:26669
+    gdef=", celestia-app's default, as $cfg does not set it"
+  fi
   if [[ -n $laddr ]]; then
-    s=$(signer_port_state "$laddr")
-    case ${s%% *} in
-      public) fails+=("priv_validator_laddr = ${s#* } is on a public address") ;;
-      wildcard) warns+=("priv_validator_laddr = ${s#* } is on every interface: celestia-appd does not authenticate the signer that connects, so whoever reaches the port while tmkms reconnects can take its place, and ufw does not filter a Tailscale interface") ;;
-      *) oks+=("priv_validator_laddr = ${s#* }") ;;
+    port_lock priv_validator_laddr "$laddr" priv_validator_laddr "" "$cfg" \
+      "\"tcp://<private address>:${laddr##*:}\" (the VLAN or WireGuard address tmkms dials)" "the KMS host (tmkms)" "<KMS host address>"
+    sev=$LOCK_SEV
+    if [[ $LOCK_OPEN == public ]]; then sev=FAIL; fi
+    if [[ $sev != OK ]]; then
+      why+=" celestia-appd does not authenticate the signer that connects to priv_validator_laddr, so whoever reaches it while tmkms reconnects can take tmkms's place (missed blocks, then jailing)."
+    fi
+    case $sev in
+      FAIL) fails+=("$LOCK_TEXT") ;;
+      WARN) warns+=("$LOCK_TEXT") ;;
+      *) oks+=("$LOCK_TEXT") ;;
     esac
+    if [[ -n $LOCK_BIND ]]; then sets+=("$LOCK_BIND"); fi
+    if [[ -n $LOCK_UFW ]]; then ufws+=("$LOCK_UFW"); fi
   fi
   if [[ -n $g ]]; then
-    s=$(signer_port_state "$g")
-    gh=${g%:*}
-    gh=${gh#\[}
-    gh=${gh%\]}
-    if [[ $(toml_get "$cfg" "" priv_validator_grpc_allow_insecure) == true && $gh != 127.* && $gh != ::1 ]]; then
-      fails+=("priv_validator_grpc_laddr = ${s#* } with priv_validator_grpc_allow_insecure = true: whoever reaches it can ask for raw-bytes signatures with the validator key, no client certificate needed")
-    else
-      case ${s%% *} in
-        public) warns+=("priv_validator_grpc_laddr = ${s#* } is on a public address (mTLS guards the signatures)") ;;
-        wildcard) warns+=("priv_validator_grpc_laddr = ${s#* } is on every interface (mTLS guards the signatures)") ;;
-        *) oks+=("priv_validator_grpc_laddr = ${s#* }") ;;
-      esac
+    n=0
+    for f in cert key client_ca; do
+      v=$(toml_get "$cfg" "" "priv_validator_grpc_${f}_file")
+      if [[ -n $v ]]; then n=$((n + 1)); fi
+    done
+    v=""
+    if ((n == 0)); then v=", without mTLS"; fi
+    port_lock priv_validator_grpc_laddr "$g" priv_validator_grpc_laddr "" "$cfg" \
+      "\"<private address>:${g##*:}\" (the address Fibre dials, named in the server certificate)" "the Fibre hosts" "<Fibre host address>" "$v$gdef"
+    sev=$LOCK_SEV
+    mtls="in $cfg, serve priv_validator_grpc_laddr with mTLS: set priv_validator_grpc_cert_file (a certificate whose SAN names the address Fibre dials), priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file (the CA that issues each Fibre's client certificate), and give each Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in its ExecStart, or signer_grpc_* in its server_config.toml); if no Fibre signs through this node, empty it instead (priv_validator_grpc_laddr = \"\")"
+    if ((n == 1 || n == 2)); then
+      sev=FAIL
+      why+=" Only $n of priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file are set, and celestia-appd refuses to start with only some of them."
+      sets+=("in $cfg, set all three")
+    elif ((n == 0)) && [[ $(toml_get "$cfg" "" priv_validator_grpc_allow_insecure) == true && $(lock_class "$(addr_host "${g#*://}")") != loopback ]]; then
+      sev=FAIL
+      why+=" With priv_validator_grpc_allow_insecure = true and no mTLS, whoever reaches priv_validator_grpc_laddr can ask for raw-bytes signatures with the validator key, no client certificate needed."
+      sets+=("$mtls, and set priv_validator_grpc_allow_insecure = false")
+    elif ((n == 0)); then
+      if [[ $sev != FAIL ]]; then sev=WARN; fi
+      why+=" Without mTLS, every account on this host can ask priv_validator_grpc_laddr for raw-bytes signatures with the validator key, no client certificate needed: loopback is no boundary between the accounts of a host."
+      sets+=("$mtls")
     fi
+    case $sev in
+      FAIL) fails+=("$LOCK_TEXT") ;;
+      WARN) warns+=("$LOCK_TEXT") ;;
+      *) oks+=("$LOCK_TEXT") ;;
+    esac
+    if [[ -n $LOCK_BIND ]]; then sets+=("$LOCK_BIND"); fi
+    if [[ -n $LOCK_UFW ]]; then ufws+=("$LOCK_UFW"); fi
   elif ! has_role validator; then
-    note="; priv_validator_grpc_laddr is empty: after a tmkms repoint to this node, a Fibre can sign through it only once that is set"
+    note="; priv_validator_grpc_laddr is empty: after a tmkms repoint to this node, a Fibre can sign through it only once that is set (with mTLS)"
   fi
   if ((${#fails[@]} + ${#warns[@]} == 0)); then
     if ((${#oks[@]} == 0)); then
       report OK 20 "$name" "no signer port: priv_validator_laddr and priv_validator_grpc_laddr are empty$note"
     else
-      report OK 20 "$name" "$(join "${oks[@]}")$note"
+      report OK 20 "$name" "$(joins '; ' "${oks[@]}")$note"
     fi
     return
   fi
-  s="$(join "${fails[@]}" "${warns[@]}")${oks[*]:+; ok: $(join "${oks[@]}")}$note. Fix: in $cfg, set each to 127.0.0.1 or this host's private address that tmkms (priv_validator_laddr) or Fibre (priv_validator_grpc_laddr, with mTLS beyond loopback and priv_validator_grpc_allow_insecure = false) dials, never 0.0.0.0, an empty host or a public address, then restart celestia-appd at a moment you choose, with tmkms running"
+  s="$(joins '; ' "${fails[@]}" "${warns[@]}")${oks[*]:+; ok: $(joins '; ' "${oks[@]}")}$note.$why Fix: $(lock_fix ", with tmkms running" "$(joins '; ' "${sets[@]}")" "$(joins '; ' "${ufws[@]}")")"
   if ((${#fails[@]} > 0)); then report FAIL 20 "$name" "$s"; else report WARN 20 "$name" "$s"; fi
+}
+
+# The node's other ports (port_lock): the app gRPC that Fibre reads (app.toml [grpc] address,
+# app_grpc_address in Fibre's settings), the RPC and the REST API, which nothing of this
+# package needs beyond loopback (celestia-mon-signal may read the RPC from the monitor), and the
+# RPC's gRPC, pprof and the trace pull address when set. The p2p port (26656) stays public, the
+# metrics port is check 1's, the signer ports are check 20's. A missing key reads as the default
+# address of the release (celestia-core v0.42.3, celestia-app's cosmos-sdk fork); only an
+# explicit enable = false turns the app gRPC or the REST API off here.
+check_node_ports() {
+  local name="node ports" cfg app en v item label value key sec file want who src sev=OK note=""
+  local one="the one host that needs it (the monitor, for celestia-mon-signal)" onesrc="<address of that host>"
+  local -a items=() bad=() oks=() sets=() ufws=()
+  if ! node_host; then report SKIP 25 "$name" "not a validator or backup node host"; return; fi
+  cfg=$NODE_HOME/config/config.toml
+  app=$NODE_HOME/config/app.toml
+  if [[ ! -r $cfg ]]; then
+    report SKIP 25 "$name" "$cfg not readable (run as root or pass --node-home)"
+    return
+  fi
+  if [[ -r $app ]]; then
+    if [[ $(toml_get "$app" grpc enable) == false ]]; then
+      oks+=("app gRPC off ([grpc] enable = false)")
+    else
+      v=$(toml_get "$app" grpc address)
+      v=${v:-localhost:9090}
+      items+=("[grpc] address|$v|address|grpc|$app|\"<private address>:${v##*:}\" (the address in Fibre's app_grpc_address), or \"127.0.0.1:${v##*:}\" when only a Fibre on this host reads it|the Fibre hosts|<Fibre host address>")
+    fi
+    en=$(toml_get "$app" api enable)
+    if [[ $en == false ]]; then
+      oks+=("REST API off ([api] enable = false)")
+    else
+      v=$(toml_get "$app" api address)
+      v=${v:-tcp://localhost:1317}
+      items+=("[api] address|$v|address|api|$app|\"tcp://127.0.0.1:${v##*:}\", or \"tcp://<private address>:${v##*:}\" when one other host reads it|$one|$onesrc")
+    fi
+  else
+    note="; $app not readable, so the app gRPC and the REST API were not checked"
+  fi
+  v=$(toml_get "$cfg" rpc laddr)
+  v=${v:-tcp://127.0.0.1:26657}
+  items+=("[rpc] laddr|$v|laddr|rpc|$cfg|\"tcp://127.0.0.1:${v##*:}\", or \"tcp://<private address>:${v##*:}\" when one other host reads it|$one|$onesrc")
+  v=$(toml_get "$cfg" rpc grpc_laddr)
+  if [[ -n $v ]]; then items+=("[rpc] grpc_laddr|$v|grpc_laddr|rpc|$cfg|\"tcp://127.0.0.1:${v##*:}\", or empty to turn it off|$one|$onesrc"); fi
+  v=$(toml_get "$cfg" rpc pprof_laddr)
+  if [[ -n $v ]]; then items+=("[rpc] pprof_laddr|$v|pprof_laddr|rpc|$cfg|\"127.0.0.1:${v##*:}\", or empty to turn it off|$one|$onesrc"); fi
+  v=$(toml_get "$cfg" instrumentation trace_pull_address)
+  if [[ -n $v ]]; then items+=("[instrumentation] trace_pull_address|$v|trace_pull_address|instrumentation|$cfg|\"127.0.0.1:${v##*:}\", or empty to turn it off|$one|$onesrc"); fi
+  for item in "${items[@]}"; do
+    IFS='|' read -r label value key sec file want who src <<<"$item"
+    port_lock "$label" "$value" "$key" "$sec" "$file" "$want" "$who" "$src"
+    case $LOCK_SEV in
+      FAIL)
+        sev=FAIL
+        bad+=("$LOCK_TEXT")
+        ;;
+      WARN)
+        if [[ $sev != FAIL ]]; then sev=WARN; fi
+        bad+=("$LOCK_TEXT")
+        ;;
+      *) oks+=("$LOCK_TEXT") ;;
+    esac
+    if [[ -n $LOCK_BIND ]]; then sets+=("$LOCK_BIND"); fi
+    if [[ -n $LOCK_UFW ]]; then ufws+=("$LOCK_UFW"); fi
+  done
+  if [[ $sev == OK ]]; then
+    report OK 25 "$name" "$(joins '; ' "${oks[@]}")$note"
+    return
+  fi
+  report "$sev" 25 "$name" "$(joins '; ' "${bad[@]}")${oks[*]:+; ok: $(joins '; ' "${oks[@]}")}$note. Every port of the node but p2p takes one source: whoever else reaches the app gRPC, the RPC or the REST API can query the chain through this node, send it transactions and load it. Fix: $(lock_fix "" "$(joins '; ' "${sets[@]}")" "$(joins '; ' "${ufws[@]}")")"
+}
+
+# celestia-appd and Fibre run as users of their own: run as root, a flaw in either that lets
+# someone run code or read files gives them the whole host, and on a monitor host every alert
+# secret and the power to silence alerts with it. Reads User= and DynamicUser= of the units.
+check_service_users() {
+  local name="service users" unit u
+  local -a units=() root=() ok=() missing=()
+  if node_host && [[ -n ${C[appd_unit]} ]]; then units+=("${C[appd_unit]}"); fi
+  if has_role fibre && fibre_on && [[ -n ${C[fibre_unit]} ]]; then units+=("${C[fibre_unit]}"); fi
+  if ((${#units[@]} == 0)); then
+    report SKIP 26 "$name" "no celestia-appd node or Fibre unit on this host"
+    return
+  fi
+  for unit in "${units[@]}"; do
+    if ! unit_loaded "$unit"; then
+      missing+=("$unit.service not found")
+      continue
+    fi
+    u=$(unit_prop "$unit" User)
+    if [[ $(unit_prop "$unit" DynamicUser) == yes ]]; then
+      ok+=("$unit.service runs as a dynamic user")
+    elif [[ -z $u || $u == root || $u == 0 ]]; then
+      root+=("$unit.service")
+    else
+      ok+=("$unit.service runs as $u")
+    fi
+  done
+  if ((${#root[@]} > 0)); then
+    u="$(join "${root[@]}") runs as root (no User= in the unit)"
+    if ((${#root[@]} > 1)); then u="$(join "${root[@]}") run as root (no User= in their units)"; fi
+    if ((${#ok[@]} + ${#missing[@]} > 0)); then u+="; $(join "${ok[@]}" "${missing[@]}")"; fi
+    report WARN 26 "$name" "$u: a flaw in a service run as root that lets someone run code or read files gives them this whole host$(has_role monitor && printf ', with every alert secret and the power to silence alerts'). Fix: give each a system user of its own (\"sudo useradd --system --home-dir <its home> --shell /usr/sbin/nologin <user>\"), give that user its home, data and keys (\"sudo chown -R <user>: <its home>\"; keys stay 0600), add User=<user> to the unit (\"sudo systemctl edit <unit>\"), then restart it at a moment you choose (celestia-appd with tmkms running)"
+  elif ((${#ok[@]} > 0)); then
+    report OK 26 "$name" "$(join "${ok[@]}" "${missing[@]}")"
+  else
+    report SKIP 26 "$name" "$(join "${missing[@]}") (checks 3 and 6)"
+  fi
 }
 
 block_age() { # RFC 3339 UTC time such as 2026-10-17T10:00:00.123456789Z -> whole seconds since then, empty when unreadable
@@ -1000,8 +1381,9 @@ check_fibre_otel() {
 # (or a wildcard) and port, in the same mode: a plaintext loopback signer needs a plaintext
 # listener, and then a Fibre on another host cannot sign through this node; an mTLS signer
 # needs the node's mTLS listener. So a standby Fibre next to the validator node needs its own
-# client certificate for the node's mTLS address, or the listener switched at its promotion.
-# The check reads both configs and never connects to the port.
+# client certificate for the node's mTLS address. A plaintext signer warns even on loopback:
+# the node's plaintext listener serves signatures to every account of its host (check 20), so
+# every fix here leads to mTLS. The check reads both configs and never connects to the port.
 check_fibre_signer() {
   local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply home f v kf tls=false ncfg g gh gp target problem=""
   local mode when loop=false port ncert kind fix
@@ -1040,7 +1422,7 @@ check_fibre_signer() {
   ip=""
   if [[ $addr =~ $re4 || $addr =~ $re6 ]]; then ip=${BASH_REMATCH[1]}; fi
   if [[ -z $ip ]]; then
-    report FAIL 17 "$name" "$src is $addr, not an IP address and port: Fibre resolves a host name at every dial, and without mTLS it accepts only a loopback IP such as 127.0.0.1, not \"localhost\". Fix: set it to the signer's IP and port (the validator node's private address with mTLS, or 127.0.0.1:26669 for a plaintext signer on this host), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+    report FAIL 17 "$name" "$src is $addr, not an IP address and port: Fibre resolves a host name at every dial, and without mTLS it accepts only a loopback IP such as 127.0.0.1, not \"localhost\". Fix: set it to the IP and port of the validator node's privval gRPC, with mTLS, run \"systemctl daemon-reload\" if you changed the unit, $apply"
     return
   fi
   for f in ca cert key; do
@@ -1087,16 +1469,16 @@ check_fibre_signer() {
       problem="the node serves its privval gRPC on $g with mTLS (priv_validator_grpc_cert_file and the other two TLS files in $ncfg), so a plaintext dial fails"
     elif [[ $tls == true && -z $ncert ]]; then
       problem="the node serves its privval gRPC on $g in plaintext (no priv_validator_grpc_cert_file in $ncfg), so this Fibre's mTLS handshake fails"
-      fix="either serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in $ncfg, the client CA being the one that issued this Fibre's certificate) and restart celestia-appd at a moment you choose, with tmkms running; or, for a plaintext signer on 127.0.0.1:$gp, remove the three signer_grpc_* files from this Fibre, $apply"
+      fix="serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in $ncfg, the client CA being the one that issued this Fibre's certificate) and restart celestia-appd at a moment you choose, with tmkms running"
     fi
   fi
   if [[ -n $problem ]]; then
     kind="an mTLS signer on this host"
     if [[ $tls == false ]]; then
       kind="a plaintext loopback signer"
-      fix="either give this Fibre a client certificate of its own from the CA the node trusts and point it at the node's mTLS address $target (--signer-grpc-address with --signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), $apply; or, when this Fibre takes over, set the node's priv_validator_grpc_laddr to 127.0.0.1:$port without the TLS files and restart celestia-appd before Fibre starts"
+      fix="give this Fibre a client certificate of its own from the CA the node trusts and point it at the node's mTLS address $target (--signer-grpc-address with --signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply; if the node serves no mTLS there yet, set priv_validator_grpc_laddr = \"$target\" with priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in $ncfg first, then restart celestia-appd at a moment you choose, with tmkms running"
     fi
-    v="$src is $addr, $kind, but $problem: $when, every signature of this Fibre fails. celestia-appd has one privval gRPC listener, plaintext on loopback or mTLS on an address a Fibre on another host can reach, never both. Fix: $fix (check 20 shows where the node's signer ports listen)"
+    v="$src is $addr, $kind, but $problem: $when, every signature of this Fibre fails. celestia-appd has one privval gRPC listener, at one address and in one mode. Fix: $fix (check 20 shows where the node's signer ports listen)"
     if [[ $when == now ]]; then report FAIL 17 "$name" "$v"; else report WARN 17 "$name" "standby: $v"; fi
     return
   fi
@@ -1111,10 +1493,12 @@ check_fibre_signer() {
       return
     fi
   fi
-  if [[ $ip == 127.* || $ip == ::1 ]]; then
-    report OK 17 "$name" "$src is $addr, the loopback signer on this host$([[ $tls == true ]] && printf ', mTLS')"
+  if [[ $tls == false ]]; then
+    report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  elif [[ $loop == true ]]; then
+    report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS"
   else
-    report OK 17 "$name" "$src is $addr, an IP address$([[ $tls == true ]] && printf ', mTLS')"
+    report OK 17 "$name" "$src is $addr, an IP address, mTLS"
   fi
 }
 
@@ -1143,10 +1527,11 @@ CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager c
   celestia-mon-signal celestia-mon-blackbox)
 
 check_binds() {
-  local name="private binds" fw unit pid addr detail
-  local -a ok=() bad=() wide=()
+  local name="private binds" fw unit pid addr detail r
+  local -a ok=() bad=() wide=() open=()
   local -A unit_of=()
-  fw=$(firewall_state)
+  net_read
+  fw=$FW
   if [[ $(id -u) -ne 0 ]]; then
     report SKIP 8 "$name" "run as root to see which process owns each socket; firewall: $fw"
     return
@@ -1165,6 +1550,12 @@ check_binds() {
       wide+=("$unit $addr")
     else
       ok+=("$unit $addr")
+      # Only the monitor scrapes these ports (and only you open Grafana): a ufw rule that lets
+      # anyone in undoes the private bind.
+      if ! is_loopback "$addr"; then
+        r=$(ufw_open "${addr##*:}")
+        if [[ -n $r ]]; then open+=("$unit $addr ($r)"); fi
+      fi
     fi
   done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
   if ((${#bad[@]} > 0)); then
@@ -1173,6 +1564,8 @@ check_binds() {
     report FAIL 8 "$name" "$detail; firewall: $fw. Fix: set celestia_mon_private_ip for this host to its private address and re-run install.sh on each host"
   elif ((${#wide[@]} > 0)); then
     report FAIL 8 "$name" "$(join "${wide[@]}") not on 127.0.0.1, where Prometheus and Alertmanager listen; firewall: $fw. Fix: re-run install.sh on this host"
+  elif ((${#open[@]} > 0)); then
+    report WARN 8 "$name" "$(join "${ok[@]}"); but ufw lets anyone reach $(join "${open[@]}"); firewall: $fw. Fix: delete each such rule (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\"): install.sh lets the monitor's address reach node_exporter and the collector with rules of its own (comment celestia-mon); for Grafana on a private address, let in only your workstation (\"sudo ufw allow from <workstation address> to any port <port> proto tcp\")"
   elif ((${#ok[@]} > 0)); then
     report OK 8 "$name" "$(join "${ok[@]}"); firewall: $fw"
   else
@@ -1739,6 +2132,12 @@ check_compaction() {
   local -a parts=()
   local -A lp=() lb=() bp=() bb=()
   if ! has_role monitor; then report SKIP 16 "$name" "not the monitor host"; return; fi
+  # A monitor of its own shares no disk with celestia-appd or Fibre; DiskLow and the Servers band
+  # watch its own disk.
+  if ! node_host && ! has_role fibre; then
+    report SKIP 16 "$name" "this monitor runs no celestia-appd node or Fibre, so Prometheus's compactions share no disk with them"
+    return
+  fi
   if ((!PROM_OK)); then report SKIP 16 "$name" "Prometheus not answering (check 11)"; return; fi
   t=$(prom_value 'max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])')
   t=${t%%.*}
@@ -2314,6 +2713,8 @@ check_silences
 check_deadman
 check_signal
 check_fibre_ready
+check_node_ports
+check_service_users
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

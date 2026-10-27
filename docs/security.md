@@ -28,7 +28,7 @@ Every `celestia-mon-*` unit runs as its own system user with `NoNewPrivileges`, 
 
 When the hosts share a Tailscale tailnet, the tailnet policy is the firewall between them. In Tailscale's default netfilter mode on Linux, tailscaled puts its own chain first in `INPUT` and accepts everything that arrives on `tailscale0`, so ufw never sees tailnet traffic: neither your rules nor the ones celestia-validator-monitoring adds apply to it. ufw still filters the public interface and other private networks.
 
-Keep the signing path off the tailnet: tmkms to the node's privval port (`priv_validator_laddr`) and Fibre to the node's privval gRPC (`priv_validator_grpc_laddr`, mTLS) and app gRPC (9090) belong on a private VLAN or WireGuard. Bind those three ports to that address, or to 127.0.0.1, never to `0.0.0.0`: on every interface they are reachable over `tailscale0`, which ufw does not filter, and celestia-appd does not authenticate the signer that connects to `priv_validator_laddr`. `doctor` check 20 shows where the two signer ports listen.
+Keep the signing path off the tailnet: tmkms to the node's privval port (`priv_validator_laddr`) and Fibre to the node's privval gRPC (`priv_validator_grpc_laddr`, mTLS) and app gRPC (9090) belong on a private VLAN or WireGuard. Bind those three ports to that address, or to 127.0.0.1, never to `0.0.0.0`: on every interface they are reachable over `tailscale0`, which ufw does not filter, and celestia-appd does not authenticate the signer that connects to `priv_validator_laddr`. `doctor` checks 20 and 25 show where these ports listen and who can reach them; [Ports on the validator](#ports-on-the-validator-who-connects-to-what) has the settings and the ufw rules.
 
 Deny by default: a policy that holds only the grants below allows nothing else between the hosts. The policy file is HuJSON (JSON with comments), edited in the Tailscale admin console. Tag each server by its role; with one host in several roles, give it several tags. Tag a backup node `tag:validator` too: the monitor scrapes it like the validator.
 
@@ -67,6 +67,75 @@ Use your own ports where they differ: the node's metrics port, the ports in `pri
 Before you switch from an allow-all policy, list the connections the hosts make over the tailnet today (for example `sudo ss -tnp` on each host, looking for `100.x` addresses) and add a grant for each one you still need: anything not granted stops at the switch.
 
 Tagging a device turns off its key expiry, so the servers stay on the tailnet without re-authenticating. What limits them is then the policy alone; remove a server's tags, or the server, when it leaves your setup.
+
+## Ports on the validator: who connects to what
+
+Every port of the validator and of each backup node takes one source, except p2p. celestia-validator-monitoring never edits celestia-appd's settings and never turns on, resets or reorders a firewall, so these changes are yours; `doctor` checks 1, 20 and 25 on each node read where every port listens and which ufw rules let others in, and print the setting and the ufw command to change.
+
+| Port | Setting | Who connects |
+|---|---|---|
+| 26656 | `[p2p] laddr` in `config.toml` | anyone: p2p is public |
+| 26658 | `priv_validator_laddr` in `config.toml` | the KMS host only (tmkms dials in) |
+| 26669 | `priv_validator_grpc_laddr` in `config.toml`, always with mTLS | the Fibre hosts only |
+| 9090 | `[grpc] address` in `app.toml` | the Fibre hosts only (Fibre's `app_grpc_address`) |
+| 26660 | `[instrumentation] prometheus_listen_addr` in `config.toml` | the monitor only |
+| 9910, 9911 | node_exporter and the collector, on `celestia_mon_private_ip` | the monitor only |
+| 26657 | `[rpc] laddr` in `config.toml` | 127.0.0.1, or one host on a private address (the monitor, when `celestia_mon_signal` reads this node) |
+| 1317 | `[api] address` in `app.toml` | 127.0.0.1, or one host on a private address |
+
+For 26660, 9910 and 9911 the install adds the ufw rules for the monitor's address while ufw is active (comment `celestia-mon`); the other rules are yours. Use your own ports where they differ.
+
+**1. Look first.** The source of each rule must be the address tmkms or Fibre really connects from, which is not always the one you expect: a host with several addresses picks one by its routes. On the node, with tmkms and Fibre running, the peer address of each connection is that source:
+
+```sh
+sudo ss -tnp '( sport = :26658 or sport = :26669 or sport = :9090 )'
+```
+
+**2. Bind each port to its address.** `<private address>` is this node's address on the VLAN or WireGuard network that tmkms and Fibre dial; never `0.0.0.0` or an empty host, and never a Tailscale address (100.64.0.0/10), whose traffic ufw does not filter ([Tailnet policy](#tailnet-policy)). Change the keys where they stand in the node's `config/config.toml`, the first five at the top of the file, above the first section:
+
+```toml
+priv_validator_laddr = "tcp://<private address>:26658"
+priv_validator_grpc_laddr = "<private address>:26669"
+priv_validator_grpc_cert_file = "<server certificate>"
+priv_validator_grpc_key_file = "<server key>"
+priv_validator_grpc_client_ca_file = "<CA of the Fibre client certificates>"
+
+[rpc]
+laddr = "tcp://127.0.0.1:26657"
+
+[instrumentation]
+prometheus = true
+prometheus_listen_addr = "<private address>:26660"
+```
+
+and in `config/app.toml`:
+
+```toml
+[api]
+address = "tcp://127.0.0.1:1317"
+
+[grpc]
+address = "<private address>:9090"
+```
+
+The privval gRPC always takes mTLS. The server certificate must name the address Fibre dials (an IP SAN for `<private address>`), the client CA is the one that issues each Fibre's client certificate, and `priv_validator_grpc_allow_insecure` stays unset or `false`. Without mTLS, every account on the node's host can ask that port for raw-bytes signatures with the validator key, loopback included, so `doctor` check 20 warns on it even on 127.0.0.1. Give each Fibre its client certificate (`--signer-grpc-ca-file`, `--signer-grpc-cert-file` and `--signer-grpc-key-file` in its unit, or `signer_grpc_*` in its `server_config.toml`; check 17 on the Fibre host). On a node that no Fibre signs through, `priv_validator_grpc_laddr = ""` turns the privval gRPC off; when only a Fibre on the same host reads the app gRPC, `127.0.0.1:9090` is enough. Point tmkms (`addr` in `tmkms.toml`) and Fibre (`signer_grpc_address` and `app_grpc_address`) at the new addresses, then restart celestia-appd at a moment you choose, with tmkms running: with `priv_validator_laddr` set, the node exits at start when no signer connects.
+
+Flags in the unit's `ExecStart` (such as `--grpc.address` or `--rpc.laddr`) take precedence over these files, and `doctor` reads the files and the listening sockets only: keep each setting in its file.
+
+**3. Let only that source in.** With ufw, one rule per source (two Fibre hosts take two rules):
+
+```sh
+sudo ufw allow from <KMS host address> to any port 26658 proto tcp
+sudo ufw allow from <Fibre host address> to any port 26669 proto tcp
+sudo ufw allow from <Fibre host address> to any port 9090 proto tcp
+sudo ufw allow 26656/tcp
+```
+
+Delete any rule that lets anyone reach one of these ports but 26656 (`sudo ufw status numbered`, then `sudo ufw delete <number>`); `doctor` names such a rule. When ufw is not active yet, add these rules, your SSH port and, on a host that runs Fibre, Fibre's port (7980) first, then turn it on yourself with `sudo ufw enable` and run `install.sh` on the host again: it adds the monitor's rules only while ufw is active ([quickstart step 2](quickstart.md#2-prepare-the-validator)). With firewalld or nftables, write the same rules there.
+
+What `doctor` reports for each port: on every interface or a public address, `FAIL` when no firewall is active or the host has a Tailscale interface (tailscaled accepts what arrives there before ufw sees it), `WARN` otherwise; `WARN` on a Tailscale address, on a private address with no firewall active, and when a ufw rule lets anyone reach the port. Check 25 also reads `[rpc] grpc_laddr`, `[rpc] pprof_laddr` and `[instrumentation] trace_pull_address` when they are set: 127.0.0.1, or empty to turn them off.
+
+**Run celestia-appd and Fibre as users of their own.** As root, a flaw in either that lets someone run code or read files gives them the whole host. `doctor` check 26 warns on a unit without `User=`.
 
 ## The operator's machine
 
