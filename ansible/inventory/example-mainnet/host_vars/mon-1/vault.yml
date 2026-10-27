@@ -1,7 +1,7 @@
 ---
 # Secrets of the monitor host (Alertmanager receivers, the dead-man URL, the Grafana
-# password). Only fibre-1 needs this file: keep it off the other hosts. Replace the
-# placeholders, then encrypt the whole file: ansible-vault encrypt host_vars/fibre-1/vault.yml
+# password). Only mon-1 needs this file: keep it off the other hosts. Replace the
+# placeholders, then encrypt the whole file: ansible-vault encrypt host_vars/mon-1/vault.yml
 # (install.sh refuses a vault.yml that is not encrypted).
 # Receivers: one list. Page alerts go to every receiver, message alerts to every receiver
 # except PagerDuty. Types: telegram, discord, slack, pagerduty, webhook (docs/alerts.md).

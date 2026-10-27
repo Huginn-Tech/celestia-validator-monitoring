@@ -411,8 +411,9 @@ jobs:
           want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
           test "$out" = "$(printf "$want")"
           test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
-      # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
-      # active or standby, in the otelcol job.
+      # The mainnet example scrapes its backup node in the celestia-app job, every Fibre host,
+      # active or standby, in the otelcol job, and the monitor host mon-1, which runs no Celestia
+      # service, in the node job (role monitor).
       - name: The mainnet scrape targets follow the inventory groups
         run: |
           set -euo pipefail
@@ -423,11 +424,12 @@ jobs:
           def hosts(job):
               return sorted((c["labels"]["host"], c["labels"]["role"]) for c in jobs[job]["static_configs"])
           assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
-          assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
+          assert hosts("node") == [("fibre-1", "fibre"), ("mon-1", "monitor"), ("val-1", "validator")], hosts("node")
+          assert [c["targets"] for c in jobs["node"]["static_configs"] if c["labels"]["host"] == "mon-1"] == [["10.20.0.3:9910"]], jobs["node"]
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
-          assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
-          assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
-          assert hosts("signal") == [("fibre-1", "monitor")], hosts("signal")
+          assert hosts("announcements") == [("mon-1", "monitor")], hosts("announcements")
+          assert hosts("tensile") == [("mon-1", "monitor")], hosts("tensile")
+          assert hosts("signal") == [("mon-1", "monitor")], hosts("signal")
           assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
           # Fibre's readiness: every Fibre host's own port, asked through celestia-mon-blackbox on the monitor.
           fh = jobs["fibre_health"]

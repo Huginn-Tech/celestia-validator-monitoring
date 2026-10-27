@@ -78,11 +78,11 @@ celestia_mon_api_amtool_config: /etc/celestia-mon/alertmanager/amtool-http.yml
 celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 
 # The services site.yml installs on this host (keys of celestia_mon_services): node_exporter
-# on Celestia hosts, the collector on every Fibre host (the standby too, so Fibre's metrics
-# arrive the moment it is started), the stack on the monitor, and there with Fibre on blackbox_exporter,
-# which asks each Fibre host for its readiness.
+# on every host it manages, the monitor too, the collector on every Fibre host (the standby too,
+# so Fibre's metrics arrive the moment it is started), the stack on the monitor, and there with
+# Fibre on blackbox_exporter, which asks each Fibre host for its readiness.
 celestia_mon_host_services: >-
-  {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) else [])
+  {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) else [])
      + (['otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
      + (['prometheus', 'alertmanager', 'grafana'] if inventory_hostname in groups.get('monitor', []) else [])
      + (['announcements'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_announcements | length > 0 else [])

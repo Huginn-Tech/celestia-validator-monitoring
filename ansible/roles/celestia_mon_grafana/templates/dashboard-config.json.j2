@@ -14,11 +14,12 @@
 {%-     set ns.endpoints = ns.endpoints + [{'host': h, 'endpoint': hostvars[h].celestia_mon_fibre_public_endpoint | default('') | trim}] -%}
 {%-   endfor -%}
 {%- endif -%}
-{#- The hosts node_exporter runs on: validator, backup_node, fibre, and kms hosts with
-    celestia_mon_kms_scrape. links: each one's optional celestia_mon_link_mbps (null when not set);
-    data_mounts: its celestia_mon_data_mounts. -#}
-{%- for h in (nodes + groups.get('fibre', []) + groups.get('kms', [])) | unique -%}
-{%-   if h in nodes or h in groups.get('fibre', []) or hostvars[h].celestia_mon_kms_scrape | default(false) | bool -%}
+{#- The hosts node_exporter runs on: validator, backup_node, fibre, kms hosts with
+    celestia_mon_kms_scrape, and the monitor host, last where it runs no Celestia service.
+    links: each one's optional celestia_mon_link_mbps (null when not set); data_mounts: its
+    celestia_mon_data_mounts. -#}
+{%- for h in (nodes + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) | unique -%}
+{%-   if h in nodes or h in groups.get('fibre', []) or h in groups.get('monitor', []) or hostvars[h].celestia_mon_kms_scrape | default(false) | bool -%}
 {%-     set ns.links = ns.links + [{'host': h, 'mbps': hostvars[h].celestia_mon_link_mbps | default(none)}] -%}
 {%-     for m in hostvars[h].celestia_mon_data_mounts | default([]) -%}
 {%-       set ns.data = ns.data + [{'host': h, 'mount': m}] -%}
