@@ -6,3 +6,9 @@ celestia_mon_signal_script: "{{ celestia_mon_signal_dir }}/celestia-mon-signal"
 celestia_mon_signal_config_dir: /etc/celestia-mon/signal
 celestia_mon_signal_config: "{{ celestia_mon_signal_config_dir }}/config.json"
 celestia_mon_signal_listen_address: "127.0.0.1:{{ celestia_mon_ports.signal }}"
+# The RPC hosts the settings name by address (not on loopback), which the unit lets the service
+# reach although it never reaches the internal ranges otherwise: a node on the private network.
+celestia_mon_signal_rpc_ips: >-
+  {{ celestia_mon_signal.rpc | default([]) | map('string') | map('urlsplit', 'hostname') | map('string')
+     | select('match', celestia_mon_single_address_regex) | reject('match', celestia_mon_loopback_address_regex)
+     | unique | list }}

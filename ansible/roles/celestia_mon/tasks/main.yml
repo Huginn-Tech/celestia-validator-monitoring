@@ -25,10 +25,28 @@
     that:
       - celestia_mon_private_ip is defined
       - celestia_mon_private_ip is match(celestia_mon_private_address_regex)
+      - celestia_mon_private_ip | string is match(celestia_mon_single_address_regex)
     fail_msg: >-
       Set celestia_mon_private_ip for {{ inventory_hostname }} to a private address
-      (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address).
-      celestia-mon never binds public addresses.
+      (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address),
+      with no prefix length. celestia-mon never binds public addresses.
+    quiet: true
+  when: celestia_mon_host_managed | bool
+
+# Every host lets the monitor reach its scraped ports from the monitor's celestia_mon_private_ip:
+# in ufw (tasks/firewall.yml) and in the units of node_exporter and the collector. A run on one
+# host does not check the monitor's own settings, so every host checks this one: a private
+# address, and one address, never a range such as 10.0.0.0/8 that would let in a whole network.
+- name: Check the monitor host's private address
+  ansible.builtin.assert:
+    that:
+      - hostvars[celestia_mon_monitor_host].celestia_mon_private_ip is defined
+      - hostvars[celestia_mon_monitor_host].celestia_mon_private_ip | string is match(celestia_mon_private_address_regex)
+      - hostvars[celestia_mon_monitor_host].celestia_mon_private_ip | string is match(celestia_mon_single_address_regex)
+    fail_msg: >-
+      Set celestia_mon_private_ip of the monitor host {{ celestia_mon_monitor_host }} to one private address of that host
+      (10/8, 172.16/12, 192.168/16, 100.64/10 for Tailscale, or an fc00::/7 IPv6 address), with no prefix length: every
+      host lets the monitor reach its scraped ports from that address.
     quiet: true
   when: celestia_mon_host_managed | bool
 

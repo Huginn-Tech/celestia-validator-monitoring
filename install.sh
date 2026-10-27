@@ -14,7 +14,9 @@
 # checked) builds a throwaway virtualenv from the host's own python3, under
 # /var/tmp/celestia-mon-install, and installs ansible-core and every package it needs from
 # ansible/requirements.lock, each file checked against the sha256 there (--require-hashes).
-# That directory is removed when the script ends, also when it fails.
+# The vault password, and with --edit-vault ansible-vault's decrypted copy of the file, go to
+# /run/celestia-mon-install instead, in memory (/run is a tmpfs), never to the disk. Both
+# directories are root's only and are removed when the script ends, also when it fails.
 #
 # --uninstall does the same with ansible/uninstall.yml, which reads no inventory settings:
 # it needs neither the inventory nor the vault password. It removes the services, their
@@ -32,6 +34,7 @@ unset PYTHONPATH PYTHONHOME
 
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 work=/var/tmp/celestia-mon-install
+secrets=/run/celestia-mon-install
 python=/usr/bin/python3
 
 usage() {
@@ -227,10 +230,12 @@ fi
 
 ((EUID == 0)) || die "run it as root: sudo ./install.sh ..."
 if [[ $mode == edit-vault ]]; then
-  [[ -t 0 ]] || die "--edit-vault needs a terminal"
   [[ $(basename -- "$vault_target") =~ ^vault\.ya?ml$ ]] ||
     die "--edit-vault edits an inventory's vault.yml (host_vars/<monitor>/vault.yml): $vault_target"
   [[ -d $(dirname -- "$vault_target") ]] || die "no such directory: $(dirname -- "$vault_target")"
+  # ansible-vault would write through a link to whatever file it names, as root.
+  [[ ! -L $vault_target ]] || die "$vault_target is a symbolic link: name the vault file itself"
+  [[ -t 0 ]] || die "--edit-vault needs a terminal"
   vault_target=$(realpath -m -- "$vault_target")
   host=edit-vault
 fi
@@ -298,7 +303,7 @@ lock=$repo/ansible/requirements.lock
 grep -Eq "^ansible-core==${ansible_core//./[.]}( |;|\$)" "$lock" ||
   die "ansible/requirements.lock is not for ansible-core $ansible_core (versions.yml): generate it with the lock workflow (GitHub Actions > lock) and commit it"
 
-# The password stays in this shell: it is written to a file under $work below, never exported.
+# The password stays in this shell: it is written to a file under $secrets below, never exported.
 vault=()
 vault_pass=""
 if $ask_vault; then
@@ -307,12 +312,18 @@ if $ask_vault; then
   echo
 fi
 
-# A fresh directory only root can enter; the script stops rather than reuse one it did not create.
-if [[ -e $work || -L $work ]]; then
-  die "$work exists: another install.sh may be running. If none is, remove it (sudo rm -rf $work) and run again."
-fi
+# Fresh directories only root can enter; the script stops rather than reuse one it did not create.
+for d in "$work" "$secrets"; do
+  if [[ -e $d || -L $d ]]; then
+    die "$d exists: another install.sh may be running. If none is, remove it (sudo rm -rf $d) and run again."
+  fi
+done
 mkdir -m 0700 -- "$work" || die "cannot create $work"
-trap 'save_logs; rm -rf -- "$work"' EXIT
+if ! mkdir -m 0700 -- "$secrets"; then
+  rm -rf -- "$work"
+  die "cannot create $secrets"
+fi
+trap 'save_logs; rm -rf -- "$work" "$secrets"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM HUP
 mount_options=$(findmnt -n -o OPTIONS --target "$work" || true)
@@ -351,14 +362,16 @@ export ANSIBLE_REMOTE_TEMP=$work/ansible/remote-tmp
 export PYTHONDONTWRITEBYTECODE=1
 if $ask_vault; then
   # A plain file only root can read: not executable, so Ansible reads the password from it.
-  (umask 077 && printf '%s\n' "$vault_pass" >"$work/vault-pass")
-  vault=(--vault-password-file "$work/vault-pass")
+  (umask 077 && printf '%s\n' "$vault_pass" >"$secrets/vault-pass")
+  vault=(--vault-password-file "$secrets/vault-pass")
 fi
 unset vault_pass
 
 # ansible-vault asks for the password itself. sudo resets EDITOR unless it is kept, so nano
-# or vi stands in. The file stays readable by its owner only.
+# or vi stands in. The file stays readable by its owner only. ansible-vault puts the decrypted
+# copy it opens in the editor under ANSIBLE_LOCAL_TEMP, here in memory.
 if [[ $mode == edit-vault ]]; then
+  export ANSIBLE_LOCAL_TEMP=$secrets/tmp
   editor=${EDITOR:-${VISUAL:-}}
   [[ -n $editor ]] || editor=$(command -v nano || command -v vi || true)
   [[ -n $editor ]] || die "no editor found: set EDITOR"

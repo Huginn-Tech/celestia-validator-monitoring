@@ -16,13 +16,19 @@
       # As the service checks them: a host, a numeric port, and no login, query or fragment (the
       # service appends each call to the path).
       - celestia_mon_signal.rpc | default([]) | map('string') | reject('match', celestia_mon_signal_rpc_pattern) | list | length == 0
+      # http only to this host or to an address of the private network, as the service checks it:
+      # elsewhere a provider's key in the path would cross the internet unencrypted.
+      - >-
+        celestia_mon_signal.rpc | default([]) | map('string') | reject('match', '^https://')
+        | reject('match', celestia_mon_plain_http_regex) | list | length == 0
       # bech32: 32 characters for the 20 address bytes, then 6 of checksum.
       - celestia_mon_signal.validator | default('') | string is match('^celestiavaloper1[02-9ac-hj-np-z]{38}$')
     fail_msg: >-
       celestia_mon_signal must be {chain_id: "<chain ID>", rpc: ["<CometBFT RPC URL>", ...], validator: "<operator
-      address>"}: the network's chain ID (celestia on mainnet, mocha-5 on Mocha), one or more http or https URLs of
-      a node's CometBFT RPC (port 26657 by default), tried in order, each without a login, query or fragment (a
-      provider's key goes in the path), and the validator's operator address (celestiavaloper1...).
+      address>"}: the network's chain ID (celestia on mainnet, mocha-5 on Mocha), one or more URLs of a node's
+      CometBFT RPC (port 26657 by default), tried in order, each without a login, query or fragment (a provider's
+      key goes in the path), https unless the node is this host (http://127.0.0.1:26657) or named by its private
+      address (http://10.20.0.5:26657), and the validator's operator address (celestiavaloper1...).
     quiet: true
   vars:
     celestia_mon_signal_rpc_pattern: '^https?://([^/:@?#\[\]\s]+|\[[0-9A-Fa-f:.]+\])(:[1-9][0-9]*)?(/[^?#\s]*)?$'
@@ -110,6 +116,11 @@
       diff: false
       no_log: true
       notify: Restart celestia-mon-signal
+
+    - name: Read the DNS resolvers the unit allows
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: resolvers
 
     - name: Install the celestia-mon-signal systemd unit
       ansible.builtin.template:

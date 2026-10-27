@@ -10,7 +10,8 @@ User=celestia-mon-blackbox
 Group=celestia-mon-blackbox
 ExecStart={{ celestia_mon_blackbox_binary }} \
   --config.file={{ celestia_mon_blackbox_config }} \
-  --web.listen-address={{ celestia_mon_blackbox_listen_address }}
+  --web.listen-address={{ celestia_mon_blackbox_listen_address }} \
+  --web.config.file={{ celestia_mon_api_web_configs.blackbox }}
 Restart=on-failure
 RestartSec=5s
 # Lower CPU and disk priority than the Celestia services when they compete (no CPU quota),

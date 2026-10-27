@@ -17,6 +17,12 @@
 {%     for r in items %}
 {%       if type == 'pagerduty' %}
       - routing_key: {{ r.routing_key | string | to_json }}
+        description: '{% raw %}{{ template "celestia.pagerduty.description" . }}{% endraw %}'
+        # Alertmanager adds its own value for each of its four keys left out (num_firing and
+        # num_resolved, the counts, are kept).
+        details:
+          firing: '{% raw %}{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}{% endraw %}'
+          resolved: '{% raw %}{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}{% endraw %}'
 {%       elif type == 'telegram' %}
       - bot_token: {{ r.bot_token | string | to_json }}
         chat_id: {{ r.chat_id | string | int }}
@@ -30,6 +36,10 @@
 {%         if r.channel is defined %}
         channel: {{ r.channel | string | to_json }}
 {%         endif %}
+        title: '{% raw %}{{ template "celestia.slack.title" . }}{% endraw %}'
+        title_link: ''
+        text: '{% raw %}{{ template "celestia.slack.text" . }}{% endraw %}'
+        fallback: '{% raw %}{{ template "celestia.slack.title" . }}{% endraw %}'
 {%       else %}
       - url: {{ r.url | string | to_json }}
 {%       endif %}
@@ -39,7 +49,7 @@
 {% endfor %}
 {% endmacro %}
 # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
-# Telegram and Discord messages use celestia-mon's text (monitoring/alertmanager-templates.tmpl).
+# Telegram, Discord, Slack and PagerDuty get celestia-mon's text (monitoring/alertmanager-templates.tmpl).
 templates:
   - {{ (celestia_mon_alertmanager_templates_file | default('/etc/celestia-mon/alertmanager/celestia-mon.tmpl')) | to_json }}
 

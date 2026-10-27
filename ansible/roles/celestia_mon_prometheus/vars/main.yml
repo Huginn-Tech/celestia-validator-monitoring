@@ -26,3 +26,22 @@ celestia_mon_prometheus_data_dir: /var/lib/celestia-mon/prometheus
 # API password (celestia_mon_api_user, celestia_mon_api_password_file), because every account
 # on the host can reach loopback.
 celestia_mon_prometheus_listen_address: "127.0.0.1:{{ celestia_mon_ports.prometheus }}"
+
+# The most samples one scrape of each job may hold, and labels one sample may carry (its name and
+# the target's labels included), so a target that floods Prometheus cannot fill its memory or disk.
+# A scrape over either limit fails as a whole and its target shows down, so they sit far above
+# what the jobs send: at least 10 times the largest scrape of 7 days on the Mocha test bed
+# (celestia-app 5990 samples, node 1876, Prometheus 1177, Alertmanager 462, the collector 261,
+# the readiness probe 17, the monitor's collectors 15 or fewer). The label limit leaves room for
+# the collector's series, which carry every resource attribute of Fibre's metrics as a label.
+celestia_mon_prometheus_sample_limits:
+  prometheus: 20000
+  alertmanager: 10000
+  celestia-app: 100000
+  node: 50000
+  otelcol: 20000
+  fibre_health: 1000
+  tensile: 1000
+  signal: 1000
+  announcements: 1000
+celestia_mon_prometheus_label_limit: 128

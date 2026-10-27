@@ -1,0 +1,24 @@
+---
+# The DNS resolvers /etc/resolv.conf names, for the units of the monitor's collectors
+# (celestia-mon-tensile, -signal and -announcements). Those units never reach the internal ranges
+# (celestia_mon_collector_denied), so a resolver there, such as a cloud's (169.254.169.253) or
+# Tailscale's MagicDNS (100.100.100.100), is allowed by its address. A resolver on loopback, such
+# as systemd-resolved's 127.0.0.53, needs no rule. Read at each install: after a change of
+# resolvers, run the install again.
+#   celestia_mon_resolv_conf  optional, the file to read instead of /etc/resolv.conf (CI)
+- name: Read the DNS resolvers
+  ansible.builtin.slurp:
+    src: "{{ celestia_mon_resolv_conf | default('/etc/resolv.conf') }}"
+  register: celestia_mon_resolv
+  failed_when: false
+
+# A zone (fe80::1%eth0) is dropped: IPAddressAllow takes the address alone.
+- name: Note the DNS resolvers the collectors may reach
+  ansible.builtin.set_fact:
+    celestia_mon_resolvers: >-
+      {{ (celestia_mon_resolv.content | default('') | b64decode)
+         | regex_findall(celestia_mon_resolv_pattern, multiline=true)
+         | map('regex_replace', '%.*$', '') | select('match', celestia_mon_single_address_regex)
+         | reject('match', celestia_mon_loopback_address_regex) | unique | list }}
+  vars:
+    celestia_mon_resolv_pattern: '^[ \t]*nameserver[ \t]+([^\s#;]+)'
