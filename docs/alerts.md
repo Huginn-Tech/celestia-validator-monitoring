@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has twenty alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has twenty-one alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -10,7 +10,7 @@ The dashboard calls a page alert **Urgent** (red) and a message alert **Warning*
 
 Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog and the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon). Every other alert names the host it is about.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon) and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about.
 
 | Alert | Severity | Catches |
 |---|---|---|
@@ -25,6 +25,7 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [FibreBothActive](#fibrebothactive) | message | Fibre active on more than one host for 5 minutes |
 | [FibreNotServing](#fibrenotserving) | message, or page when not ready for 10 minutes | Fibre running but missing the uploads of blobs sent to the validator or not serving rows it signed for (with the outside check), failing every upload (often its signer), reporting itself not ready for uploads, or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
+| [MonitorCannotReach](#monitorcannotreach) | message; page when no host answers (monitor on a host of its own) | For 3 minutes the monitor has reached none of a host's metrics endpoints: the host is down, or the link between it and the monitor is |
 | [UpgradeSignalMissing](#upgradesignalmissing) | page | Validators signal the next app version, and yours has not (only with upgrade signalling on) |
 | [UpgradeScheduled](#upgradescheduled) | message, when scheduled (again after 4 days while it waits) | A network upgrade scheduled: version, height, when, and whether yours signalled (only with upgrade signalling on) |
 | [UpgradeSoon](#upgradesoon) | message, sent once | The scheduled upgrade less than a day away (only with upgrade signalling on) |
@@ -62,7 +63,7 @@ celestia_mon_receivers:
     webhook_url: "<Discord webhook URL>"
 ```
 
-**One cause, one notification.** While NodeNotAdvancing fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back on every host. While ValidatorNotSigning fires, SignaturesMissed and FibreNotServing `not_ready` are held back: a validator out of the active set or a signer that does not answer also fails Fibre's own checks. While FibreDown fires, FibreNotServing is held back. While a host's Fibre unit crash loops, that host's FibreNotServing is held back; while its collector (celestia-mon-otelcol) is down, every reason but `not_ready`, which the monitor asks Fibre directly.
+**One cause, one notification.** While NodeNotAdvancing fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back on every host. While ValidatorNotSigning fires, SignaturesMissed and FibreNotServing `not_ready` are held back: a validator out of the active set or a signer that does not answer also fails Fibre's own checks. While FibreDown fires, FibreNotServing is held back. While a host's Fibre unit crash loops, that host's FibreNotServing is held back; while its collector (celestia-mon-otelcol) is down, every reason but `not_ready`, which the monitor asks Fibre directly. While the monitor reaches none of a host's metrics endpoints, [MonitorCannotReach](#monitorcannotreach) names that host once instead of a ServiceDown for each endpoint; where the monitor has a host of its own and reaches no host at all, it pages once, and NodeNotAdvancing and FibreDown's unit check, which read the hosts' metrics, wait for a host that answers.
 
 **Thresholds** below are the defaults. Change them in `celestia_mon_thresholds` in your inventory (list every key) and run `install.sh` on the monitor again; the dashboard's threshold lines follow. The durations named with each alert are fixed in the rules.
 
@@ -119,7 +120,7 @@ $amtool $am silence expire $($amtool $am silence query -q host=<host>)   # ends 
 | systemd restarted celestia-appd, Fibre or tmkms more than 2 times in 30 minutes (crash loop) | at once |
 | The celestia-appd unit (validator or backup node) or the tmkms unit is not loaded at all | 2 min |
 
-A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped is the normal state. [FibreDown](#fibredown) pages when no Fibre unit is active anywhere, and [FibreBothActive](#fibrebothactive) tells you when more than one is. tmkms is watched as a unit only when its host has `celestia_mon_kms_scrape: true`; without it nothing runs on the KMS host, and a tmkms that stopped shows on the validator side: [ValidatorNotSigning](#validatornotsigning) pages, and the signer's failures (`no_connection`) show on the dashboard. The crash loop rule counts only the restarts systemd makes under `Restart=`. While node_exporter is unreachable, the service and disk alerts for that host cannot fire.
+A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped is the normal state. [FibreDown](#fibredown) pages when no Fibre unit is active anywhere, and [FibreBothActive](#fibrebothactive) tells you when more than one is. tmkms is watched as a unit only when its host has `celestia_mon_kms_scrape: true`; without it nothing runs on the KMS host, and a tmkms that stopped shows on the validator side: [ValidatorNotSigning](#validatornotsigning) pages, and the signer's failures (`no_connection`) show on the dashboard. The crash loop rule counts only the restarts systemd makes under `Restart=`. While node_exporter is unreachable, the service and disk alerts for that host cannot fire. When none of a host's endpoints answers (celestia-appd's metrics, node_exporter, the collector), the monitor cannot tell the services from the host or the link: [MonitorCannotReach](#monitorcannotreach) names the host once instead of these unreachable cases.
 
 **Check first.**
 
@@ -131,7 +132,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 ## NodeNotAdvancing
 
-**What it means.** No node of this install, the validator node and the backup nodes, has committed a new block for 3 minutes: the highest height of all nodes did not change in 2 minutes, and that held for 1 more. It also fires when Prometheus has read no node's height for that long, so with one node a celestia-appd that is down pages here (after about 3 minutes). The nodes are stuck (often at an upgrade height), have lost sync or their peers, or the whole network has halted. While one node advances, the alert stays quiet: a node that stops alone is [NodeBehind](#nodebehind). The alert shows that nothing advances; it cannot tell whether a node that advances is at the network's head. Compare the height with an explorer or [status.celestia.org](https://status.celestia.org/) for that. It names no host.
+**What it means.** No node of this install, the validator node and the backup nodes, has committed a new block for 3 minutes: the highest height of all nodes did not change in 2 minutes, and that held for 1 more. It also fires when Prometheus has read no node's height for that long, so with one node a celestia-appd that is down pages here (after about 3 minutes). Where the monitor has a host of its own, that case needs a Celestia host that still answers: when the monitor reaches none, [MonitorCannotReach](#monitorcannotreach) pages instead, at the same time. The nodes are stuck (often at an upgrade height), have lost sync or their peers, or the whole network has halted. While one node advances, the alert stays quiet: a node that stops alone is [NodeBehind](#nodebehind). The alert shows that nothing advances; it cannot tell whether a node that advances is at the network's head. Compare the height with an explorer or [status.celestia.org](https://status.celestia.org/) for that. It names no host.
 
 **Severity.** page. While it fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back.
 
@@ -220,7 +221,7 @@ Only with `celestia_mon_signer: remote`.
 
 Only with `celestia_mon_fibre_enabled: true`.
 
-**What it means.** No Fibre runs anywhere: for 10 minutes no Fibre host (every host in the `fibre` group, active or standby) has reported the Fibre unit as active. Fibre is stopped or crashed on every host, the host of the active Fibre is down (its node_exporter goes with it) and no standby was started, or `celestia_mon_units.fibre` names the wrong unit. A stopped standby is normal, and a failover within 10 minutes pages nobody, so a short restart pages nobody either. The alert names no host; its description lists the Fibre hosts. When the monitor runs on the Fibre host and that host dies, the dead-man service tells you ([Watchdog](#watchdog)).
+**What it means.** No Fibre runs anywhere: for 10 minutes no Fibre host (every host in the `fibre` group, active or standby) has reported the Fibre unit as active. Fibre is stopped or crashed on every host, the host of the active Fibre is down (its node_exporter goes with it) and no standby was started, or `celestia_mon_units.fibre` names the wrong unit. A stopped standby is normal, and a failover within 10 minutes pages nobody, so a short restart pages nobody either. The alert names no host; its description lists the Fibre hosts. The monitor cannot tell a Fibre host that is down from one it cannot reach: with the link to the active Fibre's host down, this pages as well, next to [MonitorCannotReach](#monitorcannotreach)'s message for that host. While the monitor reaches no Celestia host at all (a monitor on a host of its own), this unit check waits and MonitorCannotReach pages instead. When the monitor runs on the Fibre host and that host dies, the dead-man service tells you ([Watchdog](#watchdog)).
 
 **From outside.** A running unit is not enough when nobody can reach it. With `celestia_mon_tensile` set on the monitor, FibreDown also pages, after 10 minutes, when:
 
@@ -319,7 +320,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 |---|---|---|
 | Data mounts on the celestia-appd hosts (validator and backup nodes) and the KMS host | read-only, or less than 5% free | page |
 | Data mounts on every watched host | less than 10% free for 10 minutes | message |
-| Data mounts on a Fibre host that runs no celestia-appd | read-only | message |
+| Data mounts on a Fibre host that runs no celestia-appd, and on a monitor with a host of its own (the disk of Prometheus's data, `/var/lib/celestia-mon`) | read-only | message |
 | Fibre store | read-only | message |
 | Fibre store | the space the storage budget still needs is more than the free space, for 30 minutes | message |
 | Fibre store, when Fibre reports a budget of 0 (no limit) or no budget | less than 10% free for 10 minutes | message |
@@ -333,6 +334,23 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 3. Fibre store: the "Fibre disk and budget" panel shows each Fibre store's free space against the room the storage budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
+
+## MonitorCannotReach
+
+Only on hosts the monitor reaches over the network: not on the monitor's own host.
+
+**What it means.** For 3 minutes Prometheus on the monitor has reached none of a host's metrics endpoints: celestia-appd's metrics, node_exporter and, on a Fibre host, the OpenTelemetry collector. From the monitor, a host that is down and a link that is down look the same: the host is off or cut from the network, the link between it and the monitor is down (WireGuard, either provider's network), or each of those services stopped. The message names the host and stands in for its ServiceDown messages; its service and disk alerts cannot fire until it answers again. The alerts that follow the roles still page for what that host held: [ValidatorNotSigning](#validatornotsigning) when the validator signed through its node, [FibreDown](#fibredown) when it ran the active Fibre and no standby takes over.
+
+Where the monitor has a host of its own (`mon-1` in the [mainnet layout](quickstart.md#mainnet-layout)), it can lose every host at once. When no Celestia host answers for 3 minutes, one page, "Monitor cannot reach any server", stands in for the messages: no alert that reads the hosts' metrics can fire meanwhile, and NodeNotAdvancing and FibreDown's unit check, which would otherwise page for the missing metrics, wait for a host that answers. It names no host; its description lists them. The validator may well be signing: this page says the monitor is blind, not that the validator is down. A monitor that shares a host with a node or Fibre reads that host locally and never loses all of them, so there is no page; the messages for the other hosts remain.
+
+**Severity.** message for one host; page when no host answers.
+
+**Check first.**
+
+1. Whether the validator still signs, from outside the monitor: an explorer shows its recent signed and missed blocks. If it signs, the fault is between the monitor and the hosts, and nothing on the validator needs you now.
+2. On the monitor, `sudo wg show`: each peer's `latest handshake`. While the scrapes flow, WireGuard renews the handshake about every 2 minutes, so one older than about 3 minutes, or none, means no packet gets through that tunnel. Check that the host's WireGuard UDP port allows the monitor's public IP, and that the keys, endpoints and `AllowedIPs` on both ends match ([WireGuard-only link](security.md#wireguard-only-link)). `sudo wg show` on the host, if you can reach it another way, shows the other end.
+3. The status pages of the monitor's provider and of the host's: a data centre or its network down takes every host there, or the monitor, off the link.
+4. If you can still log in to the host: `systemctl status celestia-mon-node-exporter celestia-mon-otelcol <celestia-appd unit>` and `last -x reboot | head -3` for a reboot; all its services stopped at once is rare (a reboot, a full root disk).
 
 ## UpgradeSignalMissing
 
@@ -456,13 +474,13 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 
 Connect the dead-man check to PagerDuty and to email or another channel than your alert chat. A dead monitor host, or a whole data centre gone, then still rings your phone, and when the alert chat is what broke, the dead-man service is the one left to tell you. If the dead-man service alerts you, assume that no other celestia-validator-monitoring alert can reach you until you find the cause.
 
-When the monitor runs on the Fibre host, as in the [mainnet layout](quickstart.md#mainnet-layout), a dead-man alert also means that the active Fibre and the backup node on that host are probably down, and nothing else can tell you so: start the standby Fibre on the validator host and send `set-host` ([FibreDown](#fibredown)).
+With the monitor on a host of its own, as `mon-1` in the [mainnet layout](quickstart.md#mainnet-layout), a dead-man alert says the monitor is down or cut off, not the validator: check from outside first (an explorer for its signatures, [Tensile](https://tensile.huginn.tech) for the Fibre endpoint). When the monitor shares a host with Fibre or a node, a dead-man alert also means that host is probably down, and nothing else can tell you so: if it ran the active Fibre, start the standby Fibre on another Fibre host and send `set-host` ([FibreDown](#fibredown)).
 
 **Severity.** heartbeat.
 
 **Check first.**
 
-1. Is the monitor host up and reachable? If the monitor is also the validator host, the validator may be down too.
+1. Is the monitor host up and reachable? If the monitor shares a host with the validator or Fibre, that may be down too.
 2. On the monitor, `systemctl status celestia-mon-prometheus celestia-mon-alertmanager` and `journalctl -u celestia-mon-alertmanager -n 100`; `sudo celestia-mon-doctor` (check 22) shows whether heartbeats went out in the last 10 minutes. A failed notification shows there with its receiver and error, for example a rejected bot token or a removed chat (a Telegram failure on the network does not: see [NotificationsFailing](#notificationsfailing)); so do failed heartbeats to the dead-man URL.
 3. Outbound HTTPS from the monitor to the dead-man service and to the receivers, and the URL in `celestia_mon_deadman_webhook_url`.
 
