@@ -1312,10 +1312,11 @@ jobs:
           if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
 
   # doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
-  # (WARN 6), a standby whose plaintext loopback signer cannot reach the validator node's mTLS
-  # privval gRPC on a private address (WARN 17) next to a privval port on every interface
-  # (WARN 20), and a backup node whose /status (a static file served on 127.0.0.1:26657) gives
-  # its local key voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
+  # (WARN 6) whose plaintext signer warns even on loopback (WARN 17), a standby whose plaintext
+  # loopback signer cannot reach the validator node's mTLS privval gRPC on a private address
+  # (WARN 17) next to a privval port on every interface with no firewall active (FAIL 20), and a
+  # backup node whose /status (a static file served on 127.0.0.1:26657) gives its local key
+  # voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
   doctor-signer:
     runs-on: ubuntu-24.04
     steps:
@@ -1341,7 +1342,8 @@ jobs:
           run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-standby \
             --fibre-hosts fibre-a,fibre-b --data-mounts / --head-wait 2
           grep -Eq '^WARN +6 +fibre service +standby: ci-standby\.service is inactive, but its unit file is enabled' <<<"$out"
-          grep -Eq '^OK +17 +fibre signer +.* is 127\.0\.0\.1:26669, the loopback signer on this host' <<<"$out"
+          grep -Eq '^WARN +17 +fibre signer +--signer-grpc-address in ExecStart is 127\.0\.0\.1:26669, a plaintext signer without mTLS' <<<"$out"
+          grep -Eq '^WARN +17 .*leave the unit stopped' <<<"$out"
 
           sudo systemctl disable ci-standby
           home="$RUNNER_TEMP/val"
@@ -1357,7 +1359,7 @@ jobs:
             --fibre-unit ci-standby --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^OK +6 +fibre service +standby: ci-standby\.service is inactive' <<<"$out"
           grep -Eq '^WARN +17 +fibre signer +standby: .*, a plaintext loopback signer, but .* listens on 10\.255\.0\.1:26669 only' <<<"$out"
-          grep -Eq '^WARN +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 .* is on every interface' <<<"$out"
+          grep -Eq '^FAIL +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 \(nothing listens on it now\) is on every interface, and no firewall is active' <<<"$out"
 
           home="$RUNNER_TEMP/backup"
           mkdir -p "$home/config" "$RUNNER_TEMP/rpc"
@@ -1398,6 +1400,137 @@ jobs:
             --fibre-unit ci-mtls --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
           line=$(grep -E '^WARN +17 +fibre signer +standby: ' <<<"$out")
           grep -qF 'an mTLS signer on this host, but the node serves its privval gRPC on 127.0.0.1:26669 in plaintext' <<<"$line"
+
+  # doctor's port checks on the runner (1, 20, 25 and 26), which read where each port listens and
+  # ufw's rules and never connect to the ports. python http.server stands in where a node would
+  # listen: its metrics and the app gRPC on every interface, priv_validator_laddr on a private
+  # address; the config names a plaintext privval gRPC on loopback, the REST API on a private
+  # address and pprof on a Tailscale address; one unit has no User=. With no firewall active the
+  # wildcard binds fail (FAIL 1 and 25) and the private ones warn (WARN 20); with ufw enabled and
+  # one-source rules they warn, and a rule that lets anyone reach 9090 is named (WARN 25); with a
+  # Tailscale interface they fail again. A monitor-only host skips the node and Fibre checks.
+  doctor-ports:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: doctor on the validator's ports
+        run: |
+          set -euo pipefail
+          run() {
+            rc=0
+            out=$("$@" 2>stderr.txt) || rc=$?
+            printf '%s\n' "$out"
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          says() { # check number, the text its line must contain
+            line=$(grep -E "^[A-Z]+ +$1 " <<<"$out" || true)
+            grep -qF -- "$2" <<<"$line" || { echo "check $1 does not say: $2"; exit 1; }
+          }
+          if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf || systemctl is-active --quiet firewalld || systemctl is-active --quiet nftables; then
+            echo "this job expects a runner with no firewall active at the start"
+            exit 1
+          fi
+          sudo ip addr add 10.255.1.1/32 dev lo
+          home="$RUNNER_TEMP/node"
+          mkdir -p "$home/config" "$RUNNER_TEMP/www"
+          cat >"$home/config/config.toml" <<'EOF'
+          priv_validator_laddr = "tcp://10.255.1.1:26658"
+          priv_validator_grpc_laddr = "127.0.0.1:26669"
+
+          [rpc]
+          laddr = "tcp://127.0.0.1:26657"
+          pprof_laddr = "100.100.1.1:6060"
+
+          [instrumentation]
+          prometheus = true
+          prometheus_listen_addr = ":26660"
+          namespace = "cometbft"
+          EOF
+          cat >"$home/config/app.toml" <<'EOF'
+          [api]
+          enable = true
+          address = "tcp://10.255.1.1:1317"
+
+          [grpc]
+          enable = true
+          address = "0.0.0.0:9090"
+          EOF
+          echo 'cometbft_consensus_height 1' >"$RUNNER_TEMP/www/metrics"
+          python3 -m http.server 26660 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          python3 -m http.server 9090 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          python3 -m http.server 26658 --bind 10.255.1.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          for u in http://127.0.0.1:26660 http://127.0.0.1:9090 http://10.255.1.1:26658; do
+            curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null "$u/metrics"
+          done
+          printf '%s\n' '[Service]' 'ExecStart=/bin/true' | sudo tee /etc/systemd/system/ci-root.service >/dev/null
+          printf '%s\n' '[Service]' 'User=nobody' 'ExecStart=/bin/true' | sudo tee /etc/systemd/system/ci-user.service >/dev/null
+          sudo systemctl daemon-reload
+          args=(--config /dev/null --roles validator --signer remote --fibre-enabled false --node-home "$home" --data-mounts / --head-wait 2)
+
+          echo "::group::no firewall active"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          grep -Eq '^FAIL +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
+          grep -Eq '^WARN +20 +signer binds ' <<<"$out"
+          says 20 'priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658): no firewall is active, so every host that reaches that private address can connect'
+          says 20 'priv_validator_grpc_laddr = 127.0.0.1:26669 (nothing listens on it now), without mTLS'
+          says 20 'serve priv_validator_grpc_laddr with mTLS: set priv_validator_grpc_cert_file'
+          says 20 'then restart celestia-appd at a moment you choose, with tmkms running'
+          says 20 'let only the KMS host (tmkms) reach port 26658: "sudo ufw allow from <KMS host address> to any port 26658 proto tcp"'
+          says 20 'ufw is not active:'
+          grep -Eq '^FAIL +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and no firewall is active'
+          says 25 '[api] address = tcp://10.255.1.1:1317 (nothing listens on it now): no firewall is active'
+          says 25 '[rpc] pprof_laddr = 100.100.1.1:6060 (nothing listens on it now) is on a Tailscale address'
+          says 25 'ok: [rpc] laddr = tcp://127.0.0.1:26657 (nothing listens on it now)'
+          says 25 'set address = "<private address>:9090"'
+          says 25 'let only the Fibre hosts reach port 9090: "sudo ufw allow from <Fibre host address> to any port 9090 proto tcp"'
+          grep -Eq '^WARN +26 +service users +ci-root\.service runs as root \(no User= in the unit\)' <<<"$out"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-user
+          grep -Eq '^OK +26 +service users +ci-user\.service runs as nobody' <<<"$out"
+
+          echo "::group::ufw enabled"
+          sudo ufw allow 22/tcp
+          sudo ufw allow 9090/tcp
+          sudo ufw allow from 10.255.1.9 to any port 26658 proto tcp
+          sudo ufw allow from 10.255.1.9 to any port 26660 proto tcp
+          sudo ufw --force enable
+          sudo ufw status verbose
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          grep -Eq '^WARN +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
+          grep -Eq '^WARN +20 +signer binds +priv_validator_grpc_laddr = 127\.0\.0\.1:26669 \(nothing listens on it now\), without mTLS' <<<"$out"
+          says 20 'ok: priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658); ufw lets in 10.255.1.9'
+          grep -Eq '^WARN +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface (firewall: ufw enabled); ufw lets anyone reach it (9090/tcp ALLOW IN Anywhere'
+          says 25 'ok: [api] address = tcp://10.255.1.1:1317 (nothing listens on it now); no ufw rule lets another host reach it'
+          says 25 'then delete the rule that lets anyone in ("sudo ufw status numbered", then "sudo ufw delete <number>")'
+          if grep -qF 'ufw is not active' <<<"$out"; then echo "doctor says ufw is not active while it is"; exit 1; fi
+
+          echo "::group::a Tailscale interface"
+          sudo ip tuntap add dev tailscale0 mode tun
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          grep -Eq '^FAIL +1 +node metrics +.*\(firewall: ufw enabled; Tailscale interface tailscale0\)' <<<"$out"
+          grep -Eq '^FAIL +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and this host has a Tailscale interface (tailscale0), whose traffic ufw does not filter'
+
+          echo "::group::a monitor-only host"
+          run sudo bash tools/doctor.sh --config /dev/null --roles monitor --fibre-enabled true --data-mounts / --head-wait 2
+          echo "::endgroup::"
+          for want in '^SKIP +1 +node metrics +not a validator or backup node host' \
+                      '^SKIP +6 +fibre service +not a Fibre host' \
+                      '^SKIP +16 +compaction io +this monitor runs no celestia-appd node or Fibre' \
+                      '^SKIP +17 +fibre signer +not a Fibre host' \
+                      '^SKIP +20 +signer binds +not a validator or backup node host' \
+                      '^SKIP +25 +node ports +not a validator or backup node host' \
+                      '^SKIP +26 +service users +no celestia-appd node or Fibre unit on this host'; do
+            grep -Eq -- "$want" <<<"$out" || { echo "the monitor-only host does not say: $want"; exit 1; }
+          done
 
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
