@@ -124,7 +124,7 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   blackbox_url           celestia-mon-blackbox, which asks the Fibre hosts for
                          their readiness, on the monitor host (default
                          http://127.0.0.1:9919)
-  api_user, api_password_file  HTTP basic auth for those two (default
+  api_user, api_password_file  HTTP basic auth for those three (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)
   prometheus_data_dir    default /var/lib/celestia-mon/prometheus
@@ -2154,7 +2154,9 @@ check_fibre_ready() {
     report FAIL 24 "$name" "Fibre is on, but Prometheus has no readiness target (job fibre_health), so nothing reads whether Fibre is ready. Fix: re-run install.sh on this host"
     return
   fi
-  code=$(http_code "$bburl/-/healthy")
+  # celestia-mon-blackbox takes the same API password as Prometheus (curl reads it from a file
+  # descriptor, as mon_curl does).
+  code=$(curl -K <(printf '%s\n' "$API_AUTH") -s -g -o /dev/null --max-time 5 -w '%{http_code}' "$bburl/-/healthy" 2>/dev/null)
   if [[ $code != 200 ]]; then
     report FAIL 24 "$name" "celestia-mon-blackbox does not answer at $bburl ($(answer "$code")), so Fibre's readiness is not checked. Fix: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host, then re-run install.sh on this host"
     return
@@ -2163,7 +2165,8 @@ check_fibre_ready() {
   mapfile -t hosts < <(printf '%s\n' "${!addr_of[@]}" | sort)
   for h in "${hosts[@]}"; do
     addr=${addr_of[$h]}
-    out=$(curl -fsS -g --max-time 10 -G --data-urlencode module=fibre_health --data-urlencode "target=$addr" "$bburl/probe" 2>/dev/null) || out=""
+    out=$(curl -K <(printf '%s\n' "$API_AUTH") -fsS -g --max-time 10 -G --data-urlencode module=fibre_health \
+      --data-urlencode "target=$addr" "$bburl/probe" 2>/dev/null) || out=""
     if [[ -z $out ]]; then
       bberr+=("$h")
       continue

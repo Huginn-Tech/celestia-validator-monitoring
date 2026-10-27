@@ -199,7 +199,7 @@
       no_log: true
 
     # Every account on the host can reach loopback, so the password is what keeps others out.
-    - name: Check that Prometheus and Alertmanager refuse requests without the API password
+    - name: Check that Prometheus, Alertmanager and blackbox_exporter refuse requests without the API password
       ansible.builtin.uri:
         url: "{{ item }}"
         status_code: 401
@@ -208,6 +208,8 @@
         - "{{ celestia_mon_verify_prometheus }}/metrics"
         - "{{ celestia_mon_verify_alertmanager }}/api/v2/silences"
         - "{{ celestia_mon_verify_alertmanager }}/metrics"
+        - "http://127.0.0.1:{{ celestia_mon_verify_ports.blackbox }}/probe?module=fibre_health&target=127.0.0.1:7980"
+        - "http://127.0.0.1:{{ celestia_mon_verify_ports.blackbox }}/metrics"
 
     - name: Read the owner and mode of the API password file
       ansible.builtin.stat:

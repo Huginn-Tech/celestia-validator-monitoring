@@ -24,6 +24,8 @@ celestia_mon_blackbox_staging: /var/cache/celestia-mon/blackbox_exporter.staging
 celestia_mon_blackbox_config_dir: /etc/celestia-mon/blackbox
 celestia_mon_blackbox_config: "{{ celestia_mon_blackbox_config_dir }}/blackbox.yml"
 celestia_mon_blackbox_listen_address: "127.0.0.1:{{ celestia_mon_ports.blackbox }}"
+# Checks the web configuration (role celestia_mon_prometheus installs it).
+celestia_mon_blackbox_promtool: "/opt/celestia-mon/prometheus-{{ celestia_mon_versions.prometheus.version }}/promtool"
 
 # The Fibre hosts' private addresses, the only ones besides 127.0.0.1 the unit may exchange
 # traffic with.

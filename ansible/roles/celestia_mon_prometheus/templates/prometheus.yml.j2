@@ -125,10 +125,14 @@ scrape_configs:
 
   # Fibre's upload readiness, on every Fibre host, active or standby: celestia-mon-blackbox on
   # this host asks each one's own port for the standard gRPC health check (Fibre v10.5.0 and
-  # newer). instance keeps the Fibre address; the request goes to blackbox on 127.0.0.1.
+  # newer). instance keeps the Fibre address; the request goes to blackbox on 127.0.0.1, which
+  # takes the API password too.
   - job_name: fibre_health
     sample_limit: {{ celestia_mon_prometheus_sample_limits["fibre_health"] }}
     label_limit: {{ celestia_mon_prometheus_label_limit }}
+    basic_auth:
+      username: {{ celestia_mon_api_user | to_json }}
+      password_file: {{ celestia_mon_api_password_file | to_json }}
     metrics_path: /probe
     params:
       module: [fibre_health]

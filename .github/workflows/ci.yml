@@ -461,6 +461,9 @@ jobs:
           assert hosts("fibre_health") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("fibre_health")
           assert sorted(c["targets"] for c in fh["static_configs"]) == [["10.20.0.1:7980"], ["10.20.0.2:7980"]], fh
           assert fh["metrics_path"] == "/probe" and fh["params"] == {"module": ["fibre_health"]}, fh
+          # blackbox takes only requests with the API password, as Prometheus and Alertmanager do.
+          assert fh["basic_auth"] == jobs["prometheus"]["basic_auth"] == jobs["alertmanager"]["basic_auth"], fh
+          assert fh["basic_auth"]["username"] == "celestia-mon" and "password_file" in fh["basic_auth"], fh
           assert fh["relabel_configs"] == [
               {"source_labels": ["__address__"], "target_label": "__param_target"},
               {"source_labels": ["__param_target"], "target_label": "instance"},
@@ -2210,14 +2213,24 @@ jobs:
           test "$(reach tensile)" = 000
       # Prometheus asks celestia-mon-blackbox for Fibre's readiness. Nothing listens on Fibre's port
       # here (127.0.0.1:7980), so every probe fails, and journald keeps neither of the two error
-      # lines blackbox logs for each failed probe.
+      # lines blackbox logs for each failed probe. blackbox answers only with the API password.
       - name: Fibre's readiness is asked through celestia-mon-blackbox
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-blackbox
           systemctl show celestia-mon-blackbox -p IPAddressDeny -p IPAddressAllow -p LogFilterPatterns
-          curl -fsS 'http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980' | grep -qx 'probe_grpc_status_code 14'
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/blackbox/web.yml)" = "root:celestia-mon-blackbox 640"
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          probe='http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980'
+          for url in "$probe" http://127.0.0.1:9919/metrics http://127.0.0.1:9919/-/healthy; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+            if [ "$code" != 401 ]; then echo "$url answered $code without the password, expected 401"; exit 1; fi
+            login | curl -fsS -o /dev/null -K - "$url"
+          done
+          # Grafana's datasource login does not open it.
+          test "$(sudo sh -c 'printf "user = \"grafana:%s\"\n" "$(cat /etc/celestia-mon/grafana-api-password)"' |
+            curl -s -o /dev/null -w '%{http_code}' -K - "$probe")" = 401
+          login | curl -fsS -K - "$probe" | grep -qx 'probe_grpc_status_code 14'
           query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
           ok=0
           for _ in $(seq 30); do
