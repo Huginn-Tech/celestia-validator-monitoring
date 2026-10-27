@@ -201,6 +201,10 @@ def varint(buf, i):
 
 
 def encode_varint(n):
+    """n as a varint; ValueError for a negative n (the fields encoded are unsigned), on which the
+    loop would never end: -1 >> 7 is -1."""
+    if n < 0:
+        raise ValueError(f"{n} is negative and has no varint")
     out = bytearray()
     while True:
         b = n & 0x7F
@@ -277,13 +281,17 @@ def get(rpc, path, /, **params):
         try:
             error = json.loads(e.read(MAX_BODY) or b"{}").get("error") or {}
             detail = str(error.get("data") or error.get("message") or "")[:200]
-        except (ValueError, AttributeError, OSError, http.client.HTTPException):
+        except (ValueError, RecursionError, AttributeError, OSError, http.client.HTTPException):
             pass
         raise ReadError("http", f"{shown(rpc)} answered {e.code} for {path}" + (f": {detail}" if detail else "")) from None
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         raise ReadError("network", f"cannot read {shown(rpc)}: {e}") from None
     except ValueError:
         raise ReadError("format", f"{shown(rpc)} answered {path} with no JSON") from None
+    # JSON nested deeper than Python's recursion limit, well inside MAX_BODY, raises RecursionError,
+    # not ValueError. Left to main(), it would end the read before the next RPC is tried.
+    except RecursionError:
+        raise ReadError("format", f"{shown(rpc)} answered {path} with JSON nested too deeply to read") from None
     result = body.get("result") if isinstance(body, dict) else None
     if not isinstance(result, dict):
         error = body.get("error") if isinstance(body, dict) else None
@@ -328,6 +336,10 @@ def read_rpc(rpc, chain_id, operator):
     info = get(rpc, "/abci_info").get("response") or {}
     app_version = int(info["app_version"])
     height = int(info["last_block_height"])
+    # No node gives either below 0 (app_version is a uint64 in ABCI): such an answer is broken.
+    if app_version < 0 or height < 0:
+        raise ReadError("format", f"{shown(rpc)} answered /abci_info with app version {app_version} at height {height},"
+                        " and neither is ever below 0: skipped")
     # Behind a provider's URL, /status and /abci_info can come from two nodes: one in sync, one stalled.
     latest = int(sync.get("latest_block_height") or 0)
     if latest - height > MAX_BLOCKS_BEHIND:
@@ -369,7 +381,7 @@ def block_time(rpc, sync):
         metas = get(rpc, "/blockchain", minHeight=latest - span, maxHeight=latest - span).get("block_metas") or [{}]
         t0 = epoch((metas[0].get("header") or {}).get("time"))
         t1 = epoch(sync.get("latest_block_time"))
-    except (AttributeError, KeyError, TypeError, ValueError) as e:
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
         raise ReadError("block_time", f"cannot read the block time from {shown(rpc)}: {e!r}") from None
     if t0 is None or t1 is None or t1 <= t0:
         raise ReadError("block_time", f"{shown(rpc)} gave no usable block times for heights {latest - span} and {latest}")
@@ -475,7 +487,8 @@ def read(cfg, operator, state):
             state.error(e.reason)
             log(str(e))
             continue
-        except (AttributeError, KeyError, TypeError, ValueError) as e:
+        # OverflowError: a JSON number such as 1e400 reads as a float infinity, which int() refuses.
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
             state.error("format")
             log(f"cannot read the answer of {shown(rpc)}: {e!r}")
             continue

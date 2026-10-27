@@ -228,7 +228,12 @@ def get(url):
         body = resp.read(MAX_BODY + 1)
     if len(body) > MAX_BODY:
         raise ValueError(f"the answer is larger than {MAX_BODY} bytes")
-    return json.loads(body)
+    # JSON nested deeper than Python's recursion limit, well inside MAX_BODY, raises RecursionError,
+    # which no caller expects: it would end the read in main(), and from /tip lose a status already read.
+    try:
+        return json.loads(body)
+    except RecursionError:
+        raise ValueError("the answer's JSON is nested too deeply to read") from None
 
 
 def current(api, state):

@@ -301,6 +301,12 @@ tests:
       - series: >-
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
         values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 0x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 0x10'
     alert_rule_test:
       - eval_time: 6m
         alertname: NodeNotAdvancing

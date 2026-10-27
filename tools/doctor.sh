@@ -372,13 +372,15 @@ addr_class() { # local address as ss prints it -> wildcard, private or public
 }
 
 toml_get() { # file, section ("" = top level), key -> value without quotes
-  awk -v sec="$2" -v key="$3" '
+  awk -v sec="$2" -v key="$3" -v q="'" '
     /^[[:space:]]*\[/ { s = $0; gsub(/^[[:space:]]*\[+|\]+[[:space:]]*(#.*)?$/, "", s); next }
     s == sec && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
       v = $0
       sub(/^[^=]*=[[:space:]]*/, "", v)
       sub(/[[:space:]]*(#.*)?$/, "", v)
-      gsub(/"/, "", v)
+      # A TOML literal string stands in single quotes (q), a basic string in double ones.
+      if (length(v) > 1 && substr(v, 1, 1) == q && substr(v, length(v), 1) == q) v = substr(v, 2, length(v) - 2)
+      else gsub(/"/, "", v)
       print v
       exit
     }' "$1"
@@ -436,12 +438,20 @@ net_read() {
   fi
 }
 
-# The ufw rules in UFW that let TCP port $1 in, one per line: "<kind> TAB <source> TAB <rule>",
-# kind "any" when the rule lets anyone in (Anywhere, a source port only, a whole network, or ufw's
-# default incoming policy allow), else "one". `ufw status verbose` prints a rule as
-# "<to> <ACTION IN> <from>[ # comment]", <to> being "[address ]<ports>[/proto][ (v6)][ on iface]",
-# "Anywhere" or an address; a rule without ports covers every port. DENY, REJECT, outgoing and
-# routed rules are left out.
+# The ufw rules in UFW that let TCP port $1 in, one per line: "<kind> TAB <source> TAB <rule>".
+# kind "any" when the rule lets anyone in (Anywhere, a source port only, a range that is not inside
+# one private block, or ufw's default incoming policy allow); "range" for a range inside one of
+# 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 127.0.0.0/8 or fc00::/7, such as the
+# install writes for a range in celestia_mon_firewall_sources: every host in it gets in, but not
+# anyone; else "one". `ufw status verbose` (get_status in ufw's backend_iptables.py) prints a
+# rule as "<to> <ACTION IN> <from>[ (log)][ # comment]". <to> is
+# "[<address> ]<ports>[/proto][ (<app profile>[ (v6)])][ (v6)]", or with no ports
+# "Anywhere[/proto][ (v6)]" or "<address>[/proto]", then "[ on <interface>]": the IPv6 copy of
+# "ufw allow OpenSSH" reads "22/tcp (OpenSSH (v6))", "ufw allow in on lo" reads "Anywhere on lo".
+# <from> is "Anywhere[/proto][ (v6)]", "<address>[/proto]" or "[<address> ]<ports>[/proto]": a
+# rule with no ports on <to> may print its protocol only there. A rule without ports covers every
+# port. Rules on lo are left out, as only this host sends there; other interfaces stay in the
+# rule text. DENY, REJECT, outgoing and routed rules are left out too.
 ufw_allows() {
   [[ -n $UFW ]] || return 0
   awk -v p="$1" '
@@ -453,6 +463,22 @@ ufw_allows() {
         } else if (parts[i] + 0 == p + 0) return 1
       }
       return 0
+    }
+    # The protocol after the last "/" of "22/tcp" or "10.0.0.4/tcp"; empty for "10.0.0.0/24".
+    function proto_of(s,   v) {
+      if (s !~ /\/[a-z][a-z0-9]*$/) return ""
+      v = s
+      sub(/^.*\//, "", v)
+      return v
+    }
+    # True for an "address/prefix" range inside one private block.
+    function private_range(s,   n) {
+      n = substr(s, index(s, "/") + 1) + 0
+      if (s ~ /^(10|127)\./) return n >= 8
+      if (s ~ /^172\.(1[6-9]|2[0-9]|3[01])\./) return n >= 12
+      if (s ~ /^192\.168\./) return n >= 16
+      if (s ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./) return n >= 10
+      return tolower(s) ~ /^f[cd][0-9a-f][0-9a-f]:/ && n >= 7
     }
     BEGIN { portre = "^[0-9]+(:[0-9]+)?(,[0-9]+(:[0-9]+)?)*(/[a-z][a-z0-9]*)?$" }
     /^Default:/ { if ($0 ~ /allow \(incoming\)/) printf "any\tAnywhere\tufw default: allow (incoming)\n"; next }
@@ -467,31 +493,31 @@ ufw_allows() {
       sub(/ +\(log(-all)?\)$/, "", from)
       gsub(/^ +| +$/, "", to)
       gsub(/^ +| +$/, "", from)
+      # Every " (v6)" first, the one inside an app profile too, then the profile, then the interface.
       x = to
+      gsub(/ \(v6\)/, "", x)
       gsub(/ \([^)]*\)/, "", x)
+      if (x ~ / on lo$/) next
       sub(/ on [^ ]+$/, "", x)
       n = split(x, w, " ")
       last = w[n]
-      proto = ""
+      proto = proto_of(last)
       if (last ~ portre) {
         ports = last
-        if (index(ports, "/")) {
-          proto = substr(ports, index(ports, "/") + 1)
-          ports = substr(ports, 1, index(ports, "/") - 1)
-        }
+        sub(/\/.*$/, "", ports)
         if (!covers(ports)) next
-      } else if (last ~ /\/[a-z][a-z0-9]*$/) {
-        proto = last
-        sub(/^.*\//, "", proto)
       }
-      if (proto != "" && proto != "tcp") next
       split(from, f, " ")
       src = f[1]
+      if (proto == "") proto = proto_of(src)
+      if (proto == "" && f[2] ~ portre) proto = proto_of(f[2])
+      if (proto != "" && proto != "tcp") next
+      if (src !~ portre) sub(/\/[a-z][a-z0-9]*$/, "", src)
       kind = "one"
       if (src == "Anywhere" || src ~ portre) {
         kind = "any"
         src = "Anywhere"
-      } else if (src ~ /\/[0-9]+$/ && src !~ /\/(32|128)$/) kind = "any"
+      } else if (src ~ /\/[0-9]+$/ && src !~ /\/(32|128)$/) kind = private_range(src) ? "range" : "any"
       printf "%s\t%s\t%s %s %s\n", kind, src, to, act, from
     }' <<<"$UFW"
 }
@@ -516,11 +542,12 @@ port_peers() { # port -> the remote addresses (not loopback) connected to this h
 # public address the port fails with no firewall active or a Tailscale interface on the host
 # (tailscaled accepts tailnet traffic before ufw sees it), and warns otherwise. On a Tailscale
 # address (100.64.0.0/10) it warns: only the tailnet policy filters it. On a private address it
-# warns with no firewall active. In each of these, it warns when a ufw rule lets anyone reach it.
-# Arguments: the setting as the report names it (such as "[grpc] address"), its value, its key,
-# its section ("" = top level), its file, the value to set (with "<private address>"), who may
-# connect, the placeholder for that source in the ufw command, and optional words for the report
-# line after where it listens (such as ", without mTLS"). Sets:
+# warns with no firewall active. Beyond loopback it also warns when a ufw rule lets anyone, or
+# every host of a range, reach it. A value without a port doctor can read warns: doctor cannot
+# tell where it listens. Arguments: the setting as the report names it (such as "[grpc]
+# address"), its value, its key, its section ("" = top level), its file, the value to set (with
+# "<private address>"), who may connect, the placeholder for that source in the ufw command, and
+# optional words for the report line after where it listens (such as ", without mTLS"). Sets:
 #   LOCK_SEV   OK, WARN or FAIL
 #   LOCK_OPEN  wildcard or public when the port listens there, else empty
 #   LOCK_TEXT  what doctor found, for the report line
@@ -530,7 +557,7 @@ LOCK_SEV="" LOCK_OPEN="" LOCK_TEXT="" LOCK_BIND="" LOCK_UFW=""
 port_lock() {
   local label=$1 value=$2 key=$3 sec=$4 file=$5 want=$6 who=$7 src=$8 after=${9:-}
   local hp h port l where="" classes="" peers kind s rule del=""
-  local -a anyrules=() ones=()
+  local -a anyrules=() ranges=() ones=()
   LOCK_SEV=OK LOCK_OPEN="" LOCK_BIND="" LOCK_UFW=""
   LOCK_TEXT="$label = $value"
   if [[ $value == unix://* ]]; then
@@ -543,7 +570,9 @@ port_lock() {
   h=${h#\[}
   h=${h%\]}
   if [[ $hp != *:* || ! $port =~ ^[0-9]+$ ]]; then
-    LOCK_TEXT+=" (no port in it)$after"
+    LOCK_SEV=WARN
+    LOCK_TEXT+="$after: doctor reads no port in it, so it cannot tell where it listens or who reaches it"
+    LOCK_BIND="in $file${sec:+ under [$sec]}, write $key with its port (<address>:<port>, after tcp:// where the setting has it)"
     return
   fi
   while read -r l; do
@@ -590,6 +619,8 @@ port_lock() {
     while IFS=$'\t' read -r kind s rule; do
       if [[ $kind == any ]]; then
         anyrules+=("$rule")
+      elif [[ $kind == range ]]; then
+        if [[ " ${ranges[*]} " != *" $s "* ]]; then ranges+=("$s"); fi
       elif [[ -n $s && " ${ones[*]} " != *" $s "* ]]; then
         ones+=("$s")
       fi
@@ -598,6 +629,11 @@ port_lock() {
       [[ $LOCK_SEV == FAIL ]] || LOCK_SEV=WARN
       LOCK_TEXT+="; ufw lets anyone reach it ($(join "${anyrules[@]}"))"
       del=", then delete the rule that lets anyone in (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\")"
+    elif ((${#ranges[@]} > 0)); then
+      # A private range is not anyone, but it is more than the one source the port takes.
+      [[ $LOCK_SEV == FAIL ]] || LOCK_SEV=WARN
+      LOCK_TEXT+="; ufw lets every host in $(join "${ranges[@]}") reach it"
+      del=", then delete the rule for the range (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\")"
     elif ((${#ones[@]} > 0)); then
       LOCK_TEXT+="; ufw lets in $(join "${ones[@]}")"
     else
@@ -623,7 +659,7 @@ lock_fix() { # restart words, setting changes (one string, "; "-joined), ufw com
   if [[ -n $3 ]]; then
     out+="${out:+; }$3 (look with \"sudo ss -tnp\" first: the source must be the address that host really connects from)"
     case $FW in
-      none*) out+="; ufw is not active: add your SSH port, p2p (26656) and the other rules of docs/security.md (\"Ports on the validator\") first, then turn it on yourself (\"sudo ufw enable\") and run install.sh again, which adds the monitor's rules" ;;
+      none*) out+="; ufw is not active: add your SSH port, p2p (26656), your WireGuard UDP port for each peer when the hosts link over WireGuard (\"sudo ufw allow from <peer's public IP> to any port <WireGuard port> proto udp\") and the other rules of docs/security.md (\"Ports on the validator\") first, then turn it on yourself (\"sudo ufw enable\") and run install.sh again, which adds the monitor's rules" ;;
       "ufw enabled" | "") ;;
       *) out+="; those are ufw's commands: write the same rules for ${FW% active}" ;;
     esac
@@ -685,7 +721,7 @@ home_ok() {
 METRICS=""
 check_metrics() {
   local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
-  local port open only del=""
+  local port open="" only del="" seen=false reach=false
   local -a bad=() tnet=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
   # The address the monitor scrapes, which is where the metrics belong: this host's
@@ -724,22 +760,28 @@ check_metrics() {
   if [[ -n $laddr ]] && [[ -z $lhost || $lhost == 0.0.0.0 || $lhost == :: || $lhost == '*' ]]; then
     wild="prometheus_listen_addr = \"$laddr\" in $cfg"
   fi
+  port=$(url_port "$url")
   while read -r a; do
     [[ -n $a ]] || continue
+    seen=true
+    if ! is_loopback "$a"; then reach=true; fi
     case $(addr_class "$a") in
       wildcard) [[ -n $wild ]] || wild="the port listens on $a" ;;
       public) bad+=("$a") ;;
       private) if is_tailnet "$(addr_host "$a")"; then tnet+=("$a"); fi ;;
     esac
-  done <<<"$(listeners "$(url_port "$url")")"
+  done <<<"$(listeners "$port")"
+  # With nothing listening on the port here, prometheus_listen_addr says where it would (unknown
+  # or an empty host: every interface).
+  if [[ $seen == false && $(lock_class "$lhost") != loopback ]]; then reach=true; fi
   # With no firewall active, nothing but the bind keeps the port off the networks of this host,
   # and tailscaled accepts what arrives on its interface before ufw sees it.
   net_read
   fw=$FW
   if [[ -n $TS_IF ]]; then fw+="; Tailscale interface $TS_IF"; fi
   if [[ $FW == none* || -n $TS_IF ]]; then sev=FAIL; fi
-  port=$(url_port "$url")
-  open=$(ufw_open "$port")
+  # A ufw rule matters only where another host can reach the port, never on loopback alone.
+  if [[ $reach == true || -n $wild ]]; then open=$(ufw_open "$port"); fi
   only="; let only the monitor reach port $port: \"sudo ufw allow from <monitor address> to any port $port proto tcp\" (install.sh adds this rule while ufw is active)"
   if [[ -n $open ]]; then
     del="; delete the ufw rule that lets anyone in (\"sudo ufw status numbered\", then \"sudo ufw delete <number>\"): install.sh lets the monitor's address in with a rule of its own (comment celestia-mon)"
@@ -2265,6 +2307,9 @@ check_fibre_active() {
 
 # The alerts of the rules with severity page (DiskLow also has message rules). UpgradeSignalMissing
 # exists only with upgrade signalling on, whose unit the install removes when it is off.
+# MonitorCannotReach's page ("Monitor cannot reach any server", next to its per-host messages)
+# exists only with the monitor on a host of its own; check_silences adds it there, once the roles
+# are known.
 PAGE_ALERTS=(NodeNotAdvancing ValidatorNotSigning FibreDown DiskLow)
 if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
 
@@ -2331,11 +2376,12 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
   esac
 }
 
-# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown and
-# UpgradeSignalMissing carry only alertname and severity, so each other matcher must match an
-# absent label. DiskLow also carries host, mountpoint and the node_exporter labels, whose values
-# are not known here: it counts when the silence names alertname or severity, so a host silence
-# for planned work is listed only when it runs long.
+# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown,
+# UpgradeSignalMissing and MonitorCannotReach's page carry only alertname and severity, so each
+# other matcher must match an absent label: a silence of MonitorCannotReach for one host holds
+# back only that host's message. DiskLow also carries host, mountpoint and the node_exporter
+# labels, whose values are not known here: it counts when the silence names alertname or
+# severity, so a host silence for planned work is listed only when it runs long.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=()
   local a m n o v hit named=false out=""
@@ -2379,6 +2425,9 @@ check_silences() {
   local name="silences" am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
   local -a held=() other=()
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
+  # A monitor that runs no celestia-appd or Fibre (as in check 16) can lose every host at once,
+  # and its rules have MonitorCannotReach's page for that.
+  if ! node_host && ! has_role fibre; then PAGE_ALERTS+=(MonitorCannotReach); fi
   reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
   code=${reply##*$'\n'}
   reply=${reply%$'\n'*}

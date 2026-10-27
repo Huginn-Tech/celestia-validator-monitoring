@@ -133,9 +133,15 @@ sudo ufw allow from <Fibre host address> to any port 9090 proto tcp
 sudo ufw allow 26656/tcp
 ```
 
-Delete any rule that lets anyone reach one of these ports but 26656 (`sudo ufw status numbered`, then `sudo ufw delete <number>`); `doctor` names such a rule. When ufw is not active yet, add these rules, your SSH port and, on a host that runs Fibre, Fibre's port (7980) first, then turn it on yourself with `sudo ufw enable` and run `install.sh` on the host again: it adds the monitor's rules only while ufw is active ([quickstart step 2](quickstart.md#2-prepare-the-validator)). With firewalld or nftables, write the same rules there.
+Delete any rule that lets anyone, or a whole range, reach one of these ports but 26656 (`sudo ufw status numbered`, then `sudo ufw delete <number>`); `doctor` names such a rule. When ufw is not active yet, first add these rules, your SSH port, Fibre's port (7980) on a host that runs Fibre, and, on a host that links over WireGuard, its WireGuard UDP port, one rule per peer:
 
-What `doctor` reports for each port: on every interface or a public address, `FAIL` when no firewall is active or the host has a Tailscale interface (tailscaled accepts what arrives there before ufw sees it), `WARN` otherwise; `WARN` on a Tailscale address, on a private address with no firewall active, and when a ufw rule lets anyone reach the port. Check 25 also reads `[rpc] grpc_laddr`, `[rpc] pprof_laddr` and `[instrumentation] trace_pull_address` when they are set: 127.0.0.1, or empty to turn them off.
+```sh
+sudo ufw allow from <peer's public IP> to any port <WireGuard port> proto udp
+```
+
+Without that rule, ufw drops a peer's handshake once the tunnel has been idle or the host restarts, and tmkms, Fibre and the monitor lose the node ([WireGuard-only link](#wireguard-only-link)). Then turn ufw on yourself with `sudo ufw enable` and run `install.sh` on the host again: it adds the monitor's rules only while ufw is active ([quickstart step 2](quickstart.md#2-prepare-the-validator)). With firewalld or nftables, write the same rules there.
+
+What `doctor` reports for each port: on every interface or a public address, `FAIL` when no firewall is active or the host has a Tailscale interface (tailscaled accepts what arrives there before ufw sees it), `WARN` otherwise; `WARN` on a Tailscale address, on a private address with no firewall active, when a ufw rule lets anyone, or every host of a private range, reach the port, and when it reads no port in the setting. Check 25 also reads `[rpc] grpc_laddr`, `[rpc] pprof_laddr` and `[instrumentation] trace_pull_address` when they are set: 127.0.0.1, or empty to turn them off.
 
 **Run celestia-appd and Fibre as users of their own.** As root, a flaw in either that lets someone run code or read files gives them the whole host. `doctor` check 26 warns on a unit without `User=`.
 
@@ -165,7 +171,7 @@ With the monitor in another data centre, it and the Celestia hosts reach each ot
 
 - **Addresses.** Give each host a WireGuard address and set it as that host's `celestia_mon_private_ip`: the collectors listen there and Prometheus scrapes there, so every scrape stays inside the tunnel.
 - **Peers.** On each host, every peer's `AllowedIPs` is that peer's WireGuard address alone, a `/32`: a peer can send only from its own address and routes for no other network.
-- **The WireGuard port.** Each host's firewall lets its WireGuard UDP port (often 51820) in only from its peers' public IPs, and the port stays closed to everyone else.
+- **The WireGuard port.** Each host's firewall lets its WireGuard UDP port (often 51820) in only from its peers' public IPs, and the port stays closed to everyone else. With ufw, one rule per peer: `sudo ufw allow from <peer's public IP> to any port 51820 proto udp`. Add them before `sudo ufw enable` on a host where ufw is not active yet.
 - **Plain HTTP inside.** The scrapes are plain HTTP inside the tunnel, which encrypts and authenticates every packet; the metrics endpoints have no TLS of their own.
 - **Grafana** stays on the monitor's loopback, the default, and you reach it through an SSH tunnel ([quickstart step 7](quickstart.md#7-open-grafana)).
 

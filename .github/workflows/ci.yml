@@ -885,9 +885,10 @@ jobs:
   # and scheduled at height 15116658) and a synthetic operator address: an upgrade pending that the
   # validator signalled, an open round it has not signalled, a version nobody signalled, an RPC of
   # another network, one that is behind and an unreachable one before the right one, a store that
-  # lacks the height read, a pruned node and one that refuses the block time, a redirect and an
-  # answer over 1 MiB, a key in the RPC URL that must not show, URLs and addresses that do not
-  # decode, http to a public host, and the service keeping its last reading while reads fail.
+  # lacks the height read, a pruned node and one that refuses the block time, a redirect, an
+  # answer over 1 MiB, JSON nested deeper than Python reads and an app version below 0, a key in
+  # the RPC URL that must not show, URLs and addresses that do not decode, http to a public host,
+  # and the service keeping its last reading while reads fail.
   signal:
     runs-on: ubuntu-24.04
     steps:
@@ -919,7 +920,8 @@ jobs:
             shift
             printf '{"chain_id": "celestia", "rpc": %s, "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 60}' \
               "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" "$v" >"$d/config.json"
-            python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
+            # A read that never ends (a loop on a broken answer) fails in a minute instead of holding the job.
+            timeout 60 python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
           }
 
           # The upgrade to v10 is pending and the validator signalled it. The RPC URL carries a key.
@@ -1022,6 +1024,27 @@ jobs:
           m=$(run "$addr" http://127.0.0.1:8768)
           grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
           grep -qF 'http://127.0.0.1:8768 answered /status with more than 1048576 bytes' "$d/err"
+          # JSON nested deeper than Python's parser goes cannot be read either: in /status the next RPC
+          # is read, and in a failed /blockchain the reading stands without a block time.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"nested": {"status": 200}'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"nested": {"blockchain": 500}'
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          cat "$d/err"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="block_time"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /status with JSON nested too deeply to read' "$d/err"
+          grep -qF 'http://127.0.0.1:8767 answered 500 for /blockchain; the block time measured last is kept' "$d/err"
+          if grep -q '^celestia_mon_chain_block_time_seconds' <<<"$m"; then echo "a block time from a nested answer"; exit 1; fi
+          # An app version below 0 (the later of the two app_version fields counts) is a broken answer,
+          # which must not hold the read: the next RPC is read.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"app_version": -2'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /abci_info with app version -2 at height 15000000' "$d/err"
 
           # URLs the service refuses at start, without printing them: a login, a query string, no host.
           for u in http://ci:ci-secret-key@127.0.0.1:8767 'http://127.0.0.1:8767/?key=ci-secret-key' http://:26657; do
@@ -1169,6 +1192,15 @@ jobs:
           mkdir -p build/five
           jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
           python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
+          # split with a backup node: five servers, so the Servers now table (26) instead of the cards, and three
+          # answers, so no Monitoring tile; check_surfaces must still find every alert.
+          mkdir -p build/table
+          jq '.nodes += ["val-2"] | .links += [{"host": "val-2", "mbps": null}]
+              | .data_mounts += [{"host": "val-2", "mount": "/var/lib/celestia"}]' \
+            build/split/dashboard-config.json > build/table/dashboard-config.json
+          python monitoring/dashboards/gen_dashboard.py --config build/table/dashboard-config.json --out build/table/dashboard.json
+          jq -e '([.panels[] | select(.id == 26)] | length) == 1 and ([.panels[] | select(.id >= 30 and .id < 38)] | length) == 0
+                 and ([.panels[] | select(.id == 18)] | length) == 0' build/table/dashboard.json
       # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
       # side by side). split: remote signer and Fibre (the Fibre row; four columns, the scraped KMS
       # host's third, the monitor's last). mainnet: a backup node, a standby Fibre, the outside check and
@@ -1413,7 +1445,8 @@ jobs:
       - name: Serve the dashboards' series to Prometheus
         run: |
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
-            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json \
+            build/table/dashboard.json
           nohup python -m http.server 9099 --bind 127.0.0.1 --directory build/stub > build/stub/http.log 2>&1 &
           for _ in $(seq 60); do
             reply=$(curl -sS http://127.0.0.1:9090/api/v1/query \
@@ -1428,6 +1461,7 @@ jobs:
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
           build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+          build/table/dashboard.json
 
   doctor:
     runs-on: ubuntu-24.04
@@ -1603,9 +1637,11 @@ jobs:
   # address; the config names a plaintext privval gRPC on loopback, the REST API on a private
   # address and pprof on a Tailscale address; one unit has no User=. With no firewall active the
   # wildcard binds fail (FAIL 1 and 25) and the private ones warn (WARN 20); with ufw enabled and
-  # one-source rules they warn, and a rule that lets anyone reach 9090 is named (WARN 25); with a
-  # Tailscale interface they fail again; metrics on a Tailscale address warn (WARN 1). A
-  # monitor-only host skips the node and Fibre checks.
+  # one-source rules they warn, and a rule that lets anyone reach 9090 is named (WARN 25), while an
+  # app profile's rules (its IPv6 copy reads "8080/tcp (ci-web (v6))"), "ufw allow in on lo" and a
+  # private range on 26660, as celestia_mon_firewall_sources may name, let no one in; a private
+  # range on the REST API warns (WARN 25); with a Tailscale interface they fail again; metrics on a
+  # Tailscale address warn (WARN 1). A monitor-only host skips the node and Fibre checks.
   doctor-ports:
     runs-on: ubuntu-24.04
     steps:
@@ -1695,10 +1731,19 @@ jobs:
           sudo ufw allow 9090/tcp
           sudo ufw allow from 10.255.1.9 to any port 26658 proto tcp
           sudo ufw allow from 10.255.1.9 to any port 26660 proto tcp
+          printf '%s\n' '[ci-web]' 'title=CI web' 'description=A stand-in app profile' 'ports=8080/tcp' \
+            | sudo tee /etc/ufw/applications.d/ci-web >/dev/null
+          sudo ufw allow ci-web
+          sudo ufw allow in on lo
+          sudo ufw allow from 10.255.0.0/16 to any port 26660 proto tcp comment celestia-mon
           sudo ufw --force enable
           sudo ufw status verbose
           run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
           echo "::endgroup::"
+          if grep -E '^[A-Z]+ +(1|20|25) ' <<<"$out" | grep -E 'ci-web|Anywhere( \(v6\))? on lo|10\.255\.0\.0/16' >/dev/null; then
+            echo "doctor reads the app profile, the rule on lo or the private range as letting anyone in"
+            exit 1
+          fi
           grep -Eq '^WARN +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
           grep -Eq '^WARN +20 +signer binds +priv_validator_grpc_laddr = 127\.0\.0\.1:26669 \(nothing listens on it now\), without mTLS' <<<"$out"
           says 20 'ok: priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658); ufw lets in 10.255.1.9'
@@ -1708,6 +1753,14 @@ jobs:
           says 25 'ok: [api] address = tcp://10.255.1.1:1317 (nothing listens on it now); no ufw rule lets another host reach it'
           says 25 'then delete the rule that lets anyone in ("sudo ufw status numbered", then "sudo ufw delete <number>")'
           if grep -qF 'ufw is not active' <<<"$out"; then echo "doctor says ufw is not active while it is"; exit 1; fi
+
+          echo "::group::a private range on the REST API"
+          sudo ufw allow from 10.254.0.0/16 to any port 1317 proto tcp
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          says 25 '[api] address = tcp://10.255.1.1:1317 (nothing listens on it now); ufw lets every host in 10.254.0.0/16 reach it'
+          says 25 'reach port 1317: "sudo ufw allow from <address of that host> to any port 1317 proto tcp", then delete the rule for the range'
+          sudo ufw delete allow from 10.254.0.0/16 to any port 1317 proto tcp
 
           echo "::group::a Tailscale interface"
           sudo ip tuntap add dev tailscale0 mode tun
@@ -1850,7 +1903,8 @@ jobs:
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
           line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
           for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
-                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow; ends in ' \
+                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, ' \
+                      'FibreDown, DiskLow, MonitorCannotReach; ends in ' \
                       ' hours); the others: {host="val-1"} by op'; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done

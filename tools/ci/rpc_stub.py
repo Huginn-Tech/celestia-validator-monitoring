@@ -22,6 +22,8 @@ and optionally:
   refuse       the methods the node refuses, such as ["blockchain"]
   redirect     a URL that every method answers with a redirect (302) to
   oversize     true for a /status answer larger than 1 MiB
+  nested       {method: HTTP status}: the methods the node answers with that status and JSON
+               nested 500000 deep (valid, under 1 MiB, far deeper than Python's parser goes)
 Blocks are 2.87 s apart, and the last one is from the current minute, so every request of one
 read sees the same times. Queries are answered at the last height only, so a reader must ask for
 it: a gRPC query at another height fails, and a store query at another height gets the SDK
@@ -41,6 +43,8 @@ BLOCK_NS = 2_870_000_000
 # The tally of a version nobody signalled: voting_power absent (0), the threshold and the total.
 NO_TALLY = "EMj0pLgBGNbYkt0B"
 CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+# The nested answer: 1000040 bytes. Written out, as json.dumps cannot nest that deep either.
+NESTED = b'{"jsonrpc": "2.0", "id": -1, "result": ' + b"[" * 500_000 + b"]" * 500_000 + b"}"
 
 
 def address(raw, prefix="celestiavaloper"):
@@ -75,7 +79,9 @@ def block_time(state, height):
 
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, body):
-        data = json.dumps({"jsonrpc": "2.0", "id": -1, **body}).encode()
+        self.send_body(code, json.dumps({"jsonrpc": "2.0", "id": -1, **body}).encode())
+
+    def send_body(self, code, data):
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
@@ -114,6 +120,8 @@ class Handler(BaseHTTPRequestHandler):
             return None
         if state.get("oversize") and method == "status":
             return self.reply(200, {"result": {"padding": "x" * (2 << 20)}})
+        if method in state.get("nested", {}):
+            return self.send_body(state["nested"][method], NESTED)
         if method in state.get("refuse", []):
             return self.reply(403, {"error": {"code": -32601, "message": "Forbidden", "data": f"{method} is not served here"}})
         if method == "status":

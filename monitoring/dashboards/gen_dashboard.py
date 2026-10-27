@@ -2030,20 +2030,28 @@ def check_lanes(s):
 def server_lanes(s):
     """One status line per server, in servers order: (refId, label, bars, uptime, words). The alerts
     excluded from the generic warning colour lines Remote signer, Fibre serving and Fibre from outside
-    instead, and the monitoring's own alerts the monitor's line in the Monitoring row's words; the upgrade
-    alerts colour no line (the Network upgrade tile shows them). NodeBehind colours its server's line and
-    Node in sync. Not reached: MonitorCannotReach on each server the monitor reaches over the network."""
+    instead, and the monitoring's own alerts and heartbeat the monitor's line in the Monitoring row's
+    words; the upgrade alerts colour no line (the Network upgrade tile shows them). NodeBehind colours its
+    server's line and Node in sync. Not reached: MonitorCannotReach on each server the monitor reaches
+    over the network."""
     others = SERVER_OTHERS
     services = service_down(s)
     words = SERVER_WORDS + [(30 + i, w, WARN) for i, (_, w) in enumerate(services)]
     # The monitor's line: the monitoring's alerts (MONITOR_WORDS), then Alertmanager down, which only
-    # Prometheus's own metrics show (no rule watches it; the heartbeat keeps going meanwhile).
+    # Prometheus's own metrics show (no rule watches it; the heartbeat keeps going meanwhile), then the
+    # heartbeat (Watchdog) missing from a block in which the rules ran: a failed notification stops it
+    # for an hour, also after NotificationsFailing cleared. The monitor is one of the servers in every
+    # layout, so this line shows the heartbeat also where no Monitoring tile or card row does (the
+    # Servers now table, a monitor on a KMS host); check_surfaces reads its selector left of 'and' only.
     watching = ([("MonitoringBroken", "Rules failing"), ("NotificationsFailing", "Alerts unsent"),
                  ("DeadmanFailing", "No heartbeat")]
                 + ([("AnnouncementsUnreadable", "Feed stopped")] if s.announcements else []))
+    heartbeat = seen('ALERTS{alertname="Watchdog",alertstate="firing"}')
     own = (["%s * 0 + %d" % (firing("alertname=%s" % q(a)), 11 + j) for j, (a, _) in enumerate(watching)]
-           + ["%s * 0 + 19" % down("alertmanager")])
-    own_words = [(11 + j, w, WARN) for j, (_, w) in enumerate(watching)] + [(19, "Alerting down", WARN)]
+           + ["%s * 0 + 19" % down("alertmanager"),
+              "((((%s or vector(0)) == 0) * 0 + 18) and on () %s)" % (heartbeat, evaluated())])
+    own_words = ([(11 + j, w, WARN) for j, (_, w) in enumerate(watching)]
+                 + [(19, "Alerting down", WARN), (18, "No heartbeat", WARN)])
     lanes = []
     for i, h in enumerate(s.servers):
         sel = "host=%s" % q(h)

@@ -143,6 +143,9 @@ tests:
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
         values: '1x24'
       - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x24'
+      - series: >-
           up{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre"}
         values: '1x24'
       - series: >-
@@ -190,6 +193,9 @@ tests:
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
         values: '1x9 0x15'
       - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x9 stale'
+      - series: >-
           up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
         values: '1x24'
     alert_rule_test:
@@ -236,6 +242,9 @@ tests:
       - series: >-
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
         values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
     alert_rule_test:
       - eval_time: 8m
         alertname: ServiceDown
@@ -263,7 +272,13 @@ tests:
           up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
         values: '1x14'
       - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
         values: '1x14'
       - series: >-
           up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
