@@ -34,8 +34,9 @@
 {%- endfor -%}
 {#- kms_names: every kms host, with a remote signer. The dashboard names the remote signer's column of the
     Servers band after the ones it does not scrape (it only reads their signing, through the nodes). -#}
-{#- The switches below are the alert rules' own (tensile_on, signal_on in celestia-mon.rules.yml.j2), so the
-    dashboard shows exactly the checks that have rules. -#}
+{#- The switches below are the alert rules' own (tensile_on, signal_on, mon_only in celestia-mon.rules.yml.j2),
+    so the dashboard shows exactly the checks that have rules. monitor_only: the monitor runs on a host of
+    its own, with no Celestia service. -#}
 {{ {
   'datasource_uid': 'celestia-mon-prometheus',
   'name': celestia_mon_validator_name | default('', true) | string | trim,
@@ -51,6 +52,7 @@
   'kms_hosts': ns.kms,
   'kms_names': (groups.get('kms', []) | list) if celestia_mon_signer == 'remote' else [],
   'monitor_host': celestia_mon_monitor_host,
+  'monitor_only': celestia_mon_monitor_host not in (nodes + groups.get('fibre', []) + ns.kms),
   'prometheus_retention': celestia_mon_prometheus_retention | default('30d') | string,
   'fibre_mounts': ns.fibre,
   'fibre_endpoints': ns.endpoints,
