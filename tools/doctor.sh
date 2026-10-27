@@ -623,7 +623,7 @@ lock_fix() { # restart words, setting changes (one string, "; "-joined), ufw com
   if [[ -n $3 ]]; then
     out+="${out:+; }$3 (look with \"sudo ss -tnp\" first: the source must be the address that host really connects from)"
     case $FW in
-      none*) out+="; ufw is not active: add your SSH port, p2p (26656) and the other rules of docs/security.md (\"Ports on the validator\") first, then turn it on yourself (\"sudo ufw enable\")" ;;
+      none*) out+="; ufw is not active: add your SSH port, p2p (26656) and the other rules of docs/security.md (\"Ports on the validator\") first, then turn it on yourself (\"sudo ufw enable\") and run install.sh again, which adds the monitor's rules" ;;
       "ufw enabled" | "") ;;
       *) out+="; those are ufw's commands: write the same rules for ${FW% active}" ;;
     esac
@@ -1058,7 +1058,8 @@ check_service_users() {
     fi
   done
   if ((${#root[@]} > 0)); then
-    u="$(join "${root[@]}") $( ((${#root[@]} > 1)) && printf 'run' || printf 'runs') as root (no User= in the unit)"
+    u="$(join "${root[@]}") runs as root (no User= in the unit)"
+    if ((${#root[@]} > 1)); then u="$(join "${root[@]}") run as root (no User= in their units)"; fi
     if ((${#ok[@]} + ${#missing[@]} > 0)); then u+="; $(join "${ok[@]}" "${missing[@]}")"; fi
     report WARN 26 "$name" "$u: a flaw in a service run as root that lets someone run code or read files gives them this whole host$(has_role monitor && printf ', with every alert secret and the power to silence alerts'). Fix: give each a system user of its own (\"sudo useradd --system --home-dir <its home> --shell /usr/sbin/nologin <user>\"), give that user its home, data and keys (\"sudo chown -R <user>: <its home>\"; keys stay 0600), add User=<user> to the unit (\"sudo systemctl edit <unit>\"), then restart it at a moment you choose (celestia-appd with tmkms running)"
   elif ((${#ok[@]} > 0)); then

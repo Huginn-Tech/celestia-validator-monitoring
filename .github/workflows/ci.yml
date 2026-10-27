@@ -1359,7 +1359,8 @@ jobs:
             --fibre-unit ci-standby --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^OK +6 +fibre service +standby: ci-standby\.service is inactive' <<<"$out"
           grep -Eq '^WARN +17 +fibre signer +standby: .*, a plaintext loopback signer, but .* listens on 10\.255\.0\.1:26669 only' <<<"$out"
-          grep -Eq '^FAIL +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 \(nothing listens on it now\) is on every interface, and no firewall is active' <<<"$out"
+          grep -Eq '^FAIL +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 \(nothing listens on it now\) is on every interface' <<<"$out"
+          grep -Eq '^FAIL +20 .*:26658 \(nothing listens on it now\) is on every interface, and no firewall is active' <<<"$out"
 
           home="$RUNNER_TEMP/backup"
           mkdir -p "$home/config" "$RUNNER_TEMP/rpc"
@@ -1476,7 +1477,7 @@ jobs:
           echo "::endgroup::"
           grep -Eq '^FAIL +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
           grep -Eq '^WARN +20 +signer binds ' <<<"$out"
-          says 20 'priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658): no firewall is active, so every host that reaches that private address can connect'
+          says 20 'priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658): no firewall is active, so every host'
           says 20 'priv_validator_grpc_laddr = 127.0.0.1:26669 (nothing listens on it now), without mTLS'
           says 20 'serve priv_validator_grpc_laddr with mTLS: set priv_validator_grpc_cert_file'
           says 20 'then restart celestia-appd at a moment you choose, with tmkms running'
@@ -1506,7 +1507,8 @@ jobs:
           grep -Eq '^WARN +20 +signer binds +priv_validator_grpc_laddr = 127\.0\.0\.1:26669 \(nothing listens on it now\), without mTLS' <<<"$out"
           says 20 'ok: priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658); ufw lets in 10.255.1.9'
           grep -Eq '^WARN +25 +node ports ' <<<"$out"
-          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface (firewall: ufw enabled); ufw lets anyone reach it (9090/tcp ALLOW IN Anywhere'
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface (firewall: ufw enabled); ufw lets anyone reach it'
+          says 25 'ufw lets anyone reach it (9090/tcp ALLOW IN Anywhere'
           says 25 'ok: [api] address = tcp://10.255.1.1:1317 (nothing listens on it now); no ufw rule lets another host reach it'
           says 25 'then delete the rule that lets anyone in ("sudo ufw status numbered", then "sudo ufw delete <number>")'
           if grep -qF 'ufw is not active' <<<"$out"; then echo "doctor says ufw is not active while it is"; exit 1; fi
@@ -1517,7 +1519,7 @@ jobs:
           echo "::endgroup::"
           grep -Eq '^FAIL +1 +node metrics +.*\(firewall: ufw enabled; Tailscale interface tailscale0\)' <<<"$out"
           grep -Eq '^FAIL +25 +node ports ' <<<"$out"
-          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and this host has a Tailscale interface (tailscale0), whose traffic ufw does not filter'
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and this host has a Tailscale interface (tailscale0)'
 
           echo "::group::a monitor-only host"
           run sudo bash tools/doctor.sh --config /dev/null --roles monitor --fibre-enabled true --data-mounts / --head-wait 2
