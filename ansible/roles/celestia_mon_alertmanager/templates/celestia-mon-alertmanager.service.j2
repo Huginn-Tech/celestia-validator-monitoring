@@ -11,10 +11,13 @@ Group=celestia-mon-alertmanager
 # An empty --cluster.listen-address disables HA gossip, so port 9094 stays closed.
 # receiver-name-in-metrics adds the label receiver_name to the notification metrics, so the
 # dead-man receiver's failures can be told apart from the page and message receivers'.
+# --web.external-url: the links Alertmanager puts in notifications name its loopback address,
+# not this host's name.
 ExecStart={{ celestia_mon_alertmanager_home }}/alertmanager \
   --config.file={{ celestia_mon_alertmanager_config_dir }}/alertmanager.yml \
   --storage.path={{ celestia_mon_alertmanager_data_dir }} \
   --web.listen-address={{ celestia_mon_alertmanager_listen_address }} \
+  --web.external-url=http://{{ celestia_mon_alertmanager_listen_address }}/ \
   --web.config.file={{ celestia_mon_api_web_configs.alertmanager }} \
   --cluster.listen-address= \
   --enable-feature=receiver-name-in-metrics

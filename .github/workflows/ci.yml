@@ -411,6 +411,25 @@ jobs:
           want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
           test "$out" = "$(printf "$want")"
           test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
+      # Alerts leave Prometheus without instance (a target's address), which nothing in Alertmanager
+      # reads: no rule label, inhibition or template names it.
+      - name: Alerts leave Prometheus without instance
+        run: |
+          set -euo pipefail
+          for s in single split mainnet; do
+            python - "build/$s/prometheus.yml" <<'EOF'
+          import sys
+          import yaml
+          config = yaml.safe_load(open(sys.argv[1]))
+          assert config["alerting"]["alert_relabel_configs"] == [{"action": "labeldrop", "regex": "instance"}], config["alerting"]
+          EOF
+          done
+          # A label reference: $labels.instance, .Labels.instance, a matcher, or a by, on, without or equal list.
+          use='(\$labels|\.Labels)\.instance|\binstance *(=|!=|=~|!~)|\b(by|on|ignoring|without|group_left|group_right|equal:) *[([][^])]*\binstance\b'
+          if grep -nE "$use" build/split/alertmanager.yml monitoring/alertmanager-templates.tmpl \
+               monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml; then
+            echo "Alertmanager's settings or the rules name instance, which alerts no longer carry"; exit 1
+          fi
       # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
       # active or standby, in the otelcol job.
       - name: The mainnet scrape targets follow the inventory groups
@@ -441,6 +460,69 @@ jobs:
           ], fh["relabel_configs"]
           print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal", "fibre_health")})
           EOF
+      # Slack and PagerDuty get celestia-mon's text too, never Alertmanager's list of labels or its
+      # links: Slack's title, text and fallback, with &, < and > escaped (Slack reads them as markup),
+      # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
+      # details. This renders the split example with both (the next step renders it again).
+      - name: Slack and PagerDuty messages read as text
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/receivers-text.yml" <<'EOF'
+          celestia_mon_receivers:
+            - {type: pagerduty, routing_key: ci-only}
+            - {type: slack, api_url: "https://slack.example.invalid/one"}
+          EOF
+          ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
+            -e @"$RUNNER_TEMP/receivers-text.yml"
+          amtool check-config build/split/alertmanager.yml
+          python - build/split/alertmanager.yml <<'EOF'
+          import sys
+          import yaml
+          receivers = {r["name"]: r for r in yaml.safe_load(open(sys.argv[1]))["receivers"]}
+          pd = receivers["page"]["pagerduty_configs"][0]
+          assert pd["description"] == '{{ template "celestia.pagerduty.description" . }}', pd
+          assert pd["details"] == {"firing": '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}',
+                                   "resolved": '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}'}, pd
+          for name in ("page", "message", "announcement-page", "announcement-message"):
+              slack = receivers[name]["slack_configs"][0]
+              assert slack["title"] == slack["fallback"] == '{{ template "celestia.slack.title" . }}', slack
+              assert slack["text"] == '{{ template "celestia.slack.text" . }}' and slack["title_link"] == "", slack
+          EOF
+          t=monitoring/alertmanager-templates.tmpl
+          render() { amtool template render --template.glob="$t" --template.data="$1" --template.type=text --template.text="$2"; }
+          cat >"$RUNNER_TEMP/text-announcement.json" <<'EOF'
+          {"receiver": "announcement-page", "status": "firing", "alerts": [{"status": "firing",
+            "labels": {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
+                       "source": "Celestia #mainnet-announcements", "announcement": "1"},
+            "annotations": {"summary": "Celestia announcement from Celestia #mainnet-announcements",
+                            "description": "Mainnet upgrades at height 100 <b>&", "link": "https://discord.com/channels/1/2/3"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
+          EOF
+          a="$RUNNER_TEMP/text-announcement.json"
+          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "📣 Celestia #mainnet-announcements"
+          test "$(render "$a" '{{ template "celestia.slack.text" . }}')" = "Mainnet upgrades at height 100 &lt;b&gt;&amp;"
+          test "$(render "$a" '{{ template "celestia.pagerduty.description" . }}')" = "Celestia announcement from Celestia #mainnet-announcements"
+          cat >"$RUNNER_TEMP/text-alerts.json" <<'EOF'
+          {"receiver": "page", "status": "firing", "alerts": [
+            {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
+             "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free & falling."}},
+            {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
+             "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
+          EOF
+          a="$RUNNER_TEMP/text-alerts.json"
+          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "🔴 PAGE · DiskLow · val-1"
+          out=$(render "$a" '{{ template "celestia.slack.text" . }}')
+          printf '%s\n---\n' "$out"
+          want='*Disk / on val-1 is almost full*\nLess than 5%% free &amp; falling.\n\n'
+          want+='✅ RESOLVED · DiskLow · val-1\n*Disk /data on val-1 is almost full*'
+          test "$out" = "$(printf "$want")"
+          out=$(render "$a" '{{ template "celestia.pagerduty.description" . }}')
+          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full (2 alerts)" || { echo "$out"; exit 1; }
+          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}')
+          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full Less than 5% free & falling." || { echo "$out"; exit 1; }
+          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}')
+          test "$out" = "DiskLow · val-1: Disk /data on val-1 is almost full" || { echo "$out"; exit 1; }
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->

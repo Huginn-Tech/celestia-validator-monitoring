@@ -28,6 +28,12 @@ rule_files:
 # Alertmanager runs on this host and listens on loopback only. It and Prometheus take only
 # requests with the API password (their --web.config.file); Prometheus reads it from this file.
 alerting:
+  # instance, a target's address, leaves with no alert: no rule, inhibition or notification reads
+  # it, and every job has one target per host, which host names. So no notification carries a
+  # private address. Prometheus's own ALERTS series keep it.
+  alert_relabel_configs:
+    - action: labeldrop
+      regex: instance
   alertmanagers:
     - basic_auth:
         username: {{ celestia_mon_api_user | to_json }}
