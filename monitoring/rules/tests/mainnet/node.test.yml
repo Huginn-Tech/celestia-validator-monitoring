@@ -277,7 +277,9 @@ tests:
         exp_alerts: []
 
   # Both nodes' series end at 5m: from 6m Prometheus reads no height at all, so the alert is
-  # pending from 6m and fires at 7m (a window with a single height at 5m is no stall).
+  # pending from 6m and fires at 7m (a window with a single height at 5m is no stall). Both hosts'
+  # node_exporters still answer, so the monitor reaches the hosts and the nodes are what stopped
+  # (reach.test.yml has the monitor that reaches no host).
   - name: No node reports a height; NodeNotAdvancing pages
     interval: 1m
     input_series:
@@ -287,6 +289,24 @@ tests:
       - series: >-
           cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
         values: '1000+10x4 stale'
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 0x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 0x10'
     alert_rule_test:
       - eval_time: 6m
         alertname: NodeNotAdvancing

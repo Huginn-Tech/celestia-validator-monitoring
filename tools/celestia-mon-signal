@@ -19,13 +19,16 @@ block for MAX_BLOCK_AGE seconds, or that answers /abci_info at an older height t
 skipped, and so is one whose store does not hold the height /abci_info gave. While no RPC can be
 read, the last good reading stays and only its time ages; while the block time cannot be
 measured, the one measured last stays. Only the Python standard library is used; it sends no
-transaction and needs no key.
+transaction and needs no key. An http URL must name this host or an address of the private
+network (PLAIN_HTTP); any other RPC is reached over https. No redirect is followed, and no
+answer larger than MAX_BODY is read.
 """
 
 import argparse
 import base64
 import datetime
 import http.client
+import ipaddress
 import json
 import re
 import sys
@@ -52,6 +55,14 @@ BLOCK_SPAN = 1000
 MAX_BLOCK_AGE = 120
 # The same in blocks, for an /abci_info height that trails the /status one.
 MAX_BLOCKS_BEHIND = 40
+# The largest answer read, in bytes: 20 block headers or a query take a few KiB, and a larger
+# answer is refused rather than read into memory.
+MAX_BODY = 1 << 20
+# The addresses an http URL may name: this host and the private network (RFC 1918, CGNAT for
+# Tailscale, IPv6 ULA). Anywhere else, a provider's key in the path and the answers would cross
+# the internet unencrypted.
+PLAIN_HTTP = [ipaddress.ip_network(n) for n in (
+    "127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7")]
 
 BECH32_CHARSET = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
 
@@ -60,16 +71,42 @@ def log(msg):
     print(msg, file=sys.stderr, flush=True)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows no redirect: urlopen raises the 3xx as an HTTPError, so every call goes to the
+    configured RPC and nowhere else."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def epoch(text):
     """RFC 3339 time (nanoseconds allowed) as Unix seconds; None when absent or unreadable."""
-    if not text:
+    if not text or not isinstance(text, str):
         return None
     m = re.fullmatch(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", text)
     if not m:
         return None
     zone = "+00:00" if m.group(3) == "Z" else m.group(3)
-    t = datetime.datetime.fromisoformat(m.group(1) + zone).timestamp()
+    # A date that does not exist (2026-02-30), or one the platform cannot hold.
+    try:
+        t = datetime.datetime.fromisoformat(m.group(1) + zone).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
     return t + (float("0." + m.group(2)) if m.group(2) else 0.0)
+
+
+def plain_http_allowed(host):
+    """Whether an http URL may name host: localhost, or an address in PLAIN_HTTP."""
+    if host == "localhost":
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return any(address in network for network in PLAIN_HTTP)
 
 
 def esc(value):
@@ -164,6 +201,10 @@ def varint(buf, i):
 
 
 def encode_varint(n):
+    """n as a varint; ValueError for a negative n (the fields encoded are unsigned), on which the
+    loop would never end: -1 >> 7 is -1."""
+    if n < 0:
+        raise ValueError(f"{n} is negative and has no varint")
     out = bytearray()
     while True:
         b = n & 0x7F
@@ -226,21 +267,31 @@ def get(rpc, path, /, **params):
     url = rpc.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            body = json.load(resp)
+        with OPENER.open(req, timeout=20) as resp:
+            data = resp.read(MAX_BODY + 1)
+        if len(data) > MAX_BODY:
+            raise ReadError("format", f"{shown(rpc)} answered {path} with more than {MAX_BODY} bytes")
+        body = json.loads(data)
     except urllib.error.HTTPError as e:
+        if 300 <= e.code < 400:
+            raise ReadError("http", f"{shown(rpc)} answered {e.code} for {path}, a redirect, which is not followed:"
+                            " list the URL it names in celestia_mon_signal.rpc") from None
         # CometBFT answers a failed call (a pruned height, for example) with an error and its reason.
         detail = ""
         try:
-            error = json.loads(e.read() or b"{}").get("error") or {}
+            error = json.loads(e.read(MAX_BODY) or b"{}").get("error") or {}
             detail = str(error.get("data") or error.get("message") or "")[:200]
-        except (ValueError, AttributeError, OSError):
+        except (ValueError, RecursionError, AttributeError, OSError, http.client.HTTPException):
             pass
         raise ReadError("http", f"{shown(rpc)} answered {e.code} for {path}" + (f": {detail}" if detail else "")) from None
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
         raise ReadError("network", f"cannot read {shown(rpc)}: {e}") from None
     except ValueError:
         raise ReadError("format", f"{shown(rpc)} answered {path} with no JSON") from None
+    # JSON nested deeper than Python's recursion limit, well inside MAX_BODY, raises RecursionError,
+    # not ValueError. Left to main(), it would end the read before the next RPC is tried.
+    except RecursionError:
+        raise ReadError("format", f"{shown(rpc)} answered {path} with JSON nested too deeply to read") from None
     result = body.get("result") if isinstance(body, dict) else None
     if not isinstance(result, dict):
         error = body.get("error") if isinstance(body, dict) else None
@@ -285,6 +336,10 @@ def read_rpc(rpc, chain_id, operator):
     info = get(rpc, "/abci_info").get("response") or {}
     app_version = int(info["app_version"])
     height = int(info["last_block_height"])
+    # No node gives either below 0 (app_version is a uint64 in ABCI): such an answer is broken.
+    if app_version < 0 or height < 0:
+        raise ReadError("format", f"{shown(rpc)} answered /abci_info with app version {app_version} at height {height},"
+                        " and neither is ever below 0: skipped")
     # Behind a provider's URL, /status and /abci_info can come from two nodes: one in sync, one stalled.
     latest = int(sync.get("latest_block_height") or 0)
     if latest - height > MAX_BLOCKS_BEHIND:
@@ -326,7 +381,7 @@ def block_time(rpc, sync):
         metas = get(rpc, "/blockchain", minHeight=latest - span, maxHeight=latest - span).get("block_metas") or [{}]
         t0 = epoch((metas[0].get("header") or {}).get("time"))
         t1 = epoch(sync.get("latest_block_time"))
-    except (AttributeError, KeyError, TypeError, ValueError) as e:
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
         raise ReadError("block_time", f"cannot read the block time from {shown(rpc)}: {e!r}") from None
     if t0 is None or t1 is None or t1 <= t0:
         raise ReadError("block_time", f"{shown(rpc)} gave no usable block times for heights {latest - span} and {latest}")
@@ -408,7 +463,7 @@ def serve(listen, state):
             if self.path != "/metrics":
                 self.send_error(404)
                 return
-            body = state.render().encode()
+            body = state.render().encode(errors="replace")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))
@@ -432,7 +487,8 @@ def read(cfg, operator, state):
             state.error(e.reason)
             log(str(e))
             continue
-        except (AttributeError, KeyError, TypeError, ValueError) as e:
+        # OverflowError: a JSON number such as 1e400 reads as a float infinity, which int() refuses.
+        except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
             state.error("format")
             log(f"cannot read the answer of {shown(rpc)}: {e!r}")
             continue
@@ -465,6 +521,9 @@ def check_config(cfg):
             # Not the URL itself: it may hold a provider's key.
             sys.exit(f"celestia-mon-signal: rpc {i} of {len(rpcs)} is not an http or https URL with a host and no"
                      " login, query or fragment (a provider's key goes in the path)")
+        if u.scheme == "http" and not plain_http_allowed(u.hostname):
+            sys.exit(f"celestia-mon-signal: rpc {i} of {len(rpcs)} is an http URL of a host that is not this one or an"
+                     " address of the private network: use https, or name a node of the private network by its address")
     try:
         return operator_bytes(str(cfg.get("validator") or ""))
     except ValueError as e:
@@ -494,7 +553,12 @@ def main():
         return
     serve(cfg["listen"], state)
     while True:
-        read(cfg, operator, state)
+        # Nothing ends the loop: what goes wrong is logged, and SignalUnreadable fires if no read
+        # works for 15 minutes.
+        try:
+            read(cfg, operator, state)
+        except Exception as e:
+            log(f"the read failed: {e!r}")
         time.sleep(cfg["interval_seconds"])
 
 

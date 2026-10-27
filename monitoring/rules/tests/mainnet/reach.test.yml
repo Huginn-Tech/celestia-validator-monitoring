@@ -1,0 +1,303 @@
+# MonitorCannotReach on the example-mainnet inventory: the monitor mon-1 runs no Celestia service
+# and reaches val-1 (validator node, standby Fibre) and fibre-1 (active Fibre, backup node)
+# through WireGuard. A host none of whose targets answers is one message in place of its ServiceDown
+# messages; no host answering is one page in place of NodeNotAdvancing and FibreDown. mon-1's own
+# node_exporter answers on the host itself and never counts.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # Every target on val-1 and fibre-1 stops answering at 5m; mon-1's own node_exporter keeps
+  # answering. The heights and the Fibre unit go stale with their targets.
+  - name: The monitor loses its link to every host; one page, no NodeNotAdvancing, FibreDown or ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
+        values: '1x34'
+      - series: >-
+          up{job="otelcol",instance="10.20.0.1:9911",host="val-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x4 stale'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '0x4 stale'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Monitor cannot reach any server"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
+                (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
+                alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
+                validator still signs: an explorer shows its recent blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts: []
+      # Without the page, FibreDown would page at 15m and NodeNotAdvancing at 7m.
+      - eval_time: 20m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Monitor cannot reach any server"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
+                (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
+                alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
+                validator still signs: an explorer shows its recent blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+
+  - name: The link comes back; the page resolves
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x9 1x10'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x9 1x10'
+      - series: >-
+          up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Monitor cannot reach any server"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
+                (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
+                alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
+                validator still signs: an explorer shows its recent blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 15m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+
+  # val-1 stops answering at 5m while fibre-1 advances and answers.
+  - name: val-1 unreachable; one message for val-1 and no ServiceDown for it
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x20'
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x20'
+      - series: >-
+          up{job="otelcol",instance="10.20.0.1:9911",host="val-1",role="fibre"}
+        values: '1x4 0x20'
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1x24'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x24'
+      - series: >-
+          up{job="otelcol",instance="10.20.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
+        values: '1x24'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x4 stale'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x24'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: val-1
+            exp_annotations:
+              summary: "Monitor cannot reach val-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
+
+  # val-1 stops answering at 5m, fibre-1 at 10m: from then the page stands in for val-1's message.
+  - name: val-1 unreachable, then fibre-1 too; the message for val-1 gives way to the page
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x20'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x9 0x15'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x9 stale'
+      - series: >-
+          up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
+        values: '1x24'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: val-1
+            exp_annotations:
+              summary: "Monitor cannot reach val-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 12m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 13m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Monitor cannot reach any server"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
+                (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
+                alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
+                validator still signs: an explorer shows its recent blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+
+  - name: val-1's node_exporter down while its node answers; ServiceDown as before, no MonitorCannotReach
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.1:9910
+              host: val-1
+              role: validator
+              severity: message
+              unit: node_exporter
+            exp_annotations:
+              summary: "node_exporter is unreachable on val-1"
+              description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+
+  # mon-1's own node_exporter answers on the host itself; when it stops, ServiceDown names mon-1.
+  - name: The monitor's own node_exporter down; ServiceDown on mon-1, no MonitorCannotReach
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.3:9910
+              host: mon-1
+              role: monitor
+              severity: message
+              unit: node_exporter
+            exp_annotations:
+              summary: "node_exporter is unreachable on mon-1"
+              description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts: []

@@ -21,8 +21,8 @@ jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -53,7 +53,7 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Owner-only files are ignored and absent
@@ -63,7 +63,7 @@ jobs:
           if [ -n "$(git ls-files reference CLAUDE.local.md)" ]; then
             echo "owner-only files are tracked"; exit 1
           fi
-      - uses: gitleaks/gitleaks-action@v2
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -76,8 +76,8 @@ jobs:
       ANSIBLE_CONFIG: ${{ github.workspace }}/ansible/ansible.cfg
       ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible/roles
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -263,8 +263,8 @@ jobs:
   rules:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -411,8 +411,36 @@ jobs:
           want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
           test "$out" = "$(printf "$want")"
           test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
-      # The mainnet example scrapes its backup node in the celestia-app job and every Fibre host,
-      # active or standby, in the otelcol job.
+      # Alerts leave Prometheus without instance (a target's address), which nothing in Alertmanager
+      # reads: no rule label, inhibition or template names it. Every scrape job caps its samples and
+      # labels (a scrape over a cap fails, so the caps sit far above what the jobs send; the install
+      # and molecule jobs see every target up).
+      - name: Alerts leave Prometheus without instance, and every scrape job has its limits
+        run: |
+          set -euo pipefail
+          for s in single split mainnet; do
+            python - "build/$s/prometheus.yml" <<'EOF'
+          import sys
+          import yaml
+          config = yaml.safe_load(open(sys.argv[1]))
+          assert config["alerting"]["alert_relabel_configs"] == [{"action": "labeldrop", "regex": "instance"}], config["alerting"]
+          want = {"prometheus": 20000, "alertmanager": 10000, "celestia-app": 100000, "node": 50000, "otelcol": 20000,
+                  "fibre_health": 1000, "tensile": 1000, "signal": 1000, "announcements": 1000}
+          for job in config["scrape_configs"]:
+              name = job["job_name"]
+              assert (job.get("sample_limit"), job.get("label_limit")) == (want[name], 128), job
+          print(sys.argv[1], sorted(j["job_name"] for j in config["scrape_configs"]))
+          EOF
+          done
+          # A label reference: $labels.instance, .Labels.instance, a matcher, or a by, on, without or equal list.
+          use='(\$labels|\.Labels)\.instance|\binstance *(=|!=|=~|!~)|\b(by|on|ignoring|without|group_left|group_right|equal:) *[([][^])]*\binstance\b'
+          if grep -nE "$use" build/split/alertmanager.yml monitoring/alertmanager-templates.tmpl \
+               monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml; then
+            echo "Alertmanager's settings or the rules name instance, which alerts no longer carry"; exit 1
+          fi
+      # The mainnet example scrapes its backup node in the celestia-app job, every Fibre host,
+      # active or standby, in the otelcol job, and the monitor host mon-1, which runs no Celestia
+      # service, in the node job (role monitor).
       - name: The mainnet scrape targets follow the inventory groups
         run: |
           set -euo pipefail
@@ -423,17 +451,21 @@ jobs:
           def hosts(job):
               return sorted((c["labels"]["host"], c["labels"]["role"]) for c in jobs[job]["static_configs"])
           assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
-          assert hosts("node") == [("fibre-1", "fibre"), ("val-1", "validator")], hosts("node")
+          assert hosts("node") == [("fibre-1", "fibre"), ("mon-1", "monitor"), ("val-1", "validator")], hosts("node")
+          assert [c["targets"] for c in jobs["node"]["static_configs"] if c["labels"]["host"] == "mon-1"] == [["10.20.0.3:9910"]], jobs["node"]
           assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
-          assert hosts("announcements") == [("fibre-1", "monitor")], hosts("announcements")
-          assert hosts("tensile") == [("fibre-1", "monitor")], hosts("tensile")
-          assert hosts("signal") == [("fibre-1", "monitor")], hosts("signal")
+          assert hosts("announcements") == [("mon-1", "monitor")], hosts("announcements")
+          assert hosts("tensile") == [("mon-1", "monitor")], hosts("tensile")
+          assert hosts("signal") == [("mon-1", "monitor")], hosts("signal")
           assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
           # Fibre's readiness: every Fibre host's own port, asked through celestia-mon-blackbox on the monitor.
           fh = jobs["fibre_health"]
           assert hosts("fibre_health") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("fibre_health")
           assert sorted(c["targets"] for c in fh["static_configs"]) == [["10.20.0.1:7980"], ["10.20.0.2:7980"]], fh
           assert fh["metrics_path"] == "/probe" and fh["params"] == {"module": ["fibre_health"]}, fh
+          # blackbox takes only requests with the API password, as Prometheus and Alertmanager do.
+          assert fh["basic_auth"] == jobs["prometheus"]["basic_auth"] == jobs["alertmanager"]["basic_auth"], fh
+          assert fh["basic_auth"]["username"] == "celestia-mon" and "password_file" in fh["basic_auth"], fh
           assert fh["relabel_configs"] == [
               {"source_labels": ["__address__"], "target_label": "__param_target"},
               {"source_labels": ["__param_target"], "target_label": "instance"},
@@ -441,6 +473,69 @@ jobs:
           ], fh["relabel_configs"]
           print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal", "fibre_health")})
           EOF
+      # Slack and PagerDuty get celestia-mon's text too, never Alertmanager's list of labels or its
+      # links: Slack's title, text and fallback, with &, < and > escaped (Slack reads them as markup),
+      # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
+      # details. This renders the split example with both (the next step renders it again).
+      - name: Slack and PagerDuty messages read as text
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/receivers-text.yml" <<'EOF'
+          celestia_mon_receivers:
+            - {type: pagerduty, routing_key: ci-only}
+            - {type: slack, api_url: "https://slack.example.invalid/one"}
+          EOF
+          ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
+            -e @"$RUNNER_TEMP/receivers-text.yml"
+          amtool check-config build/split/alertmanager.yml
+          python - build/split/alertmanager.yml <<'EOF'
+          import sys
+          import yaml
+          receivers = {r["name"]: r for r in yaml.safe_load(open(sys.argv[1]))["receivers"]}
+          pd = receivers["page"]["pagerduty_configs"][0]
+          assert pd["description"] == '{{ template "celestia.pagerduty.description" . }}', pd
+          assert pd["details"] == {"firing": '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}',
+                                   "resolved": '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}'}, pd
+          for name in ("page", "message", "announcement-page", "announcement-message"):
+              slack = receivers[name]["slack_configs"][0]
+              assert slack["title"] == slack["fallback"] == '{{ template "celestia.slack.title" . }}', slack
+              assert slack["text"] == '{{ template "celestia.slack.text" . }}' and slack["title_link"] == "", slack
+          EOF
+          t=monitoring/alertmanager-templates.tmpl
+          render() { amtool template render --template.glob="$t" --template.data="$1" --template.type=text --template.text="$2"; }
+          cat >"$RUNNER_TEMP/text-announcement.json" <<'EOF'
+          {"receiver": "announcement-page", "status": "firing", "alerts": [{"status": "firing",
+            "labels": {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
+                       "source": "Celestia #mainnet-announcements", "announcement": "1"},
+            "annotations": {"summary": "Celestia announcement from Celestia #mainnet-announcements",
+                            "description": "Mainnet upgrades at height 100 <b>&", "link": "https://discord.com/channels/1/2/3"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
+          EOF
+          a="$RUNNER_TEMP/text-announcement.json"
+          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "📣 Celestia #mainnet-announcements"
+          test "$(render "$a" '{{ template "celestia.slack.text" . }}')" = "Mainnet upgrades at height 100 &lt;b&gt;&amp;"
+          test "$(render "$a" '{{ template "celestia.pagerduty.description" . }}')" = "Celestia announcement from Celestia #mainnet-announcements"
+          cat >"$RUNNER_TEMP/text-alerts.json" <<'EOF'
+          {"receiver": "page", "status": "firing", "alerts": [
+            {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
+             "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free & falling."}},
+            {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
+             "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
+           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
+          EOF
+          a="$RUNNER_TEMP/text-alerts.json"
+          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "🔴 PAGE · DiskLow · val-1"
+          out=$(render "$a" '{{ template "celestia.slack.text" . }}')
+          printf '%s\n---\n' "$out"
+          want='*Disk / on val-1 is almost full*\nLess than 5%% free &amp; falling.\n\n'
+          want+='✅ RESOLVED · DiskLow · val-1\n*Disk /data on val-1 is almost full*'
+          test "$out" = "$(printf "$want")"
+          out=$(render "$a" '{{ template "celestia.pagerduty.description" . }}')
+          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full (2 alerts)" || { echo "$out"; exit 1; }
+          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}')
+          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full Less than 5% free & falling." || { echo "$out"; exit 1; }
+          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}')
+          test "$out" = "DiskLow · val-1: Disk /data on val-1 is almost full" || { echo "$out"; exit 1; }
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
@@ -472,6 +567,8 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message \
             alertname=FibreNotServing severity=message reason=not_ready host=fibre-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ServiceDown severity=message unit=appd host=val-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=MonitorCannotReach severity=message host=kms-1
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=MonitorCannotReach severity=page
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
@@ -541,16 +638,36 @@ jobs:
             echo "the old page/message receiver lists were accepted"
             exit 1
           fi
+          # A receiver URL is https, or http to this host or an address of the private network only.
+          for r in 'webhook url http://webhook.example.org/hook' 'webhook url http://203.0.113.7/hook' \
+                   'webhook url HTTP://10.20.0.9/hook' 'webhook url http://10.20.0.9.example.org/hook' \
+                   'slack api_url http://slack.example.org/one' 'discord webhook_url http://192.168.1.9@discord.example.org/x'; do
+            read -r type key url <<<"$r"
+            printf 'celestia_mon_receivers:\n  - {type: %s, %s: "%s"}\n' "$type" "$key" "$url" >"$RUNNER_TEMP/plain-http.yml"
+            if render "$RUNNER_TEMP/plain-http.yml" >"$RUNNER_TEMP/plain-http.log" 2>&1; then
+              echo "the $type receiver URL $url was accepted"; exit 1
+            fi
+            grep -q "must be https" "$RUNNER_TEMP/plain-http.log" || { cat "$RUNNER_TEMP/plain-http.log"; exit 1; }
+          done
+          cat > "$RUNNER_TEMP/private-http.yml" <<'EOF'
+          celestia_mon_receivers:
+            - {type: webhook, url: "http://10.20.0.9:8080/hook"}
+            - {type: slack, api_url: "http://[fd00::9]/one"}
+            - {type: discord, webhook_url: "http://localhost:8081/api/webhooks/0/ci-only"}
+          EOF
+          render "$RUNNER_TEMP/private-http.yml"
 
   # celestia-mon-announcements against tools/ci/discord_stub.py, which stands in for Discord and
   # for Alertmanager's alerts API: the first read only notes the newest message, the next posts
-  # the two new announcements as one request with clean text and links to the originals, a third
-  # posts nothing; a channel the bot may not read and a wrong token are reported, not fatal; and
-  # the metrics Prometheus scrapes are served.
+  # the two new announcements, one request each, with clean text and links to the originals, a
+  # third posts nothing; a channel the bot may not read and a wrong token are reported, not fatal;
+  # odd messages and answers (a time too far off, a message that cannot be read, one Alertmanager
+  # refuses, a redirect, an answer over 1 MiB) hold back nothing; and the metrics Prometheus
+  # scrapes are served.
   announcements:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-announcements reads, posts once and reports errors
         run: |
           set -euo pipefail
@@ -575,12 +692,12 @@ jobs:
           grep -q '^channel 222222222222222222: Discord answered 403 Missing Access' "$d/log"
           once
           once
-          test "$(wc -l <"$d/posts.jsonl")" = 1
+          test "$(wc -l <"$d/posts.jsonl")" = 2
           # ...103 is an alert a webhook posted into the channel, not an announcement.
           grep -q '^channel 111111111111111111: passed over 1 message(s) not posted by a followed channel' "$d/log"
           python3 - "$d/posts.jsonl" <<'EOF'
           import json, re, sys
-          alerts = json.loads(open(sys.argv[1]).readline())
+          alerts = [a for line in open(sys.argv[1]) for a in json.loads(line)]
           assert [a["labels"]["announcement"] for a in alerts] == ["1300000000000000101", "1300000000000000102"], alerts
           first, second = alerts
           assert first["labels"] == {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
@@ -594,6 +711,29 @@ jobs:
           assert second["annotations"]["description"] == "Mainnet notice\n\nRead #channel before the upgrade", second
           print("posted:", json.dumps(alerts, indent=1))
           EOF
+          # Odd messages and answers: a time too far off stays as written; a message that cannot be read
+          # and one Alertmanager refuses are passed over, so the one after them is still sent and the
+          # channel's place moves past all of them; a redirect is not followed (the token never reaches
+          # /followed); an answer over 1 MiB is not read.
+          jq --arg s "$d/odd-state.json" '.state_file = $s | .channels = [{"id": "666666666666666666", "severity": "page"},
+            {"id": "777777777777777777", "severity": "page"}, {"id": "888888888888888888", "severity": "page"}]' \
+            "$d/config.json" >"$d/odd.json"
+          odd() { CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/odd.json" --once 2>>"$d/odd.log"; }
+          odd
+          odd
+          cat "$d/odd.log"
+          test "$(wc -l <"$d/posts.jsonl")" = 4
+          tail -n 2 "$d/posts.jsonl" | jq -se '[.[][] | .labels.announcement] == ["1300000000000000201", "1300000000000000204"]'
+          tail -n 2 "$d/posts.jsonl" | jq -se '.[0][0].annotations.description == "Far off: <t:99999999999999999999:F>"'
+          grep -q '^channel 666666666666666666: message 1300000000000000202 cannot be read, passed over' "$d/odd.log"
+          grep -qF 'channel 666666666666666666: Alertmanager refused announcement 1300000000000000203 as invalid (400), passed over' "$d/odd.log"
+          grep -qF 'channel 666666666666666666: sent 2 announcement(s) to Alertmanager' "$d/odd.log"
+          jq -e '."666666666666666666" == "1300000000000000204"' "$d/odd-state.json"
+          grep -q '^channel 777777777777777777: Discord answered 302 Found, a redirect, which is not followed' "$d/odd.log"
+          test ! -e "$d/posts.jsonl.followed"
+          grep -qF "channel 888888888888888888: Discord's answer to /channels/888888888888888888 is not readable: the answer is larger than" "$d/odd.log"
+          odd
+          test "$(wc -l <"$d/posts.jsonl")" = 4
           CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" 2>>"$d/log" &
           pid=$!
           for _ in $(seq 30); do
@@ -612,12 +752,13 @@ jobs:
 
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
   # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
-  # an unknown validator (404), an unreachable API, and a Tensile without signing.last_assigned_at,
-  # whose time the running service takes from Tensile's newest block (/tip) at its reads.
+  # an unknown validator (404), an unreachable API, a redirect, an answer over 1 MiB, values that
+  # cannot be read, and a Tensile without signing.last_assigned_at, whose time the running service
+  # takes from Tensile's newest block (/tip) at its reads.
   tensile:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-tensile serves Tensile's verdict as metrics
         run: |
           set -euo pipefail
@@ -669,6 +810,37 @@ jobs:
           grep -q 'check celestia_mon_tensile.validator' "$d/err"
           m=$(run http://127.0.0.1:9/api/v1 celestiavalcons1ok)
           grep -qx 'celestia_mon_tensile_errors_total{reason="network"} 1' <<<"$m"
+          # A redirect is not followed: http.server answers a directory named without its slash with
+          # 301, and the directory's index holds a good status.
+          mkdir -p "$v/celestiavalcons1moved/status"
+          cp "$v/celestiavalcons1ok/status" "$v/celestiavalcons1moved/status/index.html"
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1moved)
+          grep -qx 'celestia_mon_tensile_errors_total{reason="http"} 1' <<<"$m"
+          grep -q 'Tensile answered 301 for .*, a redirect, which is not followed' "$d/err"
+          if grep -q '^celestia_mon_fibre_registered' <<<"$m"; then echo "the redirect was followed"; exit 1; fi
+          # An answer over 1 MiB is not read.
+          mkdir -p "$v/celestiavalcons1big"
+          { printf '{"host": "203.0.113.7:7980", "padding": "'; head -c 2000000 /dev/zero | tr '\0' x; printf '"}'; } >"$v/celestiavalcons1big/status"
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1big)
+          grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
+          grep -q 'the answer is larger than 1048576 bytes' "$d/err"
+          # Times that cannot exist (30 February, month 13, a number), counts that are no numbers and a
+          # lone surrogate in the host are left out or shown plainly, never a failed scrape.
+          mkdir -p "$v/celestiavalcons1odd"
+          cat >"$v/celestiavalcons1odd/status" <<'EOF'
+          {"host": "203.0.113.7:7980\ud800", "reachable": true, "identity_status": "verified",
+           "last_endpoint_check": {"at": "2026-02-30T06:25:11Z", "outcome": "REACHABLE"},
+           "obligations": {"served": 3, "broken": "many"},
+           "signing": {"assigned": 4, "signed": "x", "last_endorsed_at": "2026-13-01T00:00:00Z", "last_assigned_at": 7}}
+          EOF
+          m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1odd)
+          printf '%s\n' "$m"
+          grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980?"} 1' <<<"$m"
+          grep -qx 'celestia_mon_fibre_blobs_endorsed_24h 0' <<<"$m"
+          grep -qx 'celestia_mon_fibre_obligations_24h{outcome="broken"} 0' <<<"$m"
+          if grep -Eq '^celestia_mon_fibre_(last_check_timestamp|last_assigned_timestamp|last_endorsed_timestamp)' <<<"$m"; then
+            echo "a time that cannot exist was served"; exit 1
+          fi
           # Without last_assigned_at, the time of the newest assigned blob is the time of Tensile's newest
           # block (/tip) at the read at which the number of assigned blobs rose, only while that block is
           # under 2 minutes older than Tensile's clock at that read and the one before. The service reads
@@ -713,13 +885,14 @@ jobs:
   # and scheduled at height 15116658) and a synthetic operator address: an upgrade pending that the
   # validator signalled, an open round it has not signalled, a version nobody signalled, an RPC of
   # another network, one that is behind and an unreachable one before the right one, a store that
-  # lacks the height read, a pruned node and one that refuses the block time, a key in the RPC URL
-  # that must not show, URLs and addresses that do not decode, and the service keeping its last
-  # reading while reads fail.
+  # lacks the height read, a pruned node and one that refuses the block time, a redirect, an
+  # answer over 1 MiB, JSON nested deeper than Python reads and an app version below 0, a key in
+  # the RPC URL that must not show, URLs and addresses that do not decode, http to a public host,
+  # and the service keeping its last reading while reads fail.
   signal:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-signal serves x/signal as metrics
         run: |
           set -euo pipefail
@@ -747,7 +920,8 @@ jobs:
             shift
             printf '{"chain_id": "celestia", "rpc": %s, "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 60}' \
               "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" "$v" >"$d/config.json"
-            python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
+            # A read that never ends (a loop on a broken answer) fails in a minute instead of holding the job.
+            timeout 60 python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
           }
 
           # The upgrade to v10 is pending and the validator signalled it. The RPC URL carries a key.
@@ -840,12 +1014,53 @@ jobs:
           grep -qx 'celestia_mon_signal_last_success_timestamp_seconds 0.0' <<<"$m"
           if grep -q ci-secret-key - "$d/err" <<<"$m"; then echo "the key in the RPC URL shows"; exit 1; fi
 
+          # A redirect is not followed, not even to a good RPC, and an answer over 1 MiB is not read.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"redirect": "http://127.0.0.1:8767/status"'
+          m=$(run "$addr" http://127.0.0.1:8768)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="http"} 1' <<<"$m"
+          grep -qx 'celestia_mon_signal_last_success_timestamp_seconds 0.0' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered 302 for /status, a redirect, which is not followed' "$d/err"
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"oversize": true'
+          m=$(run "$addr" http://127.0.0.1:8768)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /status with more than 1048576 bytes' "$d/err"
+          # JSON nested deeper than Python's parser goes cannot be read either: in /status the next RPC
+          # is read, and in a failed /blockchain the reading stands without a block time.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"nested": {"status": 200}'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"nested": {"blockchain": 500}'
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          cat "$d/err"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="block_time"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /status with JSON nested too deeply to read' "$d/err"
+          grep -qF 'http://127.0.0.1:8767 answered 500 for /blockchain; the block time measured last is kept' "$d/err"
+          if grep -q '^celestia_mon_chain_block_time_seconds' <<<"$m"; then echo "a block time from a nested answer"; exit 1; fi
+          # An app version below 0 (the later of the two app_version fields counts) is a broken answer,
+          # which must not hold the read: the next RPC is read.
+          state "$d/other.json" celestia "" CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"app_version": -2'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_signal_errors_total{reason="format"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /abci_info with app version -2 at height 15000000' "$d/err"
+
           # URLs the service refuses at start, without printing them: a login, a query string, no host.
           for u in http://ci:ci-secret-key@127.0.0.1:8767 'http://127.0.0.1:8767/?key=ci-secret-key' http://:26657; do
             if run "$addr" "$u" >/dev/null; then echo "rpc $u was accepted"; exit 1; fi
             grep -q 'rpc 1 of 1 is not an http or https URL' "$d/err"
             if grep -q ci-secret-key "$d/err"; then echo "a refused URL shows its key"; exit 1; fi
           done
+          # http to a host that is neither this one nor an address of the private network: https is
+          # needed there. localhost is this host.
+          for u in http://rpc.example.org:26657/ci-secret-key http://203.0.113.7:26657 'http://[2001:db8::1]:26657'; do
+            if run "$addr" "$u" >/dev/null; then echo "rpc $u was accepted"; exit 1; fi
+            grep -q 'rpc 1 of 1 is an http URL of a host that is not this one or an address of the private network' "$d/err"
+            if grep -q ci-secret-key "$d/err"; then echo "a refused URL shows its key"; exit 1; fi
+          done
+          m=$(run "$addr" http://localhost:8767)
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://localhost:8767"} 1' <<<"$m"
 
           # Addresses that do not decode: the service and the install's check refuse them.
           last=${addr: -1}
@@ -920,8 +1135,8 @@ jobs:
   dashboard:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -977,12 +1192,21 @@ jobs:
           mkdir -p build/five
           jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
           python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
+          # split with a backup node: five servers, so the Servers now table (26) instead of the cards, and three
+          # answers, so no Monitoring tile; check_surfaces must still find every alert.
+          mkdir -p build/table
+          jq '.nodes += ["val-2"] | .links += [{"host": "val-2", "mbps": null}]
+              | .data_mounts += [{"host": "val-2", "mount": "/var/lib/celestia"}]' \
+            build/split/dashboard-config.json > build/table/dashboard-config.json
+          python monitoring/dashboards/gen_dashboard.py --config build/table/dashboard-config.json --out build/table/dashboard.json
+          jq -e '([.panels[] | select(.id == 26)] | length) == 1 and ([.panels[] | select(.id >= 30 and .id < 38)] | length) == 0
+                 and ([.panels[] | select(.id == 18)] | length) == 0' build/table/dashboard.json
       # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
-      # side by side). split: remote signer and Fibre (the Fibre row; three columns, the scraped KMS
-      # host's last). mainnet: a backup node, a standby Fibre, the outside check and upgrade signalling
-      # on top (six answer tiles, the Network upgrade row; three columns,
-      # the last the remote signer's, which is not scraped). five: mainnet without signalling (the Servers
-      # and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
+      # side by side). split: remote signer and Fibre (the Fibre row; four columns, the scraped KMS
+      # host's third, the monitor's last). mainnet: a backup node, a standby Fibre, the outside check and
+      # upgrade signalling on top (six answer tiles, the Network upgrade row; four columns: val-1,
+      # fibre-1, the monitor mon-1, and last the remote signer's, which is not scraped). five: mainnet
+      # without signalling (the Servers and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
       # row starts; the top strip's six cells and the answer tiles below them share their column edges.
       # Every six-cell row (the strip, the answers and the Validator, Fibre and Network upgrade facts: the
       # stats 3 rows high, untitled, labelled at 13 px) has one value size, 22, 20 or 18 px.
@@ -993,8 +1217,8 @@ jobs:
       # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
       # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
-      # (open, then closed) hold six charts per server (single: one server, mainnet and five: two,
-      # split: three, its KMS host scraped), each line one kind of chart, at one width and height,
+      # (open, then closed) hold six charts per server (single: one server, mainnet and five: three, the
+      # monitor's among them, split: four, its KMS host scraped), each line one kind of chart, at one width and height,
       # filling the 24 columns; each server's charts in one column, titled with its name first; its
       # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
       # server in one chart across the full width.
@@ -1004,9 +1228,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 60
-          test "$(count mainnet)" = 63
-          test "$(count five)" = 57
+          test "$(count split)" = 68
+          test "$(count mainnet)" = 71
+          test "$(count five)" = 65
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1016,9 +1240,9 @@ jobs:
           test "$(charts split)" = '[111,112,116,115]'
           test "$(charts mainnet)" = '[111,112,116,115]'
           test "$(columns single)" = 1
-          test "$(columns split)" = 3
-          test "$(columns mainnet)" = 3
-          test "$(columns five)" = 3
+          test "$(columns split)" = 4
+          test "$(columns mainnet)" = 4
+          test "$(columns five)" = 4
           for s in single split mainnet five; do
             jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
             jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
@@ -1080,11 +1304,14 @@ jobs:
                    and $g["24"].h == 1' "build/$s/dashboard.json"
           done
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
-                 and .kms_names == ["kms-1"] and .monitor_host == "fibre-1" and .name == "CI validator"' \
+                 and .kms_names == ["kms-1"] and .monitor_host == "mon-1" and .monitor_only and .name == "CI validator"' \
             build/mainnet/dashboard-config.json
           jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
-                 and .name == ""' build/split/dashboard-config.json
-          jq -e '.kms_names == []' build/single/dashboard-config.json
+                 and .monitor_host == "mon-1" and .monitor_only and .name == ""' build/split/dashboard-config.json
+          jq -e '.kms_names == [] and .monitor_host == "node-1" and (.monitor_only | not)' build/single/dashboard-config.json
+          # The monitor is a server of its own: its node_exporter is a link, and its Prometheus disk a data mount.
+          jq -e '([.links[].host] | index("mon-1")) != null and ([.data_mounts[] | select(.host == "mon-1") | .mount] == ["/"])' \
+            build/mainnet/dashboard-config.json
           jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
           jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
           want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
@@ -1218,7 +1445,8 @@ jobs:
       - name: Serve the dashboards' series to Prometheus
         run: |
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
-            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+            build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json \
+            build/table/dashboard.json
           nohup python -m http.server 9099 --bind 127.0.0.1 --directory build/stub > build/stub/http.log 2>&1 &
           for _ in $(seq 60); do
             reply=$(curl -sS http://127.0.0.1:9090/api/v1/query \
@@ -1233,11 +1461,12 @@ jobs:
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
           build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
+          build/table/dashboard.json
 
   doctor:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Run doctor for each role
         run: |
           bash tools/doctor.sh --help >/dev/null
@@ -1273,7 +1502,7 @@ jobs:
   doctor-standby:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on a standby Fibre host and a backup node
         run: |
           set -euo pipefail
@@ -1312,14 +1541,15 @@ jobs:
           if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
 
   # doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
-  # (WARN 6), a standby whose plaintext loopback signer cannot reach the validator node's mTLS
-  # privval gRPC on a private address (WARN 17) next to a privval port on every interface
-  # (WARN 20), and a backup node whose /status (a static file served on 127.0.0.1:26657) gives
-  # its local key voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
+  # (WARN 6) whose plaintext signer warns even on loopback (WARN 17), a standby whose plaintext
+  # loopback signer cannot reach the validator node's mTLS privval gRPC on a private address
+  # (WARN 17) next to a privval port on every interface with no firewall active (FAIL 20), and a
+  # backup node whose /status (a static file served on 127.0.0.1:26657) gives its local key
+  # voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
   doctor-signer:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on the signing path
         run: |
           set -euo pipefail
@@ -1341,7 +1571,8 @@ jobs:
           run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-standby \
             --fibre-hosts fibre-a,fibre-b --data-mounts / --head-wait 2
           grep -Eq '^WARN +6 +fibre service +standby: ci-standby\.service is inactive, but its unit file is enabled' <<<"$out"
-          grep -Eq '^OK +17 +fibre signer +.* is 127\.0\.0\.1:26669, the loopback signer on this host' <<<"$out"
+          grep -Eq '^WARN +17 +fibre signer +--signer-grpc-address in ExecStart is 127\.0\.0\.1:26669, a plaintext signer without mTLS' <<<"$out"
+          grep -Eq '^WARN +17 .*leave the unit stopped' <<<"$out"
 
           sudo systemctl disable ci-standby
           home="$RUNNER_TEMP/val"
@@ -1357,7 +1588,8 @@ jobs:
             --fibre-unit ci-standby --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^OK +6 +fibre service +standby: ci-standby\.service is inactive' <<<"$out"
           grep -Eq '^WARN +17 +fibre signer +standby: .*, a plaintext loopback signer, but .* listens on 10\.255\.0\.1:26669 only' <<<"$out"
-          grep -Eq '^WARN +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 .* is on every interface' <<<"$out"
+          grep -Eq '^FAIL +20 +signer binds +priv_validator_laddr = tcp://0\.0\.0\.0:26658 \(nothing listens on it now\) is on every interface' <<<"$out"
+          grep -Eq '^FAIL +20 .*:26658 \(nothing listens on it now\) is on every interface, and no firewall is active' <<<"$out"
 
           home="$RUNNER_TEMP/backup"
           mkdir -p "$home/config" "$RUNNER_TEMP/rpc"
@@ -1399,6 +1631,167 @@ jobs:
           line=$(grep -E '^WARN +17 +fibre signer +standby: ' <<<"$out")
           grep -qF 'an mTLS signer on this host, but the node serves its privval gRPC on 127.0.0.1:26669 in plaintext' <<<"$line"
 
+  # doctor's port checks on the runner (1, 20, 25 and 26), which read where each port listens and
+  # ufw's rules and never connect to the ports. python http.server stands in where a node would
+  # listen: its metrics and the app gRPC on every interface, priv_validator_laddr on a private
+  # address; the config names a plaintext privval gRPC on loopback, the REST API on a private
+  # address and pprof on a Tailscale address; one unit has no User=. With no firewall active the
+  # wildcard binds fail (FAIL 1 and 25) and the private ones warn (WARN 20); with ufw enabled and
+  # one-source rules they warn, and a rule that lets anyone reach 9090 is named (WARN 25), while an
+  # app profile's rules (its IPv6 copy reads "8080/tcp (ci-web (v6))"), "ufw allow in on lo" and a
+  # private range on 26660, as celestia_mon_firewall_sources may name, let no one in; a private
+  # range on the REST API warns (WARN 25); with a Tailscale interface they fail again; metrics on a
+  # Tailscale address warn (WARN 1). A monitor-only host skips the node and Fibre checks.
+  doctor-ports:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: doctor on the validator's ports
+        run: |
+          set -euo pipefail
+          run() {
+            rc=0
+            out=$("$@" 2>stderr.txt) || rc=$?
+            printf '%s\n' "$out"
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          says() { # check number, the text its line must contain
+            line=$(grep -E "^[A-Z]+ +$1 " <<<"$out" || true)
+            grep -qF -- "$2" <<<"$line" || { echo "check $1 does not say: $2"; exit 1; }
+          }
+          if grep -qs '^ENABLED=yes' /etc/ufw/ufw.conf || systemctl is-active --quiet firewalld || systemctl is-active --quiet nftables; then
+            echo "this job expects a runner with no firewall active at the start"
+            exit 1
+          fi
+          sudo ip addr add 10.255.1.1/32 dev lo
+          home="$RUNNER_TEMP/node"
+          mkdir -p "$home/config" "$RUNNER_TEMP/www"
+          cat >"$home/config/config.toml" <<'EOF'
+          priv_validator_laddr = "tcp://10.255.1.1:26658"
+          priv_validator_grpc_laddr = "127.0.0.1:26669"
+
+          [rpc]
+          laddr = "tcp://127.0.0.1:26657"
+          pprof_laddr = "100.100.1.1:6060"
+
+          [instrumentation]
+          prometheus = true
+          prometheus_listen_addr = ":26660"
+          namespace = "cometbft"
+          EOF
+          cat >"$home/config/app.toml" <<'EOF'
+          [api]
+          enable = true
+          address = "tcp://10.255.1.1:1317"
+
+          [grpc]
+          enable = true
+          address = "0.0.0.0:9090"
+          EOF
+          echo 'cometbft_consensus_height 1' >"$RUNNER_TEMP/www/metrics"
+          python3 -m http.server 26660 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          python3 -m http.server 9090 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          python3 -m http.server 26658 --bind 10.255.1.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          for u in http://127.0.0.1:26660 http://127.0.0.1:9090 http://10.255.1.1:26658; do
+            curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null "$u/metrics"
+          done
+          printf '%s\n' '[Service]' 'ExecStart=/bin/true' | sudo tee /etc/systemd/system/ci-root.service >/dev/null
+          printf '%s\n' '[Service]' 'User=nobody' 'ExecStart=/bin/true' | sudo tee /etc/systemd/system/ci-user.service >/dev/null
+          sudo systemctl daemon-reload
+          args=(--config /dev/null --roles validator --signer remote --fibre-enabled false --node-home "$home" --data-mounts / --head-wait 2)
+
+          echo "::group::no firewall active"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          grep -Eq '^FAIL +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
+          grep -Eq '^WARN +20 +signer binds ' <<<"$out"
+          says 20 'priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658): no firewall is active, so every host'
+          says 20 'priv_validator_grpc_laddr = 127.0.0.1:26669 (nothing listens on it now), without mTLS'
+          says 20 'serve priv_validator_grpc_laddr with mTLS: set priv_validator_grpc_cert_file'
+          says 20 'then restart celestia-appd at a moment you choose, with tmkms running'
+          says 20 'let only the KMS host (tmkms) reach port 26658: "sudo ufw allow from <KMS host address> to any port 26658 proto tcp"'
+          says 20 'ufw is not active:'
+          grep -Eq '^FAIL +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and no firewall is active'
+          says 25 '[api] address = tcp://10.255.1.1:1317 (nothing listens on it now): no firewall is active'
+          says 25 '[rpc] pprof_laddr = 100.100.1.1:6060 (nothing listens on it now) is on a Tailscale address'
+          says 25 'ok: [rpc] laddr = tcp://127.0.0.1:26657 (nothing listens on it now)'
+          says 25 'set address = "127.0.0.1:9090" when only the Fibre on this host reads it'
+          says 25 'let only the Fibre hosts reach port 9090: "sudo ufw allow from <Fibre host address> to any port 9090 proto tcp"'
+          grep -Eq '^WARN +26 +service users +ci-root\.service runs as root \(no User= in the unit\)' <<<"$out"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-user
+          grep -Eq '^OK +26 +service users +ci-user\.service runs as nobody' <<<"$out"
+
+          echo "::group::ufw enabled"
+          sudo ufw allow 22/tcp
+          sudo ufw allow 9090/tcp
+          sudo ufw allow from 10.255.1.9 to any port 26658 proto tcp
+          sudo ufw allow from 10.255.1.9 to any port 26660 proto tcp
+          printf '%s\n' '[ci-web]' 'title=CI web' 'description=A stand-in app profile' 'ports=8080/tcp' \
+            | sudo tee /etc/ufw/applications.d/ci-web >/dev/null
+          sudo ufw allow ci-web
+          sudo ufw allow in on lo
+          sudo ufw allow from 10.255.0.0/16 to any port 26660 proto tcp comment celestia-mon
+          sudo ufw --force enable
+          sudo ufw status verbose
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          if grep -E '^[A-Z]+ +(1|20|25) ' <<<"$out" | grep -E 'ci-web|Anywhere( \(v6\))? on lo|10\.255\.0\.0/16' >/dev/null; then
+            echo "doctor reads the app profile, the rule on lo or the private range as letting anyone in"
+            exit 1
+          fi
+          grep -Eq '^WARN +1 +node metrics +enabled at http://127\.0\.0\.1:26660/metrics, but prometheus_listen_addr = ":26660"' <<<"$out"
+          grep -Eq '^WARN +20 +signer binds +priv_validator_grpc_laddr = 127\.0\.0\.1:26669 \(nothing listens on it now\), without mTLS' <<<"$out"
+          says 20 'ok: priv_validator_laddr = tcp://10.255.1.1:26658 (10.255.1.1:26658); ufw lets in 10.255.1.9'
+          grep -Eq '^WARN +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface (firewall: ufw enabled); ufw lets anyone reach it'
+          says 25 'ufw lets anyone reach it (9090/tcp ALLOW IN Anywhere'
+          says 25 'ok: [api] address = tcp://10.255.1.1:1317 (nothing listens on it now); no ufw rule lets another host reach it'
+          says 25 'then delete the rule that lets anyone in ("sudo ufw status numbered", then "sudo ufw delete <number>")'
+          if grep -qF 'ufw is not active' <<<"$out"; then echo "doctor says ufw is not active while it is"; exit 1; fi
+
+          echo "::group::a private range on the REST API"
+          sudo ufw allow from 10.254.0.0/16 to any port 1317 proto tcp
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          says 25 '[api] address = tcp://10.255.1.1:1317 (nothing listens on it now); ufw lets every host in 10.254.0.0/16 reach it'
+          says 25 'reach port 1317: "sudo ufw allow from <address of that host> to any port 1317 proto tcp", then delete the rule for the range'
+          sudo ufw delete allow from 10.254.0.0/16 to any port 1317 proto tcp
+
+          echo "::group::a Tailscale interface"
+          sudo ip tuntap add dev tailscale0 mode tun
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root
+          echo "::endgroup::"
+          grep -Eq '^FAIL +1 +node metrics +.*\(firewall: ufw enabled; Tailscale interface tailscale0\)' <<<"$out"
+          grep -Eq '^FAIL +25 +node ports ' <<<"$out"
+          says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and this host has a Tailscale interface (tailscale0)'
+
+          echo "::group::metrics on a Tailscale address"
+          sudo ip addr add 100.100.1.1/32 dev lo
+          python3 -m http.server 26661 --bind 100.100.1.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://100.100.1.1:26661/metrics
+          sed -i 's/^prometheus_listen_addr = .*/prometheus_listen_addr = "100.100.1.1:26661"/' "$home/config/config.toml"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root --node-metrics-url http://100.100.1.1:26661/metrics
+          echo "::endgroup::"
+          grep -Eq '^WARN +1 +node metrics +enabled at http://100\.100\.1\.1:26661/metrics, but the port listens on 100\.100\.1\.1:26661, a Tailscale' <<<"$out"
+
+          echo "::group::a monitor-only host"
+          run sudo bash tools/doctor.sh --config /dev/null --roles monitor --fibre-enabled true --data-mounts / --head-wait 2
+          echo "::endgroup::"
+          for want in '^SKIP +1 +node metrics +not a validator or backup node host' \
+                      '^SKIP +6 +fibre service +not a Fibre host' \
+                      '^SKIP +16 +compaction io +this monitor runs no celestia-appd node or Fibre' \
+                      '^SKIP +17 +fibre signer +not a Fibre host' \
+                      '^SKIP +20 +signer binds +not a validator or backup node host' \
+                      '^SKIP +25 +node ports +not a validator or backup node host' \
+                      '^SKIP +26 +service users +no celestia-appd node or Fibre unit on this host'; do
+            grep -Eq -- "$want" <<<"$out" || { echo "the monitor-only host does not say: $want"; exit 1; }
+          done
+
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
   # with escaped quotes and braces, on/ignoring/group_left/by/without lists, bool, offset,
@@ -1411,8 +1804,8 @@ jobs:
   doctor-monitor:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -1510,7 +1903,8 @@ jobs:
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
           line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
           for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
-                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow; ends in ' \
+                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, ' \
+                      'FibreDown, DiskLow, MonitorCannotReach; ends in ' \
                       ' hours); the others: {host="val-1"} by op'; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done
@@ -1529,8 +1923,8 @@ jobs:
   doctor-readiness:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions
@@ -1669,7 +2063,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       # install.sh installs Ansible only from ansible/requirements.lock, and refuses the
       # placeholder that is committed until the lock workflow (.github/workflows/lock.yml) has
       # made the first lock. While it is the placeholder, this makes a lock in the runner's
@@ -1744,16 +2138,25 @@ jobs:
               celestia_mon_tensile: {api: "http://127.0.0.1:8766/api/v1", validator: "celestiavalcons1ci"}
           EOF
           # tools/ci/rpc_stub.py stands in for a node's RPC for celestia-mon-signal: the upgrade to v10
-          # is pending, and the validator (a synthetic operator address) signalled it.
+          # is pending, and the validator (a synthetic operator address) signalled it. It listens on a
+          # private address (on lo), as a node on the private network would: the service's unit
+          # refuses the internal ranges but for the RPC addresses its settings name.
           op=1111111111111111111111111111111111111111
           addr=$(python3 tools/ci/rpc_stub.py address "$op")
-          printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://127.0.0.1:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
+          printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://10.255.0.3:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
           cat >"$RUNNER_TEMP/rpc.json" <<EOF
           {"network": "celestia", "version": "9.0.4", "app_version": 9, "height": 15000000, "lowest": 1,
            "tally": {"10": "CJv2gb0BEMj0pLgBGNbYkt0B"}, "upgrade": "CgcIChDy0poH", "signals": {"$op": 10}}
           EOF
-          nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
-          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8767/health
+          sudo ip addr add 10.255.0.3/32 dev lo
+          nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" 10.255.0.3 >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://10.255.0.3:8767/health
+          # The units of the monitor's collectors allow the resolvers of this file instead of the
+          # runner's: systemd-resolved's stub, a private resolver, a link-local one with its zone,
+          # and a line that is no address.
+          printf '%s\n' 'nameserver 127.0.0.53' 'nameserver 10.255.0.53' 'nameserver fe80::53%eth0' \
+            'nameserver not-an-address' 'options edns0 trust-ad' >"$RUNNER_TEMP/resolv.conf"
+          printf '    celestia_mon_resolv_conf: %s\n' "$RUNNER_TEMP/resolv.conf" >>"$inv/hosts.yml"
           # A stand-in of Tensile's API for celestia-mon-tensile.
           v="$RUNNER_TEMP/tensile-api/api/v1/validators/celestiavalcons1ci"
           mkdir -p "$v"
@@ -1796,6 +2199,37 @@ jobs:
             'Set celestia_mon_deadman_webhook_url'
           refused "$(gate sources 's#celestia_mon_firewall_sources: .*#celestia_mon_firewall_sources: [192.168.0.0/8]#')" \
             'must be a list of private addresses'
+          # Plain http to a public RPC; and, from a validator host, a monitor whose address is a range.
+          refused "$(gate signal 's#rpc: \["http://10\.255\.0\.3:8767"\]#rpc: ["http://rpc.example.org:26657"]#')" \
+            'https unless the node is this host'
+          # Grafana on a private address of this host (10.255.0.3, on lo) without its clients, or with a range.
+          listen='\n    celestia_mon_grafana_listen: 10.255.0.3'
+          refused "$(gate grafana "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen#")" \
+            'set celestia_mon_grafana_clients'
+          refused "$(gate grafana-range "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen\\n    celestia_mon_grafana_clients: [10.255.0.0/16]#")" \
+            'set celestia_mon_grafana_clients'
+          mkdir -p "$RUNNER_TEMP/gate-monitor"
+          chmod 0755 "$RUNNER_TEMP/gate-monitor"
+          cat >"$RUNNER_TEMP/gate-monitor/hosts.yml" <<'EOF'
+          all:
+            hosts:
+              ci:
+                celestia_mon_private_ip: 127.0.0.1
+                celestia_mon_data_mounts: [/]
+              mon:
+                celestia_mon_private_ip: 10.255.0.0/16
+            children:
+              validator:
+                hosts:
+                  ci:
+              monitor:
+                hosts:
+                  mon:
+            vars:
+              celestia_mon_signer: local
+              celestia_mon_units: {appd: systemd-journald, fibre: systemd-logind, tmkms: tmkms}
+          EOF
+          refused "$RUNNER_TEMP/gate-monitor/hosts.yml" 'Set celestia_mon_private_ip of the monitor host mon'
           vault="$(dirname "$INV")/host_vars/ci/vault.yml"
           mkdir -p "$(dirname "$vault")"
           echo 'celestia_mon_grafana_admin_password: ci-test-only-not-a-secret' >"$vault"
@@ -1825,14 +2259,15 @@ jobs:
           test ! -e /var/tmp/celestia-mon-install
       # --edit-vault on a terminal (expect gives it one and types the password at each prompt): it
       # creates an encrypted vault.yml that only its owner reads, and opens it again decrypted. The
-      # editor is a script: it writes the file the first time and copies what it is shown the second.
+      # editor is a script: it writes the file the first time and copies what it is shown the second,
+      # and notes the path of each decrypted copy it is shown, which must be in memory (/run).
       - name: --edit-vault creates and edits an encrypted vault.yml
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq expect >/dev/null
           dir="$RUNNER_TEMP/editvault/host_vars/mon"
           mkdir -p "$dir"
-          printf '%s\n' '#!/bin/sh' \
+          printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>/tmp/ed-paths' \
             'if grep -q celestia_mon_ci "$1"; then cp "$1" /tmp/ed-out; else echo "celestia_mon_ci: 1" >"$1"; fi' >/tmp/ed.sh
           chmod 755 /tmp/ed.sh
           cat >/tmp/ev.exp <<'EOF'
@@ -1851,10 +2286,22 @@ jobs:
           test "$(sudo stat -c %a "$dir/vault.yml")" = 600
           expect /tmp/ev.exp "$dir/vault.yml"
           sudo grep -qx 'celestia_mon_ci: 1' /tmp/ed-out
+          sudo cat /tmp/ed-paths
+          test "$(sudo grep -c '^/run/celestia-mon-install/tmp/' /tmp/ed-paths)" = 2
+          test "$(sudo cat /tmp/ed-paths | wc -l)" = 2
           test ! -e /var/tmp/celestia-mon-install
-          if sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>/dev/null; then
+          test ! -e /run/celestia-mon-install
+          if out=$(sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>&1); then
             echo "--edit-vault accepted a file that is not a vault.yml"; exit 1
           fi
+          grep -qF "edits an inventory's vault.yml" <<<"$out"
+          # A vault.yml that is a symbolic link: ansible-vault, as root, would write wherever it points.
+          mkdir -p "$RUNNER_TEMP/editvault/host_vars/link"
+          ln -s "$dir/vault.yml" "$RUNNER_TEMP/editvault/host_vars/link/vault.yml"
+          if out=$(sudo bash ./install.sh --edit-vault "$RUNNER_TEMP/editvault/host_vars/link/vault.yml" </dev/null 2>&1); then
+            echo "--edit-vault followed a symbolic link"; exit 1
+          fi
+          grep -qF 'is a symbolic link' <<<"$out"
       # A first install sends one test message to the chat receivers; a run that changes nothing does not.
       - name: Install
         run: |
@@ -1873,6 +2320,7 @@ jobs:
           grep -Eq '^  Prometheus +no change$' "$RUNNER_TEMP/second.log"
           if grep -q '^A test message went' "$RUNNER_TEMP/second.log"; then echo "a run that changed nothing sent a test message"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
+          test ! -e /run/celestia-mon-install
       # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
       # collector) or 1000 (Grafana), and root runs some of them (promtool, amtool, the collector's
       # validate): everything under /opt/celestia-mon must belong to root, and nothing there may be
@@ -1960,16 +2408,58 @@ jobs:
           poll 'up{job="signal"}' '.data.result[0].value[1] == "1"'
           poll 'ALERTS{alertname="UpgradeScheduled",alertstate="firing"}' '.data.result | length == 1'
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
+      # node_exporter and the collector exchange traffic only with loopback, this host's and the
+      # monitor's address (127.0.0.1 here) and the ufw sources. The monitor's collectors never reach
+      # the internal ranges but for the fixture's resolvers (the private one, the link-local one
+      # without its zone, never the line that is no address) and, for signal, its RPC. systemd
+      # applies the rules: under signal's, a request reaches the RPC stand-in on 10.255.0.3; under
+      # tensile's, it does not.
+      - name: Each unit exchanges traffic only with its peers
+        run: |
+          set -euo pipefail
+          rules() { grep '^IPAddress' "/etc/systemd/system/celestia-mon-$1.service"; }
+          for u in node-exporter otelcol; do
+            want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost IPAddressAllow=127.0.0.1 \
+              IPAddressAllow=10.255.255.1 IPAddressAllow=10.255.255.2)
+            if [ "$(rules "$u")" != "$want" ]; then rules "$u"; echo "celestia-mon-$u: expected"; echo "$want"; exit 1; fi
+          done
+          for u in tensile announcements signal; do
+            want=$(printf '%s\n' 'IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 fc00::/7 fe80::/10' \
+              IPAddressAllow=localhost IPAddressAllow=10.255.0.53 IPAddressAllow=fe80::53)
+            if [ "$u" = signal ]; then want+=$'\nIPAddressAllow=10.255.0.3'; fi
+            if [ "$(rules "$u")" != "$want" ]; then rules "$u"; echo "celestia-mon-$u: expected"; echo "$want"; exit 1; fi
+          done
+          # Grafana on 127.0.0.1 (the default): loopback only.
+          want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost)
+          if [ "$(rules grafana)" != "$want" ]; then rules grafana; echo "celestia-mon-grafana: expected"; echo "$want"; exit 1; fi
+          reach() { # unit: the HTTP status of a request to the RPC stand-in under that unit's address rules
+            sudo systemd-run --quiet --wait --pipe --collect \
+              -p "IPAddressDeny=$(systemctl show -P IPAddressDeny "celestia-mon-$1")" \
+              -p "IPAddressAllow=$(systemctl show -P IPAddressAllow "celestia-mon-$1")" \
+              curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://10.255.0.3:8767/health || true
+          }
+          test "$(reach signal)" = 200
+          test "$(reach tensile)" = 000
       # Prometheus asks celestia-mon-blackbox for Fibre's readiness. Nothing listens on Fibre's port
       # here (127.0.0.1:7980), so every probe fails, and journald keeps neither of the two error
-      # lines blackbox logs for each failed probe.
+      # lines blackbox logs for each failed probe. blackbox answers only with the API password.
       - name: Fibre's readiness is asked through celestia-mon-blackbox
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-blackbox
           systemctl show celestia-mon-blackbox -p IPAddressDeny -p IPAddressAllow -p LogFilterPatterns
-          curl -fsS 'http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980' | grep -qx 'probe_grpc_status_code 14'
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/blackbox/web.yml)" = "root:celestia-mon-blackbox 640"
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
+          probe='http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980'
+          for url in "$probe" http://127.0.0.1:9919/metrics http://127.0.0.1:9919/-/healthy; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
+            if [ "$code" != 401 ]; then echo "$url answered $code without the password, expected 401"; exit 1; fi
+            login | curl -fsS -o /dev/null -K - "$url"
+          done
+          # Grafana's datasource login does not open it.
+          test "$(sudo sh -c 'printf "user = \"grafana:%s\"\n" "$(cat /etc/celestia-mon/grafana-api-password)"' |
+            curl -s -o /dev/null -w '%{http_code}' -K - "$probe")" = 401
+          login | curl -fsS -K - "$probe" | grep -qx 'probe_grpc_status_code 14'
           query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
           ok=0
           for _ in $(seq 30); do
@@ -2037,7 +2527,7 @@ jobs:
           grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
           # systemd-logind stands in for an active Fibre, and nothing listens on 127.0.0.1:7980.
           grep -Eq "^WARN +24 +fibre ready +Not checked: ci: the monitor cannot reach Fibre's port at 127\.0\.0\.1:7980 \(no connection\)" <<<"$out"
-          line=$(grep -E '^OK +23 +upgrade signal +read through http://127\.0\.0\.1:8767 ' <<<"$out")
+          line=$(grep -E '^OK +23 +upgrade signal +read through http://10\.255\.0\.3:8767 ' <<<"$out")
           grep -qF 'v10 signalled by 85.5% of the voting power, an upgrade needs 83.3%; your validator signalled v10;' <<<"$line"
           grep -qF 'upgrade to v10 scheduled at height 15116658, in about 3.9 days' <<<"$line"
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
@@ -2059,6 +2549,29 @@ jobs:
             if ((peak * 2 > high)); then echo "$unit peaked above half of its MemoryHigh: raise its default in celestia_mon_memory"; fail=1; fi
           done
           exit "$fail"
+      # Grafana moved to a private address of the host (10.255.0.3, on lo) with one client,
+      # 10.255.0.9: its unit allows loopback, that address (the install's own wait for Grafana comes
+      # from it) and the client. A request from the client's address gets an answer; one from
+      # another address of the private network (10.255.0.4) gets none.
+      - name: Grafana on a private address exchanges traffic only with its clients
+        run: |
+          set -euo pipefail
+          inv="$RUNNER_TEMP/grafana-private"
+          mkdir -p "$inv"
+          chmod 0755 "$inv"
+          add='\n    celestia_mon_grafana_listen: 10.255.0.3\n    celestia_mon_grafana_clients: [10.255.0.9]'
+          sed -E "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$add#" "$INV" >"$inv/hosts.yml"
+          grep -qx '    celestia_mon_grafana_clients: \[10\.255\.0\.9\]' "$inv/hosts.yml"
+          sudo bash ./install.sh --inventory "$inv/hosts.yml" --host ci --yes >"$RUNNER_TEMP/grafana-private.log" 2>&1 ||
+            { cat "$RUNNER_TEMP/grafana-private.log"; sudo tail -n 40 /var/log/celestia-mon/install.log; exit 1; }
+          rules=$(grep '^IPAddress' /etc/systemd/system/celestia-mon-grafana.service)
+          want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost IPAddressAllow=10.255.0.3 IPAddressAllow=10.255.0.9)
+          if [ "$rules" != "$want" ]; then printf '%s\n' "$rules"; echo "celestia-mon-grafana: expected"; echo "$want"; exit 1; fi
+          sudo ip addr add 10.255.0.4/32 dev lo
+          sudo ip addr add 10.255.0.9/32 dev lo
+          from() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 --interface "$1" http://10.255.0.3:9914/api/health || true; }
+          test "$(from 10.255.0.9)" = 200
+          test "$(from 10.255.0.4)" = 000
       - name: Uninstall removes the services and the recorded rules, and keeps data, settings and users
         run: |
           sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/uninstall.log"
@@ -2101,7 +2614,7 @@ jobs:
           if getent passwd | grep -q '^celestia-mon-'; then echo "users left"; left=1; fi
           if getent group | grep -q '^celestia-mon-'; then echo "groups left"; left=1; fi
           for p in /opt/celestia-mon /etc/celestia-mon /var/lib/celestia-mon /var/cache/celestia-mon /var/log/celestia-mon \
-                   /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install; do
+                   /usr/local/bin/celestia-mon-doctor /var/tmp/celestia-mon-install /run/celestia-mon-install; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
           added=$(sudo ufw show added)
@@ -2122,8 +2635,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: "3.12"
       - name: Read the pinned versions

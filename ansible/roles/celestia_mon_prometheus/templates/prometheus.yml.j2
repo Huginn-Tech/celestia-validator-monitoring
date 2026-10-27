@@ -6,9 +6,10 @@
 {% macro target(h, port) %}{% set ip = hostvars[h].celestia_mon_private_ip | string %}{{ ('[' ~ ip ~ ']') if ':' in ip else ip }}:{{ port }}{% endmacro %}
 {% set validators = groups.get('validator', []) %}
 {% set fibres = groups.get('fibre', []) if celestia_mon_fibre_enabled else [] %}
-{# The role label names the host's inventory group, not the role it holds after a failover. #}
+{# The role label names the host's inventory group, not the role it holds after a failover;
+   monitor on a host that runs no Celestia service. #}
 {% macro node_role(h) %}{{ 'validator' if h in groups.get('validator', []) else 'fibre' if h in groups.get('fibre', [])
-   else 'backup_node' if h in groups.get('backup_node', []) else 'kms' }}{% endmacro %}
+   else 'backup_node' if h in groups.get('backup_node', []) else 'kms' if h in groups.get('kms', []) else 'monitor' }}{% endmacro %}
 # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
 global:
   scrape_interval: 15s
@@ -28,6 +29,12 @@ rule_files:
 # Alertmanager runs on this host and listens on loopback only. It and Prometheus take only
 # requests with the API password (their --web.config.file); Prometheus reads it from this file.
 alerting:
+  # instance, a target's address, leaves with no alert: no rule, inhibition or notification reads
+  # it, and every job has one target per host, which host names. So no notification carries a
+  # private address. Prometheus's own ALERTS series keep it.
+  alert_relabel_configs:
+    - action: labeldrop
+      regex: instance
   alertmanagers:
     - basic_auth:
         username: {{ celestia_mon_api_user | to_json }}
@@ -36,10 +43,14 @@ alerting:
         - targets:
             - "127.0.0.1:{{ celestia_mon_ports.alertmanager }}"
 
+# Each job caps the samples of one scrape and the labels of one sample (celestia_mon_prometheus_sample_limits
+# and celestia_mon_prometheus_label_limit, far above what the job sends): a scrape over a cap fails.
 scrape_configs:
   # Prometheus and Alertmanager themselves, on loopback: failing rule evaluations
   # and failed notifications must be visible to the alert rules.
   - job_name: prometheus
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["prometheus"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     basic_auth:
       username: {{ celestia_mon_api_user | to_json }}
       password_file: {{ celestia_mon_api_password_file | to_json }}
@@ -51,6 +62,8 @@ scrape_configs:
           role: monitor
 
   - job_name: alertmanager
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["alertmanager"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     basic_auth:
       username: {{ celestia_mon_api_user | to_json }}
       password_file: {{ celestia_mon_api_password_file | to_json }}
@@ -64,6 +77,8 @@ scrape_configs:
   # celestia-appd's own metrics endpoint ([instrumentation] prometheus_listen_addr), on the
   # validator and on each backup node: the rules read which node signs from the metrics.
   - job_name: celestia-app
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["celestia-app"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
 {% for h in celestia_mon_appd_hosts %}
       - targets:
@@ -79,11 +94,14 @@ scrape_configs:
         target_label: __name__
         replacement: "cometbft_$1"
 
-  # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape).
+  # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape), and on the
+  # monitor host where it runs no Celestia service (role monitor).
   - job_name: node
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["node"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
-{% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])) | unique %}
-{%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
+{% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) | unique %}
+{%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or h in groups.get('monitor', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
       - targets:
           - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_ports)).node_exporter) }}"
         labels:
@@ -96,6 +114,8 @@ scrape_configs:
   # The OpenTelemetry collector that receives Fibre's OTLP metrics, on every Fibre host,
   # active or standby.
   - job_name: otelcol
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["otelcol"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
 {% for h in fibres %}
       - targets:
@@ -107,8 +127,14 @@ scrape_configs:
 
   # Fibre's upload readiness, on every Fibre host, active or standby: celestia-mon-blackbox on
   # this host asks each one's own port for the standard gRPC health check (Fibre v10.5.0 and
-  # newer). instance keeps the Fibre address; the request goes to blackbox on 127.0.0.1.
+  # newer). instance keeps the Fibre address; the request goes to blackbox on 127.0.0.1, which
+  # takes the API password too.
   - job_name: fibre_health
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["fibre_health"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
+    basic_auth:
+      username: {{ celestia_mon_api_user | to_json }}
+      password_file: {{ celestia_mon_api_password_file | to_json }}
     metrics_path: /probe
     params:
       module: [fibre_health]
@@ -132,6 +158,8 @@ scrape_configs:
 
   # celestia-mon-tensile on this host: Tensile's outside check of the registered Fibre endpoint.
   - job_name: tensile
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["tensile"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
       - targets:
           - "127.0.0.1:{{ celestia_mon_ports.tensile }}"
@@ -143,6 +171,8 @@ scrape_configs:
 
   # celestia-mon-signal on this host: the network's upgrade signalling and the validator's signal.
   - job_name: signal
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["signal"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
       - targets:
           - "127.0.0.1:{{ celestia_mon_ports.signal }}"
@@ -154,6 +184,8 @@ scrape_configs:
 
   # celestia-mon-announcements on this host: whether it still reads Celestia's announcements.
   - job_name: announcements
+    sample_limit: {{ celestia_mon_prometheus_sample_limits["announcements"] }}
+    label_limit: {{ celestia_mon_prometheus_label_limit }}
     static_configs:
       - targets:
           - "127.0.0.1:{{ celestia_mon_ports.announcements }}"

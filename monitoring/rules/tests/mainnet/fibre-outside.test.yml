@@ -1,6 +1,6 @@
 # FibreDown seen from outside, FibreNotServing from Tensile's blob record, and TensileUnreadable, on
 # the example-mainnet inventory rendered with celestia_mon_tensile (CI passes it): celestia-mon-tensile
-# on fibre-1 serves Tensile's checks of the endpoint registered on chain and the blobs assigned to the
+# on mon-1 serves Tensile's checks of the endpoint registered on chain and the blobs assigned to the
 # validator. fibre-1's public endpoint is fibre.example.org:7980, val-1's (its standby)
 # val.example.org:7980. In the FibreNotServing cases fibre-1's Fibre runs from 1m (start time 60 s)
 # and val-1 is a stopped standby; Tensile is read every minute.
@@ -16,11 +16,11 @@ tests:
         values: '1x30'
       - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
         values: '0x30'
-      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '1x30'
-      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0x30'
-      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0+60x30'
     alert_rule_test:
       - eval_time: 5m
@@ -50,11 +50,11 @@ tests:
     input_series:
       - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
         values: '1x60'
-      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '1x60'
-      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0x60'
-      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0x60'
     alert_rule_test:
       - eval_time: 40m
@@ -68,7 +68,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: message
-              host: fibre-1
+              host: mon-1
             exp_annotations:
               summary: Fibre is not checked from outside
               description: >-
@@ -85,11 +85,11 @@ tests:
         values: '0x30'
       - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
         values: '1x30'
-      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '1x30'
-      - series: 'celestia_mon_fibre_reachable{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0x30'
-      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="fibre-1",endpoint="fibre.example.org:7980"}'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0+60x30'
     alert_rule_test:
       - eval_time: 15m
@@ -126,7 +126,7 @@ tests:
     input_series:
       - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
         values: '1x30'
-      - series: 'celestia_mon_fibre_registered{job="tensile",host="fibre-1",endpoint=""}'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint=""}'
         values: '0x30'
     alert_rule_test:
       - eval_time: 5m
@@ -165,9 +165,9 @@ tests:
         values: '1000000000000x40'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x40'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x40'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x19 1200x20'
     alert_rule_test:
       - eval_time: 25m
@@ -206,9 +206,9 @@ tests:
         values: '1000000000000x300'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x300'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x300'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '595x300'
     alert_rule_test:
       - eval_time: 300m
@@ -233,9 +233,9 @@ tests:
         values: '1000000000000x40'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x20 1230x19'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x40'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x19 1200x20'
     alert_rule_test:
       - eval_time: 26m
@@ -268,9 +268,9 @@ tests:
         values: '1000000000000x61'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '300x9 600x9 1200x9 1800x31'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x61'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '370x11 670x9 1270x9 1870x29'
     alert_rule_test:
       - eval_time: 61m
@@ -299,9 +299,9 @@ tests:
         values: '1000000000000x60'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x60'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '60x60'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x60'
     alert_rule_test:
       - eval_time: 26m
@@ -312,7 +312,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: message
-              host: fibre-1
+              host: mon-1
               job: tensile
             exp_annotations:
               summary: Fibre is not checked from outside
@@ -345,9 +345,9 @@ tests:
         values: '1000000000000x60'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x60'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x20 1200x40'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x19 1200x40'
     alert_rule_test:
       - eval_time: 26m
@@ -374,7 +374,7 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: message
-              host: fibre-1
+              host: mon-1
               job: tensile
             exp_annotations:
               summary: Fibre is not checked from outside
@@ -418,9 +418,9 @@ tests:
         values: '1000000000000x60'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x29 stale'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x60'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x39 2400x20'
     alert_rule_test:
       - eval_time: 45m
@@ -463,9 +463,9 @@ tests:
         values: '1000000000000x60'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x34 stale _x5 2410x19'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x60'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x29 1790x10 2400x20'
     alert_rule_test:
       - eval_time: 60m
@@ -497,9 +497,9 @@ tests:
         values: '_x15 1000000000000x44'
       - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
         values: '600x9 stale'
-      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '0+60x60'
-      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="fibre-1"}'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
         values: '590x11 700x48'
     alert_rule_test:
       - eval_time: 60m
@@ -523,9 +523,9 @@ tests:
         values: '1000000000000x200'
       - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
         values: '0x200'
-      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="fibre-1",outcome="served"}'
+      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="mon-1",outcome="served"}'
         values: '215x200'
-      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="fibre-1",outcome="broken"}'
+      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="mon-1",outcome="broken"}'
         values: '0x89 1x30 2x80'
     alert_rule_test:
       - eval_time: 90m
@@ -577,7 +577,7 @@ tests:
         values: '1x60'
       - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
         values: '1000000000000x60'
-      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="fibre-1",outcome="broken"}'
+      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="mon-1",outcome="broken"}'
         values: '0x19 2x40'
     alert_rule_test:
       - eval_time: 19m
@@ -607,7 +607,7 @@ tests:
         values: '1x180'
       - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
         values: '1000000000000x180'
-      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="fibre-1",outcome="broken"}'
+      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="mon-1",outcome="broken"}'
         values: '2x60 1x60 0x59'
     alert_rule_test:
       - eval_time: 61m

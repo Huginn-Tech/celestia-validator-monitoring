@@ -1,0 +1,102 @@
+# MonitorCannotReach on the example-split inventory: mon-1 runs only the monitoring and reaches
+# val-1, kms-1 (scraped) and fibre-1 over the network.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # node_exporter is kms-1's only target: when it stops answering, the monitor cannot tell the
+  # service from the host or the link, and names the host once.
+  - name: kms-1 stops answering; one message for kms-1 and no ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.10.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: kms-1
+            exp_annotations:
+              summary: "Monitor cannot reach kms-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts: []
+
+  - name: No host answers; one page, and neither NodeNotAdvancing nor FibreDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x34'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Monitor cannot reach any server"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
+                (val-1, fibre-1, kms-1): the link between the monitor and the hosts is down, or every host is.
+                No alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
+                validator still signs: an explorer shows its recent blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: NodeNotAdvancing
+        exp_alerts: []

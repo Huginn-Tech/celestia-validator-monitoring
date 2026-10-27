@@ -2,8 +2,8 @@
 # Fibre's upload readiness, on the monitor host. Fibre v10.5.0 and newer answers the standard
 # gRPC health check on its own port: SERVING when all of its own checks pass, NOT_SERVING when
 # one fails. celestia-mon-blackbox (blackbox_exporter) asks each Fibre host on Prometheus's
-# behalf (scrape job fibre_health) and listens on 127.0.0.1 only. On while Fibre is on; turned
-# off after it ran, it is removed again.
+# behalf (scrape job fibre_health), listens on 127.0.0.1 only and takes only requests with the
+# API password. On while Fibre is on; turned off after it ran, it is removed again.
 - name: Install celestia-mon-blackbox
   when: celestia_mon_blackbox_enabled | bool
   block:
@@ -177,6 +177,37 @@
         mode: "0644"
         validate: "{{ celestia_mon_blackbox_binary }} --config.check --config.file=%s"
       notify: Restart celestia-mon-blackbox
+
+    # The password Prometheus sends with its readiness probes.
+    - name: Read or create the API password
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: api_password
+      when: celestia_mon_api_password_hash is not defined
+
+    # Every request to blackbox (a probe, /metrics, /-/healthy) needs celestia-mon's API password,
+    # so no other account on this host can make it connect to the Fibre hosts. blackbox reads this
+    # file at each request. promtool checks it once Prometheus is installed, which on a first
+    # install happens after this role.
+    - name: Look for promtool
+      ansible.builtin.stat:
+        path: "{{ celestia_mon_blackbox_promtool }}"
+        get_checksum: false
+        get_mime: false
+      register: celestia_mon_blackbox_promtool_file
+
+    - name: Write the blackbox web configuration
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_api_web_configs.blackbox }}"
+        content: |
+          # Managed by celestia-mon. Local changes are overwritten on the next playbook run.
+          # Basic auth on every request; the password is in {{ celestia_mon_api_password_file }}.
+          basic_auth_users:
+            {{ celestia_mon_api_user }}: {{ celestia_mon_api_password_hash | to_json }}
+        owner: root
+        group: celestia-mon-blackbox
+        mode: "0640"
+        validate: "{{ (celestia_mon_blackbox_promtool ~ ' check web-config %s') if celestia_mon_blackbox_promtool_file.stat.exists else omit }}"
 
     - name: Write the celestia-mon-blackbox service
       ansible.builtin.template:

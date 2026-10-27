@@ -9,10 +9,13 @@ After=network-online.target
 User=celestia-mon-prometheus
 Group=celestia-mon-prometheus
 # Retention (time and size) is set in prometheus.yml, so a change needs only a reload.
+# --web.external-url: an alert's link to its query (generatorURL) names Prometheus's loopback
+# address, not this host's name.
 ExecStart={{ celestia_mon_prometheus_home }}/prometheus \
   --config.file={{ celestia_mon_prometheus_config_dir }}/prometheus.yml \
   --storage.tsdb.path={{ celestia_mon_prometheus_data_dir }} \
   --web.listen-address={{ celestia_mon_prometheus_listen_address }} \
+  --web.external-url=http://{{ celestia_mon_prometheus_listen_address }}/ \
   --web.config.file={{ celestia_mon_api_web_configs.prometheus }}
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

@@ -20,11 +20,13 @@ is kept on disk.
 
   celestia-mon-tensile --config FILE [--once]
 
-Only the Python standard library is used; the API needs no key.
+Only the Python standard library is used; the API needs no key. No redirect is followed, and no
+answer larger than MAX_BODY is read.
 """
 
 import argparse
 import datetime
+import http.client
 import json
 import re
 import sys
@@ -36,10 +38,24 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER_AGENT = "celestia-mon-tensile (https://github.com/s0urledd/celestia-validator-monitoring)"
+# The largest answer read, in bytes: a validator's status takes a few KiB, and a larger one is
+# refused rather than read into memory.
+MAX_BODY = 1 << 20
 
 
 def log(msg):
     print(msg, file=sys.stderr, flush=True)
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follows no redirect: urlopen raises the 3xx as an HTTPError, so every request goes to the
+    configured API and nowhere else."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
 
 
 def epoch(text):
@@ -50,12 +66,26 @@ def epoch(text):
     if not m:
         return None
     zone = "+00:00" if m.group(3) == "Z" else m.group(3)
-    t = datetime.datetime.fromisoformat(m.group(1) + zone).timestamp()
+    # A date that does not exist (2026-02-30), or one the platform cannot hold.
+    try:
+        t = datetime.datetime.fromisoformat(m.group(1) + zone).timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
     return t + (float("0." + m.group(2)) if m.group(2) else 0.0)
 
 
 def esc(value):
-    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    # Tensile's text is JSON, which can hold what UTF-8 cannot (a lone surrogate): "?" instead.
+    text = str(value).encode("utf-8", "replace").decode("utf-8")
+    return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def number(value):
+    """A count from Tensile as a whole number, 0 when it is absent or not a number."""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0
 
 
 class State:
@@ -122,7 +152,7 @@ class State:
                     "# TYPE celestia_mon_fibre_identity_verified gauge",
                     f'celestia_mon_fibre_identity_verified{{endpoint="{endpoint}"}} {1 if s.get("identity_status") == "verified" else 0}',
                 ]
-            check = s.get("last_endpoint_check") or {}
+            check = s.get("last_endpoint_check") if isinstance(s.get("last_endpoint_check"), dict) else {}
             at = epoch(check.get("at"))
             if endpoint and at is not None:
                 out += [
@@ -157,14 +187,14 @@ class State:
                     f"celestia_mon_fibre_blobs_assigned_24h {sig['assigned']}",
                     "# HELP celestia_mon_fibre_blobs_endorsed_24h Of those, blobs that settled with the validator's endorsement.",
                     "# TYPE celestia_mon_fibre_blobs_endorsed_24h gauge",
-                    f"celestia_mon_fibre_blobs_endorsed_24h {int(sig.get('signed') or 0)}",
+                    f"celestia_mon_fibre_blobs_endorsed_24h {number(sig.get('signed'))}",
                 ]
             if isinstance(obl.get("served"), int):
                 out += [
                     "# HELP celestia_mon_fibre_obligations_24h Tensile's reads of rows the validator signed for, of blobs settled in its last 24 hours, by outcome.",
                     "# TYPE celestia_mon_fibre_obligations_24h gauge",
                     f'celestia_mon_fibre_obligations_24h{{outcome="served"}} {obl["served"]}',
-                    f'celestia_mon_fibre_obligations_24h{{outcome="broken"}} {int(obl.get("broken") or 0)}',
+                    f'celestia_mon_fibre_obligations_24h{{outcome="broken"}} {number(obl.get("broken"))}',
                 ]
             return "\n".join(out) + "\n"
 
@@ -177,7 +207,7 @@ def serve(listen, state):
             if self.path != "/metrics":
                 self.send_error(404)
                 return
-            body = state.render().encode()
+            body = state.render().encode(errors="replace")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; version=0.0.4")
             self.send_header("Content-Length", str(len(body)))
@@ -192,10 +222,18 @@ def serve(listen, state):
 
 
 def get(url):
-    """The JSON answer to a GET of url."""
+    """The JSON answer to a GET of url; ValueError for an answer larger than MAX_BODY or no JSON."""
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        return json.load(resp)
+    with OPENER.open(req, timeout=20) as resp:
+        body = resp.read(MAX_BODY + 1)
+    if len(body) > MAX_BODY:
+        raise ValueError(f"the answer is larger than {MAX_BODY} bytes")
+    # JSON nested deeper than Python's recursion limit, well inside MAX_BODY, raises RecursionError,
+    # which no caller expects: it would end the read in main(), and from /tip lose a status already read.
+    try:
+        return json.loads(body)
+    except RecursionError:
+        raise ValueError("the answer's JSON is nested too deeply to read") from None
 
 
 def current(api, state):
@@ -203,7 +241,7 @@ def current(api, state):
     less than 2 minutes older than Tensile's clock. None when it does not, or the tip cannot be read."""
     try:
         tip = get(api + "/tip")
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
         state.error("tip")
         log(f"cannot read Tensile's tip at {api}/tip: {e}")
         return None
@@ -221,9 +259,11 @@ def read(cfg, state):
     except urllib.error.HTTPError as e:
         state.error("not_found" if e.code == 404 else "http")
         hint = ": check celestia_mon_tensile.validator and the network of celestia_mon_tensile.api" if e.code == 404 else ""
+        if 300 <= e.code < 400:
+            hint = ", a redirect, which is not followed: set celestia_mon_tensile.api to the API's own URL"
         log(f"Tensile answered {e.code} for {url}{hint}")
         return
-    except (urllib.error.URLError, TimeoutError, OSError, ValueError) as e:
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
         state.error("network")
         log(f"cannot read Tensile at {url}: {e}")
         return
@@ -251,7 +291,12 @@ def main():
         return
     serve(cfg["listen"], state)
     while True:
-        read(cfg, state)
+        # Nothing ends the loop: what goes wrong is logged, and TensileUnreadable fires if no read
+        # works for 15 minutes.
+        try:
+            read(cfg, state)
+        except Exception as e:
+            log(f"the read failed: {e!r}")
         time.sleep(cfg["interval_seconds"])
 
 

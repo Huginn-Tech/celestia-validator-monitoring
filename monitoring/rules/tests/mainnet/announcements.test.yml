@@ -9,9 +9,9 @@ tests:
   # Read every minute: nothing fires.
   - interval: 1m
     input_series:
-      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="fibre-1",job="announcements"}'
+      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="mon-1",job="announcements"}'
         values: '0+60x60'
-      - series: 'up{host="fibre-1",job="announcements"}'
+      - series: 'up{host="mon-1",job="announcements"}'
         values: '1x60'
     alert_rule_test:
       - eval_time: 50m
@@ -21,9 +21,9 @@ tests:
   # No read ever worked (a wrong token): over 15 minutes from 16m on, firing 10 minutes later.
   - interval: 1m
     input_series:
-      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="fibre-1",job="announcements"}'
+      - series: 'celestia_mon_announcements_last_success_timestamp_seconds{channel="111111111111111111",host="mon-1",job="announcements"}'
         values: '0x60'
-      - series: 'up{host="fibre-1",job="announcements"}'
+      - series: 'up{host="mon-1",job="announcements"}'
         values: '1x60'
     alert_rule_test:
       - eval_time: 20m
@@ -34,11 +34,11 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: message
-              host: fibre-1
+              host: mon-1
               channel: "111111111111111111"
               job: announcements
             exp_annotations:
-              summary: Celestia announcements are not being read on fibre-1
+              summary: Celestia announcements are not being read on mon-1
               description: >-
                 celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
                 announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
@@ -48,7 +48,7 @@ tests:
   # The service is down: its target fails for 10 minutes.
   - interval: 1m
     input_series:
-      - series: 'up{host="fibre-1",job="announcements"}'
+      - series: 'up{host="mon-1",job="announcements"}'
         values: '0x30'
     alert_rule_test:
       - eval_time: 5m
@@ -59,10 +59,10 @@ tests:
         exp_alerts:
           - exp_labels:
               severity: message
-              host: fibre-1
+              host: mon-1
               job: announcements
             exp_annotations:
-              summary: Celestia announcements are not being read on fibre-1
+              summary: Celestia announcements are not being read on mon-1
               description: >-
                 celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
                 announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it

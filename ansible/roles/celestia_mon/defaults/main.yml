@@ -60,10 +60,14 @@ celestia_mon_ports:
 # You may set a private address of the monitor host instead (Tailscale, WireGuard, a LAN),
 # or keep 127.0.0.1 and put a reverse proxy on the monitor host in front of it. The install
 # stops when the address is not one of this machine's; Grafana never listens on 0.0.0.0.
-# Grafana's unit allows network traffic only with 127.0.0.1 and, for a private address, with
-# that address's private block (100.64.0.0/10 for a Tailscale address, for example), so a
-# Grafana login cannot reach other networks through a datasource.
 celestia_mon_grafana_listen: 127.0.0.1
+# With a private address in celestia_mon_grafana_listen: the private address of each machine
+# that opens Grafana there (your workstation's Tailscale or WireGuard address, for example), one
+# address each, no prefix. Grafana's unit allows network traffic only with 127.0.0.1, its listen
+# address and these addresses, so a Grafana login cannot reach another host through a
+# datasource. The install stops when the list is empty or names a host of the inventory.
+# Unused with 127.0.0.1.
+celestia_mon_grafana_clients: []
 
 # Alert thresholds (see docs/alerts.md). The durations (for example ValidatorNotSigning's 2
 # minutes, FibreDown's 10) are fixed in the rules.
@@ -83,7 +87,8 @@ celestia_mon_thresholds:
 #   {type: pagerduty, routing_key: ...}                  an Events API v2 integration key
 #   {type: webhook, url: ...}
 # Page alerts go to every receiver; message alerts go to every receiver except PagerDuty, so
-# at least one receiver must be of another type. Keep the list (it holds secrets) in
+# at least one receiver must be of another type. Each URL is https (http only to this host or an
+# address of the private network, such as a relay there). Keep the list (it holds secrets) in
 # ansible-vault on the monitor host. The separate page and message lists of earlier
 # versions are refused.
 celestia_mon_receivers: []
@@ -108,8 +113,9 @@ celestia_mon_tensile: {}
 # Upgrade signalling (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), on the monitor host:
 # celestia-mon-signal reads x/signal through a node's CometBFT RPC. chain_id: the network's chain ID
 # (celestia, mocha-5); an RPC that serves another network is skipped. rpc: CometBFT RPC URLs, tried
-# in order; a node of your own first, a public RPC after it. validator: the validator's operator
-# address (celestiavaloper1...). Empty: off, and nothing watches the validator's signal.
+# in order; a node of your own first, a public RPC after it; https, or http to this host or a node
+# named by its private address. validator: the validator's operator address (celestiavaloper1...).
+# Empty: off, and nothing watches the validator's signal.
 #   celestia_mon_signal:
 #     chain_id: celestia
 #     rpc: ["http://127.0.0.1:26657", "https://rpc.celestia.pops.one"]
@@ -167,7 +173,8 @@ celestia_mon_memory:
 # Per-host settings (set them in host_vars or the inventory):
 #   celestia_mon_private_ip             required on every host celestia-mon touches; an address
 #                                       of that host itself (the playbook checks)
-#   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state)
+#   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state, and
+#                                       on the monitor the disk of Prometheus's data)
 #   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts, active or standby)
 #   celestia_mon_fibre_public_endpoint  host:port that valaddr set-host registers while this host's
 #                                       Fibre is the active one (fibre hosts)
@@ -177,7 +184,11 @@ celestia_mon_memory:
 #                                       ports, when ufw is active (default: the monitor's
 #                                       celestia_mon_private_ip). Private addresses or ranges only,
 #                                       a range no wider than its private block (10.0.0.0/8,
-#                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7)
+#                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7).
+#                                       Besides this host's and the monitor's own addresses, they are
+#                                       the only ones node_exporter and the collector exchange traffic
+#                                       with, ufw or not: list the address Prometheus scrapes from when
+#                                       it is not the monitor's celestia_mon_private_ip
 #   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
 #                                       dashboard's Network peak (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one

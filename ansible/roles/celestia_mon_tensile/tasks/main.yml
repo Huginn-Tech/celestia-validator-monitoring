@@ -82,6 +82,11 @@
         mode: "0644"
       notify: Restart celestia-mon-tensile
 
+    - name: Read the DNS resolvers the unit allows
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: resolvers
+
     - name: Install the celestia-mon-tensile systemd unit
       ansible.builtin.template:
         src: celestia-mon-tensile.service.j2
