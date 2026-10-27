@@ -98,10 +98,10 @@ tests:
     input_series:
       - series: >-
           up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
-        values: '1x4 0x10 1x10'
+        values: '1x4 0x9 1x10'
       - series: >-
           up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
-        values: '1x4 0x10 1x10'
+        values: '1x4 0x9 1x10'
       - series: >-
           up{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor"}
         values: '1x24'
