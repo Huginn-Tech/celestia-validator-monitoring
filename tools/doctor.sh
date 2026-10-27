@@ -1030,7 +1030,7 @@ check_node_ports() {
     else
       v=$(toml_get "$app" grpc address)
       v=${v:-localhost:9090}
-      items+=("[grpc] address|$v|address|grpc|$app|\"<private address>:${v##*:}\" (the address in Fibre's app_grpc_address), or \"127.0.0.1:${v##*:}\" when only a Fibre on this host reads it|the Fibre hosts|<Fibre host address>")
+      items+=("[grpc] address|$v|address|grpc|$app|\"127.0.0.1:${v##*:}\" when only the Fibre on this host reads it (its app_grpc_address), else \"<private address>:${v##*:}\" (the address in the app_grpc_address of the Fibre hosts that read it)|the Fibre hosts|<Fibre host address>")
     fi
     en=$(toml_get "$app" api enable)
     if [[ $en == false ]]; then

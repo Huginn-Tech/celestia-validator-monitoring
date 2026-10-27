@@ -53,9 +53,10 @@ Deny by default: a policy that holds only the grants below allows nothing else b
     // Only if celestia_mon_signal.rpc lists a node's CometBFT RPC on its tailnet address:
     // {"src": ["tag:celestia-mon-monitor"], "dst": ["tag:validator"], "ip": ["tcp:26657"]},
     // Only if tmkms or Fibre reach the nodes over the tailnet instead of a private VLAN or WireGuard:
-    // tmkms to the privval port (priv_validator_laddr), Fibre to the privval gRPC and the app gRPC.
+    // tmkms to the privval port (priv_validator_laddr), Fibre to the privval gRPC; add "tcp:9090" (the
+    // app gRPC) only for a Fibre that reads a node on another host instead of the one on its own.
     // {"src": ["tag:kms"], "dst": ["tag:validator"], "ip": ["tcp:26658"]},
-    // {"src": ["tag:fibre"], "dst": ["tag:validator"], "ip": ["tcp:26669", "tcp:9090"]},
+    // {"src": ["tag:fibre"], "dst": ["tag:validator"], "ip": ["tcp:26669"]},
     // Admins: SSH to every server. Grafana listens on 127.0.0.1 by default and is reached
     // through an SSH tunnel; only if you set celestia_mon_grafana_listen to the monitor's
     // tailnet address, add: {"src": ["autogroup:admin"], "dst": ["tag:celestia-mon-monitor"], "ip": ["tcp:9914"]}
@@ -79,7 +80,7 @@ Every port of the validator and of each backup node takes one source, except p2p
 | 26656 | `[p2p] laddr` in `config.toml` | anyone: p2p is public |
 | 26658 | `priv_validator_laddr` in `config.toml` | the KMS host only (tmkms dials in) |
 | 26669 | `priv_validator_grpc_laddr` in `config.toml`, always with mTLS | the Fibre hosts only |
-| 9090 | `[grpc] address` in `app.toml` | the Fibre hosts only (Fibre's `app_grpc_address`) |
+| 9090 | `[grpc] address` in `app.toml` | 127.0.0.1: each Fibre reads the node on its own host (Fibre's `app_grpc_address`). Only a Fibre that reads a node on another host connects from there |
 | 26660 | `[instrumentation] prometheus_listen_addr` in `config.toml` | the monitor only |
 | 9910, 9911 | node_exporter and the collector, on `celestia_mon_private_ip` | the monitor only |
 | 26657 | `[rpc] laddr` in `config.toml` | 127.0.0.1, or one host on a private address (the monitor, when `celestia_mon_signal` reads this node) |
@@ -92,6 +93,8 @@ For 26660, 9910 and 9911 the install adds the ufw rules for the monitor's addres
 ```sh
 sudo ss -tnp '( sport = :26658 or sport = :26669 or sport = :9090 )'
 ```
+
+A peer on 127.0.0.1 is a Fibre on the node's own host: that port stays on loopback.
 
 **2. Bind each port to its address.** `<private address>` is this node's address on the VLAN or WireGuard network that tmkms and Fibre dial; never `0.0.0.0` or an empty host, and never a Tailscale address (100.64.0.0/10), whose traffic ufw does not filter ([Tailnet policy](#tailnet-policy)). Change the keys where they stand in the node's `config/config.toml`, the first five at the top of the file, above the first section:
 
@@ -117,10 +120,12 @@ and in `config/app.toml`:
 address = "tcp://127.0.0.1:1317"
 
 [grpc]
-address = "<private address>:9090"
+address = "127.0.0.1:9090"
 ```
 
-The privval gRPC always takes mTLS. The server certificate must name the address Fibre dials (an IP SAN for `<private address>`), the client CA is the one that issues each Fibre's client certificate, and `priv_validator_grpc_allow_insecure` stays unset or `false`. Without mTLS, every account on the node's host can ask that port for raw-bytes signatures with the validator key, loopback included, so `doctor` check 20 warns on it even on 127.0.0.1. Give each Fibre its client certificate (`--signer-grpc-ca-file`, `--signer-grpc-cert-file` and `--signer-grpc-key-file` in its unit, or `signer_grpc_*` in its `server_config.toml`; check 17 on the Fibre host). On a node that no Fibre signs through, `priv_validator_grpc_laddr = ""` turns the privval gRPC off; when only a Fibre on the same host reads the app gRPC, `127.0.0.1:9090` is enough. Point tmkms (`addr` in `tmkms.toml`) and Fibre (`signer_grpc_address` and `app_grpc_address`) at the new addresses, then restart celestia-appd at a moment you choose, with tmkms running: with `priv_validator_laddr` set, the node exits at start when no signer connects.
+`127.0.0.1:9090` serves the Fibre on the same host, which reads its own node (`app_grpc_address = "127.0.0.1:9090"`), so the app gRPC never leaves the host. Only where a Fibre reads a node on another host, set `<private address>:9090` there and let that Fibre host in (step 3).
+
+The privval gRPC always takes mTLS. The server certificate must name the address Fibre dials (an IP SAN for `<private address>`), the client CA is the one that issues each Fibre's client certificate, and `priv_validator_grpc_allow_insecure` stays unset or `false`. Without mTLS, every account on the node's host can ask that port for raw-bytes signatures with the validator key, loopback included, so `doctor` check 20 warns on it even on 127.0.0.1. Give each Fibre its client certificate (`--signer-grpc-ca-file`, `--signer-grpc-cert-file` and `--signer-grpc-key-file` in its unit, or `signer_grpc_*` in its `server_config.toml`; check 17 on the Fibre host). On a node that no Fibre signs through, `priv_validator_grpc_laddr = ""` turns the privval gRPC off. Point tmkms (`addr` in `tmkms.toml`) and Fibre (`signer_grpc_address` and `app_grpc_address`) at the new addresses, then restart celestia-appd at a moment you choose, with tmkms running: with `priv_validator_laddr` set, the node exits at start when no signer connects.
 
 Flags in the unit's `ExecStart` (such as `--grpc.address` or `--rpc.laddr`) take precedence over these files, and `doctor` reads the files and the listening sockets only: keep each setting in its file.
 
@@ -129,9 +134,10 @@ Flags in the unit's `ExecStart` (such as `--grpc.address` or `--rpc.laddr`) take
 ```sh
 sudo ufw allow from <KMS host address> to any port 26658 proto tcp
 sudo ufw allow from <Fibre host address> to any port 26669 proto tcp
-sudo ufw allow from <Fibre host address> to any port 9090 proto tcp
 sudo ufw allow 26656/tcp
 ```
+
+Only for a Fibre that reads this node from another host: `sudo ufw allow from <Fibre host address> to any port 9090 proto tcp`.
 
 Delete any rule that lets anyone, or a whole range, reach one of these ports but 26656 (`sudo ufw status numbered`, then `sudo ufw delete <number>`); `doctor` names such a rule. When ufw is not active yet, first add these rules, your SSH port, Fibre's port (7980) on a host that runs Fibre, and, on a host that links over WireGuard, its WireGuard UDP port, one rule per peer:
 

@@ -1720,7 +1720,7 @@ jobs:
           says 25 '[api] address = tcp://10.255.1.1:1317 (nothing listens on it now): no firewall is active'
           says 25 '[rpc] pprof_laddr = 100.100.1.1:6060 (nothing listens on it now) is on a Tailscale address'
           says 25 'ok: [rpc] laddr = tcp://127.0.0.1:26657 (nothing listens on it now)'
-          says 25 'set address = "<private address>:9090"'
+          says 25 'set address = "127.0.0.1:9090" when only the Fibre on this host reads it'
           says 25 'let only the Fibre hosts reach port 9090: "sudo ufw allow from <Fibre host address> to any port 9090 proto tcp"'
           grep -Eq '^WARN +26 +service users +ci-root\.service runs as root \(no User= in the unit\)' <<<"$out"
           run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-user

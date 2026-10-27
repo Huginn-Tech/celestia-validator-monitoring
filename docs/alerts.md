@@ -144,7 +144,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 ## NodeBehind
 
-**What it means.** One node lags the others of this install: for 10 minutes it has been more than 20 blocks (`node_behind_blocks`) behind the highest node, or it has not advanced while another node did. This is how a backup node that could not take over signing is caught: after a tmkms repoint, a node that lags signs late or not at all. With one node it cannot fire. The alert names the host of the node that lags.
+**What it means.** One node lags the others of this install: for 10 minutes it has been more than 20 blocks (`node_behind_blocks`) behind the highest node, or it has not advanced while another node did. This is how a backup node that could not take over signing is caught: after a tmkms repoint, a node that lags signs late or not at all. With one node it cannot fire. The alert names the host of the node that lags. A Fibre that reads that node (its `app_grpc_address`, as on `fibre-1` in the [mainnet layout](quickstart.md#mainnet-layout)) lags with it: once the node's newest block is older than Fibre's `max_block_age` (2 minutes), Fibre's health check reports `chain_stalled`, and [FibreNotServing](#fibrenotserving) (`not_ready`) follows.
 
 **Severity.** message. While NodeNotAdvancing fires, it is held back.
 
