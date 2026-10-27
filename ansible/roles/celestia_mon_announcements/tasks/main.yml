@@ -110,6 +110,11 @@
       diff: false
       notify: Restart celestia-mon-announcements
 
+    - name: Read the DNS resolvers the unit allows
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: resolvers
+
     - name: Install the celestia-mon-announcements systemd unit
       ansible.builtin.template:
         src: celestia-mon-announcements.service.j2

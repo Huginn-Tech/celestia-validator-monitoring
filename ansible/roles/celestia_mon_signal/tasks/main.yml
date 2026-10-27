@@ -111,6 +111,11 @@
       no_log: true
       notify: Restart celestia-mon-signal
 
+    - name: Read the DNS resolvers the unit allows
+      ansible.builtin.include_role:
+        name: celestia_mon
+        tasks_from: resolvers
+
     - name: Install the celestia-mon-signal systemd unit
       ansible.builtin.template:
         src: celestia-mon-signal.service.j2

@@ -241,6 +241,40 @@
       retries: 12
       delay: 5
 
+    # Their units exchange traffic only with loopback, this host's private address and the
+    # monitor's (the same here) and the ufw sources, whatever the firewall: Prometheus scrapes
+    # them over the private address, so a unit that refused it would leave them down.
+    - name: Wait until Prometheus has scraped node_exporter and the collector on the private address
+      ansible.builtin.uri:
+        url: "{{ celestia_mon_verify_prometheus }}/api/v1/targets?state=active"
+        url_username: "{{ celestia_mon_verify_api_user }}"
+        url_password: "{{ celestia_mon_verify_api_password }}"
+        force_basic_auth: true
+        return_content: true
+      register: celestia_mon_verify_private_targets
+      until: >-
+        celestia_mon_verify_private_targets.json.data.activeTargets | default([])
+        | selectattr('labels.job', 'in', ['node', 'otelcol']) | selectattr('health', 'equalto', 'up') | list | length == 2
+      retries: 12
+      delay: 5
+
+    - name: Check that node_exporter and the collector refuse every other address
+      ansible.builtin.assert:
+        that:
+          - "'0.0.0.0/0' in item.status.IPAddressDeny | default('') | split"
+          - "'::/0' in item.status.IPAddressDeny | default('') | split"
+          - >-
+            celestia_mon_private_ip in (item.status.IPAddressAllow | default('') | split
+            | map('regex_replace', '/[0-9]+$', '') | list)
+        fail_msg: >-
+          {{ item.item }} has IPAddressDeny={{ item.status.IPAddressDeny | default('') }} and
+          IPAddressAllow={{ item.status.IPAddressAllow | default('') }}; expected every address denied but loopback,
+          {{ celestia_mon_private_ip }} and the ufw sources.
+        quiet: true
+      loop: "{{ celestia_mon_verify_caps.results | selectattr('item', 'in', ['celestia-mon-node-exporter.service', 'celestia-mon-otelcol.service']) | list }}"
+      loop_control:
+        label: "{{ item.item }}"
+
     - name: Check that Prometheus has exactly the expected jobs
       ansible.builtin.assert:
         that:

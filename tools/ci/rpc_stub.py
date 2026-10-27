@@ -1,7 +1,7 @@
 """A stand-in for a celestia-appd node's CometBFT RPC, as celestia-mon-signal reads it, in CI.
 
-  python3 tools/ci/rpc_stub.py PORT STATE_FILE     serve the RPC on 127.0.0.1:PORT
-  python3 tools/ci/rpc_stub.py address HEX         print the celestiavaloper1 address of these bytes
+  python3 tools/ci/rpc_stub.py PORT STATE_FILE [ADDRESS]  serve the RPC on ADDRESS:PORT (127.0.0.1 by default)
+  python3 tools/ci/rpc_stub.py address HEX                 print the celestiavaloper1 address of these bytes
 
 STATE_FILE is JSON, read again for every request, so a test changes the chain by rewriting it:
   network      node_info.network in /status
@@ -149,4 +149,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "address":
         print(address(bytes.fromhex(sys.argv[2])))
     else:
-        ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])), Handler).serve_forever()
+        ThreadingHTTPServer((sys.argv[3] if len(sys.argv) > 3 else "127.0.0.1", int(sys.argv[1])), Handler).serve_forever()

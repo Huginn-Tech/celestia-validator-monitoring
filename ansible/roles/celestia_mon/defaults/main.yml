@@ -177,7 +177,11 @@ celestia_mon_memory:
 #                                       ports, when ufw is active (default: the monitor's
 #                                       celestia_mon_private_ip). Private addresses or ranges only,
 #                                       a range no wider than its private block (10.0.0.0/8,
-#                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7)
+#                                       172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, fc00::/7).
+#                                       Besides this host's and the monitor's own addresses, they are
+#                                       the only ones node_exporter and the collector exchange traffic
+#                                       with, ufw or not: list the address Prometheus scrapes from when
+#                                       it is not the monitor's celestia_mon_private_ip
 #   celestia_mon_link_mbps              optional, the link speed you pay for in Mbit/s, for the
 #                                       dashboard's Network peak (every node_exporter host). Set it when
 #                                       the host reports no NIC speed (virtio), has more than one

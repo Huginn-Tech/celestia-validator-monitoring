@@ -6,6 +6,25 @@ celestia_mon_newline: "\n"
 # One string: in double quotes, a backslash at the end of a line joins the next line without a space.
 celestia_mon_private_address_regex: "^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[01])\\.|\
   100\\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\\.|127\\.|::1$|f[cd][0-9a-fA-F]{2}:)"
+# One IPv4 or IPv6 address, without a prefix length, zone or port.
+celestia_mon_single_address_regex: '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9A-Fa-f]*:[0-9A-Fa-f]*:[0-9A-Fa-f:]*)$'
+# Loopback addresses, which every unit reaches through IPAddressAllow=localhost.
+celestia_mon_loopback_address_regex: '^(127\.|::1$)'
+
+# The only addresses node_exporter and the collector exchange traffic with (their units'
+# IPAddressAllow, besides loopback): this host's own private address (Prometheus on the same
+# host, the install's wait_for), the monitor's (Prometheus) and this host's ufw sources, which
+# also name the address Prometheus scrapes from when it is not the monitor's.
+celestia_mon_scrape_peers: >-
+  {{ ([celestia_mon_private_ip, hostvars[celestia_mon_monitor_host].celestia_mon_private_ip]
+      + celestia_mon_firewall_sources | default([])) | map('string') | unique | list }}
+
+# The internal ranges the monitor's collectors (celestia-mon-tensile, -signal and -announcements)
+# never reach (their units' IPAddressDeny): RFC 1918, CGNAT (Tailscale), link-local (a cloud's
+# metadata service), IPv6 ULA and link-local. They reach loopback (Alertmanager, Prometheus's
+# scrapes), the DNS resolvers (tasks/resolvers.yml), celestia-mon-signal also the RPC addresses
+# its settings name, and every public address.
+celestia_mon_collector_denied: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16, fc00::/7, fe80::/10]
 
 # The hosts that run celestia-appd: the validator node and the key-less backup nodes that can
 # take over signing when tmkms is pointed at them. Each one's metrics are scraped and watched

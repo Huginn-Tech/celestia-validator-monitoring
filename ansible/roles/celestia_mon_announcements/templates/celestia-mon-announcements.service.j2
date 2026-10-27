@@ -47,6 +47,15 @@ RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# No traffic with the internal ranges (celestia_mon_collector_denied) but loopback (Alertmanager,
+# Prometheus's scrapes) and the DNS resolvers: an answer or a changed DNS record cannot send it,
+# or the bot token, to a host on the private network or to a cloud's metadata service. Public
+# addresses (Discord) stay open.
+IPAddressDeny={{ celestia_mon_collector_denied | join(' ') }}
+IPAddressAllow=localhost
+{% for ip in celestia_mon_resolvers %}
+IPAddressAllow={{ ip }}
+{% endfor %}
 
 [Install]
 WantedBy=multi-user.target

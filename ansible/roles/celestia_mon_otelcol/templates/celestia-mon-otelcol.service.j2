@@ -41,6 +41,14 @@ RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# Network traffic only with loopback (Fibre's OTLP), this host's private address, the monitor's
+# and the ufw sources (celestia_mon_firewall_sources): no other host can scrape it, whatever
+# the firewall.
+IPAddressDeny=any
+IPAddressAllow=localhost
+{% for ip in celestia_mon_scrape_peers %}
+IPAddressAllow={{ ip }}
+{% endfor %}
 
 [Install]
 WantedBy=multi-user.target

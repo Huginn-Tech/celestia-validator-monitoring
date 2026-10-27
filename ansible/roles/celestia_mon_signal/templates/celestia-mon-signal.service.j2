@@ -40,6 +40,15 @@ RestrictSUIDSGID=true
 LockPersonality=true
 SystemCallFilter=@system-service
 SystemCallErrorNumber=EPERM
+# No traffic with the internal ranges (celestia_mon_collector_denied) but loopback (Prometheus's
+# scrapes), the DNS resolvers and the RPC addresses of its settings: an answer or a changed DNS
+# record cannot send it to another host on the private network or to a cloud's metadata service.
+# A node on the private network is named by its address. Public addresses stay open.
+IPAddressDeny={{ celestia_mon_collector_denied | join(' ') }}
+IPAddressAllow=localhost
+{% for ip in (celestia_mon_resolvers + celestia_mon_signal_rpc_ips) | unique %}
+IPAddressAllow={{ ip }}
+{% endfor %}
 
 [Install]
 WantedBy=multi-user.target

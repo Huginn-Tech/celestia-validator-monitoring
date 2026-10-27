@@ -1744,16 +1744,25 @@ jobs:
               celestia_mon_tensile: {api: "http://127.0.0.1:8766/api/v1", validator: "celestiavalcons1ci"}
           EOF
           # tools/ci/rpc_stub.py stands in for a node's RPC for celestia-mon-signal: the upgrade to v10
-          # is pending, and the validator (a synthetic operator address) signalled it.
+          # is pending, and the validator (a synthetic operator address) signalled it. It listens on a
+          # private address (on lo), as a node on the private network would: the service's unit
+          # refuses the internal ranges but for the RPC addresses its settings name.
           op=1111111111111111111111111111111111111111
           addr=$(python3 tools/ci/rpc_stub.py address "$op")
-          printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://127.0.0.1:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
+          printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://10.255.0.3:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
           cat >"$RUNNER_TEMP/rpc.json" <<EOF
           {"network": "celestia", "version": "9.0.4", "app_version": 9, "height": 15000000, "lowest": 1,
            "tally": {"10": "CJv2gb0BEMj0pLgBGNbYkt0B"}, "upgrade": "CgcIChDy0poH", "signals": {"$op": 10}}
           EOF
-          nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
-          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:8767/health
+          sudo ip addr add 10.255.0.3/32 dev lo
+          nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" 10.255.0.3 >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://10.255.0.3:8767/health
+          # The units of the monitor's collectors allow the resolvers of this file instead of the
+          # runner's: systemd-resolved's stub, a private resolver, a link-local one with its zone,
+          # and a line that is no address.
+          printf '%s\n' 'nameserver 127.0.0.53' 'nameserver 10.255.0.53' 'nameserver fe80::53%eth0' \
+            'nameserver not-an-address' 'options edns0 trust-ad' >"$RUNNER_TEMP/resolv.conf"
+          printf '    celestia_mon_resolv_conf: %s\n' "$RUNNER_TEMP/resolv.conf" >>"$inv/hosts.yml"
           # A stand-in of Tensile's API for celestia-mon-tensile.
           v="$RUNNER_TEMP/tensile-api/api/v1/validators/celestiavalcons1ci"
           mkdir -p "$v"
@@ -1960,6 +1969,35 @@ jobs:
           poll 'up{job="signal"}' '.data.result[0].value[1] == "1"'
           poll 'ALERTS{alertname="UpgradeScheduled",alertstate="firing"}' '.data.result | length == 1'
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
+      # node_exporter and the collector exchange traffic only with loopback, this host's and the
+      # monitor's address (127.0.0.1 here) and the ufw sources. The monitor's collectors never reach
+      # the internal ranges but for the fixture's resolvers (the private one, the link-local one
+      # without its zone, never the line that is no address) and, for signal, its RPC. systemd
+      # applies the rules: under signal's, a request reaches the RPC stand-in on 10.255.0.3; under
+      # tensile's, it does not.
+      - name: Each unit exchanges traffic only with its peers
+        run: |
+          set -euo pipefail
+          rules() { grep '^IPAddress' "/etc/systemd/system/celestia-mon-$1.service"; }
+          for u in node-exporter otelcol; do
+            want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost IPAddressAllow=127.0.0.1 \
+              IPAddressAllow=10.255.255.1 IPAddressAllow=10.255.255.2)
+            if [ "$(rules "$u")" != "$want" ]; then rules "$u"; echo "celestia-mon-$u: expected"; echo "$want"; exit 1; fi
+          done
+          for u in tensile announcements signal; do
+            want=$(printf '%s\n' 'IPAddressDeny=10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 fc00::/7 fe80::/10' \
+              IPAddressAllow=localhost IPAddressAllow=10.255.0.53 IPAddressAllow=fe80::53)
+            if [ "$u" = signal ]; then want+=$'\nIPAddressAllow=10.255.0.3'; fi
+            if [ "$(rules "$u")" != "$want" ]; then rules "$u"; echo "celestia-mon-$u: expected"; echo "$want"; exit 1; fi
+          done
+          reach() { # unit: the HTTP status of a request to the RPC stand-in under that unit's address rules
+            sudo systemd-run --quiet --wait --pipe --collect \
+              -p "IPAddressDeny=$(systemctl show -P IPAddressDeny "celestia-mon-$1")" \
+              -p "IPAddressAllow=$(systemctl show -P IPAddressAllow "celestia-mon-$1")" \
+              curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://10.255.0.3:8767/health || true
+          }
+          test "$(reach signal)" = 200
+          test "$(reach tensile)" = 000
       # Prometheus asks celestia-mon-blackbox for Fibre's readiness. Nothing listens on Fibre's port
       # here (127.0.0.1:7980), so every probe fails, and journald keeps neither of the two error
       # lines blackbox logs for each failed probe.
@@ -2037,7 +2075,7 @@ jobs:
           grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
           # systemd-logind stands in for an active Fibre, and nothing listens on 127.0.0.1:7980.
           grep -Eq "^WARN +24 +fibre ready +Not checked: ci: the monitor cannot reach Fibre's port at 127\.0\.0\.1:7980 \(no connection\)" <<<"$out"
-          line=$(grep -E '^OK +23 +upgrade signal +read through http://127\.0\.0\.1:8767 ' <<<"$out")
+          line=$(grep -E '^OK +23 +upgrade signal +read through http://10\.255\.0\.3:8767 ' <<<"$out")
           grep -qF 'v10 signalled by 85.5% of the voting power, an upgrade needs 83.3%; your validator signalled v10;' <<<"$line"
           grep -qF 'upgrade to v10 scheduled at height 15116658, in about 3.9 days' <<<"$line"
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
