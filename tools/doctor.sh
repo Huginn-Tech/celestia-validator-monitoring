@@ -686,7 +686,7 @@ METRICS=""
 check_metrics() {
   local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
   local port open only del=""
-  local -a bad=()
+  local -a bad=() tnet=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
   # The address the monitor scrapes, which is where the metrics belong: this host's
   # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660").
@@ -729,6 +729,7 @@ check_metrics() {
     case $(addr_class "$a") in
       wildcard) [[ -n $wild ]] || wild="the port listens on $a" ;;
       public) bad+=("$a") ;;
+      private) if is_tailnet "$(addr_host "$a")"; then tnet+=("$a"); fi ;;
     esac
   done <<<"$(listeners "$(url_port "$url")")"
   # With no firewall active, nothing but the bind keeps the port off the networks of this host,
@@ -748,6 +749,8 @@ check_metrics() {
     report "$sev" 1 "$name" "enabled at $url, but $wild: celestia-appd serves its metrics on every interface of this host, a Tailscale interface included, which ufw does not filter (firewall: $fw)$open. Whoever reaches the port can read the node's metrics and hold its few connections (max_open_connections, 3 by default), which blinds the signing alerts. Fix: bind it to the private address the monitor scrapes, prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (never 0.0.0.0 or an empty host), then restart celestia-appd at a moment you choose$only$del; celestia-mon-doctor never edits the config"
   elif ((${#bad[@]} > 0)); then
     report "$sev" 1 "$name" "enabled at $url, but the port listens on $(join "${bad[@]}"), which is not a private address (firewall: $fw)$open. Fix: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose$only$del"
+  elif ((${#tnet[@]} > 0)); then
+    report WARN 1 "$name" "enabled at $url$note, but the port listens on $(join "${tnet[@]}"), a Tailscale address: ufw does not filter tailnet traffic, so only the tailnet policy decides who reaches it$open. Fix: grant tcp:$port on this host to the monitor alone in the tailnet policy (docs/security.md, Tailnet policy), or move celestia_mon_private_ip and prometheus_listen_addr to this host's VLAN or WireGuard address$del"
   elif [[ -n $open ]]; then
     report WARN 1 "$name" "enabled at $url$note$open. Only the monitor scrapes it. Fix: ${del#; }"
   else

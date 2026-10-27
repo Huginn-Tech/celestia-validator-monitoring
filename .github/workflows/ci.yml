@@ -1409,7 +1409,8 @@ jobs:
   # address and pprof on a Tailscale address; one unit has no User=. With no firewall active the
   # wildcard binds fail (FAIL 1 and 25) and the private ones warn (WARN 20); with ufw enabled and
   # one-source rules they warn, and a rule that lets anyone reach 9090 is named (WARN 25); with a
-  # Tailscale interface they fail again. A monitor-only host skips the node and Fibre checks.
+  # Tailscale interface they fail again; metrics on a Tailscale address warn (WARN 1). A
+  # monitor-only host skips the node and Fibre checks.
   doctor-ports:
     runs-on: ubuntu-24.04
     steps:
@@ -1520,6 +1521,15 @@ jobs:
           grep -Eq '^FAIL +1 +node metrics +.*\(firewall: ufw enabled; Tailscale interface tailscale0\)' <<<"$out"
           grep -Eq '^FAIL +25 +node ports ' <<<"$out"
           says 25 '[grpc] address = 0.0.0.0:9090 (0.0.0.0:9090) is on every interface, and this host has a Tailscale interface (tailscale0)'
+
+          echo "::group::metrics on a Tailscale address"
+          sudo ip addr add 100.100.1.1/32 dev lo
+          python3 -m http.server 26661 --bind 100.100.1.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://100.100.1.1:26661/metrics
+          sed -i 's/^prometheus_listen_addr = .*/prometheus_listen_addr = "100.100.1.1:26661"/' "$home/config/config.toml"
+          run sudo bash tools/doctor.sh "${args[@]}" --appd-unit ci-root --node-metrics-url http://100.100.1.1:26661/metrics
+          echo "::endgroup::"
+          grep -Eq '^WARN +1 +node metrics +enabled at http://100\.100\.1\.1:26661/metrics, but the port listens on 100\.100\.1\.1:26661, a Tailscale' <<<"$out"
 
           echo "::group::a monitor-only host"
           run sudo bash tools/doctor.sh --config /dev/null --roles monitor --fibre-enabled true --data-mounts / --head-wait 2
