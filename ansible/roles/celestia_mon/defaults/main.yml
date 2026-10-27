@@ -83,7 +83,8 @@ celestia_mon_thresholds:
 #   {type: pagerduty, routing_key: ...}                  an Events API v2 integration key
 #   {type: webhook, url: ...}
 # Page alerts go to every receiver; message alerts go to every receiver except PagerDuty, so
-# at least one receiver must be of another type. Keep the list (it holds secrets) in
+# at least one receiver must be of another type. Each URL is https (http only to this host or an
+# address of the private network, such as a relay there). Keep the list (it holds secrets) in
 # ansible-vault on the monitor host. The separate page and message lists of earlier
 # versions are refused.
 celestia_mon_receivers: []
@@ -108,8 +109,9 @@ celestia_mon_tensile: {}
 # Upgrade signalling (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), on the monitor host:
 # celestia-mon-signal reads x/signal through a node's CometBFT RPC. chain_id: the network's chain ID
 # (celestia, mocha-5); an RPC that serves another network is skipped. rpc: CometBFT RPC URLs, tried
-# in order; a node of your own first, a public RPC after it. validator: the validator's operator
-# address (celestiavaloper1...). Empty: off, and nothing watches the validator's signal.
+# in order; a node of your own first, a public RPC after it; https, or http to this host or a node
+# named by its private address. validator: the validator's operator address (celestiavaloper1...).
+# Empty: off, and nothing watches the validator's signal.
 #   celestia_mon_signal:
 #     chain_id: celestia
 #     rpc: ["http://127.0.0.1:26657", "https://rpc.celestia.pops.one"]

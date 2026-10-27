@@ -32,3 +32,25 @@
     quiet: true
   vars:
     celestia_mon_alertmanager_receivers: "{{ celestia_mon_receivers | default([], true) }}"
+
+# A receiver's URL carries its secret (a webhook's path, a Slack or Discord hook) and every alert:
+# https, or http only to this host or an address of the private network, such as a relay there.
+# Alertmanager follows the URL as it is, so a public http one would send both unencrypted.
+- name: Check the receivers' URLs
+  ansible.builtin.assert:
+    that:
+      - >-
+        celestia_mon_alertmanager_receiver_urls | reject('match', '^https://')
+        | reject('match', celestia_mon_plain_http_regex) | list | length == 0
+    fail_msg: >-
+      Each URL in celestia_mon_receivers (webhook url, slack api_url, discord webhook_url) must be https; http only
+      to this host (http://127.0.0.1:...) or to an address of the private network (http://10.20.0.5:...), such as a
+      relay there: anywhere else its token and the alerts would cross the internet unencrypted.
+    quiet: true
+  vars:
+    celestia_mon_alertmanager_receivers: "{{ celestia_mon_receivers | default([], true) }}"
+    celestia_mon_alertmanager_receiver_urls: >-
+      {{ ((celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'webhook') | map(attribute='url') | list)
+          + (celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'slack') | map(attribute='api_url') | list)
+          + (celestia_mon_alertmanager_receivers | selectattr('type', 'equalto', 'discord') | map(attribute='webhook_url') | list))
+         | map('string') | list }}

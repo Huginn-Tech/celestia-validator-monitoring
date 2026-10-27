@@ -20,6 +20,8 @@ and optionally:
   no_version   true for a signal store that does not hold the last height yet (on a node one
                block behind the one that answered /abci_info)
   refuse       the methods the node refuses, such as ["blockchain"]
+  redirect     a URL that every method answers with a redirect (302) to
+  oversize     true for a /status answer larger than 1 MiB
 Blocks are 2.87 s apart, and the last one is from the current minute, so every request of one
 read sees the same times. Queries are answered at the last height only, so a reader must ask for
 it: a gRPC query at another height fails, and a store query at another height gets the SDK
@@ -104,6 +106,14 @@ class Handler(BaseHTTPRequestHandler):
         with open(sys.argv[2]) as f:
             state = json.load(f)
         height = state["height"]
+        if state.get("redirect"):
+            self.send_response(302)
+            self.send_header("Location", state["redirect"])
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return None
+        if state.get("oversize") and method == "status":
+            return self.reply(200, {"result": {"padding": "x" * (2 << 20)}})
         if method in state.get("refuse", []):
             return self.reply(403, {"error": {"code": -32601, "message": "Forbidden", "data": f"{method} is not served here"}})
         if method == "status":
