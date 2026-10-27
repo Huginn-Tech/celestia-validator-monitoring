@@ -2234,7 +2234,7 @@ jobs:
           sudo grep -qx 'celestia_mon_ci: 1' /tmp/ed-out
           sudo cat /tmp/ed-paths
           test "$(sudo grep -c '^/run/celestia-mon-install/tmp/' /tmp/ed-paths)" = 2
-          test "$(sudo wc -l </tmp/ed-paths)" = 2
+          test "$(sudo cat /tmp/ed-paths | wc -l)" = 2
           test ! -e /var/tmp/celestia-mon-install
           test ! -e /run/celestia-mon-install
           if out=$(sudo bash ./install.sh --edit-vault "$dir/hosts.yml" </dev/null 2>&1); then

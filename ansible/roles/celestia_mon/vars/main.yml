@@ -109,7 +109,8 @@ celestia_mon_firewall_record: /var/lib/celestia-mon/firewall-added.json
 # so Fibre's metrics arrive the moment it is started), the stack on the monitor, and there with
 # Fibre on blackbox_exporter, which asks each Fibre host for its readiness.
 celestia_mon_host_services: >-
-  {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) else [])
+  {{ (['node_exporter'] if inventory_hostname in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', [])
+                                                  + groups.get('monitor', [])) else [])
      + (['otelcol'] if (celestia_mon_fibre_enabled and inventory_hostname in groups.get('fibre', [])) else [])
      + (['prometheus', 'alertmanager', 'grafana'] if inventory_hostname in groups.get('monitor', []) else [])
      + (['announcements'] if inventory_hostname in groups.get('monitor', []) and celestia_mon_announcements | length > 0 else [])

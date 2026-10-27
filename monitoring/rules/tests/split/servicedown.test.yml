@@ -234,6 +234,9 @@ tests:
           up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
         values: '1x14'
       - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
           up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
         values: '1x4 0x10'
       - series: >-
