@@ -111,6 +111,7 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 | `celestia_mon_prometheus_retention` | `30d` | How long Prometheus keeps data. |
 | `celestia_mon_prometheus_retention_size` | `8GB` | How much data Prometheus keeps; the oldest goes first when either limit is reached. Its disk needs this x 1.5 + 2 GiB (step 1). |
 | `celestia_mon_grafana_listen` | `127.0.0.1` | The address Grafana listens on, on the monitor (step 7). Another value must be a private address of the monitor host. |
+| `celestia_mon_grafana_clients` | `[]` | With a private `celestia_mon_grafana_listen`: the private address of each machine that opens Grafana there, one address each, no prefix, none a host of the inventory (step 7). Grafana exchanges network traffic with nothing else but loopback and its own address. |
 | `celestia_mon_nice`, `celestia_mon_cpu_weight`, `celestia_mon_io_weight` | 10, 20, 20 | CPU and disk priority of every unit. |
 | `celestia_mon_memory` | table in step 1 | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`, `announcements`, `tensile`, `signal`, `blackbox`). |
 | `celestia_mon_signal` | `{}` (off) | Upgrade signalling, on the monitor host: the RPCs to read x/signal through and the validator's operator address ([below](#upgrade-signalling)). |
@@ -253,7 +254,7 @@ Then also `http://localhost:9912/alerts` (Prometheus) and `http://localhost:9913
 
 Two optional alternatives:
 
-- **A private address.** Set `celestia_mon_grafana_listen` to a private address of the monitor (a Tailscale, WireGuard or LAN address) and run `install.sh` on the monitor again; then open `http://<that address>:9914` from a machine on that network. The install stops when the address is not one of the monitor's, and Grafana never listens on `0.0.0.0`. With ufw active on the monitor, allow your workstation to port 9914 yourself (`sudo ufw allow from <addr> to any port 9914 proto tcp`). Tailscale is never required.
+- **A private address.** Set `celestia_mon_grafana_listen` to a private address of the monitor (a Tailscale, WireGuard or LAN address) and `celestia_mon_grafana_clients` to the private address of each machine you open Grafana from (for example `[10.20.0.50]`, your workstation's address on that network), and run `install.sh` on the monitor again; then open `http://<that address>:9914` from one of those machines. Grafana's unit exchanges network traffic with nothing else but loopback and its own address, so a Grafana login cannot reach the validator or another host through a datasource. The install stops when the address is not one of the monitor's or the list is empty, and Grafana never listens on `0.0.0.0`. With ufw active on the monitor, allow your workstation to port 9914 yourself (`sudo ufw allow from <addr> to any port 9914 proto tcp`). Tailscale is never required.
 - **A reverse proxy.** Keep `127.0.0.1` and run the proxy on the monitor itself, in front of `http://127.0.0.1:9914`, with its own TLS.
 
 The dashboard is **Celestia validator** in the **Celestia validator** folder. [panels.md](panels.md) explains each panel. It is generated from your inventory, so groups that do not apply are left out and the threshold lines match the alerts. Do not edit it in Grafana; change the inventory and run `install.sh` on the monitor again.

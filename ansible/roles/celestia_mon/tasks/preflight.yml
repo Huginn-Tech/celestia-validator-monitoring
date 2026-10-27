@@ -58,6 +58,32 @@
     quiet: true
   when: "'grafana' in celestia_mon_host_services"
 
+# On a private address, Grafana's unit exchanges network traffic only with loopback, that
+# address and the clients listed, so the list cannot open the validator or another host of the
+# inventory to a Grafana login.
+- name: Check the machines that open Grafana on its private address
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_grafana_clients is sequence and celestia_mon_grafana_clients is not string
+      - celestia_mon_grafana_clients | length > 0
+      - celestia_mon_grafana_clients | map('string') | reject('match', celestia_mon_single_address_regex) | list | length == 0
+      - celestia_mon_grafana_clients | map('string') | reject('match', celestia_mon_private_address_regex) | list | length == 0
+      - celestia_mon_grafana_clients | map('string') | select('match', celestia_mon_loopback_address_regex) | list | length == 0
+      - celestia_mon_grafana_clients | map('string') | intersect(celestia_mon_preflight_inventory_ips) | list | length == 0
+    fail_msg: >-
+      Grafana listens on {{ celestia_mon_grafana_listen }}: set celestia_mon_grafana_clients to the private address of
+      each machine that opens it there (your workstation's Tailscale or WireGuard address, for example), one address
+      each, no prefix, none of them loopback or a host of the inventory. Or keep celestia_mon_grafana_listen at
+      127.0.0.1 and reach Grafana through an SSH tunnel.
+    quiet: true
+  vars:
+    celestia_mon_preflight_inventory_ips: >-
+      {{ groups.all | map('extract', hostvars) | selectattr('celestia_mon_private_ip', 'defined')
+         | map(attribute='celestia_mon_private_ip') | map('string') | list }}
+  when: >-
+    'grafana' in celestia_mon_host_services
+    and not ((celestia_mon_grafana_listen | string) is match(celestia_mon_loopback_address_regex))
+
 # The minimal subset: distribution, service manager, architecture and user.
 - name: Read the system facts
   ansible.builtin.setup:

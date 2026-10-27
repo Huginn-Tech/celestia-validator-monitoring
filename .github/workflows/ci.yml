@@ -1996,6 +1996,12 @@ jobs:
           # Plain http to a public RPC; and, from a validator host, a monitor whose address is a range.
           refused "$(gate signal 's#rpc: \["http://10\.255\.0\.3:8767"\]#rpc: ["http://rpc.example.org:26657"]#')" \
             'https unless the node is this host'
+          # Grafana on a private address of this host (10.255.0.3, on lo) without its clients, or with a range.
+          listen='\n    celestia_mon_grafana_listen: 10.255.0.3'
+          refused "$(gate grafana "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen#")" \
+            'set celestia_mon_grafana_clients'
+          refused "$(gate grafana-range "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen\\n    celestia_mon_grafana_clients: [10.255.0.0/16]#")" \
+            'set celestia_mon_grafana_clients'
           mkdir -p "$RUNNER_TEMP/gate-monitor"
           chmod 0755 "$RUNNER_TEMP/gate-monitor"
           cat >"$RUNNER_TEMP/gate-monitor/hosts.yml" <<'EOF'
@@ -2203,6 +2209,9 @@ jobs:
             if [ "$u" = signal ]; then want+=$'\nIPAddressAllow=10.255.0.3'; fi
             if [ "$(rules "$u")" != "$want" ]; then rules "$u"; echo "celestia-mon-$u: expected"; echo "$want"; exit 1; fi
           done
+          # Grafana on 127.0.0.1 (the default): loopback only.
+          want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost)
+          if [ "$(rules grafana)" != "$want" ]; then rules grafana; echo "celestia-mon-grafana: expected"; echo "$want"; exit 1; fi
           reach() { # unit: the HTTP status of a request to the RPC stand-in under that unit's address rules
             sudo systemd-run --quiet --wait --pipe --collect \
               -p "IPAddressDeny=$(systemctl show -P IPAddressDeny "celestia-mon-$1")" \
@@ -2320,6 +2329,29 @@ jobs:
             if ((peak * 2 > high)); then echo "$unit peaked above half of its MemoryHigh: raise its default in celestia_mon_memory"; fail=1; fi
           done
           exit "$fail"
+      # Grafana moved to a private address of the host (10.255.0.3, on lo) with one client,
+      # 10.255.0.9: its unit allows loopback, that address (the install's own wait for Grafana comes
+      # from it) and the client. A request from the client's address gets an answer; one from
+      # another address of the private network (10.255.0.4) gets none.
+      - name: Grafana on a private address exchanges traffic only with its clients
+        run: |
+          set -euo pipefail
+          inv="$RUNNER_TEMP/grafana-private"
+          mkdir -p "$inv"
+          chmod 0755 "$inv"
+          add='\n    celestia_mon_grafana_listen: 10.255.0.3\n    celestia_mon_grafana_clients: [10.255.0.9]'
+          sed -E "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$add#" "$INV" >"$inv/hosts.yml"
+          grep -qx '    celestia_mon_grafana_clients: \[10\.255\.0\.9\]' "$inv/hosts.yml"
+          sudo bash ./install.sh --inventory "$inv/hosts.yml" --host ci --yes >"$RUNNER_TEMP/grafana-private.log" 2>&1 ||
+            { cat "$RUNNER_TEMP/grafana-private.log"; sudo tail -n 40 /var/log/celestia-mon/install.log; exit 1; }
+          rules=$(grep '^IPAddress' /etc/systemd/system/celestia-mon-grafana.service)
+          want=$(printf '%s\n' IPAddressDeny=any IPAddressAllow=localhost IPAddressAllow=10.255.0.3 IPAddressAllow=10.255.0.9)
+          if [ "$rules" != "$want" ]; then printf '%s\n' "$rules"; echo "celestia-mon-grafana: expected"; echo "$want"; exit 1; fi
+          sudo ip addr add 10.255.0.4/32 dev lo
+          sudo ip addr add 10.255.0.9/32 dev lo
+          from() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 --interface "$1" http://10.255.0.3:9914/api/health || true; }
+          test "$(from 10.255.0.9)" = 200
+          test "$(from 10.255.0.4)" = 000
       - name: Uninstall removes the services and the recorded rules, and keeps data, settings and users
         run: |
           sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/uninstall.log"
