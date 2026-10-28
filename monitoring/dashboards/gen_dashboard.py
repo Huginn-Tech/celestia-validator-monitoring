@@ -122,8 +122,9 @@ NETWORK = "#CCCCDC"
 REFERENCE = "#CCCCDC99"
 
 # Bar fills and key swatches: fine (a muted green, so a healthy board is calm), look soon, urgent
-# (Grafana's dark-theme red, so red words and red bars match), and no data or not in use.
-OK, WARN, ALERT, NODATA = "#56A64B99", "#FF9830", "#F2495C", "#8E8E8E40"
+# (Grafana's dark-theme red, so red words and red bars match), and no data or not in use (at 45%, plainly
+# grey on the dark page and a step under the fine green).
+OK, WARN, ALERT, NODATA = "#56A64B99", "#FF9830", "#F2495C", "#8E8E8E73"
 # Words use named colours; grey words (no data, not checked, standby) this fixed grey.
 GREY = "#8E8E8E"
 # The steady healthy word of the Status cell and of each answer tile, and no other word: Grafana's
@@ -2111,7 +2112,7 @@ def check_lanes(s):
                     "((sum(increase(%s[1m])) > 0) or (sum(%s) > 0))) and on () %s"
                     % (PV, rsp, rsp, PV, missed_in("1m"), PROM)),
              [(1, "Signing, fast enough", OK), (2, "Signer slow", WARN), (3, "Bad proposals", WARN),
-              (4, "No signatures", WARN)] + twice_words + [(0, "Not asked to sign, or no data", NODATA)]))
+              (4, "No signatures", WARN)] + twice_words + [(0, "No data, or not asked to sign", NODATA)]))
     if s.fibre:
         # Uptime leaves out every minute the line is amber or red: a Fibre alert firing, or no Fibre running.
         fibre_alert = 'max(ALERTS{alertname=~"FibreNotServing|FibreBothActive",alertstate="firing"})'
@@ -2382,22 +2383,19 @@ def key_line(s, axis, width):
     right that wraps upwards: where the line has no room for the servers they wrap above the panel's
     top, which its scroll box clips without scrolling, and the states stay. The divider is the servers
     group's right border, so it wraps away with them."""
-    swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:%dpx;height:%dpx;'
-              'border-radius:2px;background-color:%s;%smargin-right:4px"></span>%s</span>')
-    # No data's fill is nearly invisible on the dark panel: its square has a 1 px border within the same 10 px.
-    states = [(OK, "Fine", ""), (WARN, "Warning", ""), (ALERT, "Urgent", ""),
-              (NODATA, "No data", "border:1px solid %s99;" % GREY)]
+    swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:10px;height:10px;'
+              'border-radius:2px;background-color:%s;margin-right:4px"></span>%s</span>')
+    states = [(OK, "Fine"), (WARN, "Warning"), (ALERT, "Urgent"), (NODATA, "No data")]
     hosts = [(c, name) for _, name, c in band_columns(s) if c]
     gap = 14
     apart = 3 * gap // 2                 # from the last server to the divider, and from the divider to the states
     ends = ["${__from:text}", "${__to:text} UTC"]
     room = (inner_px(width) - axis - text_px("2026-10-21 09:18:15", KEY_PX)
             - text_px("2026-10-21 09:18:15 UTC", KEY_PX) - 4 * gap)
-    if sum(text_px(t, KEY_PX) + 14 for _, t, _ in states) + gap * (len(states) - 1) > room:
+    if sum(text_px(t, KEY_PX) + 14 for _, t in states) + gap * (len(states) - 1) > room:
         raise SystemExit("The key line under the role band does not fit %d columns" % width)
     group = '<span style="display:flex;align-items:center;gap:%dpx%s">%s</span>'
-    boxes = group % (gap, "", "".join(swatch % (((8, 8) if line else (10, 10)) + (c, line, t))
-                                      for c, t, line in states))
+    boxes = group % (gap, "", "".join(swatch % state for state in states))
     if hosts:
         boxes += group % (gap, ";padding-right:%dpx;border-right:1px solid %s66" % (apart, GREY),
                           "".join('<span style="color:%s">%s</span>' % (c, name) for c, name in hosts))
