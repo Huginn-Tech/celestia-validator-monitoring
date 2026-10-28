@@ -38,7 +38,8 @@ groups:
           or quantile_over_time(0.5, ci_missing_q[10m:1m]) > 0
 EOF
 # The page rules of each doctor run below: no metric (check 12 still finds 8 names), never firing.
-# $labels. in a summary marks an alert that carries its metric's labels too, as on an install.
+# $labels.<name> in a summary marks a label the alert carries besides its rule's, as on an install:
+# host for one that comes from a host's series, endpoint for FibreDown's check from outside.
 cat > pages-1.yml <<'EOF'
 groups:
   - name: pages
@@ -75,6 +76,7 @@ groups:
       - {alert: NodePeersLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
       - {alert: ValidatorNotSigning, expr: vector(1) == 0, labels: {severity: page}}
       - {alert: FibreDown, expr: vector(1) == 0, labels: {severity: page}}
+      - {alert: FibreDown, expr: vector(1) == 0, labels: {severity: page, check: reachability}, annotations: {summary: "{{ $labels.endpoint }}"}}
       - {alert: DiskLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
       - {alert: MonitorCannotReach, expr: vector(1) == 0, labels: {severity: page}}
 EOF
@@ -168,7 +170,7 @@ for want in '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvanci
             ', {alertname="FibreNotServing", reason="missed_uploads"} by op until '; do
   grep -qF -- "$want" <<<"$line" || { echo "check 21 with a remote signer and Fibre: missing $want"; exit 1; }
 done
-pages pages-3.yml 6
+pages pages-3.yml 7
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor \
       --signer remote 2>/dev/null) || true
 want='(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ValidatorNotSigning, '
@@ -176,3 +178,17 @@ want+='FibreDown, DiskLow, MonitorCannotReach; ends in '
 line=$(grep -E '^WARN +21 +silences +1 of 5 active silences ' <<<"$out" || true)
 grep -qF -- "$want" <<<"$line" || { echo "check 21 counted a page alert the loaded rules do not have"; exit 1; }
 grep -Eq '^SKIP +22 +dead-man ' <<<"$out" || { echo "check 22 did not skip without an alertmanager job"; exit 1; }
+# A silence for one host holds back the page alerts that come from that host's series (NodePeersLow),
+# not FibreDown's, whose alerts carry the endpoint and no host (pages-3.yml is still loaded).
+cat > am/api/v2/silences <<EOF
+[{"id":"00000000-0000-0000-0000-000000000007","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"planned","createdBy":"op","endsAt":"$soon",
+  "matchers":[{"isEqual":true,"isRegex":true,"name":"alertname","value":"FibreDown|NodePeersLow"},
+              {"isEqual":true,"isRegex":false,"name":"host","value":"val-1"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+EOF
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^WARN +21 +silences +1 of 1 active silences ' <<<"$out" || true)
+want='{alertname=~"FibreDown|NodePeersLow", host="val-1"} by op until '
+grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the host silence: $want"; exit 1; }
+want='(ID 00000000-0000-0000-0000-000000000007: holds back NodePeersLow). '
+grep -qF -- "$want" <<<"$line" || { echo "check 21 counted a host silence for a page alert that names no host"; exit 1; }

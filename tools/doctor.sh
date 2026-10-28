@@ -2359,9 +2359,8 @@ JSON_READER='
 
 # Prometheus's GET /api/v1/rules reply (JSON) -> one line per alerting rule with severity page, in
 # the order Prometheus lists them (rule files by name, each group's rules as in its file): its name,
-# its labels and whether it is hosted, split by \034; the labels are split by \036, each one name
-# \037 value.
-# Hosted: an annotation reads $labels., so its alerts also carry labels from the rule's metrics.
+# its labels and the labels its annotations read ($labels.<name>), split by \034; the labels are
+# split by \036, each one name \037 value, and so are the names read.
 page_rules() {
   awk '
     function value(v) {
@@ -2370,14 +2369,20 @@ page_rules() {
       else if (d == 7 && key[6] == "labels") {
         if (key[7] == "severity") sev = v
         ls = ls ((ls == "") ? "" : "\036") key[7] "\037" v
-      } else if (d == 7 && key[6] == "annotations" && index(v, "$labels.")) hosted = "true"
+      } else if (d == 7 && key[6] == "annotations") {
+        while (match(v, /\$labels\.[a-zA-Z_][a-zA-Z0-9_]*/)) {
+          l = substr(v, RSTART + 8, RLENGTH - 8)
+          if (!index("\036" rd "\036", "\036" l "\036")) rd = rd ((rd == "") ? "" : "\036") l
+          v = substr(v, RSTART + RLENGTH)
+        }
+      }
     }
     function opened() {
-      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules") { name = ""; type = ""; sev = ""; ls = ""; hosted = "false" }
+      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules") { name = ""; type = ""; sev = ""; ls = ""; rd = "" }
     }
     function closed() {
       if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules" && type == "alerting" && sev == "page") {
-        print name "\034" ls "\034" hosted
+        print name "\034" ls "\034" rd
       }
     }'"$JSON_READER"
 }
@@ -2423,33 +2428,38 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
 
 # The page alerts a silence holds back, from the page rules Prometheus has loaded (PAGE_RULES). A
 # matcher on alertname reads the rule's name, and one on a label the rule sets (severity, and a
-# reason or check where it has one) reads that label's value. A hosted alert also carries host and
-# the labels of its metrics, whose values are not known here: it counts when the silence names
-# alertname or severity, and its matchers on those labels are not read, so a host silence for
-# planned work is listed only when it runs long. Any other page alert carries no other label, so
-# each other matcher must match an absent label: a silence for one host does not hold back a page
-# that names no host. Each alert is listed once, at its first rule held back.
+# reason or check where it has one) reads that label's value. An alert also carries the labels its
+# annotations read, whose values are not known here: it counts when the silence names alertname or
+# severity, and its matchers on those labels are not read. One that reads host comes from a host's
+# series and carries the other labels of its metrics too, so none of its matchers on a label the
+# rule does not set is read: a host silence for planned work is listed only when it runs long. Each
+# other matcher must match an absent label: a silence for one host does not hold back a page that
+# names no host, such as FibreDown's, whose alerts carry at most the endpoint. Each alert is listed
+# once, at its first rule held back.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=() kv=()
-  local -A lab=() listed=()
-  local r a l m n o v hit hosted named=false out=""
+  local -A lab=() reads=() listed=()
+  local r a l rd m n o v hit named=false out=""
   IFS=$'\036' read -r -a ms <<<"$1"
   for m in "${ms[@]}"; do
     n=${m%%$'\037'*}
     if [[ $n == alertname || $n == severity ]]; then named=true; fi
   done
   for r in "${PAGE_RULES[@]}"; do
-    IFS=$'\034' read -r a l hosted <<<"$r"
-    if [[ -n ${listed[$a]+set} || ($hosted == true && $named == false) ]]; then continue; fi
+    IFS=$'\034' read -r a l rd <<<"$r"
+    if [[ -n ${listed[$a]+set} || (-n $rd && $named == false) ]]; then continue; fi
     lab=()
     IFS=$'\036' read -r -a kv <<<"$l"
     for m in "${kv[@]}"; do lab[${m%%$'\037'*}]=${m#*$'\037'}; done
+    reads=()
+    IFS=$'\036' read -r -a kv <<<"$rd"
+    for m in "${kv[@]}"; do reads[$m]=1; done
     hit=true
     for m in "${ms[@]}"; do
       IFS=$'\037' read -r n o v <<<"$m"
       if [[ $n == alertname ]]; then matcher_admits "$o" "$v" "$a" || hit=false
       elif [[ -n ${lab[$n]+set} ]]; then matcher_admits "$o" "$v" "${lab[$n]}" || hit=false
-      elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi
+      elif [[ -z ${reads[$n]+set} && -z ${reads[host]+set} ]]; then matcher_admits "$o" "$v" "" || hit=false; fi
     done
     if [[ $hit == true ]]; then
       listed[$a]=1
