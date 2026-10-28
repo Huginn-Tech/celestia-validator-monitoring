@@ -1,5 +1,6 @@
 ---
-# Single source of truth for every binary celestia-mon installs or uses in CI.
+# Single source of truth for every binary celestia-mon installs or uses in CI, and for the
+# celestia-app release its upstream names are checked against (celestia_app, last).
 # Pin releases that are at least two weeks old, on a line upstream still supports.
 # Each sha256 is the official checksum of the tarball the role downloads; the roles
 # verify downloads against these values and never fetch a checksum file at run time.
@@ -59,3 +60,9 @@ celestia_mon_versions:
   # weeks old, and after the ansible-core release above; after changing either pin, run the
   # lock workflow and commit the requirements.lock it uploads.
   python_deps_before: "2026-09-25T00:00:00Z"
+  # celestia-app: not installed by celestia-mon, and pinned to the release the validators run,
+  # not by age. The source that metric names, labels, links and version phrases are checked
+  # against (monitoring/upstream.yml, tools/ci/check_upstream.py); celestia-core and the
+  # Cosmos SDK fork follow from its go.mod. CLAUDE.md lists the steps of a Celestia release.
+  celestia_app:
+    version: "v10.5.0"
