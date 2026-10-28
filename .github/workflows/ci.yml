@@ -9,6 +9,11 @@ on:
 permissions:
   contents: read
 
+# One run per branch: a new push to a pull request cancels the run of its last one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   ANSIBLE_CONFIG: ansible/ansible.cfg
   ANSIBLE_ROLES_PATH: ansible/roles
@@ -20,6 +25,7 @@ env:
 jobs:
   lint:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
@@ -46,6 +52,7 @@ jobs:
 
   secrets:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -66,6 +73,7 @@ jobs:
 
   collectors:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -253,6 +261,7 @@ jobs:
   # fetched).
   rules:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
@@ -748,6 +757,7 @@ jobs:
   # scrapes are served.
   announcements:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-announcements reads, posts once and reports errors
@@ -839,6 +849,7 @@ jobs:
   # takes from Tensile's newest block (/tip) at its reads.
   tensile:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-tensile serves Tensile's verdict as metrics
@@ -977,6 +988,7 @@ jobs:
   # while x/signal goes on being read.
   signal:
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-signal serves x/signal as metrics
@@ -1322,6 +1334,7 @@ jobs:
 
   dashboard:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
@@ -1747,6 +1760,7 @@ jobs:
 
   doctor:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Run doctor for each role
@@ -1783,6 +1797,7 @@ jobs:
   # the fix never starts it; with one it is down (FAIL 6). On a backup node check 2 is INFO.
   doctor-standby:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on a standby Fibre host and a backup node
@@ -1830,6 +1845,7 @@ jobs:
   # host without md arrays gets no md line.
   doctor-md:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor reads the md RAID arrays
@@ -1916,6 +1932,7 @@ jobs:
   # voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
   doctor-signer:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on the signing path
@@ -2032,6 +2049,7 @@ jobs:
   # Tailscale address warn (WARN 1). A monitor-only host skips the node and Fibre checks.
   doctor-ports:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on the validator's ports
@@ -2194,6 +2212,7 @@ jobs:
   # fire and read no metric stand in for an install's, one set per doctor run, swapped by a reload.
   doctor-monitor:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
@@ -2394,6 +2413,7 @@ jobs:
   # active (its closed port is Not checked), fibre-e's is not (a standby).
   doctor-readiness:
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
@@ -2520,7 +2540,8 @@ jobs:
   # rule; a second run of each changes nothing. ufw is enabled first with a rule of the
   # operator's (it even carries the comment celestia-mon) that must survive both, and the
   # inventory names monitor addresses other than this host's (celestia_mon_firewall_sources),
-  # so rules are added, recorded and removed. No setup-python: install.sh brings its own Ansible.
+  # so rules are added, recorded and removed. No setup action: install.sh brings its own Ansible,
+  # from the committed ansible/requirements.lock.
   install:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -2529,36 +2550,6 @@ jobs:
         shell: bash
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      # install.sh installs Ansible only from ansible/requirements.lock, and refuses the
-      # placeholder that is committed until the lock workflow (.github/workflows/lock.yml) has
-      # made the first lock. While it is the placeholder, this makes a lock in the runner's
-      # checkout the way that workflow does (pinned uv, checked against versions.yml; hashes of
-      # every file), so install.sh runs with --require-hashes as on a host. A committed lock is
-      # used as it is.
-      - name: Use the committed Ansible lock, or make one while it is the placeholder
-        run: |
-          set -euo pipefail
-          if grep -q '^ansible-core==' ansible/requirements.lock; then
-            echo "Using the committed ansible/requirements.lock."
-            exit 0
-          fi
-          echo "::warning::ansible/requirements.lock is the placeholder: run the lock workflow and commit its lock. This job makes one meanwhile."
-          pins=.celestia_mon_versions
-          uv_version=$(yq "$pins.uv.version" versions.yml)
-          uv_sha256=$(yq "$pins.uv.sha256.x86_64" versions.yml)
-          ansible_core=$(yq "$pins.ansible_core" versions.yml)
-          deps_before=$(yq "$pins.python_deps_before" versions.yml)
-          tarball=uv-x86_64-unknown-linux-gnu.tar.gz
-          mkdir -p "$RUNNER_TEMP/uv" "$RUNNER_TEMP/lock"
-          curl -fsSL --retry 3 -o "$RUNNER_TEMP/$tarball" "https://github.com/astral-sh/uv/releases/download/$uv_version/$tarball"
-          echo "$uv_sha256  $RUNNER_TEMP/$tarball" | sha256sum -c -
-          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/uv" --strip-components=1 uv-x86_64-unknown-linux-gnu/uv
-          echo "ansible-core==$ansible_core" >"$RUNNER_TEMP/lock/requirements.in"
-          UV_NO_CONFIG=1 UV_NO_PROGRESS=1 UV_PYTHON_DOWNLOADS=never "$RUNNER_TEMP/uv/uv" pip compile "$RUNNER_TEMP/lock/requirements.in" \
-            --universal --python-version 3.12 --generate-hashes --only-binary :all: --exclude-newer "$deps_before" \
-            --no-header --output-file "$RUNNER_TEMP/lock/requirements.lock"
-          cp "$RUNNER_TEMP/lock/requirements.lock" ansible/requirements.lock
-          cat ansible/requirements.lock
       - name: Write a one-host inventory
         run: |
           inv="$RUNNER_TEMP/install"
