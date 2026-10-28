@@ -1441,9 +1441,9 @@ jobs:
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 68
-          test "$(count mainnet)" = 71
-          test "$(count five)" = 65
+          test "$(count split)" = 70
+          test "$(count mainnet)" = 73
+          test "$(count five)" = 67
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1451,7 +1451,7 @@ jobs:
           # The upgrade tile is Governance with the vote check on: Vote missing amber (6) and, where
           # GovVoteMissing pages, red (16); Network upgrade, without a vote word, with gov: false.
           for v in nogov nopage; do
-            test "$(count "$v")" = 71
+            test "$(count "$v")" = 73
             test "$(tiles "$v")" = '[11,12,17,14,15,16]'
           done
           tile16() {
@@ -1585,26 +1585,29 @@ jobs:
           EOF
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
-      # the Upload readiness band (215: one untitled lane across the row, 2 rows high, right under the
-      # facts), then three charts of one height, right under the band: two side by side on columns 0 and
-      # 12, then one across the row.
+      # the Upload readiness line, 2 rows high, right under the facts, in History's form: its bars (215, an
+      # untitled status history with its lane between two hidden ones) on History's 21 columns and its
+      # share (216, an untitled state timeline of the same lanes and rowHeight) in the Uptime column's 3.
+      # Then four charts of one height, right under it, in two lines of two on columns 0 and 12.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
                    | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
-                   | [$f[] | select(.type == "state-timeline")] as $b
+                   | [$f[] | select(.type == "status-history")] as $b | [$f[] | select(.type == "state-timeline")] as $u
                    | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
                      and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
                                    and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
                      and ($p | map(.options.text.valueSize) | unique | length) == 1
                      and ($b | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h]))
-                         == [[215, "", 1, 0, 24, 2]]
+                         == [[215, "", 3, 0, 21, 2]]
+                     and ($u | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h, .gridPos.y, .options.rowHeight]))
+                         == [[216, "", 3, 21, 3, 2, $b[0].gridPos.y, $b[0].options.rowHeight]]
                      and $b[0].gridPos.y == ($s | map(.y + .h) | max)
                      and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) == $b[0].gridPos.y + 2
-                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
+                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 12], [12, 12]]' \
               "build/$s/dashboard.json"
           done
       # Upload readiness (215) and the Fibre tile, History and cards read the not_ready rules: both rules
@@ -1633,7 +1636,7 @@ jobs:
                   p = todo.pop()
                   panels[p["id"]] = p
                   todo += p.get("panels", [])
-              band = " ".join(panels[215]["targets"][0]["expr"].split())
+              band = " ".join(next(t["expr"] for t in panels[215]["targets"] if t["legendFormat"] == "Upload readiness").split())
               assert "max_over_time(%s[$__interval] offset -$__interval)" % m.group(1) in band, band
               page = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
               assert 'ALERTS{alertstate="firing",%s}' % page in band, band
