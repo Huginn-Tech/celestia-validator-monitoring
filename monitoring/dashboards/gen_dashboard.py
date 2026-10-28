@@ -424,6 +424,11 @@ def re2(text):
     return re.sub(r"[\\^$.*+?()\[\]{}|]", lambda m: "\\" + m.group(0), text)
 
 
+def devices(host, left_out):
+    """The selector of host's devices, less those whose name matches the regex left_out (VIRT, DISK)."""
+    return "{host=%s,device!~%s}" % (q(host), q(left_out))
+
+
 def label(expr, name, value):
     """expr with the label name set to the fixed text value ('$' kept as it is)."""
     return 'label_replace(%s, %s, %s, "", "")' % (expr, q(name), q(value.replace("$", "$$")))
@@ -2449,7 +2454,7 @@ def servers_table(s):
               % nodata_all)
     peaks = []
     for link in s.links:
-        sel = "{host=%s,device!~%s}" % (q(link["host"]), q(VIRT))
+        sel = devices(link["host"], VIRT)
         cap = link_capacity(link, sel)
         # A 75 s window holds a full minute of 15 s scrapes; [1m] would hold 45 s of them and read
         # the busiest 45 seconds instead of the busiest minute.
@@ -2913,7 +2918,7 @@ def network_now(s, host):
     link = next((x for x in s.links if x["host"] == host), None)
     if link is None:
         return "vector(-9)"
-    sel = "{host=%s,device!~%s}" % (q(host), q(VIRT))
+    sel = devices(host, VIRT)
     cap = link_capacity(link, sel)
     # A 75 s window holds a full minute of 15 s scrapes.
     rates = ["max_over_time((sum by (host) (rate(node_network_%s_bytes_total%s[75s])))[1h:1m])" % (m, sel)
@@ -4242,7 +4247,7 @@ def network_chart(s, h, pid, width, variant):
     Grafana leaves a series it does not draw out of the tooltip too. Fibre's own shard traffic is a small
     part of the total and is drawn in the Fibre row's Uploads and Downloads."""
     hue = server_hue(s, h)
-    sel = "{host=%s,device!~%s}" % (q(h), q(VIRT))
+    sel = devices(h, VIRT)
     overrides, legend = mirrored(hue, ("In", "Out"))
     targets = [target("A", "sum(rate(node_network_receive_bytes_total%s[5m])) * 8" % sel, legend[0]),
                target("B", "sum(rate(node_network_transmit_bytes_total%s[5m])) * 8" % sel, legend[1])]
@@ -4317,7 +4322,7 @@ def disk_latency_chart(s, h, pid, width, variant):
     """The average time one write (above zero) and one read (below) took on server h's physical disks, on an
     axis centred on zero that shows at least 10 ms each way, so the columns read alike."""
     hue = server_hue(s, h)
-    dev = "{host=%s,device!~%s}" % (q(h), q(DISK))
+    dev = devices(h, DISK)
     avg = "sum(rate(node_disk_%s_time_seconds_total%s[5m])) / (sum(rate(node_disk_%s_completed_total%s[5m])) > 0)"
     overrides, legend = mirrored(hue, ("Write", "Read"))
     targets = [target("A", avg % ("write", dev, "writes", dev), legend[0]),
@@ -4334,7 +4339,7 @@ def disk_latency_chart(s, h, pid, width, variant):
 def disk_io_chart(s, h, pid, width, variant):
     """Bytes written (above zero) and read (below) per second on server h's physical disks."""
     hue = server_hue(s, h)
-    dev = "{host=%s,device!~%s}" % (q(h), q(DISK))
+    dev = devices(h, DISK)
     overrides, legend = mirrored(hue, ("Write", "Read"))
     targets = [target("A", "sum(rate(node_disk_written_bytes_total%s[5m]))" % dev, legend[0]),
                target("B", "sum(rate(node_disk_read_bytes_total%s[5m]))" % dev, legend[1])]
