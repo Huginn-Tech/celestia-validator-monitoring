@@ -13,23 +13,16 @@ env:
   ANSIBLE_CONFIG: ansible/ansible.cfg
   ANSIBLE_ROLES_PATH: ansible/roles
 
-# Jobs that need Ansible install the ansible-core pinned in versions.yml, the one install.sh
-# uses on the hosts. tools/ci/pins.py writes that pin and the release versions and amd64
-# sha256 values of versions.yml to $GITHUB_ENV (ANSIBLE_CORE_VERSION, PROMETHEUS_VERSION,
-# PROMETHEUS_SHA256, ...).
+# Jobs that need Python run .github/actions/setup: Python 3.12 with PyYAML, and the release
+# versions and amd64 sha256 values of versions.yml in $GITHUB_ENV (tools/ci/pins.py:
+# ANSIBLE_CORE_VERSION, PROMETHEUS_VERSION, PROMETHEUS_SHA256, ...); with ansible "true" also the
+# ansible-core pinned there, the one install.sh uses on the hosts.
 jobs:
   lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup
       - name: Install linters
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION" "ansible-lint>=25,<26" "yamllint>=1.35,<2"
       - name: yamllint
@@ -81,16 +74,9 @@ jobs:
       ANSIBLE_ROLES_PATH: ${{ github.workspace }}/ansible/roles
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: ./.github/actions/setup
         with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
-      - name: Install Ansible
-        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible: "true"
       - name: Write a one-host inventory and playbook
         run: |
           CI_DIR="$RUNNER_TEMP/collectors"
@@ -269,16 +255,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: ./.github/actions/setup
         with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
-      - name: Install Ansible
-        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible: "true"
       # The mainnet example also reads one announcement channel, has the outside check of its
       # Fibre endpoint and reads upgrade signalling, so its rules and scrape jobs include
       # AnnouncementsUnreadable, FibreDown's outside branches, TensileUnreadable, the upgrade alerts
@@ -1345,16 +1324,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      - uses: ./.github/actions/setup
         with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
-      - name: Install Ansible
-        run: pip install "ansible-core==$ANSIBLE_CORE_VERSION"
+          ansible: "true"
       # A throwaway Prometheus container that runs the panel queries; it is not celestia-mon's. It
       # scrapes the stub series written further down (one for each selector of the dashboards) on
       # loopback, so a query that would carry a PromQL warning or info on real data carries it here.
@@ -2224,14 +2196,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup
       - name: doctor checks 11 and 12 against Prometheus on loopback
         run: |
           set -euo pipefail
@@ -2431,14 +2396,7 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup
       - name: Install the gRPC packages of the stand-ins
         run: pip install "grpcio>=1.66,<2" "grpcio-health-checking>=1.66,<2"
       - name: The readiness probe and doctor check 24
@@ -3186,14 +3144,7 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
-        with:
-          python-version: "3.12"
-      - name: Read the pinned versions
-        run: |
-          python -m pip install --upgrade pip
-          pip install pyyaml
-          python tools/ci/pins.py >> "$GITHUB_ENV"
+      - uses: ./.github/actions/setup
       # community.docker and ansible.posix are for molecule's docker driver only; the roles use ansible.builtin.
       - name: Install molecule
         run: |

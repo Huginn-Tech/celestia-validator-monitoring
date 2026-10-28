@@ -1,0 +1,26 @@
+name: Set up Python and the pins
+description: >-
+  Python 3.12 with PyYAML, the pins of versions.yml in the job's environment (tools/ci/pins.py writes
+  ANSIBLE_CORE_VERSION, PROMETHEUS_VERSION, PROMETHEUS_SHA256, ...), and with ansible "true" the
+  ansible-core pinned there, the one install.sh uses on the hosts. Run it after actions/checkout.
+inputs:
+  ansible:
+    description: '"true" installs the ansible-core of versions.yml.'
+    default: "false"
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+      with:
+        python-version: "3.12"
+    # $GITHUB_ENV applies from the job's next step, so the ansible-core pin is read here again.
+    - name: Read the pinned versions
+      shell: bash
+      env:
+        ANSIBLE: ${{ inputs.ansible }}
+      run: |
+        pip install pyyaml
+        python tools/ci/pins.py >> "$GITHUB_ENV"
+        if [ "$ANSIBLE" = true ]; then
+          pip install "ansible-core==$(python tools/ci/pins.py | sed -n 's/^ANSIBLE_CORE_VERSION=//p')"
+        fi
