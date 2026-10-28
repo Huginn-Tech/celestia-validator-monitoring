@@ -3545,7 +3545,7 @@ def validator_row(s):
 
 
 # The Fibre row's facts take the top strip's cell style: untitled cells INTRO_ROWS high, the label over
-# the value, set from the left, all six in one value size (fibre_strip). The widest "<x>/<y>" a
+# the value, set from the left, all six in one value size (cell, fit_cells). The widest "<x>/<y>" a
 # fact must hold.
 OF_SAMPLE = "99999/99999"
 # One series per host whose Fibre sends its metrics: its storage budget gauge, which Fibre reports from
@@ -3576,31 +3576,6 @@ def rule_number(alert, reason, pattern):
     return int(found[0])
 
 
-def fibre_fact(pid, label, desc, targets, **kw):
-    """A Fibre fact in the top strip's cell style: an untitled cell, the label (INTRO_LABEL_PX) over the
-    value, set from the left, in the text colour unless a mapping colours it. The label is the field's
-    display name, so the title bar stays empty and the (i) shows on hover; fibre_strip pins the value
-    size."""
-    kw.setdefault("color_mode", "none")
-    p = stat(pid, "", desc, targets, size=INTRO_VALUE_SIZES[0], text_mode="value_and_name", justify="auto",
-             wide=False, title_size=INTRO_LABEL_PX, **kw)
-    p["fieldConfig"]["defaults"]["displayName"] = label
-    return p
-
-
-def fibre_strip(facts, samples):
-    """The six Fibre facts as (panel, width) items on the top strip's column edges, marked for
-    one_value_size() with every text a fact can show (its words, its no-value text and samples {id: [texts]}
-    of values that no mapping names), so they take the value size of every six-cell row. Stops when a
-    label does not fit."""
-    if len(facts) != len(INTRO_WIDTHS):
-        raise SystemExit("The Fibre row needs %d facts, one per column of the top strip" % len(INTRO_WIDTHS))
-    items = list(zip(facts, INTRO_WIDTHS))
-    for p, w in items:
-        check_fit("The Fibre facts (label)", [p["fieldConfig"]["defaults"]["displayName"]], INTRO_LABEL_PX, w)
-    return six_cells(items, samples)
-
-
 def of_fact(pid, name, desc, x, y, zero, missing, alarm=None):
     """A fact that reads "<x>/<y>" (x and y whole numbers, one series each without labels), the
     words zero while y is 0, or the words missing, in grey, while y has no value. count_values turns each
@@ -3615,8 +3590,8 @@ def of_fact(pid, name, desc, x, y, zero, missing, alarm=None):
         joined = ('label_replace(%s and on () (%s), "text", "$1%s", "text", "(.*)") or on () %s'
                   % (joined, alarm, MARKS["orange"], joined))
     expr = " or on () ".join([joined, label("(%s == 0)" % y, "text", zero), label("vector(1)", "text", missing)])
-    p = fibre_fact(pid, name, desc, one(expr), no_value=missing, color_mode="value",
-                   mappings=mapping((missing, missing, GREY)) + regex_map(".*" + MARKS["orange"], "orange"))
+    p = cell(pid, name, desc, one(expr), no_value=missing, color_mode="value",
+             mappings=mapping((missing, missing, GREY)) + regex_map(".*" + MARKS["orange"], "orange"))
     p["transformations"] = [{"id": "labelsToFields", "options": {"keepLabels": ["text"], "mode": "columns"}},
                             {"id": "filterFieldsByName", "options": {"include": {"names": ["text"]}}}]
     p["options"]["reduceOptions"]["fields"] = "/.*/"
@@ -3697,7 +3672,7 @@ def fibre_row(s):
     unit = q(s.units["fibre"])
     failing = s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
 
-    accepted = fibre_fact(
+    accepted = cell(
         202, "Uploads accepted, 24 h",
         "Uploads this Fibre accepted and signed in the last 24 hours; a low count on a quiet network is fine. "
         "It counts across Fibre restarts and failovers. A client may send an upload again, so it can exceed the "
@@ -3707,7 +3682,7 @@ def fibre_row(s):
            "(celestia_mon_tensile) does.")
         + more(pages=[FIBRE_DASHBOARD, TENSILE]),
         one(count_24h(ok, "sum", alive=FIBRE_ALIVE)), no_value="No Fibre data")
-    upload_time = fibre_fact(
+    upload_time = cell(
         205, "Upload time, 24 h",
         "The average time an accepted upload took in the last 24 hours; steady is good. It covers checking the "
         "payment promise and the rows, writing the shard to disk and signing it through the validator's signer; "
@@ -3718,7 +3693,7 @@ def fibre_row(s):
         unit="s", decimals=None, mappings=special_map("nan", "No uploads"), no_value="No Fibre data")
     # '> 0' leaves out an unlimited budget and one never derived because the validator was out of the
     # active set when Fibre started: -1 names them "No limit".
-    budget = fibre_fact(
+    budget = cell(
         204, "Storage budget used",
         "Share of this server's stake-based storage budget that its shards fill; below 100% is good. At 100% "
         "Fibre refuses uploads (the Fibre tile reads Uploads failing while FibreNotServing holds). The share "
@@ -3731,7 +3706,7 @@ def fibre_row(s):
                   '(absent(node_systemd_unit_state{name=%s,state="active"} == 1) * -2)' % unit)),
         unit="percentunit", decimals=0, no_value="No Fibre data",
         mappings=mapping((-1, "No limit", None), (-2, "Not running", None)))
-    cleanups = fibre_fact(
+    cleanups = cell(
         214, "Failed clean-ups, 24 h",
         "Failed runs of Fibre's removal of old shards in the last 24 hours; 0 is good. Fibre removes shards "
         "older than the retention window (4 hours by default) about once a minute. A failed run leaves old "
@@ -3770,7 +3745,7 @@ def fibre_row(s):
     else:
         first = [
             accepted,
-            fibre_fact(
+            cell(
                 203, "Upload success, 24 h",
                 "Share of upload requests Fibre accepted in the last 24 hours; near 100%% is good. Failures "
                 "include clients' invalid payment promises and uploads refused while the storage budget is "
@@ -3781,7 +3756,7 @@ def fibre_row(s):
                           "(count(fibre_server_upload_shard_budget_bytes) * 0 - 1)")),
                 unit="percentunit", decimals=2, mappings=mapping((-1, "No uploads", None)),
                 no_value="No Fibre data"),
-            fibre_fact(
+            cell(
                 201, "Last accepted upload",
                 "When the active Fibre last accepted an upload; hours ago is normal on a quiet network. Fibre "
                 "sends its metrics up to a minute apart, so this can be a minute late; an upload in the last "
@@ -3799,7 +3774,10 @@ def fibre_row(s):
         # The longest text the time-ago value shows, which no mapping names ("44 minutes ago"; "a few
         # seconds ago" cannot show, see above).
         samples = {201: ["44 minutes ago"]}
-    strip = fibre_strip(first + [upload_time, budget, cleanups], samples)
+    facts = first + [upload_time, budget, cleanups]
+    if len(facts) != len(INTRO_WIDTHS):
+        raise SystemExit("The Fibre row needs %d facts, one per column of the top strip" % len(INTRO_WIDTHS))
+    strip = fit_cells(list(zip(facts, INTRO_WIDTHS)), "The Fibre facts", samples=samples)
 
     # The first chart draws what a FibreNotServing rule watches, in the active Fibre's colour, with the
     # rule's level dashed and named in its legend: flat on a healthy server and on a quiet network, a
