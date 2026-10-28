@@ -380,7 +380,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 1. `chronyc tracking` and `chronyc sources` (chrony), or `timedatectl timesync-status` (systemd-timesyncd): whether the daemon runs, which sources it reaches, and the offset it measures. `sudo celestia-mon-doctor` on the host (check 9) shows the same.
 2. Outgoing NTP (UDP 123) must be allowed to the time servers. Start the daemon if it stopped (`systemctl start chrony`, or `timedatectl set-ntp true` for systemd-timesyncd); run one of the two, not both.
-3. The dashboard's Clock maximum error chart (Servers: restarts, disk activity and clocks) shows when the line began to climb.
+3. The dashboard's Clock maximum error chart (Servers: disks, restarts and clocks) shows when the line began to climb.
 
 **Links.** [node_exporter v1.12.1 timex collector](https://github.com/prometheus/node_exporter/blob/v1.12.1/collector/timex.go), [Fibre health checks](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/server_health.go).
 

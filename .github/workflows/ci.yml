@@ -1431,10 +1431,11 @@ jobs:
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
       # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
       # (open, then closed) hold six charts per server (single: one server, mainnet and five: three, the
-      # monitor's among them, split: four, its KMS host scraped), each line one kind of chart, at one width and height,
-      # filling the 24 columns; each server's charts in one column, titled with its name first; its
-      # out-of-memory marker on its own memory chart. Restarts (480) and Clock maximum error (490) show
-      # every server in one chart across the full width.
+      # monitor's among them, split: four, its KMS host scraped): CPU, memory and network in the open row (400),
+      # disk used, latency and I/O in the closed one (450). Each line holds one kind of chart (a single server's
+      # three to a line), at one width and height, filling the 24 columns; each server's charts in one column,
+      # titled with its name first; its out-of-memory marker on its own memory chart. Restarts (480) and Clock
+      # maximum error (490) show every server in one chart across the full width, at the end of the closed row.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
@@ -1490,6 +1491,8 @@ jobs:
                    | ($p | length) == 6 * $n
                    and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
                    and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
+                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 410 and . < 440)] | length) == 0
+                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 440)] | length) == 3 * $n + 2
                    and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
                                                         and (map(.gridPos.w) | unique | length) == 1
                                                         and (map(.gridPos.w) | add) == 24))
@@ -1695,7 +1698,43 @@ jobs:
               assert chart["targets"] and all(m.group(1) + "{" in t["expr"] for t in chart["targets"]), chart["targets"]
               level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
               assert level == int(m.group(2)), "%s: 490's line at %s, the rule's %s" % (s, level, m.group(2))
+              assert chart["title"].endswith("(alert at %d s)" % level), "%s: 490 is titled %r" % (s, chart["title"])
               print("%s: 490 draws %s, its line at %s s" % (s, m.group(1), level))
+          EOF
+      # Restarts (480) draws, for each service of each server, the value ServiceDown's crash-loop rule compares
+      # (its restarts in the last 30 minutes), its dashed line at the rule's number and that number in its
+      # title, so neither side can change alone.
+      - name: Restarts draw the crash-loop rule
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("single", "split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              exprs = [" ".join(r["expr"].split()) for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                       if r.get("alert") == "ServiceDown" and "node_systemd_service_restart_total" in r["expr"]]
+              found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)", e)
+                       for e in exprs]
+              assert found and all(found), "%s: the crash-loop rules %s" % (s, exprs)
+              levels = {int(m.group(1)) for m in found}
+              assert len(levels) == 1, "%s: crash-loop levels %s" % (s, levels)
+              n = levels.pop()
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              chart = panels[480]
+              assert chart["targets"] and all("increase(node_systemd_service_restart_total{" in t["expr"] and "[30m]" in t["expr"]
+                                              for t in chart["targets"]), chart["targets"]
+              level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+              assert level == n, "%s: 480's line at %s, the rule's %s" % (s, level, n)
+              assert chart["title"] == "Restarts (alert above %d in 30 min)" % n, "%s: 480 is titled %r" % (s, chart["title"])
+              print("%s: 480 draws %d series, its line at %s" % (s, len(chart["targets"]), level))
           EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
