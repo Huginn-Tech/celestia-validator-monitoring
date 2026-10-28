@@ -230,6 +230,8 @@ TOTAL = 'cometbft_consensus_validators_power{job="celestia-app"}'
 # A node that only forwards Fibre's requests is never taken for the node the validator signs through.
 PV = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type=~"prevote|precommit|proposal"}'
 RAW = 'cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="raw_bytes"}'
+# Each node's median time over its last 50 signatures, as RemoteSignerProblem reads it.
+MEDIAN = 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"})'
 
 # True while the validator's key is in the active set: a node recorded a block for it in the
 # last 2 minutes, as a signature (the last signed height changes) or a miss (the missed-block
@@ -2435,12 +2437,11 @@ def servers_table(s):
         "max by (host) (ALERTS{%s,alertstate=\"firing\"}) * 0 - 11" % PEERS_PAGE,
         'max by (host) (ALERTS{alertname="NodePeersLow"}) * 0 - 12',
         'max by (host) (cometbft_p2p_peers{job="celestia-app"})'), lookup(s.nodes), na)
-    median = 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"})'
     signer = "%s %s" % (chain(
         '(max by (host) (increase(cometbft_privval_signing_failures_total{job="celestia-app",message_type="proposal",'
         'reason!~"timeout|no_connection"}[6h])) > 0) * 0 - 5',
-        "(%s and on (host) %s)" % (median, sig),
-        "(%s > %s) * 0 - 6" % (median, num(s.S)),
+        "(%s and on (host) %s)" % (MEDIAN, sig),
+        "(%s > %s) * 0 - 6" % (MEDIAN, num(s.S)),
         "((%s * 0 - 7) and on () ((count(%s) or vector(0)) == 0) and on () %s)" % (lookup(s.nodes), sig, IN_SET)), na)
     cpu = ('(1 - sum by (host) (rate(node_cpu_seconds_total{mode=~"idle|iowait"}[5m])) '
            '/ count by (host) (node_cpu_seconds_total{mode="idle"})) %s' % nodata_all)
@@ -3008,8 +3009,7 @@ def signing_time(s, pid, hue, title, name_px=None):
     p99 = "max(histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) and on (host) %s) * 1000 or vector(-9)"
     names = signing_names(s)
     exprs = [
-        'max(max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) and on (host) %s) '
-        "* 1000 or vector(-9)" % sig,
+        "max(%s and on (host) %s) * 1000 or vector(-9)" % (MEDIAN, sig),
         p99 % (bucket % '=~"prevote|precommit"', "5m", sig),
         'max(ALERTS{alertname="RemoteSignerProblem",reason!="",alertstate="firing"}) * 0 - 5 or '
         + p99 % (bucket % '="proposal"', "24h", sig),
@@ -3332,8 +3332,7 @@ def validator_row(s):
             "RemoteSignerProblem sends a warning. No reading: no node signed in the last 2 minutes, or the node has "
             "made fewer than 50 signatures since it started."
             % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem"]),
-            one('max(max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) '
-                'and on (host) %s)' % sig_now),
+            one("max(%s and on (host) %s)" % (MEDIAN, sig_now)),
             unit="s", decimals=2, color_mode="value", thresholds=steps(("text", None), ("orange", s.S)),
             no_value="No reading")
     else:
@@ -3510,8 +3509,7 @@ def validator_row(s):
             "only. Grey bars, right axis: failed signing requests (timeouts, lost connections, every retry). Red band: "
             "ValidatorNotSigning paged; no node signed, so the lines stop. The axis is logarithmic, 0.1 to 100 ms."
             % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem", "ValidatorNotSigning"]),
-            [target("A", 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) '
-                         'and on (host) %s' % sig_now, median)]
+            [target("A", "%s and on (host) %s" % (MEDIAN, sig_now), median)]
             + [target(ref, expr, "Slowest 1%, votes") for expr, ref, _ in slow]
             + [target(failed, "sum(%s) > 0" % grown('cometbft_privval_signing_failures_total{job="celestia-app"}', "sum"),
                       "Failures")],
