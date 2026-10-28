@@ -38,6 +38,10 @@ jobs:
         run: ansible-lint
       - name: shellcheck
         run: shellcheck install.sh tools/*.sh
+      # Links, version phrases and cometbft_/fibre_server_ metric names against the celestia_app pin
+      # and monitoring/upstream.yml, without network (the upstream workflow checks the table itself).
+      - name: Upstream links, versions and names follow the pin
+        run: python tools/ci/check_upstream.py
       # The docs run it as ./install.sh, and git archive keeps the mode git records.
       - name: install.sh is executable
         run: |

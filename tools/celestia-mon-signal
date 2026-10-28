@@ -47,9 +47,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER_AGENT = "celestia-mon-signal (https://github.com/s0urledd/celestia-validator-monitoring)"
 
-# celestia-app v10.4.0: proto/celestia/signal/v1/query.proto, and the signal store (store key
-# "signal", x/signal/types/keys.go), which keeps each validator's signalled version under its
-# operator address bytes as an 8-byte big-endian number.
+# celestia-app: proto/celestia/signal/v1/query.proto, and the signal store (store key "signal",
+# x/signal/types/msgs.go), which keeps each validator's signalled version under its operator
+# address bytes as an 8-byte big-endian number (x/signal/keeper.go, VersionToBytes).
 TALLY_PATH = "/celestia.signal.v1.Query/VersionTally"
 UPGRADE_PATH = "/celestia.signal.v1.Query/GetUpgrade"
 STORE_PATH = "/store/signal/key"
