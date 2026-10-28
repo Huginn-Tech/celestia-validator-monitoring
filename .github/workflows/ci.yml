@@ -650,158 +650,14 @@ jobs:
       # maximum error (490) show every server in one chart across the full width, at the end of the closed row.
       - name: Panels match the switches
         id: panels-switches
-        run: |
-          count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
-          tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
-          columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
-          test "$(count single)" = 32
-          test "$(count split)" = 70
-          test "$(count mainnet)" = 73
-          test "$(count five)" = 67
-          test "$(tiles single)" = '[11,12]'
-          test "$(tiles split)" = '[11,12,14]'
-          test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
-          test "$(tiles five)" = '[11,12,17,14,15,18]'
-          # The upgrade tile is Governance with the vote check on: Vote missing amber (6) and, where
-          # GovVoteMissing pages, red (16); Network upgrade, without a vote word, with gov: false.
-          for v in nogov nopage; do
-            test "$(count "$v")" = 73
-            test "$(tiles "$v")" = '[11,12,17,14,15,16]'
-          done
-          tile16() {
-            jq -c '.panels[] | select(.id == 16) | [.fieldConfig.defaults.displayName,
-                   ([.fieldConfig.defaults.mappings[].options | to_entries[] | select(.value.text == "Vote missing") | .key] | sort)]' \
-              "build/$1/dashboard.json"
-          }
-          test "$(tile16 mainnet)" = '["Governance",["16","6"]]'
-          test "$(tile16 nopage)" = '["Governance",["6"]]'
-          test "$(tile16 nogov)" = '["Network upgrade",[]]'
-          charts() { jq -c '[.panels[] | select(.id > 100 and .id < 200 and .type == "timeseries") | .id]' "build/$1/dashboard.json"; }
-          test "$(charts single)" = '[111,116,115]'
-          test "$(charts split)" = '[111,112,116,115]'
-          test "$(charts mainnet)" = '[111,112,116,115]'
-          test "$(columns single)" = 1
-          test "$(columns split)" = 4
-          test "$(columns mainnet)" = 4
-          test "$(columns five)" = 4
-          for s in single split mainnet five; do
-            jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
-            jq -e '(.panels[] | select(.id == 300) | .gridPos.y) as $y
-                   | ([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max) == $y
-                   and (.panels[] | select(.id == 300) | .collapsed)
-                   and (.panels[] | select(.id == 100) | .gridPos.y) == $y + 1' "build/$s/dashboard.json"
-            jq -e '[.panels[] | select(.gridPos.y == 0) | [.gridPos.x, .gridPos.w, .gridPos.h]]
-                   == [[0,4,3],[4,4,3],[8,4,3],[12,4,3],[16,4,3],[20,4,3]]' "build/$s/dashboard.json"
-            jq -e '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .gridPos] as $t
-                   | ($t | map(.w) | unique | length) == 1 and ($t | map(.h) | unique) == [3]
-                   and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
-            jq -e '[.panels[] | ., (.panels // [])[] | select(.type == "stat" and .gridPos.h == 3 and (.id < 30 or .id > 33))]
-                   | all(.title == "" and .options.text.titleSize == 13)
-                     and (map(.options.text.valueSize) | unique | length == 1 and (.[0] | IN(22, 20, 18)))' \
-              "build/$s/dashboard.json"
-            jq -e --slurpfile cfg "build/$s/dashboard-config.json" '
-                   ($cfg[0].nodes + ([$cfg[0].links[].host] - $cfg[0].nodes)) as $servers | ($servers | length) as $n
-                   | [.panels[] | ., (.panels // [])[] | select(.type != "row" and .id >= 410 and .id < 500)] as $all
-                   | ($all | map(select(.id < 480))) as $p
-                   | ($p | length) == 6 * $n
-                   and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
-                   and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
-                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 410 and . < 440)] | length) == 0
-                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 440)] | length) == 3 * $n + 2
-                   and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
-                                                        and (map(.gridPos.w) | unique | length) == 1
-                                                        and (map(.gridPos.w) | add) == 24))
-                   and ($n == 1 or ($p | group_by(.id % 10) | all(map(.gridPos.x) | unique | length == 1)))
-                   and ($p | all(. as $c | $c.title | startswith($servers[$c.id % 10] + " · ")))
-                   and ([.annotations.list[] | select(.name | startswith("Out of memory on ")) | .filter.ids]
-                        == [range(0; $n) | [420 + .]])' "build/$s/dashboard.json"
-            # The Validator row: six cells on the top strip's column edges and of its height (3 rows),
-            # then charts of one height, of one width on each line and filling it.
-            jq -e '(.panels[] | select(.id == 100) | .gridPos.y) as $y
-                   | [.panels[] | select(.id > 100 and .id < 200)] as $v
-                   | ($v | map(select(.type == "stat"))) as $f | ($v | map(select(.type == "timeseries"))) as $c
-                   | ($f | map(.id)) == [109,117,118,101,102,103]
-                   and ($f | map([.gridPos.x, .gridPos.y, .gridPos.w, .gridPos.h]))
-                       == [[0,$y+1,4,3],[4,$y+1,4,3],[8,$y+1,4,3],[12,$y+1,4,3],[16,$y+1,4,3],[20,$y+1,4,3]]
-                   and ($c | map(.gridPos.h) | unique) == [7]
-                   and ($c | group_by(.gridPos.y) | all(map(.gridPos.w) | (unique | length) == 1 and add == 24))
-                   and ($v | length) == ($f | length) + ($c | length)' "build/$s/dashboard.json"
-            jq -e '[.panels[] | select(.id >= 30 and .id < 34)] as $c | [.panels[] | select(.id >= 34 and .id < 38)] as $l
-                   | ($c | length) as $n | ($c | map(.gridPos)) as $cg | ($l | map(.gridPos)) as $lg
-                   | $n >= 1 and ($l | length) == $n and ([.panels[] | select(.id == 26)] | length) == 0
-                   and ($cg | map(.y) | unique) == [6] and ($cg | map(.h) | unique | length) == 1
-                   and ($lg | map(.h) | unique | length) == 1
-                   and ($c | map(.targets | length) | unique | length) == 1 and ($l | map(.targets | length) | unique) == [4]
-                   and (if $n == 1 then
-                          [$cg[0].x, $cg[0].w, $lg[0].x, $lg[0].w, $lg[0].y, $lg[0].h] == [0, 12, 12, 12, 6, $cg[0].h]
-                        else
-                          ($cg | map(.w) | unique | length) == 1 and ($cg | map(.w) | add) == 24
-                          and ($cg | map(.x)) == [range(0; $n) * $cg[0].w] and ($lg | map(.x)) == ($cg | map(.x))
-                          and ($lg | map(.w) | unique) == [$cg[0].w] and ($lg | map(.y) | unique) == [6 + $cg[0].h]
-                          and ([$l[] | [.gridPos.h, .options.namePlacement]] | unique | . == [[4, "left"]] or . == [[5, "top"]])
-                        end)' "build/$s/dashboard.json"
-            jq -e '[.panels[] | select(.id >= 20 and .id < 30)] as $b | ($b | map(.id) | sort) == [20, 21, 24, 25]
-                   and (INDEX($b[]; .id | tostring) | map_values(.gridPos)) as $g
-                   | ([$g["20"].y, $g["20"].h] == [$g["21"].y, $g["21"].h]) and $g["21"].x == $g["20"].x + $g["20"].w
-                   and $g["21"].x + $g["21"].w == 24
-                   and ([$g["20"], $g["25"], $g["24"]] | map([.x, .w]) | unique | length) == 1
-                   and $g["25"].y == $g["20"].y + $g["20"].h and $g["24"].y == $g["25"].y + $g["25"].h
-                   and $g["24"].h == 1' "build/$s/dashboard.json"
-          done
-          jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
-                 and .kms_names == ["kms-1"] and .monitor_host == "mon-1" and .monitor_only and .name == "CI validator"' \
-            build/mainnet/dashboard-config.json
-          # The vote check is on with upgrade signalling, and pages with chain_id celestia.
-          jq -e '.gov_enabled == true and .gov_page == true' build/mainnet/dashboard-config.json
-          jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
-                 and .gov_enabled == false and .gov_page == false
-                 and .monitor_host == "mon-1" and .monitor_only and .name == ""' build/split/dashboard-config.json
-          jq -e '.kms_names == [] and .monitor_host == "node-1" and (.monitor_only | not)' build/single/dashboard-config.json
-          # The monitor is a server of its own: its node_exporter is a link, and its Prometheus disk a data mount.
-          jq -e '([.links[].host] | index("mon-1")) != null and ([.data_mounts[] | select(.host == "mon-1") | .mount] == ["/"])' \
-            build/mainnet/dashboard-config.json
-          jq -e '.nodes == ["val-1", "fibre-1"]' build/mainnet/dashboard-config.json
-          jq -e '[.fibre_mounts[].host] | sort == ["fibre-1", "val-1"]' build/mainnet/dashboard-config.json
-          want='[["fibre-1", "fibre.example.org:7980"], ["val-1", "val.example.org:7980"]]'
-          jq -e --argjson want "$want" '[.fibre_endpoints[] | [.host, .endpoint]] | sort == $want' build/mainnet/dashboard-config.json
+        run: bash tools/ci/dashboard/panels.sh
       # SignaturesMissed is max(A > on (host) R * B): A the blocks each node counted as missed in the last
       # hour, B the blocks it committed in that hour, R the share. The Validator tile holds the whole
       # comparison, and Missed blocks (the fact and the chart) draws A over B with its level at R, so
       # neither side can change alone.
       - name: Missed blocks read the SignaturesMissed rule
         id: missed-blocks
-        run: |
-          python - <<'EOF'
-          import json
-          import re
-
-          import yaml
-
-          for s in ("single", "split", "mainnet", "five"):
-              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
-              rule = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
-                      if r.get("alert") == "SignaturesMissed"]
-              assert len(rule) == 1, "%s: one SignaturesMissed rule, not %d" % (s, len(rule))
-              expr = " ".join(rule[0]["expr"].split())
-              m = re.fullmatch(r"max\((max by \(host\) \(.+\)) > on \(host\) ([0-9.]+) \* "
-                               r"(max by \(host\) \(delta\(cometbft_consensus_height\{[^}]*\}\[1h\]\)\))\)", expr)
-              assert m, expr
-              a, r, b = m.groups()
-              panels = {}
-              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
-              while todo:
-                  p = todo.pop()
-                  panels[p["id"]] = p
-                  todo += p.get("panels", [])
-              text = lambda i: [" ".join(t["expr"].split()) for t in panels[i]["targets"]]
-              assert any(expr in t for t in text(11)), "%s: tile 11 lacks %s" % (s, expr)
-              for i in (117, 111):
-                  shares = [t for t in text(i) if a in t and b in t]
-                  assert shares, "%s: %d draws no %s over %s" % (s, i, a, b)
-                  level = panels[i]["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
-                  assert level == float(r), "%s: %d's level %s, the rule's %s" % (s, i, level, r)
-              print("%s: tile 11, 117 and 111 read %s over %s at %s" % (s, a[:60] + "...", b, r))
-          EOF
+        run: python tools/ci/check_dashboard.py missed-blocks
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
       # the Upload readiness line, 2 rows high, right under the facts, in History's form: its bars (215, an
@@ -810,156 +666,30 @@ jobs:
       # Then four charts of one height, right under it, in two lines of two on columns 0 and 12.
       - name: The Fibre row is symmetric
         id: fibre-row
-        run: |
-          for s in split mainnet five; do
-            jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
-                   | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
-                   | [$f[] | select(.type == "timeseries") | .gridPos] as $c
-                   | [$f[] | select(.type == "status-history")] as $b | [$f[] | select(.type == "state-timeline")] as $u
-                   | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
-                     and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
-                     and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
-                                   and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
-                     and ($p | map(.options.text.valueSize) | unique | length) == 1
-                     and ($b | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h]))
-                         == [[215, "", 3, 0, 21, 2]]
-                     and ($u | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h, .gridPos.y, .options.rowHeight]))
-                         == [[216, "", 3, 21, 3, 2, $b[0].gridPos.y, $b[0].options.rowHeight]]
-                     and $b[0].gridPos.y == ($s | map(.y + .h) | max)
-                     and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) == $b[0].gridPos.y + 2
-                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 12], [12, 12]]' \
-              "build/$s/dashboard.json"
-          done
+        run: bash tools/ci/dashboard/fibre_row.sh
       # Upload readiness (215) and the Fibre tile, History and cards read the not_ready rules: both rules
       # (a message after 3 minutes, a page after 10) watch one NOT_SERVING selector, which the band's
       # amber reads, and its red is the page firing.
       - name: Upload readiness reads the not_ready rules
         id: upload-readiness
-        run: |
-          python - <<'EOF'
-          import json
-          import re
-
-          import yaml
-
-          for s in ("split", "mainnet", "five"):
-              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
-              found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
-                       if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "not_ready"]
-              assert sorted((r["labels"]["severity"], r["for"]) for r in found) == [("message", "3m"), ("page", "10m")], found
-              exprs = {" ".join(r["expr"].split()) for r in found}
-              assert len(exprs) == 1, exprs
-              m = re.fullmatch(r"max by \(host\) \((probe_grpc_healthcheck_response\{[^}]*\})\) == 1", exprs.pop())
-              assert m, found
-              panels = {}
-              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
-              while todo:
-                  p = todo.pop()
-                  panels[p["id"]] = p
-                  todo += p.get("panels", [])
-              band = " ".join(next(t["expr"] for t in panels[215]["targets"] if t["legendFormat"] == "Upload readiness").split())
-              assert "max_over_time(%s[$__interval] offset -$__interval)" % m.group(1) in band, band
-              page = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
-              assert 'ALERTS{alertstate="firing",%s}' % page in band, band
-              for i in (14, 20):
-                  assert any(page in t["expr"] for t in panels[i]["targets"]), "%s: %d lacks the page" % (s, i)
-              print("%s: 215 reads %s; 14 and 20 the page" % (s, m.group(1)))
-          EOF
+        run: python tools/ci/check_dashboard.py upload-readiness
       # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
       # compares, which is the rule's expression without its comparison (inside the clamp that draws an
       # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
       - name: Fibre behind the network draws the missed_uploads rule
         id: fibre-behind
-        run: |
-          python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
-          import json
-          import re
-          import sys
-
-          import yaml
-
-          dash = json.load(open(sys.argv[1]))
-          rules = [r for g in yaml.safe_load(open(sys.argv[2]))["groups"] for r in g["rules"]
-                   if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
-          assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
-          m = re.fullmatch(r"(.*) > (\d+) (and on .*)", " ".join(rules[0]["expr"].split()))
-          assert m, rules[0]["expr"]
-          chart = next(p for p in dash["panels"] if p.get("id") == 210)
-          drawn = " ".join(chart["targets"][0]["expr"].split())
-          value = "%s %s" % (m.group(1), m.group(3))
-          # A gap up to 60 s (an upload settling) draws as 0, a larger one as it is, in minutes.
-          assert drawn == "clamp_min(%s, 0) * ((%s) > bool 60) / 60" % (value, value), (drawn, value)
-          level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
-          assert level * 60 == int(m.group(2)), (level, m.group(2))
-          print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
-          EOF
+        run: python tools/ci/check_dashboard.py fibre-behind build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml
       # Clock maximum error (490) draws, for every server, the metric ClockNotSynced compares, and its
       # dashed line at the rule's number, so neither side can change alone.
       - name: Clock maximum error draws the ClockNotSynced rule
         id: clock
-        run: |
-          python - <<'EOF'
-          import json
-          import re
-
-          import yaml
-
-          for s in ("single", "split", "mainnet", "five"):
-              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
-              found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
-                       if r.get("alert") == "ClockNotSynced"]
-              assert len(found) == 1, "%s: one ClockNotSynced rule, not %d" % (s, len(found))
-              m = re.fullmatch(r"(node_timex_maxerror_seconds)\{[^}]*\} >= (\d+)", " ".join(found[0]["expr"].split()))
-              assert m, found[0]["expr"]
-              panels = {}
-              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
-              while todo:
-                  p = todo.pop()
-                  panels[p["id"]] = p
-                  todo += p.get("panels", [])
-              chart = panels[490]
-              assert chart["targets"] and all(m.group(1) + "{" in t["expr"] for t in chart["targets"]), chart["targets"]
-              level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
-              assert level == int(m.group(2)), "%s: 490's line at %s, the rule's %s" % (s, level, m.group(2))
-              assert chart["title"].endswith("(alert at %d s)" % level), "%s: 490 is titled %r" % (s, chart["title"])
-              print("%s: 490 draws %s, its line at %s s" % (s, m.group(1), level))
-          EOF
+        run: python tools/ci/check_dashboard.py clock
       # Restarts (480) draws, for each service of each server, the value ServiceDown's crash-loop rule compares
       # (its restarts in the last 30 minutes), its dashed line at the rule's number and that number in its
       # title, so neither side can change alone.
       - name: Restarts draw the crash-loop rule
         id: restarts
-        run: |
-          python - <<'EOF'
-          import json
-          import re
-
-          import yaml
-
-          for s in ("single", "split", "mainnet", "five"):
-              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
-              exprs = [" ".join(r["expr"].split()) for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
-                       if r.get("alert") == "ServiceDown" and "node_systemd_service_restart_total" in r["expr"]]
-              found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)", e)
-                       for e in exprs]
-              assert found and all(found), "%s: the crash-loop rules %s" % (s, exprs)
-              levels = {int(m.group(1)) for m in found}
-              assert len(levels) == 1, "%s: crash-loop levels %s" % (s, levels)
-              n = levels.pop()
-              panels = {}
-              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
-              while todo:
-                  p = todo.pop()
-                  panels[p["id"]] = p
-                  todo += p.get("panels", [])
-              chart = panels[480]
-              assert chart["targets"] and all("increase(node_systemd_service_restart_total{" in t["expr"] and "[30m]" in t["expr"]
-                                              for t in chart["targets"]), chart["targets"]
-              level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
-              assert level == n, "%s: 480's line at %s, the rule's %s" % (s, level, n)
-              assert chart["title"] == "Restarts (alert above %d in 30 min)" % n, "%s: 480 is titled %r" % (s, chart["title"])
-              print("%s: 480 draws %d series, its line at %s" % (s, len(chart["targets"]), level))
-          EOF
+        run: python tools/ci/check_dashboard.py restarts
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       # The stub series, served on loopback; the check waits until a minute step of Prometheus holds

@@ -38,13 +38,13 @@ tensile/run                      | tools/ci/tensile.sh                          
 signal/run                       | tools/ci/signal.sh                           | celestia-mon-signal serves x/signal as metrics
 dashboard/render                 | tools/ci/dashboard_configs.sh                | Render the dashboard settings for the example inventories
 dashboard/generate               | ci.yml                                       | Generate the dashboards
-dashboard/panels-switches        | ci.yml                                       | Panels match the switches
-dashboard/missed-blocks          | ci.yml                                       | Missed blocks read the SignaturesMissed rule
-dashboard/fibre-row              | ci.yml                                       | The Fibre row is symmetric
-dashboard/upload-readiness       | ci.yml                                       | Upload readiness reads the not_ready rules
-dashboard/fibre-behind           | ci.yml                                       | Fibre behind the network draws the missed_uploads rule
-dashboard/clock                  | ci.yml                                       | Clock maximum error draws the ClockNotSynced rule
-dashboard/restarts               | ci.yml                                       | Restarts draw the crash-loop rule
+dashboard/panels-switches        | tools/ci/dashboard/panels.sh                 | Panels match the switches
+dashboard/missed-blocks          | tools/ci/check_dashboard.py missed-blocks    | Missed blocks read the SignaturesMissed rule
+dashboard/fibre-row              | tools/ci/dashboard/fibre_row.sh              | The Fibre row is symmetric
+dashboard/upload-readiness       | tools/ci/check_dashboard.py upload-readiness | Upload readiness reads the not_ready rules
+dashboard/fibre-behind           | tools/ci/check_dashboard.py fibre-behind     | Fibre behind the network draws the missed_uploads rule
+dashboard/clock                  | tools/ci/check_dashboard.py clock            | Clock maximum error draws the ClockNotSynced rule
+dashboard/restarts               | tools/ci/check_dashboard.py restarts         | Restarts draw the crash-loop rule
 dashboard/serve-series           | ci.yml                                       | Serve the dashboards' series to Prometheus
 dashboard/panel-queries          | ci.yml                                       | Every panel query runs in Prometheus without an error, warning or info
 doctor/run                       | tools/ci/doctor/roles.sh                     | Run doctor for each role
