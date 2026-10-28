@@ -257,9 +257,10 @@ jobs:
         run: sudo journalctl -u celestia-mon-node-exporter -u celestia-mon-otelcol --no-pager -n 200
 
   # Renders the rules, Alertmanager, Prometheus and dashboard settings for the three example
-  # inventories (single, split, and mainnet with a backup node and a standby Fibre) and checks
-  # them with promtool and amtool from the pinned releases, whose tarballs are checked against
-  # the sha256 in versions.yml (no checksum file is fetched).
+  # inventories (single, split, and mainnet with a backup node and a standby Fibre; the mainnet one
+  # also on Mocha and with gov off) and checks them with promtool and amtool from the pinned
+  # releases, whose tarballs are checked against the sha256 in versions.yml (no checksum file is
+  # fetched).
   rules:
     runs-on: ubuntu-24.04
     steps:
@@ -349,6 +350,49 @@ jobs:
           for s in single split mainnet; do
             promtool test rules monitoring/rules/tests/"$s"/*.test.yml
           done
+      # The mainnet example rendered twice more: on Mocha (chain_id mocha-5, so GovVoteMissing sends its
+      # message only, by default) into tests/mocha, whose rule tests run there, and with gov: false (no
+      # vote rule; SignalUnreadable about x/signal only) into build/nogov. The dashboard settings of each
+      # read the same switches.
+      - name: The vote rules on another network, and with gov off
+        run: |
+          set -euo pipefail
+          for v in mocha nogov; do
+            if [ "$v" = mocha ]; then
+              tests="$PWD/monitoring/rules/tests/mocha"
+              signal='{"chain_id": "mocha-5", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"}'
+            else
+              tests="$PWD/build/nogov"
+              signal='{"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci", "gov": false}'
+            fi
+            ansible-playbook -i ansible/inventory/example-mainnet tools/ci/render.yml -e celestia_mon_ci_scenario=mainnet \
+              -e "celestia_mon_ci_tests=$tests" -e "celestia_mon_ci_build=$PWD/build/$v" -e "{\"celestia_mon_signal\": $signal}"
+            promtool check rules --lint=none "build/$v/rules/celestia-mon.rules.yml"
+          done
+          promtool test rules monitoring/rules/tests/mocha/*.test.yml
+          jq -e '.signal_enabled and .gov_enabled and (.gov_page | not)' build/mocha/dashboard-config.json
+          jq -e '.signal_enabled and (.gov_enabled | not) and (.gov_page | not)' build/nogov/dashboard-config.json
+          python - build/mocha/rules/celestia-mon.rules.yml build/nogov/rules/celestia-mon.rules.yml <<'EOF'
+          import sys
+
+          import yaml
+
+
+          def rules(path, name):
+              return [r for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if r.get("alert") == name]
+
+
+          gov = rules(sys.argv[1], "GovVoteMissing")
+          assert [r["labels"]["severity"] for r in gov] == ["message"], gov
+          assert "ALERTS" not in gov[0]["expr"] and "It pages" not in gov[0]["annotations"]["description"], gov
+          unread = rules(sys.argv[1], "SignalUnreadable")
+          assert len(unread) == 1 and "celestia_mon_gov_last_success_timestamp_seconds" in unread[0]["expr"], unread
+          assert rules(sys.argv[2], "GovVoteMissing") == []
+          unread = rules(sys.argv[2], "SignalUnreadable")
+          assert len(unread) == 1 and "_gov_" not in unread[0]["expr"], unread
+          assert unread[0]["annotations"]["summary"] == "The upgrade signal is not being read on mon-1", unread
+          print("mocha: GovVoteMissing, message only; nogov: no GovVoteMissing, SignalUnreadable about x/signal only")
+          EOF
       - name: promtool check config
         run: |
           for s in single split mainnet; do
@@ -567,7 +611,8 @@ jobs:
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
       # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, NodePeersLow by
       # its severity, Watchdog -> deadman, UpgradeScheduled and UpgradeSoon -> message on a route of
-      # their own that sends each once, UpgradeSignalMissing -> page), the inhibitions of one cause,
+      # their own that sends each once, UpgradeSignalMissing -> page, GovVoteMissing by its severity
+      # on a route of its own that sends each once per proposal), the inhibitions of one cause,
       # and checks that the receiver check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         run: |
@@ -609,6 +654,10 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeScheduled severity=message
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeSoon severity=message
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignalUnreadable severity=message host=mon-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=RaidDegraded severity=message host=val-1 device=md0
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=ClockNotSynced severity=message host=val-1
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=GovVoteMissing severity=page proposal_id=9
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=GovVoteMissing severity=message proposal_id=9
           python - "$am" <<'EOF'
           import sys
           import yaml
@@ -621,6 +670,21 @@ jobs:
           assert (r["receiver"], r["group_by"], r["group_wait"], r["repeat_interval"]) == ("message", ["..."], "0s", "96h"), r
           assert "routes" not in r and not r.get("continue", False), r
           assert upgrade[0] < [i for i, r in enumerate(routes) if r.get("receiver") == "message" and i != upgrade[0]][0], routes
+          # RaidDegraded: its own route before the page and message routes, a reminder once a day.
+          raid = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname="RaidDegraded"']]
+          assert len(raid) == 1 and raid[0] < [i for i, r in enumerate(routes) if r.get("matchers") == ['severity="page"']][0], routes
+          r = routes[raid[0]]
+          assert (r["receiver"], r["repeat_interval"]) == ("message", "24h") and "group_by" not in r, r
+          assert "routes" not in r and not r.get("continue", False), r
+          # GovVoteMissing: its own route before the page and message routes, one notification per proposal and
+          # severity, sent at once and not again while the vote lasts; by severity to page or message.
+          gov = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname="GovVoteMissing"']]
+          assert len(gov) == 1 and gov[0] < [i for i, r in enumerate(routes) if r.get("matchers") == ['severity="page"']][0], routes
+          r = routes[gov[0]]
+          assert (r["group_by"], r["group_wait"], r["repeat_interval"]) == (["..."], "0s", "96h") and "receiver" not in r, r
+          assert [(c["receiver"], c["matchers"]) for c in r["routes"]] == [("page", ['severity="page"']),
+                                                                           ("message", ['severity="message"'])], r
+          assert not r.get("continue", False), r
           # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
           # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready.
           inhibit = config["inhibit_rules"]
@@ -923,7 +987,11 @@ jobs:
   # lacks the height read, a pruned node and one that refuses the block time, a redirect, an
   # answer over 1 MiB, JSON nested deeper than Python reads and an app version below 0, a key in
   # the RPC URL that must not show, URLs and addresses that do not decode, http to a public host,
-  # and the service keeping its last reading while reads fail.
+  # and the service keeping its last reading while reads fail. Governance: proposals in their
+  # voting period with and without the validator account's vote, free-text titles (one in
+  # Markdown), none open, a node that fails the Proposals query or answers it in a form that does
+  # not read before one that answers it, gov off, and the service keeping the proposals read last
+  # while x/signal goes on being read.
   signal:
     runs-on: ubuntu-24.04
     steps:
@@ -935,7 +1003,9 @@ jobs:
           mkdir -p "$d"
           op=1111111111111111111111111111111111111111
           addr=$(python3 tools/ci/rpc_stub.py address "$op")
-          echo "operator address: $addr"
+          # The validator account: the operator address's bytes under the account prefix.
+          acc=$(python3 tools/ci/rpc_stub.py address "$op" celestia)
+          echo "operator address: $addr, account: $acc"
           # file, network, GetUpgrade answer, VersionTally answer for v10, the validator's version (null:
           # none), lowest block[, more fields]. Written aside and moved, so the stand-in never reads half a file.
           state() {
@@ -950,11 +1020,11 @@ jobs:
           python3 tools/ci/rpc_stub.py 8767 "$d/rpc.json" &
           python3 tools/ci/rpc_stub.py 8768 "$d/other.json" &
           for p in 8767 8768; do curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null "http://127.0.0.1:$p/health"; done
-          run() { # validator, RPC URLs...
+          run() { # validator, RPC URLs...; $cfg adds config fields
             local v=$1
             shift
-            printf '{"chain_id": "celestia", "rpc": %s, "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 60}' \
-              "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" "$v" >"$d/config.json"
+            printf '{"chain_id": "celestia", "rpc": %s, "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 60%s}' \
+              "$(printf '%s\n' "$@" | jq -R . | jq -sc .)" "$v" "${cfg:+, $cfg}" >"$d/config.json"
             # A read that never ends (a loop on a broken answer) fails in a minute instead of holding the job.
             timeout 60 python3 -I tools/celestia-mon-signal --config "$d/config.json" --once 2>"$d/err"
           }
@@ -1081,6 +1151,80 @@ jobs:
           grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8767"} 1' <<<"$m"
           grep -qF 'http://127.0.0.1:8768 answered /abci_info with app version -2 at height 15000000' "$d/err"
 
+          # Governance: two proposals in their voting period, the validator account voted on one and
+          # another account on the other, and one that has left it. A title is free text: a line
+          # break, a zero-width space and a direction override do not reach the label, nor more than
+          # 80 characters.
+          t100=$(printf 'x%.0s' $(seq 100))
+          gov='"gov": [{"id": 101, "start": 1792000000, "end": 1792604800, "nanos": 500000000, "voters": ["'"$acc"'"],
+                        "title": "Raise the\nblock size\u200b\u202e"},
+                       {"id": 102, "start": 1792300000, "end": 1792386400, "expedited": true, "voters": ["celestia1other"],
+                        "title": "'"$t100"'"},
+                       {"id": 99, "status": 3, "start": 1791000000, "end": 1791604800, "voters": ["'"$acc"'"], "title": "Passed"}]'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"
+          m=$(run "$addr" http://127.0.0.1:8767)
+          printf '%s\n' "$m"
+          for want in "celestia_mon_gov_voting_proposals{voter=\"$acc\"} 2" \
+                      'celestia_mon_gov_voting_start_timestamp_seconds{proposal_id="101"} 1792000000.0' \
+                      'celestia_mon_gov_voting_end_timestamp_seconds{proposal_id="101"} 1792604800.5' \
+                      'celestia_mon_gov_voting_start_timestamp_seconds{proposal_id="102"} 1792300000.0' \
+                      'celestia_mon_gov_voting_end_timestamp_seconds{proposal_id="102"} 1792386400.0' \
+                      'celestia_mon_gov_validator_voted{proposal_id="101"} 1' 'celestia_mon_gov_validator_voted{proposal_id="102"} 0' \
+                      'celestia_mon_gov_proposal_info{proposal_id="101",title="Raise the block size"} 1' \
+                      "celestia_mon_gov_proposal_info{proposal_id=\"102\",title=\"${t100:0:79}…\"} 1" \
+                      'celestia_mon_upgrade_height 15116658'; do
+            grep -qxF "$want" <<<"$m" || { echo "missing: $want"; exit 1; }
+          done
+          grep -Eq '^celestia_mon_gov_last_success_timestamp_seconds [1-9]' <<<"$m"
+          if grep -q 'proposal_id="99"' <<<"$m"; then echo "a proposal out of its voting period was read"; exit 1; fi
+          if grep -q 'reason="gov"' <<<"$m"; then echo "a good read of the proposals counted an error"; exit 1; fi
+          # None open: the count is 0 and no proposal line is served.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -qxF "celestia_mon_gov_voting_proposals{voter=\"$acc\"} 0" <<<"$m"
+          if grep -q 'proposal_id=' <<<"$m"; then echo "a proposal line without a proposal"; exit 1; fi
+          # The first RPC fails the Proposals query: x/signal is read there, the proposals through the next.
+          state "$d/other.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"gov_error": true'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"
+          m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+          cat "$d/err"
+          grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8768"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_signal_errors_total{reason="gov"} 1' <<<"$m"
+          grep -qxF 'celestia_mon_gov_validator_voted{proposal_id="101"} 1' <<<"$m"
+          grep -qF 'http://127.0.0.1:8768 answered /cosmos.gov.v1.Query/Proposals with code 6' "$d/err"
+          # Every RPC fails it: the x/signal reading stands, and no proposal is served.
+          m=$(run "$addr" http://127.0.0.1:8768)
+          grep -Eq '^celestia_mon_signal_last_success_timestamp_seconds [1-9]' <<<"$m"
+          grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          grep -qxF 'celestia_mon_gov_last_success_timestamp_seconds 0.0' <<<"$m"
+          if grep -q '^celestia_mon_gov_voting_proposals' <<<"$m"; then echo "proposals served without a read"; exit 1; fi
+          grep -qF 'no RPC gave the proposals' "$d/err"
+          # The first RPC answers the Proposals query in a form that does not read: a proposal without its voting end
+          # time, then an answer with the voter that lists a proposal out of its voting period. x/signal is read there,
+          # the proposals through the next.
+          for broken in end voted; do
+            state "$d/other.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"', "gov_broken": "'"$broken"'"'
+            m=$(run "$addr" http://127.0.0.1:8768 http://127.0.0.1:8767)
+            cat "$d/err"
+            grep -qxF 'celestia_mon_signal_rpc_info{rpc="http://127.0.0.1:8768"} 1' <<<"$m"
+            grep -qxF 'celestia_mon_signal_errors_total{reason="gov"} 1' <<<"$m"
+            grep -qxF 'celestia_mon_gov_validator_voted{proposal_id="101"} 1' <<<"$m"
+            grep -qF 'cannot read the proposals in the answer of http://127.0.0.1:8768: ValueError(' "$d/err"
+            if [ "$broken" = end ]; then want="proposal 101's voting end time is missing"; else want='proposal 99 has a vote'; fi
+            grep -qF "$want" "$d/err" || { echo "the log does not say: $want"; exit 1; }
+          done
+          # A title in Markdown: its square brackets become round ones, so Discord shows no link under other words.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
+            '"gov": [{"id": 103, "start": 1792000000, "end": 1792604800, "title": "[Vote here](https://phish.example)"}]'
+          m=$(run "$addr" http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(https://phish.example)"} 1' <<<"$m"
+          # gov false: no proposal is read and no gov metric is served; gov must be true or false.
+          m=$(cfg='"gov": false' run "$addr" http://127.0.0.1:8767)
+          grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          if grep -q '^celestia_mon_gov_' <<<"$m"; then echo "gov metrics with gov false"; exit 1; fi
+          if cfg='"gov": "yes"' run "$addr" http://127.0.0.1:8767 >/dev/null; then echo "gov \"yes\" was accepted"; exit 1; fi
+          grep -qF "gov is 'yes', not true or false" "$d/err"
+
           # URLs the service refuses at start, without printing them: a login, a query string, no host.
           for u in http://ci:ci-secret-key@127.0.0.1:8767 'http://127.0.0.1:8767/?key=ci-secret-key' http://:26657; do
             if run "$addr" "$u" >/dev/null; then echo "rpc $u was accepted"; exit 1; fi
@@ -1134,17 +1278,21 @@ jobs:
           prefix, values = collector.bech32_decode("BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4")
           assert prefix == "bc" and values[0] == 0, (prefix, values)
           assert collector.from5(values[1:]) == bytes.fromhex("751e76e8199196d454941c45d1b3a323f1433bd6")
+          # The encoder (of the validator account) against the same vector.
+          program = collector.to5(bytes.fromhex("751e76e8199196d454941c45d1b3a323f1433bd6"))
+          assert collector.bech32_encode("bc", [0] + program).upper() == "BC1QW508D6QEJXTDG4Y5R3ZARVARY0C5XW7KV8F3T4"
           EOF
 
           # As a service: while the block time cannot be measured, the one measured last stays; while
-          # no RPC can be read, the whole last reading stays and only its time ages.
-          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1
+          # the proposals cannot be read, the ones read last stay and x/signal goes on being read;
+          # while no RPC can be read, the whole last reading stays and only its time ages.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"
           printf '{"chain_id": "celestia", "rpc": ["http://127.0.0.1:8767"], "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 1}' \
             "$addr" >"$d/service.json"
           python3 -I tools/celestia-mon-signal --config "$d/service.json" 2>"$d/service.err" &
           service=$!
           metrics() { curl -fsS http://127.0.0.1:9918/metrics; }
-          reading() { metrics | grep -Ev '^(#|celestia_mon_signal_(last_success_timestamp_seconds|errors_total))'; }
+          reading() { metrics | grep -Ev '^(#|celestia_mon_(signal|gov)_last_success_timestamp_seconds|celestia_mon_signal_errors_total)'; }
           wait_for() { # an extended regular expression that a whole metrics line must match
             for _ in $(seq 30); do
               if grep -Eqx "$1" <<<"$(metrics 2>/dev/null)"; then return 0; fi
@@ -1153,11 +1301,33 @@ jobs:
             echo "no metrics line matches $1"; cat "$d/service.err"; exit 1
           }
           wait_for 'celestia_mon_upgrade_eta_seconds 334808'
+          # The proposals are read after x/signal, in the same read.
+          wait_for 'celestia_mon_gov_validator_voted\{proposal_id="101"\} 1'
           before=$(reading)
           # One thing changes at a time, so a read that began before the change gives the same reading.
-          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"', "refuse": ["blockchain"]'
           wait_for 'celestia_mon_signal_errors_total\{reason="block_time"\} ([2-9]|[1-9][0-9]+)'
           test "$(reading)" = "$before" || { echo "the block time measured last did not stay"; reading; exit 1; }
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"', "refuse": ["blockchain"], "gov_error": true'
+          wait_for 'celestia_mon_signal_errors_total\{reason="gov"\} [1-9][0-9]*'
+          gov_at=$(metrics | grep '^celestia_mon_gov_last_success_timestamp_seconds ')
+          signal_at=$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')
+          wait_for 'celestia_mon_signal_errors_total\{reason="gov"\} ([3-9]|[1-9][0-9]+)'
+          test "$(reading)" = "$before" || { echo "a failed read of the proposals changed the reading"; reading; exit 1; }
+          test "$(metrics | grep '^celestia_mon_gov_last_success_timestamp_seconds ')" = "$gov_at" ||
+            { echo "the proposals' read time moved without a read"; exit 1; }
+          test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" != "$signal_at" ||
+            { echo "a failed read of the proposals held back x/signal"; exit 1; }
+          # A Proposals answer that does not read keeps them the same way.
+          state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"', "refuse": ["blockchain"], "gov_broken": "end"'
+          for _ in $(seq 30); do
+            if grep -qF "proposal 101's voting end time is missing" "$d/service.err"; then break; fi
+            sleep 1
+          done
+          grep -qF 'cannot read the proposals in the answer of http://127.0.0.1:8767: ValueError(' "$d/service.err"
+          test "$(reading)" = "$before" || { echo "an unreadable answer of the proposals changed the reading"; reading; exit 1; }
+          test "$(metrics | grep '^celestia_mon_gov_last_success_timestamp_seconds ')" = "$gov_at" ||
+            { echo "the proposals' read time moved after an unreadable answer"; exit 1; }
           state "$d/rpc.json" mocha-5 CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
           wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} [1-9][0-9]*'
           at=$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')
@@ -1227,6 +1397,14 @@ jobs:
           mkdir -p build/five
           jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
           python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
+          # mainnet with gov: false (the Network upgrade tile, no vote words), and with the vote check but no
+          # page (as on Mocha: Vote missing never red); check_surfaces and check_words run in each.
+          for v in nogov nopage; do
+            mkdir -p "build/$v"
+            jq "if \"$v\" == \"nogov\" then .gov_enabled = false | .gov_page = false else .gov_page = false end" \
+              build/mainnet/dashboard-config.json > "build/$v/dashboard-config.json"
+            python monitoring/dashboards/gen_dashboard.py --config "build/$v/dashboard-config.json" --out "build/$v/dashboard.json"
+          done
           # split with a backup node: five servers, so the Servers now table (26) instead of the cards, and three
           # answers, so no Monitoring tile; check_surfaces must still find every alert.
           mkdir -p build/table
@@ -1255,8 +1433,8 @@ jobs:
       # (open, then closed) hold six charts per server (single: one server, mainnet and five: three, the
       # monitor's among them, split: four, its KMS host scraped), each line one kind of chart, at one width and height,
       # filling the 24 columns; each server's charts in one column, titled with its name first; its
-      # out-of-memory marker on its own memory chart. Restarts (480) and Clock offset (490) show every
-      # server in one chart across the full width.
+      # out-of-memory marker on its own memory chart. Restarts (480) and Clock maximum error (490) show
+      # every server in one chart across the full width.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
@@ -1270,6 +1448,20 @@ jobs:
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
           test "$(tiles five)" = '[11,12,17,14,15,18]'
+          # The upgrade tile is Governance with the vote check on: Vote missing amber (6) and, where
+          # GovVoteMissing pages, red (16); Network upgrade, without a vote word, with gov: false.
+          for v in nogov nopage; do
+            test "$(count "$v")" = 71
+            test "$(tiles "$v")" = '[11,12,17,14,15,16]'
+          done
+          tile16() {
+            jq -c '.panels[] | select(.id == 16) | [.fieldConfig.defaults.displayName,
+                   ([.fieldConfig.defaults.mappings[].options | to_entries[] | select(.value.text == "Vote missing") | .key] | sort)]' \
+              "build/$1/dashboard.json"
+          }
+          test "$(tile16 mainnet)" = '["Governance",["16","6"]]'
+          test "$(tile16 nopage)" = '["Governance",["6"]]'
+          test "$(tile16 nogov)" = '["Network upgrade",[]]'
           charts() { jq -c '[.panels[] | select(.id > 100 and .id < 200 and .type == "timeseries") | .id]' "build/$1/dashboard.json"; }
           test "$(charts single)" = '[111,116,115]'
           test "$(charts split)" = '[111,112,116,115]'
@@ -1341,7 +1533,10 @@ jobs:
           jq -e '.tensile_enabled and .signal_enabled and .announcements_enabled and .kms_hosts == []
                  and .kms_names == ["kms-1"] and .monitor_host == "mon-1" and .monitor_only and .name == "CI validator"' \
             build/mainnet/dashboard-config.json
+          # The vote check is on with upgrade signalling, and pages with chain_id celestia.
+          jq -e '.gov_enabled == true and .gov_page == true' build/mainnet/dashboard-config.json
           jq -e '.kms_hosts == ["kms-1"] and .kms_names == ["kms-1"] and (.tensile_enabled | not) and (.signal_enabled | not)
+                 and .gov_enabled == false and .gov_page == false
                  and .monitor_host == "mon-1" and .monitor_only and .name == ""' build/split/dashboard-config.json
           jq -e '.kms_names == [] and .monitor_host == "node-1" and (.monitor_only | not)' build/single/dashboard-config.json
           # The monitor is a server of its own: its node_exporter is a link, and its Prometheus disk a data mount.
@@ -1473,6 +1668,35 @@ jobs:
           assert level * 60 == int(m.group(2)), (level, m.group(2))
           print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
           EOF
+      # Clock maximum error (490) draws, for every server, the metric ClockNotSynced compares, and its
+      # dashed line at the rule's number, so neither side can change alone.
+      - name: Clock maximum error draws the ClockNotSynced rule
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("single", "split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                       if r.get("alert") == "ClockNotSynced"]
+              assert len(found) == 1, "%s: one ClockNotSynced rule, not %d" % (s, len(found))
+              m = re.fullmatch(r"(node_timex_maxerror_seconds)\{[^}]*\} >= (\d+)", " ".join(found[0]["expr"].split()))
+              assert m, found[0]["expr"]
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              chart = panels[490]
+              assert chart["targets"] and all(m.group(1) + "{" in t["expr"] for t in chart["targets"]), chart["targets"]
+              level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+              assert level == int(m.group(2)), "%s: 490's line at %s, the rule's %s" % (s, level, m.group(2))
+              print("%s: 490 draws %s, its line at %s s" % (s, m.group(1), level))
+          EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       # The stub series, served on loopback; the check waits until a minute step of Prometheus holds
@@ -1574,6 +1798,92 @@ jobs:
           run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^INFO +2 +remote signer +backup node: priv_validator_laddr = tcp://127\.0\.0\.1:26658' <<<"$out"
           if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
+
+  # doctor's md RAID lines (check 10, one per array) on the runner, which has no md array: stand-in
+  # mdstat files (--mdstat) and a stand-in node_exporter, a loaded unit whose --web.listen-address
+  # points at a static metrics file served on 127.0.0.1:19910. An array missing a disk fails, one
+  # rebuilding warns, a check or a delayed resync is fine, an old half mirror started read-only fails
+  # with its own fix, an array node_exporter does not export fails, an inactive one is INFO, and a
+  # host without md arrays gets no md line.
+  doctor-md:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: doctor reads the md RAID arrays
+        run: |
+          set -euo pipefail
+          run() {
+            rc=0
+            out=$("$@" 2>stderr.txt) || rc=$?
+            printf '%s\n' "$out"
+            cat stderr.txt
+            if [ "$rc" -gt 1 ] || [ -s stderr.txt ]; then
+              echo "doctor exited $rc or wrote to stderr: $*"
+              exit 1
+            fi
+          }
+          printf '%s\n' '[Service]' 'ExecStart=/bin/true --web.listen-address=127.0.0.1:19910' \
+            | sudo tee /etc/systemd/system/celestia-mon-node-exporter.service >/dev/null
+          sudo systemctl daemon-reload
+          web="$RUNNER_TEMP/node-exporter"
+          mkdir -p "$web"
+          nohup python3 -m http.server 19910 --bind 127.0.0.1 --directory "$web" >"$RUNNER_TEMP/http.log" 2>&1 &
+          exported() { printf 'node_md_disks_required{device="%s"} 2\n' "$@" >"$web/metrics"; }
+
+          cat >"$RUNNER_TEMP/mdstat-1" <<'EOF'
+          Personalities : [raid1] [linear] [multipath] [raid0] [raid6] [raid5] [raid4] [raid10]
+          md2 : active raid1 nvme1n1p3[2] nvme0n1p3[0]
+                1919309120 blocks super 1.2 [2/1] [U_]
+                [=>...................]  recovery =  5.3% (101836416/1919309120) finish=150.2min speed=201652K/sec
+                bitmap: 15/15 pages [60KB], 65536KB chunk
+
+          md1 : active raid1 nvme1n1p2[1](F) nvme0n1p2[0]
+                1046528 blocks super 1.2 [2/1] [U_]
+
+          md0 : active raid1 nvme1n1p1[1] nvme0n1p1[0]
+                33520640 blocks super 1.2 [2/2] [UU]
+                [==>..................]  check = 12.3% (4123456/33520640) finish=3.1min speed=150000K/sec
+
+          md127 : active (auto-read-only) raid1 sdb1[1]
+                976630464 blocks super 1.2 [2/1] [_U]
+
+          unused devices: <none>
+          EOF
+          exported md0 md1 md2 md127
+          curl -fsS --retry 10 --retry-connrefused --retry-delay 1 http://127.0.0.1:19910/metrics >/dev/null
+          run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/mdstat-1" --head-wait 2
+          grep -Eq '^WARN +10 +md RAID +md2 raid1 \[2/1\] \[U_\], recovery=5\.3%: missing a disk and rebuilding' <<<"$out"
+          grep -Eq '^FAIL +10 +md RAID +md1 raid1 \[2/1\] \[U_\]: missing a disk\. Fix: "mdadm --detail /dev/md1"' <<<"$out"
+          grep -Eq '^OK +10 +md RAID +md0 raid1 \[2/2\] \[UU\], check=12\.3%$' <<<"$out"
+          grep -Eq '^FAIL +10 +md RAID +md127 raid1 \[2/1\] \[_U\] read-only: missing a disk\. Fix: if it is an old disk' <<<"$out"
+          grep -Eq '^FAIL +10 .*"mdadm --stop /dev/md127"' <<<"$out"
+          test "$(grep -Ec '^[A-Z ]+ +10 +md RAID ' <<<"$out")" = 4
+
+          cat >"$RUNNER_TEMP/mdstat-2" <<'EOF'
+          Personalities : [raid0] [raid1]
+          md0 : active raid1 sdb1[1] sda1[0]
+                33520640 blocks super 1.2 [2/2] [UU]
+                resync=DELAYED
+
+          md3 : active raid0 sdd1[1] sdc1[0]
+                1953260544 blocks super 1.2 512k chunks
+
+          md126 : inactive sde1[0](S)
+                976630488 blocks super 1.2
+
+          unused devices: <none>
+          EOF
+          exported md0 md126
+          run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/mdstat-2" --head-wait 2
+          grep -Eq '^OK +10 +md RAID +md0 raid1 \[2/2\] \[UU\], resync=DELAYED$' <<<"$out"
+          grep -Eq '^FAIL +10 +md RAID +md3 raid0, but node_exporter at 127\.0\.0\.1:19910 exports no node_md metrics for md3' <<<"$out"
+          grep -Eq '^INFO +10 +md RAID +md126: inactive \(not started\)' <<<"$out"
+          exported md0 md3 md126
+          run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/mdstat-2" --head-wait 2
+          grep -Eq '^OK +10 +md RAID +md3 raid0: no redundancy' <<<"$out"
+
+          run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+          if grep -Eq ' md RAID ' <<<"$out"; then echo "an md RAID line without md arrays"; exit 1; fi
 
   # doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
   # (WARN 6) whose plaintext signer warns even on loopback (WARN 17), a standby whose plaintext
@@ -1920,7 +2230,9 @@ jobs:
             sleep 1
           done
           # Check 21 reads these through doctor's JSON reader: escaped quotes and braces, a regex
-          # matcher that admits the pages, a host silence that does not, and an expired silence.
+          # matcher that admits the pages, a host silence that does not, an expired silence, one of
+          # GovVoteMissing for one proposal (a page with --gov-page true), and two of FibreNotServing,
+          # of whose reasons only not_ready pages (with Fibre on).
           mkdir -p am/api/v2
           soon=$(date -u -d '+30 min' +%Y-%m-%dT%H:%M:%S.000Z)
           cat > am/api/v2/silences <<EOF
@@ -1932,11 +2244,23 @@ jobs:
             "matchers":[{"isEqual":true,"isRegex":false,"name":"host","value":"val-1"}],"startsAt":"2026-10-17T10:00:00.000Z"},
            {"id":"00000000-0000-0000-0000-000000000003","status":{"state":"expired"},"updatedAt":"2026-10-17T10:00:00.000Z",
             "comment":"old","createdBy":"op","endsAt":"2026-10-17T11:00:00.000Z",
-            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreDown"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreDown"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+           {"id":"00000000-0000-0000-0000-000000000004","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"voted elsewhere","createdBy":"op","endsAt":"$soon",
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"GovVoteMissing"},
+                        {"isEqual":true,"isRegex":false,"name":"proposal_id","value":"9"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+           {"id":"00000000-0000-0000-0000-000000000005","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"no blobs","createdBy":"op","endsAt":"$soon",
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreNotServing"},
+                        {"isEqual":true,"isRegex":false,"name":"reason","value":"missed_uploads"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+           {"id":"00000000-0000-0000-0000-000000000006","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+            "comment":"fibre restart","createdBy":"op","endsAt":"$soon",
+            "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreNotServing"},
+                        {"isEqual":true,"isRegex":false,"name":"reason","value":"not_ready"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
           EOF
 
           rc=0
-          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>stderr.txt) || rc=$?
+          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --gov-page true 2>stderr.txt) || rc=$?
           printf '%s\n' "$out"
           cat stderr.txt
           if [ "$rc" -ne 1 ] || [ -s stderr.txt ]; then
@@ -1956,14 +2280,35 @@ jobs:
             if ! grep -qF " $m (" <<<"$line"; then echo "check 12 does not list $m"; exit 1; fi
           done
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
-          line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
+          line=$(grep -E '^WARN +21 +silences +2 of 5 active silences ' <<<"$out" || true)
           for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
                       '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ' \
-                      'ValidatorNotSigning, FibreDown, DiskLow, MonitorCannotReach; ends in ' \
-                      ' hours); the others: {host="val-1"} by op'; do
+                      'ValidatorNotSigning, FibreDown, DiskLow, MonitorCannotReach, GovVoteMissing; ends in ' \
+                      ' hours), {alertname="GovVoteMissing", proposal_id="9"} by op until ' \
+                      '(ID 00000000-0000-0000-0000-000000000004: holds back GovVoteMissing); the others: {host="val-1"} by op'; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done
           if grep -q '000000000003' <<<"$out"; then echo "check 21 listed an expired silence"; exit 1; fi
+          # With a remote signer and Fibre on, ValidatorSigningTwice and FibreNotServing's not_ready page
+          # count too, and a silence of another FibreNotServing reason does not; with tmkms set to sign
+          # through several nodes, ValidatorSigningTwice is left out.
+          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --gov-page true \
+                --signer remote --fibre-enabled true 2>/dev/null) || true
+          line=$(grep -E '^WARN +21 +silences +3 of 5 active silences ' <<<"$out" || true)
+          for want in '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ' \
+                      'ValidatorNotSigning, FibreDown, DiskLow, ValidatorSigningTwice, FibreNotServing, ' \
+                      'MonitorCannotReach, GovVoteMissing; ends in ' \
+                      '{alertname="FibreNotServing", reason="not_ready"} by op until ' \
+                      '(ID 00000000-0000-0000-0000-000000000006: holds back FibreNotServing); the others: {host="val-1"} by op' \
+                      ', {alertname="FibreNotServing", reason="missed_uploads"} by op until '; do
+            grep -qF -- "$want" <<<"$line" || { echo "check 21 with a remote signer and Fibre: missing $want"; exit 1; }
+          done
+          out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor \
+                --signer remote --signer-multi-node true 2>/dev/null) || true
+          want='(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ValidatorNotSigning, '
+          want+='FibreDown, DiskLow, MonitorCannotReach; ends in '
+          line=$(grep -E '^WARN +21 +silences +1 of 5 active silences ' <<<"$out" || true)
+          grep -qF -- "$want" <<<"$line" || { echo "check 21 with signer_multi_node true counted ValidatorSigningTwice"; exit 1; }
           grep -Eq '^SKIP +22 +dead-man ' <<<"$out" || { echo "check 22 did not skip without an alertmanager job"; exit 1; }
       - name: Show the Prometheus log
         if: failure()
@@ -2193,15 +2538,23 @@ jobs:
               celestia_mon_tensile: {api: "http://127.0.0.1:8766/api/v1", validator: "celestiavalcons1ci"}
           EOF
           # tools/ci/rpc_stub.py stands in for a node's RPC for celestia-mon-signal: the upgrade to v10
-          # is pending, and the validator (a synthetic operator address) signalled it. It listens on a
+          # is pending, and the validator (a synthetic operator address) signalled it; two proposals
+          # are in a week's voting period with 6 days left, 8 with the validator account's vote and 7
+          # without, and 9, an expedited one of a day with 23 hours left, without. It listens on a
           # private address (on lo), as a node on the private network would: the service's unit
           # refuses the internal ranges but for the RPC addresses its settings name.
           op=1111111111111111111111111111111111111111
           addr=$(python3 tools/ci/rpc_stub.py address "$op")
+          acc=$(python3 tools/ci/rpc_stub.py address "$op" celestia)
+          now=$(date +%s)
           printf '    celestia_mon_signal: {chain_id: celestia, rpc: ["http://10.255.0.3:8767"], validator: %s}\n' "$addr" >>"$inv/hosts.yml"
           cat >"$RUNNER_TEMP/rpc.json" <<EOF
           {"network": "celestia", "version": "9.0.4", "app_version": 9, "height": 15000000, "lowest": 1,
-           "tally": {"10": "CJv2gb0BEMj0pLgBGNbYkt0B"}, "upgrade": "CgcIChDy0poH", "signals": {"$op": 10}}
+           "tally": {"10": "CJv2gb0BEMj0pLgBGNbYkt0B"}, "upgrade": "CgcIChDy0poH", "signals": {"$op": 10},
+           "gov": [{"id": 7, "start": $((now - 86400)), "end": $((now + 518400)), "title": "CI proposal", "voters": []},
+                   {"id": 8, "start": $((now - 86400)), "end": $((now + 518400)), "title": "CI voted", "voters": ["$acc"]},
+                   {"id": 9, "start": $((now - 3600)), "end": $((now + 82800)), "title": "CI expedited", "voters": [],
+                    "expedited": true}]}
           EOF
           sudo ip addr add 10.255.0.3/32 dev lo
           nohup python3 tools/ci/rpc_stub.py 8767 "$RUNNER_TEMP/rpc.json" 10.255.0.3 >"$RUNNER_TEMP/rpc-stub.log" 2>&1 &
@@ -2442,15 +2795,22 @@ jobs:
           echo "Prometheus does not scrape celestia-mon-tensile"; exit 1
       # celestia-mon-signal reads the stand-in of a node's RPC, Prometheus scrapes it, and the rules
       # rendered on this host act on it: the stand-in's upgrade is pending and the validator signalled
-      # it, so UpgradeScheduled fires and UpgradeSignalMissing does not.
+      # it, so UpgradeScheduled fires and UpgradeSignalMissing does not. The votes are read (gov on by
+      # default), GovVoteMissing's message and page are loaded (chain_id celestia), and with 6 days
+      # and 23 hours left neither fires.
       - name: Upgrade signalling is read
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-signal
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/signal/config.json)" = "root:celestia-mon-signal 640"
+          sudo jq -e '.gov == true' /etc/celestia-mon/signal/config.json
           m=$(curl -fsS http://127.0.0.1:9918/metrics)
           grep -qx 'celestia_mon_signal_validator_version 10' <<<"$m"
           grep -qx 'celestia_mon_upgrade_height 15116658' <<<"$m"
+          grep -Eqx 'celestia_mon_gov_voting_proposals\{voter="celestia1[02-9ac-hj-np-z]{38}"\} 3' <<<"$m"
+          grep -qx 'celestia_mon_gov_validator_voted{proposal_id="7"} 0' <<<"$m"
+          grep -qx 'celestia_mon_gov_validator_voted{proposal_id="8"} 1' <<<"$m"
+          grep -qx 'celestia_mon_gov_proposal_info{proposal_id="7",title="CI proposal"} 1' <<<"$m"
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
           query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
           poll() { # PromQL, jq test its reply must pass
@@ -2463,6 +2823,10 @@ jobs:
           poll 'up{job="signal"}' '.data.result[0].value[1] == "1"'
           poll 'ALERTS{alertname="UpgradeScheduled",alertstate="firing"}' '.data.result | length == 1'
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
+          poll 'celestia_mon_gov_validator_voted{job="signal",proposal_id="7"}' '.data.result[0].value[1] == "0"'
+          jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="GovVoteMissing"}')"
+          login | curl -fsS -K - http://127.0.0.1:9912/api/v1/rules |
+            jq -e '[.data.groups[].rules[] | select(.name == "GovVoteMissing") | .labels.severity] | sort == ["message", "page"]'
       # node_exporter and the collector exchange traffic only with loopback, this host's and the
       # monitor's address (127.0.0.1 here) and the ufw sources. The monitor's collectors never reach
       # the internal ranges but for the fixture's resolvers (the private one, the link-local one
@@ -2585,6 +2949,16 @@ jobs:
           line=$(grep -E '^OK +23 +upgrade signal +read through http://10\.255\.0\.3:8767 ' <<<"$out")
           grep -qF 'v10 signalled by 85.5% of the voting power, an upgrade needs 83.3%; your validator signalled v10;' <<<"$line"
           grep -qF 'upgrade to v10 scheduled at height 15116658, in about 3.9 days' <<<"$line"
+          line=$(grep -E '^WARN +23 +gov votes +read [0-9]+s ago for celestia1[02-9ac-hj-np-z]{38}: proposal 7 \(CI proposal\) ends ' <<<"$out")
+          grep -Eq ' UTC, not voted, proposal 8 \(CI voted\) ends [0-9-]{10} [0-9:]{5} UTC, voted, ' <<<"$line"
+          grep -Eq ', voted, proposal 9 \(CI expedited\) ends [0-9-]{10} [0-9:]{5} UTC, not voted\. ' <<<"$line"
+          # When GovVoteMissing comes for each, 10 minutes after its condition: on the week's vote the message 2 days
+          # and the page 1 day before its end; on the expedited one the page alone, at half its day.
+          ends_at() { sed -nE "s/.*proposal $1 \([^)]*\) ends ([0-9-]{10} [0-9:]{5}) UTC.*/\1/p" <<<"$line"; }
+          at() { date -u -d "@$(($(date -u -d "$1" +%s) + $2))" '+%Y-%m-%d %H:%M UTC'; }
+          want="not voted on proposal 7 (GovVoteMissing: the message from $(at "$(ends_at 7)" -172200), the page from"
+          want+=" $(at "$(ends_at 7)" -85800)), 9 (GovVoteMissing: the page from $(at "$(ends_at 9)" -42600)). Fix: "
+          grep -qF "$want" <<<"$line" || { echo "check 23 does not say: $want"; exit 1; }
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
           grep -Eq '^(OK|NOT YET|WARN|FAIL) +22 +dead-man ' <<<"$out"
       # The defaults must leave headroom: each unit's peak memory since it started (memory.peak

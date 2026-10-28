@@ -4,8 +4,8 @@
   Roles can move between hosts: tmkms can be pointed at a backup node, and a standby Fibre can
   be started on another host. The page alerts (NodeNotAdvancing, ValidatorNotSigning, NodePeersLow,
   FibreDown, DiskLow) therefore read which node signs and which Fibre runs from the metrics, never
-  from the inventory, and ServiceDown is a message. The page of upgrade signalling, UpgradeSignalMissing,
-  reads the chain through celestia-mon-signal and names no host either.
+  from the inventory, and ServiceDown is a message. The pages of upgrade signalling, UpgradeSignalMissing,
+  and of governance votes, GovVoteMissing, read the chain through celestia-mon-signal and name no host either.
 #}
 {% set appd = celestia_mon_units.appd ~ '.service' %}
 {% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
@@ -43,6 +43,23 @@
 {% macro last(m) %}max(last_over_time({{ m }}{job='signal',host='{{ celestia_mon_monitor_host }}'}[7d])){% endmacro %}
 {# Alert template text that prints that value as a whole number (a version or a height). #}
 {% macro number(m) %}{{ '{{' }} with query `{{ last(m) }}` }}{{ '{{' }} . | first | value | printf `%.0f` }}{{ '{{' }} end }}{% endmacro %}
+{# Governance votes (GovVoteMissing), read with upgrade signalling unless celestia_mon_signal sets
+   gov: false; the page only where celestia_mon_gov_page holds (by default chain_id celestia). #}
+{% set gov_on = signal_on and celestia_mon_gov_on | bool %}
+{% set gov_page = gov_on and celestia_mon_gov_page | bool %}
+{# The vote rules read each proposal's last value in the past hour, by proposal_id: a scrape or two
+   that fail keep the reading; an hour without one (the service down or not scraped) lets the alert
+   resolve, after SignalUnreadable. While the service runs, it serves the proposals it read last,
+   also while its reads of them fail. #}
+{% macro gov(m) %}max by (proposal_id) (last_over_time({{ m }}{job='signal',host='{{ celestia_mon_monitor_host }}'}[1h])){% endmacro %}
+{% set gov_end = gov('celestia_mon_gov_voting_end_timestamp_seconds') %}
+{% set gov_span = '(' ~ gov_end ~ ' - ' ~ gov('celestia_mon_gov_voting_start_timestamp_seconds') ~ ')' %}
+{# Alert template text: the proposal's title and the validator account, when they are read. #}
+{% set gov_sel = "{job='signal',host='" ~ celestia_mon_monitor_host ~ "'" %}
+{% set gov_title = "{{ with query (printf `max by (title) (last_over_time(celestia_mon_gov_proposal_info" ~ gov_sel
+   ~ ",proposal_id='%s'}[1h]))` $labels.proposal_id) }}{{ with . | first | label `title` }} ({{ . }}){{ end }}{{ end }}" %}
+{% set gov_voter = "{{ with query `max by (voter) (last_over_time(celestia_mon_gov_voting_proposals" ~ gov_sel
+   ~ "}[1h]))` }} {{ . | first | label `voter` }}{{ end }}" %}
 {% set vf = nodes + groups.get('fibre', []) %}
 {# MonitorCannotReach: the scrape targets on the Celestia hosts (celestia-appd's metrics,
    node_exporter, the collector) that the monitor reaches over the network, so every host but the
@@ -692,6 +709,46 @@ groups:
           runbook: "{{ docs }}#disklow"
 {% endfor %}
 
+      # RaidDegraded: an md software RAID array runs on fewer disks than it needs: a disk failed or
+      # dropped out, the array started without it, or a new disk is still being rebuilt. node_exporter's
+      # mdadm collector reads /proc/mdstat, whose [2/1] gives the disks the array needs and the active
+      # ones (node_md_disks_required, node_md_disks{state="active"}). A host without md has no such
+      # series, and the monthly check and a resync keep [2/2], so neither fires it; a rebuild keeps
+      # it firing until the array is whole again. A single failed scrape must not resolve it, which
+      # would read as "the rebuild finished", hence keep_firing_for. A message on every host.
+      - alert: RaidDegraded
+        expr: node_md_disks_required{job="node"} - ignoring (state) node_md_disks{job="node",state="active"} > 0
+        for: 5m
+        keep_firing_for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}RAID {{ $labels.device }} on {{ $labels.host }} is missing a disk{% endraw %}"
+          description: "{% raw %}For 5 minutes the md software RAID array {{ $labels.device }} has run on fewer disks than it needs ({{ $value | printf `%.0f` }} missing): a disk failed or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_]) and a rebuild's progress; mdadm --detail /dev/{{ $labels.device }} shows why. This alert resolves when the array is whole again.{% endraw %}"
+          runbook: "{{ docs }}#raiddegraded"
+
+      # ClockNotSynced: the kernel has reported the host's clock as not synchronised for an hour: its
+      # maximum error (adjtimex's maxerror, node_timex_maxerror_seconds) is at 16 s, the kernel's
+      # ceiling, the same test as timedatectl's NTPSynchronized and doctor check 9. chrony sets the
+      # error at each clock update and 16 s while it has no usable source; systemd-timesyncd sets 0
+      # at each correction; in between the kernel adds 0.5 ms a second, so 16 s comes about 9 hours
+      # after the last correction. A clocksource switch or a step also sets 16 s until the daemon's
+      # next update, hence the hour. Nothing fails yet, but the clock drifts freely: a node about 60 s
+      # slow rejects every block (celestia-core v0.42.3), and a Fibre server about 2 minutes fast
+      # reports itself not ready. A clock synchronised to a wrong source passes. A single failed
+      # scrape must not resolve it, which would read as "time sync works again", hence
+      # keep_firing_for.
+      - alert: ClockNotSynced
+        expr: node_timex_maxerror_seconds{job="node"} >= 16
+        for: 1h
+        keep_firing_for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Clock not synchronised on {{ $labels.host }}{% endraw %}"
+          description: "For an hour the kernel has reported this host's clock as not synchronised: chrony or systemd-timesyncd has stopped correcting it, or has not corrected it since boot. Nothing fails yet, but the clock now drifts freely: a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and allow outgoing NTP (UDP 123)."
+          runbook: "{{ docs }}#clocknotsynced"
+
 {% if celestia_mon_announcements | default([]) | length > 0 %}
       # AnnouncementsUnreadable: celestia-mon-announcements has not read a Discord channel for
       # 15 minutes (a revoked token, a lost permission, Discord unreachable), or it is down, so
@@ -789,20 +846,79 @@ groups:
           description: "The upgrade to app version {{ number('celestia_mon_upgrade_version') }} is scheduled at height {{ number('celestia_mon_upgrade_height') }}, in about {{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}{% raw %}{{ . | first | value | humanizeDuration }}{{ end }}{% endraw %}. Check now that every node of this install ({{ nodes | join(', ') }}) runs a celestia-app release that supports v{{ number('celestia_mon_upgrade_version') }}: a node without one stops at that height. This alert resolves when the chain has switched to v{{ number('celestia_mon_upgrade_version') }}."
           runbook: "{{ docs }}#upgradesoon"
 
+{% if gov_on %}
+      # GovVoteMissing: a governance proposal is in its voting period and the validator account (the
+      # operator address's bytes as celestia1..., whose vote the tally reads for the validator) has
+      # no vote on it, with less than 2 days left (the message) or less than 1 (the page), or less
+      # than half the vote on a short one. One alert per proposal, its value the time left. Where it
+      # pages, the message is held back once the page's time has come, unless it fires already (its
+      # own ALERTS series), so the two never start together: a vote of 2 days or less, or one first
+      # read in its last day (gov turned on then, or the readings back after more than an hour),
+      # gets the page alone. It resolves when the vote is on chain, when voting has closed, or when
+      # the end moves out: an expedited proposal that fails becomes a regular one, its votes wiped
+      # (x/gov abci.go), and comes back as it nears its new end. Both hold for 10 minutes, the
+      # for-grace-period.
+      - alert: GovVoteMissing
+        expr: >-
+          {{ gov_end }} - time() > 0
+          < on (proposal_id) clamp_max({{ gov_span }} / 2, 172800)
+          and on (proposal_id) {{ gov('celestia_mon_gov_validator_voted') }} == 0
+{% if gov_page %}
+          unless on (proposal_id) (
+            {{ gov_end }} - time() < on (proposal_id) clamp_max({{ gov_span }} / 2, 86400)
+            unless on (proposal_id) ALERTS{alertname="GovVoteMissing",severity="message",alertstate="firing"}
+          )
+{% endif %}
+        for: 10m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}The validator has not voted on proposal {{ $labels.proposal_id }}{% endraw %}"
+          description: "{% raw %}Proposal {{ $labels.proposal_id }}{% endraw %}{{ gov_title }}{% raw %} ends its voting period in about {{ $value | humanizeDuration }}, and the validator account{% endraw %}{{ gov_voter }}{% raw %} has no vote on it. Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx gov vote {{ $labels.proposal_id }} yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an authz grant from the validator account counts; a vote from any other account does not. This alert resolves when the vote is on chain or the voting period has ended.{% endraw %}{{ ' It pages when less than a day is left.' if gov_page else '' }}"
+          runbook: "{{ docs }}#govvotemissing"
+
+{% if gov_page %}
+      - alert: GovVoteMissing
+        expr: >-
+          {{ gov_end }} - time() > 0
+          < on (proposal_id) clamp_max({{ gov_span }} / 2, 86400)
+          and on (proposal_id) {{ gov('celestia_mon_gov_validator_voted') }} == 0
+        for: 10m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}The validator has not voted on proposal {{ $labels.proposal_id }}{% endraw %}"
+          description: "{% raw %}Proposal {{ $labels.proposal_id }}{% endraw %}{{ gov_title }}{% raw %} ends its voting period in about {{ $value | humanizeDuration }}, and the validator account{% endraw %}{{ gov_voter }}{% raw %} has no vote on it. Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx gov vote {{ $labels.proposal_id }} yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an authz grant from the validator account counts; a vote from any other account does not. This alert resolves when the vote is on chain or the voting period has ended.{% endraw %}"
+          runbook: "{{ docs }}#govvotemissing"
+
+{% endif %}
+{% endif %}
       # SignalUnreadable: for 15 minutes celestia-mon-signal has read none of its RPCs (each one down,
-      # refused, behind, or serving another network), or the service is down, for 10 minutes more.
-      # The upgrade alerts keep their last reading meanwhile; a new signalling round would not page.
+      # refused, behind, or serving another network), or with gov on none has given it the
+      # proposals, or the service is down, for 10 minutes more. The upgrade alerts keep their last
+      # reading meanwhile, and the vote alerts the proposals read last, which the service serves for
+      # as long as it runs (the rules keep them an hour once it is down): a new signalling round
+      # would not page, a new proposal would not be seen, and a vote cast meanwhile would not
+      # resolve GovVoteMissing.
       - alert: SignalUnreadable
         expr: >-
           time() - celestia_mon_signal_last_success_timestamp_seconds > 900
+{% if gov_on %}
+          or time() - celestia_mon_gov_last_success_timestamp_seconds > 900
+{% endif %}
           or up{job="signal"} == 0
         for: 10m
         labels:
           severity: message
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
+{% if gov_on %}
+          summary: "The upgrade signal and votes are not being read on {{ celestia_mon_monitor_host }}"
+          description: "For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance proposals, or it is down, so a new signalling round would not page, a new proposal would not be seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why."
+{% else %}
           summary: "The upgrade signal is not being read on {{ celestia_mon_monitor_host }}"
           description: "For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new signalling round would not page, and the upgrade alerts keep their last reading. Run journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why."
+{% endif %}
           runbook: "{{ docs }}#signalunreadable"
 
 {% endif %}

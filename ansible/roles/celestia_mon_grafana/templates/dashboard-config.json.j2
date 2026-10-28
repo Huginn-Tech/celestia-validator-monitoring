@@ -34,7 +34,7 @@
 {%- endfor -%}
 {#- kms_names: every kms host, with a remote signer. The dashboard names the remote signer's column of the
     Servers band after the ones it does not scrape (it only reads their signing, through the nodes). -#}
-{#- The switches below are the alert rules' own (tensile_on, signal_on, mon_only in celestia-mon.rules.yml.j2),
+{#- The switches below are the alert rules' own (tensile_on, signal_on, gov_on, gov_page, mon_only in celestia-mon.rules.yml.j2),
     so the dashboard shows exactly the checks that have rules. monitor_only: the monitor runs on a host of
     its own, with no Celestia service. -#}
 {{ {
@@ -45,6 +45,8 @@
   'fibre_enabled': celestia_mon_fibre_enabled | bool,
   'tensile_enabled': (celestia_mon_fibre_enabled | bool) and (celestia_mon_tensile.validator | default('') | length > 0),
   'signal_enabled': celestia_mon_signal | default({}, true) | length > 0,
+  'gov_enabled': celestia_mon_gov_on | bool,
+  'gov_page': celestia_mon_gov_page | bool,
   'announcements_enabled': celestia_mon_announcements | default([]) | length > 0,
   'units': celestia_mon_units,
   'thresholds': celestia_mon_thresholds,

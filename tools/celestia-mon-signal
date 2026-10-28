@@ -1,5 +1,6 @@
 #!/usr/bin/python3 -I
-"""celestia-mon-signal: the network's upgrade signalling (x/signal) and the validator's own signal.
+"""celestia-mon-signal: the network's upgrade signalling (x/signal) and the validator's own signal,
+and the governance proposals in their voting period with the validator's votes (x/gov).
 
 Celestia moves to a new app version through x/signal: validators signal the next version, and
 once 5/6 of the voting power has signalled, anyone can schedule the upgrade at a height. This
@@ -8,7 +9,9 @@ service reads, every interval, through a node's CometBFT RPC: the app version an
 (VersionTally), the scheduled upgrade (GetUpgrade) and the version the validator signalled (its
 entry in the signal store), and the block time over the last 1000 blocks the node keeps (the
 oldest one's header, from /blockchain). It serves them as Prometheus metrics for
-UpgradeSignalMissing, UpgradeScheduled and UpgradeSoon.
+UpgradeSignalMissing, UpgradeScheduled and UpgradeSoon. With gov on (the default), it also reads
+at that height the proposals in their voting period, and those of them the validator account has
+voted on, for GovVoteMissing.
 
   celestia-mon-signal --config FILE [--once]
   celestia-mon-signal --check-address ADDRESS
@@ -18,10 +21,13 @@ current state is read. One that serves another network, whose node is catching u
 block for MAX_BLOCK_AGE seconds, or that answers /abci_info at an older height than /status, is
 skipped, and so is one whose store does not hold the height /abci_info gave. While no RPC can be
 read, the last good reading stays and only its time ages; while the block time cannot be
-measured, the one measured last stays. Only the Python standard library is used; it sends no
-transaction and needs no key. An http URL must name this host or an address of the private
-network (PLAIN_HTTP); any other RPC is reached over https. No redirect is followed, and no
-answer larger than MAX_BODY is read.
+measured, the one measured last stays. The proposals are read on their own, at the /abci_info
+height of the first RPC that answers for chain_id with a current state and gives them, which is
+mostly the one that gave the x/signal reading but need not be; while none gives them, the
+proposals read last stay, and the x/signal reading goes on. Only the Python standard library is
+used; it sends no transaction and needs no key. An http URL must name this host or an address of
+the private network (PLAIN_HTTP); any other RPC is reached over https. No redirect is followed,
+and no answer larger than MAX_BODY is read.
 """
 
 import argparse
@@ -48,6 +54,19 @@ TALLY_PATH = "/celestia.signal.v1.Query/VersionTally"
 UPGRADE_PATH = "/celestia.signal.v1.Query/GetUpgrade"
 STORE_PATH = "/store/signal/key"
 OPERATOR_PREFIX = "celestiavaloper"
+# celestia-app v10.5.0 builds x/gov from celestiaorg/cosmos-sdk v0.52.12 (go.mod's replace):
+# proto/cosmos/gov/v1/query.proto and gov.proto. Proposals takes proposal_status (1) and voter (2),
+# and with a voter answers only the proposals that account has a vote on (x/gov/keeper/grpc_query.go);
+# without pagination it answers up to 100 matches. The validator's own vote is the one of the
+# account with the operator address's bytes under the account prefix (app/params/config.go;
+# x/gov/keeper/tally.go): a vote sent through an authz grant from that account is stored under it
+# too, a vote from any other account is not the validator's.
+GOV_PATH = "/cosmos.gov.v1.Query/Proposals"
+ACCOUNT_PREFIX = "celestia"
+VOTING_PERIOD = 2  # PROPOSAL_STATUS_VOTING_PERIOD
+# The characters of a proposal's title the metrics keep.
+TITLE_CHARS = 80
+SQUARE_TO_ROUND = str.maketrans("[]", "()")
 # The blocks the block time is measured over.
 BLOCK_SPAN = 1000
 # A node whose last block is older than this (in seconds; some 40 blocks) has stalled or halted,
@@ -181,6 +200,34 @@ def operator_bytes(address):
     return bytes(out)
 
 
+def to5(data):
+    """The 5-bit values that carry bytes (BIP 173's convertbits, the last one padded with zero bits)."""
+    acc = bits = 0
+    out = []
+    for b in data:
+        acc = ((acc << 8) | b) & 0xFFF
+        bits += 8
+        while bits >= 5:
+            bits -= 5
+            out.append((acc >> bits) & 31)
+    if bits:
+        out.append((acc << (5 - bits)) & 31)
+    return out
+
+
+def bech32_encode(prefix, values):
+    """A bech32 string of a prefix and 5-bit data values, with its checksum."""
+    expanded = [ord(c) >> 5 for c in prefix] + [0] + [ord(c) & 31 for c in prefix]
+    chk = bech32_polymod(expanded + values + [0] * 6) ^ 1
+    return prefix + "1" + "".join(BECH32_CHARSET[v] for v in values + [(chk >> 5 * (5 - i)) & 31 for i in range(6)])
+
+
+def account(operator):
+    """The validator account (celestia1...) of the operator address's bytes: the voter whose votes
+    count as the validator's."""
+    return bech32_encode(ACCOUNT_PREFIX, to5(operator))
+
+
 # ------------------------------------------------------------------- protobuf
 
 
@@ -216,10 +263,10 @@ def encode_varint(n):
             return bytes(out)
 
 
-def fields(buf):
-    """The fields of a protobuf message as {number: value}: varints as int, length-delimited fields
-    as bytes. A field that is absent was 0 (proto3)."""
-    out = {}
+def entries(buf):
+    """The fields of a protobuf message in order, as (number, value): varints as int,
+    length-delimited fields as bytes; a repeated field once per entry."""
+    out = []
     i = 0
     while i < len(buf):
         key, i = varint(buf, i)
@@ -238,7 +285,22 @@ def fields(buf):
             value, i = buf[i : i + n], i + n
         else:
             raise ValueError(f"field {number} has wire type {wire}")
-        out[number] = value
+        out.append((number, value))
+    return out
+
+
+def fields(buf):
+    """The fields of a protobuf message as {number: value}, the last entry of a field that comes
+    more than once. A field that is absent was 0 (proto3)."""
+    return dict(entries(buf))
+
+
+def repeated(buf, field):
+    """Every entry of a repeated length-delimited field of a protobuf message, in order; ValueError
+    when one came as another wire type."""
+    out = [v for n, v in entries(buf) if n == field]
+    if any(not isinstance(v, bytes) for v in out):
+        raise ValueError(f"field {field} is not a message")
     return out
 
 
@@ -318,8 +380,9 @@ def abci_query(rpc, path, height, data=b""):
     return base64.b64decode(value, validate=True) if value else None
 
 
-def read_rpc(rpc, chain_id, operator):
-    """One full reading through one RPC, without the block time; and the node's sync_info."""
+def read_head(rpc, chain_id):
+    """The RPC's chain head, {rpc, node_version, app_version, height, next_version}, when it answers
+    for chain_id with a current state; and the node's sync_info. ReadError otherwise."""
     status = get(rpc, "/status")
     network = (status.get("node_info") or {}).get("network")
     if network != chain_id:
@@ -345,13 +408,20 @@ def read_rpc(rpc, chain_id, operator):
     if latest - height > MAX_BLOCKS_BEHIND:
         raise ReadError("behind", f"{shown(rpc)} answered /abci_info at height {height}, {latest} in /status,"
                         " so its state is old: skipped")
-    reading = {
+    head = {
         "rpc": shown(rpc),
         "node_version": info.get("version") or "",
         "app_version": app_version,
         "height": height,
         "next_version": app_version + 1,
     }
+    return head, sync
+
+
+def read_signal(rpc, head, operator):
+    """One full x/signal reading through one RPC at its head's height, without the block time."""
+    reading = dict(head)
+    height, app_version = head["height"], head["app_version"]
     # Every query at the height /abci_info gave, so a block that lands during the read (the switch
     # to the new version, which clears the tally) cannot mix two states in one reading.
     tally = fields(abci_query(rpc, TALLY_PATH, height, b"\x08" + encode_varint(app_version + 1)) or b"")
@@ -366,7 +436,51 @@ def read_rpc(rpc, chain_id, operator):
     # x/signal reads any value that is not 8 bytes as no version (keeper.go VersionFromBytes).
     own = abci_query(rpc, STORE_PATH, height, operator)
     reading["validator_version"] = int.from_bytes(own, "big") if own is not None and len(own) == 8 else 0
-    return reading, sync
+    return reading
+
+
+def seconds(msg, what):
+    """A google.protobuf.Timestamp (seconds 1, nanos 2) as Unix seconds; ValueError when absent."""
+    if not isinstance(msg, bytes):
+        raise ValueError(f"{what} is missing")
+    t = fields(msg)
+    return uint(t, 1) + uint(t, 2) / 1e9
+
+
+def title_text(raw):
+    """A proposal's title as a label can carry it. A title is free text, written by whoever
+    submitted the proposal: line breaks, tabs and other spaces become one space, control and
+    format characters (zero-width ones, direction overrides) are dropped, square brackets become
+    round ones, so no chat channel that reads Markdown (Discord) shows a link under other words
+    ([text](url)) in an alert, and it keeps at most TITLE_CHARS characters."""
+    text = raw.decode("utf-8", errors="replace").translate(SQUARE_TO_ROUND)
+    text = "".join(" " if c.isspace() else c if c.isprintable() else "" for c in text)
+    text = " ".join(text.split())
+    return text if len(text) <= TITLE_CHARS else text[: TITLE_CHARS - 1].rstrip() + "…"
+
+
+def read_gov(rpc, height, voter):
+    """The proposals in their voting period at a height, {id: {start, end, voted, title}}: voted is
+    1 when the voter account has a vote on it. Two queries at that height, so a vote that lands
+    during the read cannot mix two states."""
+    status = b"\x08" + encode_varint(VOTING_PERIOD)
+    out = {}
+    for raw in repeated(abci_query(rpc, GOV_PATH, height, status) or b"", 1):
+        p = fields(raw)
+        n = uint(p, 1)
+        if not isinstance(p.get(11, b""), bytes):
+            raise ValueError(f"proposal {n}'s title is not a string")
+        out[n] = {"start": seconds(p.get(8), f"proposal {n}'s voting start time"),
+                  "end": seconds(p.get(9), f"proposal {n}'s voting end time"),
+                  "voted": 0, "title": title_text(p.get(11, b""))}
+    with_voter = status + b"\x12" + encode_varint(len(voter)) + voter.encode()
+    for raw in repeated(abci_query(rpc, GOV_PATH, height, with_voter) or b"", 1):
+        n = uint(fields(raw), 1)
+        # A proposal the first answer lacks would come only from a broken answer.
+        if n not in out:
+            raise ValueError(f"proposal {n} has a vote but is not in its voting period")
+        out[n]["voted"] = 1
+    return out
 
 
 def block_time(rpc, sync):
@@ -392,13 +506,17 @@ def block_time(rpc, sync):
 
 
 class State:
-    """The last good reading, rendered as Prometheus text."""
+    """The last good reading, and with gov on (a voter) the last proposals read, rendered as
+    Prometheus text."""
 
-    def __init__(self):
+    def __init__(self, voter=None):
         self.lock = threading.Lock()
         self.last_success = 0.0
         self.errors = {}
         self.reading = None
+        self.voter = voter
+        self.gov_success = 0.0
+        self.proposals = None
 
     def ok(self, reading):
         with self.lock:
@@ -406,6 +524,11 @@ class State:
                 reading["block_time"] = self.reading["block_time"]
             self.reading = reading
             self.last_success = time.time()
+
+    def gov_ok(self, proposals):
+        with self.lock:
+            self.proposals = proposals
+            self.gov_success = time.time()
 
     def error(self, reason):
         with self.lock:
@@ -421,12 +544,36 @@ class State:
                 "# TYPE celestia_mon_signal_errors_total counter",
             ]
             out += [f'celestia_mon_signal_errors_total{{reason="{r}"}} {n}' for r, n in sorted(self.errors.items())]
+
+            def family(name, text, samples):
+                if samples:
+                    out.extend([f"# HELP {name} {text}", f"# TYPE {name} gauge"]
+                               + [f"{name}{labels} {value}" for labels, value in samples])
+
+            def gauge(name, text, value, labels=""):
+                family(name, text, [(labels, value)])
+
+            if self.voter is not None:
+                gauge("celestia_mon_gov_last_success_timestamp_seconds",
+                      "Unix time of the last read of the proposals in their voting period, 0 before the first.",
+                      self.gov_success)
+            if self.proposals is not None:
+                ps = sorted(self.proposals.items())
+                ids = [(f'{{proposal_id="{n}"}}', p) for n, p in ps]
+                gauge("celestia_mon_gov_voting_proposals",
+                      "Proposals in their voting period; voter is the validator account whose votes are read.",
+                      len(ps), f'{{voter="{esc(self.voter)}"}}')
+                family("celestia_mon_gov_voting_start_timestamp_seconds", "Unix time the proposal's voting period began.",
+                       [(i, round(p["start"], 3)) for i, p in ids])
+                family("celestia_mon_gov_voting_end_timestamp_seconds", "Unix time the proposal's voting period ends.",
+                       [(i, round(p["end"], 3)) for i, p in ids])
+                family("celestia_mon_gov_validator_voted", "1 when the validator account has a vote on the proposal, 0 otherwise.",
+                       [(i, p["voted"]) for i, p in ids])
+                family("celestia_mon_gov_proposal_info", f"1 for each proposal, with its title (at most {TITLE_CHARS} characters).",
+                       [(f'{{proposal_id="{n}",title="{esc(p["title"])}"}}', 1) for n, p in ps])
             r = self.reading
             if r is None:
                 return "\n".join(out) + "\n"
-
-            def gauge(name, text, value, labels=""):
-                out.extend([f"# HELP {name} {text}", f"# TYPE {name} gauge", f"{name}{labels} {value}"])
 
             gauge("celestia_mon_app_version", "The chain's current app version.", r["app_version"])
             gauge("celestia_mon_node_version_info", "The celestia-app version of the node behind the RPC read last.", 1,
@@ -477,12 +624,18 @@ def serve(listen, state):
     threading.Thread(target=server.serve_forever, daemon=True).start()
 
 
-def read(cfg, operator, state):
+def read(cfg, operator, voter, state):
     """Reads through the first RPC that answers for chain_id with a current state; keeps the last
-    reading when none does."""
+    reading when none does. With a voter, the proposals too, at the /abci_info height of the
+    first such RPC that gives them, also one whose x/signal read failed: a failed read of the
+    proposals (reason gov) keeps the last ones and never holds back the x/signal reading, which
+    the upgrade page needs."""
+    signal_done, gov_done = False, voter is None
     for rpc in cfg["rpc"]:
+        if signal_done and gov_done:
+            return
         try:
-            reading, sync = read_rpc(rpc, cfg["chain_id"], operator)
+            head, sync = read_head(rpc, cfg["chain_id"])
         except ReadError as e:
             state.error(e.reason)
             log(str(e))
@@ -492,15 +645,38 @@ def read(cfg, operator, state):
             state.error("format")
             log(f"cannot read the answer of {shown(rpc)}: {e!r}")
             continue
-        # The block time feeds only the ETA: without it the reading stands, with the one measured last.
-        try:
-            reading["block_time"] = block_time(rpc, sync)
-        except ReadError as e:
-            state.error("block_time")
-            log(f"{e}; the block time measured last is kept")
-        state.ok(reading)
-        return
-    log("no RPC could be read; the metrics keep the last good reading")
+        if not signal_done:
+            try:
+                reading = read_signal(rpc, head, operator)
+            except ReadError as e:
+                state.error(e.reason)
+                log(str(e))
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
+                state.error("format")
+                log(f"cannot read the answer of {shown(rpc)}: {e!r}")
+            else:
+                # The block time feeds only the ETA: without it the reading stands, with the one measured last.
+                try:
+                    reading["block_time"] = block_time(rpc, sync)
+                except ReadError as e:
+                    state.error("block_time")
+                    log(f"{e}; the block time measured last is kept")
+                state.ok(reading)
+                signal_done = True
+        if not gov_done:
+            try:
+                state.gov_ok(read_gov(rpc, head["height"], voter))
+                gov_done = True
+            except ReadError as e:
+                state.error("gov")
+                log(f"{e}; the proposals read last are kept")
+            except (AttributeError, KeyError, TypeError, ValueError, OverflowError) as e:
+                state.error("gov")
+                log(f"cannot read the proposals in the answer of {shown(rpc)}: {e!r}; the proposals read last are kept")
+    if not signal_done:
+        log("no RPC could be read; the metrics keep the last good reading")
+    if not gov_done:
+        log("no RPC gave the proposals; the metrics keep the proposals read last")
 
 
 def check_config(cfg):
@@ -524,6 +700,8 @@ def check_config(cfg):
         if u.scheme == "http" and not plain_http_allowed(u.hostname):
             sys.exit(f"celestia-mon-signal: rpc {i} of {len(rpcs)} is an http URL of a host that is not this one or an"
                      " address of the private network: use https, or name a node of the private network by its address")
+    if not isinstance(cfg.get("gov", True), bool):
+        sys.exit(f"celestia-mon-signal: gov is {cfg.get('gov')!r}, not true or false")
     try:
         return operator_bytes(str(cfg.get("validator") or ""))
     except ValueError as e:
@@ -546,17 +724,19 @@ def main():
     with open(args.config) as f:
         cfg = json.load(f)
     operator = check_config(cfg)
-    state = State()
+    # gov false: no proposal is read, and no gov metric is served.
+    voter = account(operator) if cfg.get("gov", True) else None
+    state = State(voter)
     if args.once:
-        read(cfg, operator, state)
+        read(cfg, operator, voter, state)
         sys.stdout.write(state.render())
         return
     serve(cfg["listen"], state)
     while True:
         # Nothing ends the loop: what goes wrong is logged, and SignalUnreadable fires if no read
-        # works for 15 minutes.
+        # (of x/signal, or with gov on of the proposals) works for 15 minutes.
         try:
-            read(cfg, operator, state)
+            read(cfg, operator, voter, state)
         except Exception as e:
             log(f"the read failed: {e!r}")
         time.sleep(cfg["interval_seconds"])

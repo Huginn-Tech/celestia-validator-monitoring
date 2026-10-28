@@ -4,10 +4,10 @@ Ready-made monitoring for Celestia validators running Fibre.
 
 It watches a consensus validator, its Fibre server and its remote signer (tmkms), on one host or split across validator, KMS, Fibre and monitor hosts, with optional backup nodes and a standby Fibre; when tmkms moves to a backup node or a standby Fibre takes over, the alerts and the dashboard follow. It ships:
 
-- one Grafana dashboard that reads like a status page: what is wrong now in the words of your alerts; one-word answers (is the validator signing and through which node, is a backup node ready, is Fibre serving and reachable from outside, is a network upgrade coming); a day of uptime bars per check and per server, read from the alert states; which server held each role; each server's state; and below them the charts behind every alert, with its threshold drawn;
-- twenty-two alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
+- one Grafana dashboard that reads like a status page: what is wrong now in the words of your alerts; one-word answers (is the validator signing and through which node, is a backup node ready, is Fibre serving and reachable from outside, is a network upgrade coming, is a governance vote missing); a day of uptime bars per check and per server, read from the alert states; which server held each role; each server's state; and below them the charts behind every alert, with its threshold drawn;
+- twenty-five alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
 - optionally, Celestia's announcements from its Discord (upgrades, incidents) through the same receivers, PagerDuty included;
-- optionally, network upgrades read from the chain (x/signal): a page while validators signal the next app version and yours has not, and a message when the upgrade is scheduled and when it is a day away;
+- optionally, network upgrades read from the chain (x/signal): a page while validators signal the next app version and yours has not, and a message when the upgrade is scheduled and when it is a day away; with them, the validator's governance votes (x/gov): a message when a proposal is 2 days from its end without your vote, and on mainnet a page a day before (an expedited 24-hour vote: 12 hours before its end);
 - `celestia-mon-doctor`, a read-only check of each host's setup.
 
 ## How it installs
