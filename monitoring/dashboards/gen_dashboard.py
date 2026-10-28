@@ -83,7 +83,7 @@ QUICKSTART = "https://github.com/s0urledd/celestia-validator-monitoring/blob/mai
 # Pages the descriptions link to, as (text, url). Panels carry no links of their own: one (i) per title.
 NODE_EXPORTER_FULL = ("Node Exporter Full", "https://grafana.com/grafana/dashboards/1860-node-exporter-full/")
 FIBRE_DASHBOARD = ("Fibre dashboard (celestia-app)",
-                   "https://github.com/celestiaorg/celestia-app/blob/v10.4.0/observability/docker/grafana/dashboards/fibre.json")
+                   "https://github.com/celestiaorg/celestia-app/blob/v10.5.0/observability/docker/grafana/dashboards/fibre.json")
 TENSILE = ("Tensile", "https://tensile.huginn.tech")
 MAINNET_LAYOUT = ("mainnet layout", QUICKSTART + "#mainnet-layout")
 PANEL_GUIDE = ("Panel guide", "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/panels.md")

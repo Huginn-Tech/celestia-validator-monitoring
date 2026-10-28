@@ -134,7 +134,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 2. For "is not loaded": the unit was stopped and disabled, or `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Correct `celestia_mon_units` if needed and run `install.sh` again on that host and on the monitor.
 3. For "is unreachable": from the monitor, `curl -s http://<host private address>:<port>/metrics | head`. If that fails while the service runs, check its listen address (for celestia-appd, `prometheus_listen_addr` in `config.toml`), a firewall on the host, and the private network between the hosts. `sudo celestia-mon-doctor` on the host checks the listen addresses and the node's metrics; on the monitor, check 11 names each target that is down and what to fix.
 
-**Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#troubleshooting), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
+**Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#troubleshooting), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
 
 ## NodeNotAdvancing
 
@@ -200,7 +200,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 2. The link between the node and the KMS host (packet loss, round trip) and the load on the KMS host; then the node itself: its peers and a slow disk ("Disk latency" panel), since a node that lags signs late.
 3. How close to jailing: `celestia-appd query slashing signing-info <celestiavalcons address>` (`doctor` check 4 on the validator host prints the address) shows the blocks missed in the current window; `celestia-appd query slashing params` shows the window and the share it must sign.
 
-**Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/), [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#key-management-systems-kms).
+**Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/), [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/docs/release-notes/release-notes.md#key-management-systems-kms).
 
 ## ValidatorSigningTwice
 
@@ -216,7 +216,7 @@ Only with `celestia_mon_signer: remote`, and not with `celestia_mon_signer_multi
 2. On the dashboard, the Consensus node rows of the server cards show which nodes get the signatures now, and the Validator signs through lane under History shows since when.
 3. If one tmkms signs through several nodes on purpose (several `[[validator]]` entries), set `celestia_mon_signer_multi_node: true` and run `install.sh` on the monitor: this alert is then left out.
 
-**Links.** [tmkms](https://github.com/iqlusioninc/tmkms), [Cosmos SDK x/slashing](https://github.com/cosmos/cosmos-sdk/tree/main/x/slashing).
+**Links.** [tmkms](https://github.com/iqlusioninc/tmkms), [Cosmos SDK x/slashing](https://github.com/celestiaorg/cosmos-sdk/tree/v0.52.12/x/slashing).
 
 ## RemoteSignerProblem
 
@@ -235,7 +235,7 @@ Only with `celestia_mon_signer: remote`.
 2. Latency: the network path between the validator and the KMS host (round trip, same datacenter or not) and the load on the KMS host. Celestia recommends keeping the signer close, for example by colocation.
 3. Proposal failures: the tmkms log on the KMS host around the failed proposals, and whether the tmkms version and its chain settings match the network's current app version (often the cause after an upgrade).
 
-**Links.** [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#key-management-systems-kms), [Fibre server guide: signing](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#signing), [tmkms](https://github.com/iqlusioninc/tmkms).
+**Links.** [celestia-app v10 release notes: KMS requirements](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/docs/release-notes/release-notes.md#key-management-systems-kms), [Fibre server guide: signing](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#signing), [tmkms](https://github.com/iqlusioninc/tmkms).
 
 ## FibreDown
 
@@ -261,7 +261,7 @@ celestia-mon-tensile on the monitor reads Tensile's verdict for your validator e
 2. On the Fibre host that should be active, `systemctl status <fibre unit>` and `journalctl -u <fibre unit> -n 100`. `sudo celestia-mon-doctor` there (check 6) shows the unit and its listening port. If that host is down, start the standby Fibre on another Fibre host and point `x/valaddr` at it with `celestia-appd tx valaddr set-host`, from your workstation or through an ops key with an authz grant, never with a key on a server ([mainnet layout](quickstart.md#mainnet-layout)); check 5 on the validator shows the registration. Before you start a standby, check 17 on its host shows whether its signer reaches the validator node.
 3. For a planned Fibre stop with no standby started in its place, silence the alert by name first ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)): a host silence does not cover it.
 
-**Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#troubleshooting).
+**Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#troubleshooting).
 
 ## TensileUnreadable
 
@@ -329,7 +329,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 | `registration` | "Register a Fibre provider host for validator <address> with MsgSetFibreProviderInfo." (`provider_not_registered`), "The registered provider host "<host>" is not a valid host:port. Register it again." (`provider_host_invalid`), or "Could not query the Fibre provider registration from the app node." (`app_unreachable`) | `doctor` check 5 on the validator host shows the registration; register the active Fibre host in `x/valaddr` as under [FibreDown](#fibredown). |
 | `store` | "The store failed a small write and read. Check free disk space and permissions of the store directory." (`store_failed`) | The Fibre store's disk (full, read-only, I/O errors in `journalctl -k`) and the permissions of the store directory for Fibre's user. |
 
-**Links.** [Fibre server guide: server runs but no uploads arrive](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#server-runs-but-no-uploads-arrive), [registration](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#registration), [tracing and metrics](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/fibre/cmd/README.md#tracing--metrics), [health checks](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/server_health.go).
+**Links.** [Fibre server guide: server runs but no uploads arrive](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#server-runs-but-no-uploads-arrive), [registration](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#registration), [tracing and metrics](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#tracing--metrics), [health checks](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/server_health.go).
 
 ## DiskLow
 
@@ -354,7 +354,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 2. Free space: `du -xh --max-depth=2 <mount> | sort -h | tail` shows what grew. On the node, check pruning in `app.toml` and blockstore compaction in `config.toml`.
 3. Fibre store: the "Fibre disk and budget" panel shows the free space on the store of the Fibre that runs against what Fibre may still write under its storage budget, the room the budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
-**Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
+**Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/docs/release-notes/release-notes.md#blockstore-compaction).
 
 ## RaidDegraded
 
@@ -419,7 +419,7 @@ celestia-mon-signal on the monitor reads x/signal every minute through a node's 
 
 x/signal accepts a signal for any version at or above the current one, so one validator that signals early opens a round before a release exists. If Celestia's announcements name no release for the version yet, silence UpgradeSignalMissing until they do (`doctor` check 21 lists that silence while it holds the page back).
 
-**Links.** [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/), [x/signal](https://github.com/celestiaorg/celestia-app/tree/v10.4.0/x/signal).
+**Links.** [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/), [x/signal](https://github.com/celestiaorg/celestia-app/tree/v10.5.0/x/signal).
 
 ## UpgradeScheduled
 
