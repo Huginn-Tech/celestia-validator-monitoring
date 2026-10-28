@@ -47,13 +47,13 @@ dashboard/clock                  | ci.yml                                       
 dashboard/restarts               | ci.yml                                       | Restarts draw the crash-loop rule
 dashboard/serve-series           | ci.yml                                       | Serve the dashboards' series to Prometheus
 dashboard/panel-queries          | ci.yml                                       | Every panel query runs in Prometheus without an error, warning or info
-doctor/run                       | ci.yml                                       | Run doctor for each role
-doctor-standby/run               | ci.yml                                       | doctor on a standby Fibre host and a backup node
-doctor-md/run                    | ci.yml                                       | doctor reads the md RAID arrays
-doctor-signer/run                | ci.yml                                       | doctor on the signing path
-doctor-ports/run                 | ci.yml                                       | doctor on the validator's ports
-doctor-monitor/run               | ci.yml                                       | doctor checks 11 and 12 against Prometheus on loopback
-doctor-readiness/run             | ci.yml                                       | The readiness probe and doctor check 24
+doctor/run                       | tools/ci/doctor/roles.sh                     | Run doctor for each role
+doctor-standby/run               | tools/ci/doctor/standby.sh                   | doctor on a standby Fibre host and a backup node
+doctor-md/run                    | tools/ci/doctor/md.sh                        | doctor reads the md RAID arrays
+doctor-signer/run                | tools/ci/doctor/signer.sh                    | doctor on the signing path
+doctor-ports/run                 | tools/ci/doctor/ports.sh                     | doctor on the validator's ports
+doctor-monitor/run               | tools/ci/doctor/monitor.sh                   | doctor checks 11 and 12 against Prometheus on loopback
+doctor-readiness/run             | tools/ci/doctor/readiness.sh                 | The readiness probe and doctor check 24
 install/refuses-unsafe           | ci.yml                                       | The install refuses unsafe settings
 install/dry-run                  | ci.yml                                       | The dry run changes nothing and lists the ufw rules
 install/edit-vault               | ci.yml                                       | --edit-vault creates and edits an encrypted vault.yml
