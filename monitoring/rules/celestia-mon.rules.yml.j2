@@ -501,13 +501,13 @@ groups:
 {% if tensile_on %}
       # Uploads missed: blobs came for the validator, but Fibre accepted none of them. Tensile records
       # each settled blob that assigned rows to the validator. The publisher's client sends an upload
-      # to every validator the blob assigns rows to, never skipping one (celestia-app v10.4.0
-      # fibre/client_upload.go: uploadShards starts one uploadTo per assigned validator, lines
-      # 447-466), and once 2/3 of the voting power has signed it keeps delivering to the rest in the
-      # background (lines 420-423 and 478); fibre.Put keeps those deliveries running until the blob's
-      # PayForFibre is in a block (fibre/client_put.go, lines 136-181). So the newest assignment
-      # settling more than 5 minutes after Fibre's last accepted upload is an upload that never
-      # arrived or never completed, whether or not the validator's signature made it into the blob.
+      # to every validator the blob assigns rows to, never skipping one (celestia-app
+      # fibre/client_upload.go: uploadShards starts one uploadTo per assigned validator), and once
+      # 2/3 of the voting power has signed it keeps delivering to the rest in the background, each
+      # upload bounded by the client's RPC timeout and retries (ClientConfig.DetachBackgroundUploads).
+      # So the newest assignment settling more than 5 minutes after Fibre's last accepted upload is
+      # an upload that never arrived or never completed, whether or not the validator's signature
+      # made it into the blob.
       # Fibre's side is the later of its last accepted upload and the start of its unit: a blob that
       # settled while no Fibre ran, or before a restart, does not count, also while the collector
       # still holds the old process's last upload (for about 5 minutes after a restart). Tensile's
@@ -556,7 +556,7 @@ groups:
           runbook: "{{ docs }}#fibrenotserving"
 {% endif %}
       # Every upload fails and none is accepted. Fibre fetches the validator's public key for each
-      # upload and then signs through the node at its signer_grpc_address (celestia-app v10.4.0
+      # upload and then signs through the node at its signer_grpc_address (celestia-app
       # fibre/server_upload.go). An unreachable signer fails the upload before the signature is
       # tried, so fibre.server.sign.duration does not count it; the upload count with success
       # "false" counts both. Uploads that clients get wrong fail too, but next to accepted ones.
