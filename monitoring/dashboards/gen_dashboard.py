@@ -286,7 +286,7 @@ STARTED = '(count_over_time(up{job="prometheus"}%s) >= 3)' % W
 # than a minute after Prometheus's last scrape of itself, which also leaves out the steps of a
 # monitoring outage.
 LIVE = '(time() - max(timestamp(up{job="prometheus"})) < 60)'
-BOARD_PANELS = {20, 21, 25}
+BOARD_PANELS = {20, 21, 25, 216}
 
 # How long after a check stopped the alert that reports it fires, on top of its hold time: the
 # 15 minutes in TensileUnreadable's and SignalUnreadable's expressions. FibreNotServing
@@ -3677,51 +3677,62 @@ READINESS_WORDS = [(1, "Ready", OK), (2, "Not ready", WARN), (3, "Not ready", AL
 
 
 def readiness_band(s, axis):
-    """Upload readiness: one lane of what the running Fibre answered its health check, per time block and
-    worst moment first, as History reads its lines: red once FibreNotServing (not ready) paged, amber
-    where Fibre answered NOT_SERVING (as the rule's condition; a restart shows for its seconds), Ready
-    where it answered SERVING, grey Not reported (Unimplemented) or Not checked (no answer). The answers
-    of every Fibre host count together: a stopped standby answers nothing, so it adds nothing beside the
-    Fibre that runs. Grey No data wherever the alert rules did not run. Untitled, its lane named on the
-    left in a column as wide as the role band's, without a time axis: the charts under it carry one."""
+    """Upload readiness, as one more line of History: bars of what the running Fibre answered its health
+    check, per time block and worst moment first, as History reads its lines: red once FibreNotServing
+    (not ready) paged, amber where Fibre answered NOT_SERVING (as the rule's condition; a restart shows
+    for its seconds), Ready where it answered SERVING, grey Not reported (Unimplemented) or Not checked
+    (no answer). The answers of every Fibre host count together: a stopped standby answers nothing, so it
+    adds nothing beside the Fibre that runs. Grey No data wherever the alert rules did not run. Untitled,
+    its lane named on the left in a column as wide as History's, without a time axis: the charts under
+    it carry one. Beside it, in an untitled Uptime column, the share of the minutes in which Fibre
+    answered SERVING or NOT_SERVING that it answered SERVING; No data while it answered neither.
+    Returns the height and both panels."""
     expr = "((%s) and on () %s) or %s * 0 - 99" % (chain(
         "%s * 0 + 3" % firing(NOT_READY_PAGE),
         "(%s == 1) * 0 + 2" % seen(NOT_READY),
         "(%s == 1) * 0 + 1" % seen(READY),
         "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "(%s == bool 12)" % PROBE_CODE, sub=True),
         "%s * 0" % seen('up{job="prometheus"}')), evaluated(), seen('up{job="prometheus"}'))
-    desc = ("Whether the running Fibre reports itself ready for uploads, over the selected time; Ready all along is "
-            "good. Fibre is ready while six checks pass: app node, Fibre module, signer, validator in the active set, "
-            "provider registration and store. Not ready: one fails, or Fibre is starting or stopping; "
-            "FibreNotServing sends a message after %s, red once it pages after %s. Fibre's log names the check. "
-            "Not reported: Fibre older than v10.5.0. Not checked: no answer. A stopped standby is left out."
+    # A minute counts 0 while any Fibre host answered NOT_SERVING, as the bars' amber does, else 1 while
+    # one answered SERVING.
+    ready = uptime("(((max(%s) == 1) * 0) or on () ((max(%s) == 1) * 0 + 1)) and on () %s" % (NOT_READY, READY, PROM))
+    desc = ("Whether the running Fibre reports itself ready for uploads, one bar per time block, worst moment first; "
+            "Ready all along is good. Fibre is ready while six checks pass: app node, Fibre module, signer, validator "
+            "in the active set, provider registration and store. Not ready: one fails, or Fibre is starting or "
+            "stopping; FibreNotServing sends a message after %s, red once it pages after %s. Fibre's log names the "
+            "check. Not reported: Fibre older than v10.5.0. Not checked: no answer. A stopped standby is left out. "
+            "On the right: the share of the time Fibre answered Ready, of the time it answered at all."
             % (s.hold("FibreNotServing not_ready message"), s.hold("FibreNotServing not_ready page"))
             + more(["FibreNotServing"], [PANEL_GUIDE]))
-    lane = ("A", "Upload readiness", expr, READINESS_WORDS)
     height = grid_rows(LANE_PX + PLOT_INSET, CHROME_UNTITLED)
-    defaults = {"color": {"fixedColor": "#8E8E8E26", "mode": "fixed"},
-                "custom": {"axisWidth": axis, "fillOpacity": 100, "lineWidth": 0},
-                "mappings": special_map("null", "No data", NODATA)}
-    overrides = [override("byType", "time", custom__axisPlacement="hidden"),
-                 override("byFrameRefID", "A", mappings=lane_map(READINESS_WORDS))]
-    options = {"alignValue": "left", "legend": {"displayMode": "list", "placement": "bottom", "showLegend": False},
-               "mergeValues": True, "rowHeight": board_row_height("", height, [lane]), "showValue": "always",
-               "tooltip": {"mode": "single", "sort": "none"}}
-    p = panel(215, "state-timeline", "", desc, [target("A", expr, "Upload readiness", interval="1m")], defaults,
-              overrides, options)
-    p.update({"interval": "1m", "maxDataPoints": 1500, "transparent": True})
-    return height, p
+
+    def spacer(i):
+        """History's empty lane (spacer_lane), kept off the plot and the tooltip below."""
+        ref, name, bars, up, words = spacer_lane()
+        return ref + str(i), name * i, bars, up, words
+    # Grafana 12.4 draws a timeline of one lane across its whole plot and ignores its rowHeight, which
+    # would make the bar 34 px thick here. The line therefore sits between two hidden lanes, and a
+    # rowHeight above 1, which Grafana applies as set, lets the three overlap: each lane is rowHeight / 3
+    # of the plot, so the middle one is BAR_PX thick and centred, and the share beside it sits on it.
+    lanes = [spacer(1), ("A", "Upload readiness", expr, ready, READINESS_WORDS), spacer(2)]
+    plot = grid_px(height) - CHROME_UNTITLED - PLOT_INSET
+    band, share = status_history(215, "", desc, lanes, height, axis), uptime_column(216, "", lanes, height)
+    for p in (band, share):
+        p["options"]["rowHeight"] = round(BAR_PX * len(lanes) / float(plot), 2)
+        p["fieldConfig"]["overrides"] += [override("byFrameRefID", lanes[i][0], custom__hideFrom=dict(
+            legend=True, tooltip=True, viz=True)) for i in (0, 2)]
+    return height, band, share
 
 
 def fibre_row(s):
     """The Fibre row: six facts over the last 24 hours, so a network that sends no blobs for hours
-    leaves them readable, then the Upload readiness band (readiness_band) and three charts: the two that
-    the Fibre alerts read, side by side, and Fibre's requests across the row. With the outside check the
-    facts set Fibre's own count next to Tensile's record of the blobs sent to the validator, and the
-    first chart draws what FibreNotServing (uploads missed) watches; without it, the facts are Fibre's
-    own uploads and the first chart draws what FibreNotServing (uploads failing) watches. A chart of the
-    upload's steps is left out: it was empty whenever no blob came, and its total is the Upload time
-    fact."""
+    leaves them readable, then the Upload readiness line with its share (readiness_band) and four charts
+    of one size in two lines: the two that the Fibre alerts read, then Uploads and Downloads. With the
+    outside check the facts set Fibre's own count next to Tensile's record of the blobs sent to the
+    validator, and the first chart draws what FibreNotServing (uploads missed) watches; without it, the
+    facts are Fibre's own uploads and the first chart draws what FibreNotServing (uploads failing)
+    watches. A chart of the upload's steps is left out: it was empty whenever no blob came, and its total
+    is the Upload time fact."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
     unit = q(s.units["fibre"])
@@ -3832,9 +3843,11 @@ def fibre_row(s):
     strip = fibre_strip(first + [upload_time, budget, cleanups], samples)
 
     # The first chart draws what a FibreNotServing rule watches, in the active Fibre's colour, with the
-    # rule's level dashed: flat on a healthy server and on a quiet network, a rise when Fibre misses
-    # blobs (with the outside check) or fails every upload (without it).
+    # rule's level dashed and named in its legend: flat on a healthy server and on a quiet network, a
+    # rise when Fibre misses blobs (with the outside check) or fails every upload (without it). Each
+    # chart of the row says what the red band of FibreDown's page (annotations) is.
     active = 'max by (host) (node_systemd_unit_state{name=%s,state="active"}) == 1' % unit
+    red_band = " Red band: FibreDown paged; no Fibre server ran, so the %s stop."
     if s.tensile:
         # The missed_uploads rule's value: the newest blob sent to the validator, in Tensile's record of a
         # minute ago (so Fibre's own report of an upload, a few seconds late, is in first), minus the later
@@ -3851,6 +3864,7 @@ def fibre_row(s):
                "(fibre_server_upload_shard_last_success_timestamp_seconds or node_systemd_unit_start_time_seconds"
                "{name=%s}) and on (host) %s and on (host) count by (host) (fibre_server_upload_shard_budget_bytes)"
                % (unit, active))
+        first_legend = "{{host}} behind the network (alert at %g min)" % (level / 60.0)
         first_chart = timeseries(
             210, "Fibre behind the network",
             "How far Fibre's last accepted upload trails the newest blob sent to the validator; a line on 0 is good. "
@@ -3858,36 +3872,39 @@ def fibre_row(s):
             "A gap up to %s, the normal time from an upload to its blob settling, draws as 0; so does a quiet "
             "network. Not checked: no Tensile reading, or no Fibre that runs and reports."
             % (minutes_text(level), s.hold("FibreNotServing missed_uploads"), minutes_text(SETTLE_SECONDS))
-            + more(["FibreNotServing"], [TENSILE]),
-            [target("A", "clamp_min(%s, 0) * ((%s) > bool %d) / 60" % (gap, gap, SETTLE_SECONDS),
-                    "{{host}} behind the network")],
+            + red_band % "lines" + more(["FibreNotServing", "FibreDown"], [TENSILE]),
+            [target("A", "clamp_min(%s, 0) * ((%s) > bool %d) / 60" % (gap, gap, SETTLE_SECONDS), first_legend)],
             "m", threshold=(level / 60.0, "orange"), soft_max=level / 60.0 * 1.2, step=True, fill=30)
         first_chart["fieldConfig"]["defaults"]["noValue"] = "Not checked"
     else:
         # The uploads_failing rule: failed uploads and none accepted in its window, on the active Fibre.
-        # The share failing is 100% exactly then.
+        # The share failing is 100% (full) exactly then.
         window = "%ds" % UPLOAD_WINDOW
+        full = 1
         share = ('(sum by (host) (increase(%s{success="false"}[%s])) / (sum by (host) (increase(%s[%s])) > 0)) '
                  "> 0 and on (host) %s" % (count, window, count, window, active))
+        first_legend = "{{host}} share failing (alert at %g%%)" % (full * 100)
         first_chart = timeseries(
             210, "Uploads failing",
             "Share of upload requests that failed, over %s windows; an empty chart is good. FibreNotServing "
-            "(uploads failing) sends a message once the share has stayed at the dashed 100%% line, no upload "
+            "(uploads failing) sends a message once the share has stayed at the dashed %g%% line, no upload "
             "accepted, for %s. Clients' invalid payment promises make small rises; a quiet network leaves the "
             "chart empty. Blobs that never reached Fibre show only with the outside check (celestia_mon_tensile)."
-            % (minutes_text(UPLOAD_WINDOW).replace(" minutes", "-minute"),
-               s.hold("FibreNotServing uploads_failing")) + more(["FibreNotServing"], [TENSILE]),
-            [target("A", share, "{{host}} share failing"), target("B", "max(%s) * 0" % FIBRE_ALIVE, "Fibre data")],
-            "percentunit", threshold=(1, "orange"), maximum=1, fill=30,
+            % (minutes_text(UPLOAD_WINDOW).replace(" minutes", "-minute"), full * 100,
+               s.hold("FibreNotServing uploads_failing"))
+            + red_band % "lines" + more(["FibreNotServing", "FibreDown"], [TENSILE]),
+            [target("A", share, first_legend), target("B", "max(%s) * 0" % FIBRE_ALIVE, "Fibre data")],
+            "percentunit", threshold=(full, "orange"), maximum=full, fill=30,
             overrides=[override("byFrameRefID", "B", **UNSEEN)])
         first_chart["fieldConfig"]["defaults"]["noValue"] = "No Fibre data"
 
-    # Will the store hold the budget? The active Fibre's free space fills down to the room its budget may
-    # still fill (fillBelowTo, one override per Fibre host), so the band between them is the headroom. A
-    # standby's store is left out: its disk is on its server's chart, and its free space set the axis.
+    # Will the store hold the budget? The active Fibre's free space fills down to what Fibre may still
+    # write under its budget (fillBelowTo, one override per Fibre host), so the band between them is the
+    # headroom. A standby's store is left out: its disk is on its server's chart, and its free space set
+    # the axis.
     frees = ["node_filesystem_avail_bytes{host=%s,mountpoint=%s}" % (q(m["host"]), q(m["mount"]))
              for m in s.fibre_mounts if m["mount"]]
-    room_name = "room the budget may still fill"
+    room_name = "Fibre may still write"
     room = ("(max by (host) (fibre_server_upload_shard_budget_bytes) - max by (host) "
             "(fibre_server_upload_shard_occupancy_bytes)) and on (host) (max by (host) "
             "(fibre_server_upload_shard_budget_bytes) > 0)")
@@ -3906,62 +3923,73 @@ def fibre_row(s):
     disk_overrides.append(override("byFrameRefID", "C", **UNSEEN))
     store = timeseries(
         212, "Fibre disk and budget",
-        "Free space on the Fibre store against the room its budget may still fill; a wide band between them is "
-        "good. Solid: free space; dashed: the budget minus what Fibre holds. DiskLow sends a "
-        "message once the dashed line has been above the solid one for %s (with no budget, at %g%% free). A "
-        "standby's store is on its server's Disk used chart."
-        % (s.hold("DiskLow budget"), s.DM * 100) + more(["DiskLow"], [FIBRE_DASHBOARD]),
+        "Free space on the Fibre store against what Fibre may still write; a wide band between them is good. "
+        "Solid: free space; dashed: what Fibre may still write under its budget (the budget minus what it holds). "
+        "DiskLow sends a message once the dashed line has been above the solid one for %s (with no budget, at %g%% "
+        "free). A standby's store is on its server's Disk used chart."
+        % (s.hold("DiskLow budget"), s.DM * 100) + red_band % "lines"
+        + more(["DiskLow", "FibreDown"], [FIBRE_DASHBOARD]),
         disk_targets, "bytes", overrides=disk_overrides)
 
-    # Requests per time block as bars: uploads above zero, downloads below; a block without any draws
-    # nothing ('> 0'), so a quiet network leaves the chart empty. Refused uploads also end with success
-    # "false" (celestia-app fibre/server_upload.go returns the budget error through the deferred
-    # uploadShardDone), so they are taken out of the failed ones and drawn as their own outlined bars.
-    # Every part has its own swatch: accepted in the server's colour and served in a darker shade of it,
-    # failed uploads light grey, failed downloads a darker grey, refused uploads an amber outline. Refused
+    # Fibre's requests per time block as stacked bars, uploads and downloads each in a chart of their
+    # own, counted on a linear axis from 0 whose soft max keeps a single request a short bar. Each bar is
+    # the 30 minutes (on 24 hours; more on longer ranges) that end at its time, so the newest is the last
+    # whole block; a block without requests draws nothing ('> 0'), so a quiet network leaves a chart
+    # empty. Refused uploads also end with success "false" (celestia-app fibre/server_upload.go returns
+    # the budget error through the deferred uploadShardDone), so they are taken out of the failed ones
+    # and drawn as their own outlined bars, in the text colour: no rule fires on a refusal. Refused
     # uploads also count as failed ones, so once Fibre accepts none the Fibre tile reads Uploads failing.
+    # Accepted uploads take the server's colour and served downloads a darker shade of it; failed uploads
+    # are light grey, and downloads Fibre did not hold a faint darker grey, since most of them are routine.
     rejected = "fibre_server_upload_shard_rejected_total"
     downloads = "fibre_server_download_shard_duration_seconds_count"
-    served = "downloads served (below)"
-    events = [
-        ("round(sum by (host) (increase(%s[$__interval]))) > 0" % ok, "{{host}} uploads accepted"),
-        ('round(clamp_min(sum(increase(%s{success="false"}[$__interval])) - (sum(increase(%s[$__interval])) '
-         "or on () vector(0)), 0)) > 0" % (count, rejected), "Uploads failed"),
-        ("round(sum(increase(%s[$__interval]))) > 0" % rejected, "Uploads refused, budget full"),
-        ('round(sum by (host) (increase(%s{success="true"}[$__interval]))) > 0' % downloads, "{{host}} " + served),
-        ('round(sum(increase(%s{success="false"}[$__interval]))) > 0' % downloads,
-         "Downloads not held or failed (below)")]
-    shards = timeseries(
-        211, "Uploads and downloads",
-        "Fibre's requests in each time block, uploads above zero and downloads below (their axis numbers carry a "
-        "minus); bars in the server's colour are good. Grey: uploads failed, and downloads not held or failed; "
-        "requests for shards already removed are normal. Amber outlines: uploads refused, storage budget full. "
-        "Blocks are 10 minutes on 24 hours. Failed uploads and none accepted for %s is FibreNotServing (uploads "
-        "failing)." % failing + more(["FibreNotServing"]),
-        [target(chr(65 + i), expr, legend, interval="10m") for i, (expr, legend) in enumerate(events)],
-        "none", decimals=0, bars=True, mirror=["D", "E"],
-        overrides=[override("byFrameRefID", r, custom__stacking={"group": "up", "mode": "normal"}) for r in "ABC"]
-        + [override("byFrameRefID", r, custom__stacking={"group": "down", "mode": "normal"}) for r in "DE"]
-        + [override("byFrameRefID", "B", color=fixed(NETWORK), custom__fillOpacity=50),
-           override("byFrameRefID", "C", color=fixed(WARN), custom__fillOpacity=0),
-           override("byFrameRefID", "E", color=fixed(darker(NETWORK, 0.6)), custom__fillOpacity=60)]
+    served = "served"
+
+    def requests(pid, title, desc, events, no_value, overrides):
+        p = timeseries(pid, title, desc, refs(events), "none", soft_max=3, decimals=0, bars=True, stack=True,
+                       fill=60, overrides=overrides)
+        p["fieldConfig"]["defaults"]["custom"]["barAlignment"] = -1
+        p["fieldConfig"]["defaults"]["noValue"] = no_value
+        p.update({"interval": "30m", "maxDataPoints": 60})
+        return p
+
+    uploads = requests(
+        211, "Uploads",
+        "Upload requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in the server's "
+        "colour are good. Grey: failed, as when a client's payment promise is invalid. Outlined: refused while "
+        "the storage budget was full. Failed uploads and none accepted for %s is FibreNotServing (uploads failing)."
+        % failing + red_band % "bars" + more(["FibreNotServing", "FibreDown"]),
+        [("round(sum by (host) (increase(%s[$__interval]))) > 0" % ok, "{{host}} accepted"),
+         ('round(clamp_min(sum(increase(%s{success="false"}[$__interval])) - (sum(increase(%s[$__interval])) '
+          "or on () vector(0)), 0)) > 0" % (count, rejected), "Failed"),
+         ("round(sum(increase(%s[$__interval]))) > 0" % rejected, "Refused, budget full")],
+        "No uploads in this time",
+        [override("byFrameRefID", "B", color=fixed(NETWORK), custom__fillOpacity=50),
+         override("byFrameRefID", "C", color=fixed(NETWORK), custom__fillOpacity=0)])
+    downloads_chart = requests(
+        213, "Downloads",
+        "Shard download requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in a "
+        "darker shade of the server's colour, shards served, are good. Grey: not held or failed. Most failed "
+        "downloads ask for shards Fibre does not hold (pruned after the 4-hour window, or never assigned to it), "
+        "which is normal; "
+        + ("Rows served tells whether the validator's own rows are served." if s.tensile else
+           "whether the validator's own rows are served shows only with the outside check (celestia_mon_tensile).")
+        + red_band % "bars" + more(["FibreDown"], [TENSILE]),
+        [('round(sum by (host) (increase(%s{success="true"}[$__interval]))) > 0' % downloads, "{{host}} " + served),
+         ('round(sum(increase(%s{success="false"}[$__interval]))) > 0' % downloads, "Not held or failed")],
+        "No downloads in this time",
+        [override("byFrameRefID", "B", color=fixed(darker(NETWORK, 0.6)), custom__fillOpacity=25)]
         + [override("byName", "%s %s" % (h, served), color=fixed(darker(server_hue(s, h), 0.7)))
            for h in s.fibre_hosts])
-    shards["fieldConfig"]["defaults"]["noValue"] = "No uploads or downloads in this time"
-    # A bar stands for the time block that ends at its timestamp. A symmetric log axis keeps a block of
-    # one request as visible as a burst of hundreds; at a linear threshold of 0.2 the step from 0 to 1
-    # is as tall as each step from 1 to 10 to 100, so the ticks are evenly spaced. Its many grid lines
-    # are left out; a thin line at zero parts uploads from downloads.
-    shards["fieldConfig"]["defaults"]["custom"].update(
-        {"axisGridShow": False, "barAlignment": -1,
-         "scaleDistribution": {"type": "symlog", "log": 10, "linearThreshold": 0.2},
-         "thresholdsStyle": {"mode": "line"}})
-    shards["fieldConfig"]["defaults"]["thresholds"] = steps(("transparent", None), (REFERENCE, 0))
-    # At most 200 blocks, so bars stay bars on a 7-day range (about 50 minutes each) instead of hairlines.
-    shards["maxDataPoints"] = 200
-    band_h, band = readiness_band(s, axis_width(s, check_lanes(s), server_lanes(s), role_lanes(s)))
-    return [(INTRO_ROWS, strip), (band_h, [(band, 24)]), (CHART_ROWS, [(first_chart, 12), (store, 12)]),
-            (CHART_ROWS, [(shards, 24)])]
+    # The legend entries each chart can show at once, one line each, so the plots of a line stay level.
+    shown = {210: [first_legend], 212: [t["legendFormat"] for t in disk_targets if t["refId"] != "C"],
+             211: ["{{host}} accepted", "Failed", "Refused, budget full"],
+             213: ["{{host}} " + served, "Not held or failed"]}
+    for p in (first_chart, store, uploads, downloads_chart):
+        check_legend("Fibre chart %r" % p["title"], shown[p["id"]], 12)
+    band_h, band, share = readiness_band(s, axis_width(s, check_lanes(s), server_lanes(s), role_lanes(s)))
+    return [(INTRO_ROWS, strip), (band_h, [(band, 24 - UPTIME_W), (share, UPTIME_W)]),
+            (CHART_ROWS, [(first_chart, 12), (store, 12)]), (CHART_ROWS, [(uploads, 12), (downloads_chart, 12)])]
 
 
 def upgrade_row(s):
