@@ -1,0 +1,307 @@
+# GovVoteMissing on the example-mainnet inventory rendered with celestia_mon_signal (CI passes it,
+# chain_id celestia, so the page is on): celestia-mon-signal on mon-1 serves the proposals in their
+# voting period, each one's start and end and whether the validator account voted on it. Mainnet's
+# votes last 7 days, an expedited one 1 day. promtool's clock starts at 0, so a vote that began
+# before the test has a start below 0.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # A week's vote with 49 hours left at 0: the message once less than 2 days are left, from 1h on,
+  # held 10 minutes. Proposal 10, which the validator voted on, raises nothing.
+  - name: A week's vote without the validator's vote; the message with 2 days left
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '-428400x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '176400x12'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="9"}'
+        values: '0x12'
+      - series: 'celestia_mon_gov_proposal_info{job="signal",host="mon-1",proposal_id="9",title="Raise the block size"}'
+        values: '1x12'
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="10"}'
+        values: '-428400x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="10"}'
+        values: '176400x12'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="10"}'
+        values: '1x12'
+      - series: 'celestia_mon_gov_voting_proposals{job="signal",host="mon-1",voter="celestia1ci"}'
+        values: '2x12'
+      - series: 'celestia_mon_gov_last_success_timestamp_seconds{job="signal",host="mon-1"}'
+        values: '0+600x12'
+    alert_rule_test:
+      - eval_time: 55m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h5m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 (Raise the block size) ends its voting period in about 1d 23h 45m 0s, and the
+                validator account celestia1ci has no vote on it. Vote from that account, abstain if you have no
+                view rather than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from
+                <validator account key>. A vote sent through an authz grant from the validator account counts; a
+                vote from any other account does not. This alert resolves when the vote is on chain or the voting
+                period has ended. It pages when less than a day is left.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+
+  # The same vote with 25 hours left at 0: the message from the start, the page once less than a
+  # day is left (from 1h on, held 10 minutes); the validator votes at 1h30m and both resolve.
+  - name: A week's vote with a day left; the page as well, and both resolve once the vote is on chain
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '-514800x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '90000x12'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="9"}'
+        values: '0x8 1x3'
+      - series: 'celestia_mon_gov_proposal_info{job="signal",host="mon-1",proposal_id="9",title="Raise the block size"}'
+        values: '1x12'
+      - series: 'celestia_mon_gov_voting_proposals{job="signal",host="mon-1",voter="celestia1ci"}'
+        values: '1x12'
+      - series: 'celestia_mon_gov_last_success_timestamp_seconds{job="signal",host="mon-1"}'
+        values: '0+600x12'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 (Raise the block size) ends its voting period in about 1d 0h 45m 0s, and the
+                validator account celestia1ci has no vote on it. Vote from that account, abstain if you have no
+                view rather than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from
+                <validator account key>. A vote sent through an authz grant from the validator account counts; a
+                vote from any other account does not. This alert resolves when the vote is on chain or the voting
+                period has ended. It pages when less than a day is left.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+      - eval_time: 1h15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 (Raise the block size) ends its voting period in about 23h 45m 0s, and the validator
+                account celestia1ci has no vote on it. Vote from that account, abstain if you have no view rather
+                than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator
+                account key>. A vote sent through an authz grant from the validator account counts; a vote from
+                any other account does not. This alert resolves when the vote is on chain or the voting period has
+                ended. It pages when less than a day is left.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+          - exp_labels:
+              severity: page
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 (Raise the block size) ends its voting period in about 23h 45m 0s, and the validator
+                account celestia1ci has no vote on it. Vote from that account, abstain if you have no view rather
+                than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator
+                account key>. A vote sent through an authz grant from the validator account counts; a vote from
+                any other account does not. This alert resolves when the vote is on chain or the voting period has
+                ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+      - eval_time: 1h35m
+        alertname: GovVoteMissing
+        exp_alerts: []
+
+  # A week's vote first read with 20 hours left (gov turned on then, or the readings back after more
+  # than an hour): the message's time and the page's have both come, so the page alone, held 10
+  # minutes, and no message next to it, also later.
+  - name: A week's vote first read in its last day; the page alone
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '-532800x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="9"}'
+        values: '72000x12'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="9"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 ends its voting period in about 19h 45m 0s, and the validator account has no vote on it.
+                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
+                gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
+                authz grant from the validator account counts; a vote from any other account does not. This alert
+                resolves when the vote is on chain or the voting period has ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+      - eval_time: 1h50m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              proposal_id: '9'
+            exp_annotations:
+              summary: The validator has not voted on proposal 9
+              description: >-
+                Proposal 9 ends its voting period in about 18h 10m 0s, and the validator account has no vote on it.
+                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
+                gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
+                authz grant from the validator account counts; a vote from any other account does not. This alert
+                resolves when the vote is on chain or the voting period has ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+
+  # An expedited vote of 1 day with 13 hours left at 0: half the vote is left from 1h on, so the
+  # page then, held 10 minutes; no message, which would come at the same time. Without the title
+  # (proposal_info) and the account (voting_proposals), the text leaves them out.
+  - name: A day's vote without the validator's vote; the page at half the vote and no message
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '-39600x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '46800x12'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="12"}'
+        values: '0x12'
+    alert_rule_test:
+      - eval_time: 1h5m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              proposal_id: '12'
+            exp_annotations:
+              summary: The validator has not voted on proposal 12
+              description: >-
+                Proposal 12 ends its voting period in about 11h 45m 0s, and the validator account has no vote on
+                it. Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd
+                tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
+                authz grant from the validator account counts; a vote from any other account does not. This alert
+                resolves when the vote is on chain or the voting period has ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+
+  # A day's vote with 90 minutes left: the page from 10m on. No reading from 40m to 1h (a scrape
+  # outage) keeps it, on the reading of 30m; it resolves once the voting period has ended.
+  - name: The page stays through a half-hour gap in the readings and resolves when voting ends
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '-81000x3 _x3 -81000x6'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '5400x3 _x3 5400x6'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="12"}'
+        values: '0x3 _x3 0x6'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h5m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              proposal_id: '12'
+            exp_annotations:
+              summary: The validator has not voted on proposal 12
+              description: >-
+                Proposal 12 ends its voting period in about 25m 0s, and the validator account has no vote on it.
+                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
+                gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
+                authz grant from the validator account counts; a vote from any other account does not. This alert
+                resolves when the vote is on chain or the voting period has ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+      - eval_time: 1h35m
+        alertname: GovVoteMissing
+        exp_alerts: []
+
+  # An expedited vote with an hour left pages; the validator votes at 20m. At 1h the expedited vote
+  # fails: the chain makes it a regular one, ends it 7 days after its start and wipes its votes
+  # (x/gov abci.go), so voted goes back to 0 with 6 days left. Nothing fires until less than 2 days
+  # are left, as in the first test.
+  - name: An expedited vote that fails becomes a regular one; its wiped vote raises nothing until its new end nears
+    interval: 10m
+    input_series:
+      - series: 'celestia_mon_gov_voting_start_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '-82800x12'
+      - series: 'celestia_mon_gov_voting_end_timestamp_seconds{job="signal",host="mon-1",proposal_id="12"}'
+        values: '3600x5 522000x6'
+      - series: 'celestia_mon_gov_validator_voted{job="signal",host="mon-1",proposal_id="12"}'
+        values: '0x1 1x3 0x6'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: GovVoteMissing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              proposal_id: '12'
+            exp_annotations:
+              summary: The validator has not voted on proposal 12
+              description: >-
+                Proposal 12 ends its voting period in about 45m 0s, and the validator account has no vote on it.
+                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
+                gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
+                authz grant from the validator account counts; a vote from any other account does not. This alert
+                resolves when the vote is on chain or the voting period has ended.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+      - eval_time: 25m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h15m
+        alertname: GovVoteMissing
+        exp_alerts: []
+      - eval_time: 1h50m
+        alertname: GovVoteMissing
+        exp_alerts: []
+
+  # x/signal is read but the proposals are not from 10m on: SignalUnreadable once the last read of
+  # them is over 15 minutes old, 10 minutes later.
+  - name: The proposals are not read; SignalUnreadable fires
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_last_success_timestamp_seconds{job="signal",host="mon-1"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_gov_last_success_timestamp_seconds{job="signal",host="mon-1"}'
+        values: '0+60x10 600x30'
+      - series: 'up{job="signal",host="mon-1"}'
+        values: '1x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SignalUnreadable
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: SignalUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: mon-1
+              job: signal
+            exp_annotations:
+              summary: The upgrade signal and votes are not being read on mon-1
+              description: >-
+                For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance
+                proposals, or it is down, so a new signalling round would not page, a new proposal would not be
+                seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
+                reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
+                journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
+              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable

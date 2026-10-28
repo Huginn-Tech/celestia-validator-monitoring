@@ -14,6 +14,7 @@
 roles={{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
 inventory_host={{ inventory_hostname }}
 signer={{ celestia_mon_signer }}
+signer_multi_node={{ 'true' if celestia_mon_signer_multi_node | default(false) | bool else 'false' }}
 fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
 appd_unit={{ celestia_mon_units.appd }}
 fibre_unit={{ celestia_mon_units.fibre }}
@@ -42,6 +43,8 @@ node_hosts={{ node_hosts | join(',') }}
 {# The data directory of role celestia_mon_prometheus (celestia_mon_prometheus_data_dir), as in the preflight. #}
 prometheus_data_dir=/var/lib/celestia-mon/prometheus
 prometheus_retention_size={{ celestia_mon_prometheus_retention_size }}
+{# Whether GovVoteMissing pages, as the rules have it (celestia_mon_gov_page). #}
+gov_page={{ 'true' if celestia_mon_gov_page | bool else 'false' }}
 {% endif %}
 signer_median_max={{ celestia_mon_thresholds.signer_median_seconds }}
 disk_min_free_ratio={{ celestia_mon_thresholds.disk_message_free_ratio }}

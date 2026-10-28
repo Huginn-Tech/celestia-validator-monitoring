@@ -60,6 +60,16 @@ celestia_mon_host_role: >-
 
 celestia_mon_monitor_host: "{{ groups['monitor'][0] }}"
 
+# Governance votes (GovVoteMissing), read with upgrade signalling: on unless celestia_mon_signal
+# sets gov: false. celestia_mon_gov_page: GovVoteMissing pages too (with the message before it, but
+# alone on a vote of 2 days or less), by default on mainnet (chain_id celestia) only. The rules, the dashboard, doctor and
+# celestia-mon-signal's settings read these two, so they agree; strings, read with | bool.
+celestia_mon_gov_on: >-
+  {{ celestia_mon_signal | default({}, true) | length > 0 and celestia_mon_signal.gov | default(true) | bool }}
+celestia_mon_gov_page: >-
+  {{ (celestia_mon_gov_on | bool)
+     and (celestia_mon_signal.gov_page | default(celestia_mon_signal.chain_id | default('') | string == 'celestia') | bool) }}
+
 # The services celestia-mon installs, with their systemd unit, the keys of their ports in
 # celestia_mon_ports, their directory under /opt/celestia-mon (<dir>-<version>, version from
 # celestia_mon_versions[<version>]) and the disk space an install needs in MiB (download,

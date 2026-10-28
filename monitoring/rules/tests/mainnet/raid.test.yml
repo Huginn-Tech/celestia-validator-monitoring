@@ -1,0 +1,128 @@
+# RaidDegraded on the example-mainnet inventory: node_exporter's mdadm collector gives each md array
+# the disks it needs (node_md_disks_required) and its disks per state (node_md_disks), from the [2/1]
+# of /proc/mdstat. Samples are one minute apart.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # md2 on val-1 lost a disk ([2/1]; the failed one counts as failed); a new disk is added at 15m and
+  # rebuilt until 20m, which keeps [2/1]. The message fires after 5 minutes and holds through the
+  # rebuild; the array is whole from 21m, and the alert resolves 10 minutes later (keep_firing_for).
+  - name: A mirror missing a disk; the message after 5m, through the rebuild, resolved once whole
+    interval: 1m
+    input_series:
+      - series: >-
+          node_md_disks_required{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md2"}
+        values: '2x40'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md2",state="active"}
+        values: '1x20 2x20'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md2",state="failed"}
+        values: '1x14 0x26'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: RaidDegraded
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: RaidDegraded
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.1:9910
+              host: val-1
+              role: validator
+              device: md2
+              severity: message
+            exp_annotations:
+              summary: "RAID md2 on val-1 is missing a disk"
+              description: >-
+                For 5 minutes the md software RAID array md2 has run on fewer disks than it needs (1 missing): a disk failed
+                or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
+                data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
+                and a rebuild's progress; mdadm --detail /dev/md2 shows why. This alert resolves when the array is whole again.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+      - eval_time: 30m
+        alertname: RaidDegraded
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.1:9910
+              host: val-1
+              role: validator
+              device: md2
+              severity: message
+            exp_annotations:
+              summary: "RAID md2 on val-1 is missing a disk"
+              description: >-
+                For 5 minutes the md software RAID array md2 has run on fewer disks than it needs (1 missing): a disk failed
+                or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
+                data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
+                and a rebuild's progress; mdadm --detail /dev/md2 shows why. This alert resolves when the array is whole again.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+      - eval_time: 31m
+        alertname: RaidDegraded
+        exp_alerts: []
+
+  # A failed scrape marks every series of the target stale. The alert keeps firing through it, so no
+  # "resolved" message reads as a finished rebuild.
+  - name: Two failed scrapes do not resolve it
+    interval: 1m
+    input_series:
+      - series: >-
+          node_md_disks_required{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",device="md0"}
+        values: '2x10 stale stale 2x10'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",device="md0",state="active"}
+        values: '1x10 stale stale 1x10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: RaidDegraded
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              device: md0
+              severity: message
+            exp_annotations:
+              summary: "RAID md0 on fibre-1 is missing a disk"
+              description: >-
+                For 5 minutes the md software RAID array md0 has run on fewer disks than it needs (1 missing): a disk failed
+                or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
+                data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
+                and a rebuild's progress; mdadm --detail /dev/md0 shows why. This alert resolves when the array is whole again.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+
+  # The monthly check and a resync after an unclean shutdown keep [2/2]; an array that is not
+  # started (inactive) reports 0 needed and 0 active; RAID 0 needs every disk it has. None fires.
+  - name: A check, a resync, an inactive array and RAID 0 send nothing
+    interval: 1m
+    input_series:
+      - series: >-
+          node_md_disks_required{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md0"}
+        values: '2x20'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md0",state="active"}
+        values: '2x20'
+      - series: >-
+          node_md_disks_required{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md127"}
+        values: '0x20'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md127",state="active"}
+        values: '0x20'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",device="md127",state="spare"}
+        values: '1x20'
+      - series: >-
+          node_md_disks_required{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="md1"}
+        values: '2x20'
+      - series: >-
+          node_md_disks{job="node",instance="10.20.0.3:9910",host="mon-1",role="monitor",device="md1",state="active"}
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RaidDegraded
+        exp_alerts: []

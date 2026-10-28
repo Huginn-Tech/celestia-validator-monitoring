@@ -97,6 +97,29 @@ route:
       group_by: ['...']
       group_wait: 0s
       repeat_interval: 96h
+    # A governance vote the validator has not cast (GovVoteMissing, celestia-mon-signal): one
+    # notification per proposal and severity, sent at once, the message with 2 days left and the
+    # page with 1 (PagerDuty and every chat channel), each with a "resolved" one once the vote is
+    # on chain. A vote lasts about a week, so neither repeats before it ends: 96 hours, within the
+    # 120 hours Alertmanager keeps its notification log.
+    - matchers:
+        - 'alertname="GovVoteMissing"'
+      group_by: ['...']
+      group_wait: 0s
+      repeat_interval: 96h
+      routes:
+        - receiver: page
+          matchers:
+            - 'severity="page"'
+        - receiver: message
+          matchers:
+            - 'severity="message"'
+    # A RAID array missing a disk (RaidDegraded) often waits days for a new one: one message, a
+    # reminder once a day instead of every 4 hours, and a "resolved" message once it is whole again.
+    - receiver: message
+      matchers:
+        - 'alertname="RaidDegraded"'
+      repeat_interval: 24h
     - receiver: page
       matchers:
         - 'severity="page"'

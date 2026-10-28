@@ -2,6 +2,7 @@
   "chain_id": {{ celestia_mon_signal.chain_id | string | to_json }},
   "rpc": {{ celestia_mon_signal.rpc | map('string') | list | to_json }},
   "validator": {{ celestia_mon_signal.validator | string | to_json }},
+  "gov": {{ celestia_mon_gov_on | bool | to_json }},
   "listen": {{ celestia_mon_signal_listen_address | to_json }},
   "interval_seconds": {{ celestia_mon_signal_interval_seconds | int }}
 }

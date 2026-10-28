@@ -14,6 +14,8 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
       "fibre_enabled": true | false,
       "tensile_enabled": true | false,             # the outside check (celestia_mon_tensile), with Fibre on
       "signal_enabled": true | false,              # upgrade signalling (celestia_mon_signal)
+      "gov_enabled": true | false,                 # its governance votes (celestia_mon_gov_on)
+      "gov_page": true | false,                    # GovVoteMissing also pages (celestia_mon_gov_page)
       "announcements_enabled": true | false,       # celestia_mon_announcements
       "units": {"appd": "...", "fibre": "...", "tmkms": "..."},
       "thresholds": {...},                         # celestia_mon_thresholds
@@ -294,9 +296,9 @@ TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 900, 900, 300
 # words the tiles, cards and lines use for the state, at most what the cell holds (the intro strip's
 # fit check). part: what the item is about, which the Status cell's label line names ("Status ·
 # Fibre"), one of PARTS. needs: the switch the alert needs (Setup.has).
-P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_CELESTIA = (
-    "Validator", "Signing", "Signer", "Fibre", "Servers", "Monitoring", "Upgrade", "Celestia")
-PARTS = (P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_CELESTIA)
+P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_GOV, P_CELESTIA = (
+    "Validator", "Signing", "Signer", "Fibre", "Servers", "Monitoring", "Upgrade", "Governance", "Celestia")
+PARTS = (P_VAL, P_SIGNING, P_SIGNER, P_FIBRE, P_SERVERS, P_MON, P_UPGRADE, P_GOV, P_CELESTIA)
 TITLES = [
     ("NodeNotAdvancing:.*", "No new blocks on any node", "Nodes stalled", P_VAL, None),
     ("ValidatorNotSigning:.*", "Validator not signing", "Not signing", P_VAL, None),
@@ -336,6 +338,8 @@ TITLES = [
     ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
     ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
     ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
+    ("RaidDegraded:.*:([^:]*)", "RAID degraded on $1", "RAID degraded", P_SERVERS, None),
+    ("ClockNotSynced:.*:([^:]*)", "Clock not synchronised on $1", "No time sync", P_SERVERS, None),
     ("MonitorCannotReach:message::::([^:]*)", "Monitor cannot reach $1", "Not reached", P_SERVERS, "reached"),
     ("MonitorCannotReach:page::::", "Monitor cannot reach any server", "Not reached", P_SERVERS, "monitor_only"),
     ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", P_MON, None),
@@ -347,6 +351,11 @@ TITLES = [
     ("UpgradeScheduled:.*", "Network upgrade scheduled", "Upgrade set", P_UPGRADE, "signal"),
     ("UpgradeSoon:.*", "Network upgrade within 24 hours", "Upgrade soon", P_UPGRADE, "signal"),
     ("SignalUnreadable:.*", "Upgrade check stopped", "Signal stale", P_UPGRADE, "signal"),
+    # The vote check (gov): the page only where it is on (gov_page). With the check on, SignalUnreadable
+    # also covers the proposals, and the later key wins.
+    ("GovVoteMissing:page:.*", "Validator has not voted on a proposal", "Vote missing", P_GOV, "gov_page"),
+    ("GovVoteMissing:message:.*", "Validator has not voted on a proposal", "Vote missing", P_GOV, "gov"),
+    ("SignalUnreadable:.*", "Upgrade and vote check stopped", "Signal stale", P_GOV, "gov"),
 ]
 # The Status cell's words for an alert whose labels match no key of TITLES (its label line then
 # reads "Status" alone).
@@ -356,7 +365,7 @@ SHORT_FALLBACK = "See alerts"
 # tile).
 SERVER_OTHERS = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|NotificationsFailing|DeadmanFailing|"
                  "TensileUnreadable|AnnouncementsUnreadable|SignalUnreadable|UpgradeSignalMissing|UpgradeScheduled|"
-                 "UpgradeSoon")
+                 "UpgradeSoon|GovVoteMissing")
 # The heartbeat goes to the dead-man service only and is never shown as an alert.
 UNTITLED = {"Watchdog"}
 # The Status cell's panel id.
@@ -371,13 +380,15 @@ NO_SURFACE = {
 # Worst first between alerts of one level, so the order stays the same between refreshes.
 PRIORITY = {"ValidatorSigningTwice": 0.095, "NodePeersLow": 0.092, "NodeNotAdvancing": 0.09,
             "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
-            "DiskLow": 0.06, "MonitorCannotReach": 0.055, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04,
-            "SignaturesMissed": 0.035, "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025, "NodeBehind": 0.02,
-            "FibreBothActive": 0.015, "UpgradeSoon": 0.012}
+            "DiskLow": 0.06, "MonitorCannotReach": 0.055, "UpgradeSignalMissing": 0.05, "GovVoteMissing": 0.045,
+            "ServiceDown": 0.04, "SignaturesMissed": 0.035, "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025,
+            "NodeBehind": 0.02, "RaidDegraded": 0.018, "FibreBothActive": 0.015, "UpgradeSoon": 0.012,
+            "ClockNotSynced": 0.01}
 # A message alert's rank where it differs from its page's. NodePeersLow's message: few peers usually follow
 # a node it peers with that stopped, so it ranks below that ServiceDown and below missed blocks, and above
-# the lag the few peers cause (NodeBehind).
-MESSAGE_PRIORITY = {"NodePeersLow": 0.022}
+# the lag the few peers cause (NodeBehind). GovVoteMissing's message: a vote with up to 2 days left, below
+# every fault of the servers, above a clock out of sync.
+MESSAGE_PRIORITY = {"NodePeersLow": 0.022, "GovVoteMissing": 0.011}
 
 # The Role column: a server's parts add up to one code. (code, words, short words).
 NODE_PARTS = [(1, "Signing node", "Signing"), (2, "Backup node", "Backup"), (3, "Node, not signing", "Not signing")]
@@ -700,8 +711,9 @@ def load_rules():
 class Setup:
     """The settings, with what the panels derive from them.
 
-    remote, multi (tmkms signs through several nodes on purpose), fibre, tensile, signal,
-    announcements and mon_only (the monitor on a host of its own) are the switches. nodes are the
+    remote, multi (tmkms signs through several nodes on purpose), fibre, tensile, signal, gov (the
+    vote check, with signal), gov_page (its page), announcements and mon_only (the monitor on a host
+    of its own) are the switches. nodes are the
     celestia-appd hosts, the validator first; fibre_hosts every Fibre host; kms_hosts the KMS hosts
     whose node_exporter runs, with a remote signer; servers the nodes, then the other node_exporter
     hosts (the monitor's among them), in inventory order: the order of the status board, the table
@@ -717,6 +729,9 @@ class Setup:
         self.fibre = bool(cfg["fibre_enabled"])
         self.tensile = self.fibre and bool(cfg.get("tensile_enabled"))
         self.signal = bool(cfg.get("signal_enabled"))
+        # The vote check comes with upgrade signalling; its page only where it is on.
+        self.gov = self.signal and bool(cfg.get("gov_enabled"))
+        self.gov_page = self.gov and bool(cfg.get("gov_page"))
         self.announcements = bool(cfg.get("announcements_enabled"))
         self.monitor = cfg.get("monitor_host") or ""
         self.retention = str(cfg.get("prometheus_retention") or "30d")
@@ -767,7 +782,8 @@ class Setup:
     def has(self, need):
         """Whether the alerts that need need exist in this install (None: always)."""
         return {None: True, "remote": self.remote, "two_signers": self.remote and not self.multi, "fibre": self.fibre,
-                "tensile": self.tensile, "signal": self.signal, "announcements": self.announcements,
+                "tensile": self.tensile, "signal": self.signal, "gov": self.gov, "gov_page": self.gov_page,
+                "announcements": self.announcements,
                 "tmkms": bool(self.kms_hosts), "reached": bool(self.reached), "monitor_only": self.mon_only}[need]
 
     def color(self, host):
@@ -911,6 +927,17 @@ def wrong_host(s):
 def last(s, metric):
     """The last value of a celestia-mon-signal metric in the past 7 days, as the upgrade rules read it."""
     return "max(last_over_time(%s{job=\"signal\",host=%s}[7d]))" % (metric, q(s.monitor))
+
+
+def gov(s, metric):
+    """Each proposal's last value of a celestia-mon-signal vote metric in the past hour, as GovVoteMissing
+    reads it."""
+    return "max by (proposal_id) (last_over_time(%s{job=\"signal\",host=%s}[1h]))" % (metric, q(s.monitor))
+
+
+def upgrade_title(s):
+    """The name of the upgrade tile: Governance with the vote check on, which it then shows too."""
+    return "Governance" if s.gov else "Network upgrade"
 
 
 def disks(mounts, metric):
@@ -1769,30 +1796,52 @@ def outside_tile(s):
 
 
 def upgrade_tile(s):
-    """(id, title, description, query, words) of the Network upgrade tile (signal collector on)."""
+    """(id, title, description, query, words) of the Network upgrade tile (signal collector on), named
+    Governance with the vote check on (gov): then also Vote missing while GovVoteMissing is pending or
+    fires (amber; red once it pages), and Vote open while a proposal the validator account has not voted
+    on is in its voting period and no alert holds yet."""
+    # A proposal in its voting period without the validator account's vote, as GovVoteMissing reads them.
+    unvoted = ("(count((%s == 0) and on (proposal_id) (%s - time() > 0)) > 0) * 0 + 7"
+               % (gov(s, "celestia_mon_gov_validator_voted"), gov(s, "celestia_mon_gov_voting_end_timestamp_seconds")))
     expr = chain(
         'max(ALERTS{alertname="UpgradeSignalMissing",alertstate="firing"}) * 0 + 13',
+        'max(ALERTS{alertname="GovVoteMissing",severity="page",alertstate="firing"}) * 0 + 16' if s.gov_page else None,
         'max(ALERTS{alertname="UpgradeSoon",alertstate="firing"}) * 0 + 5',
+        'max(ALERTS{alertname="GovVoteMissing"}) * 0 + 6' if s.gov else None,
         'max(ALERTS{alertname="SignalUnreadable",alertstate="firing"}) * 0 + 10',
         'max(absent(up{job="signal"})) * 0',
         '(max(up{job="signal"}) == 0) * 0',
         "(time() - max(celestia_mon_signal_last_success_timestamp_seconds) > 900) * 0",
+        "(time() - max(celestia_mon_gov_last_success_timestamp_seconds) > 900) * 0" if s.gov else None,
         "((max(celestia_mon_upgrade_pending) == 1) * 0 + 5 and on () (max(celestia_mon_upgrade_eta_seconds) < 86400))",
         "(max(celestia_mon_upgrade_pending) == 1) * 0 + 4",
         "((max(celestia_mon_signal_tally_power) > 0) * 0 + 3 unless on () "
         "(max(celestia_mon_signal_validator_version) == on () max(celestia_mon_signal_next_version)))",
+        unvoted if s.gov else None,
         "(max(celestia_mon_signal_tally_power) > 0) * 0 + 2",
         "max(celestia_mon_upgrade_pending) * 0 + 1")
     words = [(1, "None pending", "text"), (2, "Signal sent", "text"), (3, "Not signalled", "orange"),
              (13, "Not signalled", "red"), (4, "Upgrade set", "text"), (5, "Upgrade soon", "orange"),
              (10, "Signal stale", "orange"), (0, "Not checked", GREY)]
+    if s.gov:
+        words += [(6, "Vote missing", "orange"), (7, "Vote open", "text")]
+    if s.gov_page:
+        words += [(16, "Vote missing", "red")]
     desc = ("Is a network upgrade coming, and has this validator signalled for it? None pending and Signal sent are "
             "fine. Not signalled: a round is open and this validator has not signalled; red once UpgradeSignalMissing "
-            "pages (after %s). Signal only once every node runs a release that supports the new version. Upgrade set, "
-            "Upgrade soon, Signal stale: UpgradeScheduled, UpgradeSoon, SignalUnreadable. Versions and the height: "
-            "the Network upgrade row. Every word: the panel guide." % s.hold("UpgradeSignalMissing"))
-    return 16, "Network upgrade", desc + more(["UpgradeSignalMissing", "UpgradeScheduled", "UpgradeSoon",
-                                               "SignalUnreadable"], [PANEL_GUIDE]), expr, words
+            "pages (after %s). Signal only once every node runs a release that supports the new version. "
+            % s.hold("UpgradeSignalMissing"))
+    if s.gov:
+        desc += ("Vote open: a governance proposal is in its voting period and the validator account has not voted; "
+                 "vote, abstain if you have no view. Vote missing: less than 2 days of the vote are left (less than "
+                 "half of a vote shorter than 4 days; GovVoteMissing, after %s)%s. "
+                 % (s.hold("GovVoteMissing message"), "; red once it pages, with less than a day left"
+                    if s.gov_page else ""))
+    desc += ("Upgrade set, Upgrade soon, Signal stale: UpgradeScheduled, UpgradeSoon, SignalUnreadable. Versions and "
+             "the height: the Network upgrade row. Every word: the panel guide.")
+    alerts = ["UpgradeSignalMissing"] + (["GovVoteMissing"] if s.gov else []) + ["UpgradeScheduled", "UpgradeSoon",
+                                                                                  "SignalUnreadable"]
+    return 16, upgrade_title(s), desc + more(alerts, [PANEL_GUIDE]), expr, words
 
 
 # ServiceDown's rules for a metrics endpoint (up == 0); the others watch a systemd unit.
@@ -1815,10 +1864,11 @@ def service_down(s):
 
 # The words of a server's line and of the Servers tile beyond ServiceDown's (codes 30 and up). Not
 # reached: MonitorCannotReach, amber for one server, red once no server answers and it pages. No peers
-# and Few peers: NodePeersLow's page and message.
+# and Few peers: NodePeersLow's page and message. RAID degraded (10) and No time sync (20): RaidDegraded and
+# ClockNotSynced, codes clear of the monitor's own words (11 to 19).
 SERVER_WORDS = [(1, "OK", OK), (2, "Warning", WARN), (3, "Disk critical", ALERT), (4, "Not reached", WARN),
                 (5, "Not reached", ALERT), (6, "Disk low", WARN), (7, "Node behind", WARN), (8, "No peers", ALERT),
-                (9, "Few peers", WARN), (0, "No data", NODATA)]
+                (9, "Few peers", WARN), (10, "RAID degraded", WARN), (20, "No time sync", WARN), (0, "No data", NODATA)]
 DISK_PAGE = 'alertname="DiskLow",severity="page"'
 UNREACHED_PAGE = 'alertname="MonitorCannotReach",severity="page"'
 
@@ -1847,6 +1897,8 @@ def servers_tile(s):
            "%s * 0 + 6" % alert('alertname="DiskLow"'),
            "%s * 0 + 9" % alert('alertname="NodePeersLow"'),
            "%s * 0 + 7" % alert('alertname="NodeBehind"'),
+           "%s * 0 + 10" % alert('alertname="RaidDegraded"'),
+           "%s * 0 + 20" % alert('alertname="ClockNotSynced"'),
            "%s * 0 + 2" % alert('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
            '((count(up{job="node",%s} == 1) == %d) and on () %s) * 0 + 1' % (sel, len(s.servers), rules),
            'max(up{job="prometheus"}) * 0']))
@@ -1856,11 +1908,15 @@ def servers_tile(s):
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
             "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
             "Status cell's words, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
-            "validator signs through has none), Few peers (a node has fewer than %d peers)%s; Warning: another warning "
-            "names a server. Which server: its card below and its line in History. Every word: the panel guide."
-            % (s.PM, (" or Not reached (MonitorCannotReach: the monitor reaches none of a server's metrics%s)"
-                      % (", red once it reaches no server" if s.mon_only else "")) if s.reached else ""))
-    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind", "NodePeersLow"]
+            "validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
+            "RAID array has been missing a disk for %s), No time sync (a clock not synchronised for %s)%s; "
+            "Warning: another warning names a server. Which server: its card below and its line in History. Every "
+            "word: the panel guide."
+            % (s.PM, s.hold("RaidDegraded"), s.hold("ClockNotSynced"),
+               (" or Not reached (MonitorCannotReach: the monitor reaches none of a server's metrics%s)"
+                % (", red once it reaches no server" if s.mon_only else "")) if s.reached else ""))
+    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind", "NodePeersLow", "RaidDegraded",
+                                       "ClockNotSynced"]
                                       + (["MonitorCannotReach"] if s.reached else []), [PANEL_GUIDE]), expr, words
 
 
@@ -2060,10 +2116,12 @@ def server_lanes(s):
     """One status line per server, in servers order: (refId, label, bars, uptime, words). The alerts
     excluded from the generic warning colour lines Remote signer, Fibre serving and Fibre from outside
     instead, and the monitoring's own alerts and heartbeat the monitor's line in the Monitoring row's
-    words; the upgrade alerts colour no line (the Network upgrade tile shows them). NodeBehind colours its
-    server's line and Node in sync, NodePeersLow its server's line. Not reached: MonitorCannotReach on
-    each server the monitor reaches over the network. Uptime leaves out the minutes in which a page that
-    names the server fired (DiskLow, NodePeersLow) or one of its metrics endpoints did not answer."""
+    words; the upgrade and vote alerts colour no line (the Network upgrade tile, or Governance, shows
+    them). NodeBehind colours its server's line and Node in sync; NodePeersLow, RaidDegraded and
+    ClockNotSynced their server's line. Not
+    reached: MonitorCannotReach on each server the monitor reaches over the network. Uptime leaves out the
+    minutes in which a page that names the server fired (DiskLow, NodePeersLow) or one of its metrics
+    endpoints did not answer."""
     others = SERVER_OTHERS
     services = service_down(s)
     words = SERVER_WORDS + [(30 + i, w, WARN) for i, (_, w) in enumerate(services)]
@@ -2097,7 +2155,9 @@ def server_lanes(s):
                     + ["%s * 0 + 8" % firing("%s,%s" % (sel, PEERS_PAGE)),
                        "%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
                        "%s * 0 + 9" % firing('%s,alertname="NodePeersLow"' % sel),
-                       "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel)]
+                       "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel),
+                       "%s * 0 + 10" % firing('%s,alertname="RaidDegraded"' % sel),
+                       "%s * 0 + 20" % firing('%s,alertname="ClockNotSynced"' % sel)]
                     + (own if mine else [])
                     + ["%s * 0 + 2" % firing('%s,severity="message",alertname!~"%s"' % (sel, others)),
                        "((%s == 1) and on () %s) * 0 + 1" % (seen('up{job="node",%s}' % sel), rules_ran()),
@@ -3418,16 +3478,17 @@ UNSEEN ={"custom__hideFrom": {"legend": True, "tooltip": True, "viz": False}, "c
 
 def rule_number(alert, reason, pattern):
     """The number that pattern (a regex with one group) finds in the expression of the alert rule with
-    this name and reason label in the rules template. Stops unless there is exactly one, so a chart that
-    draws a rule's level cannot drift from the rule."""
+    this name and reason label (None: any) in the rules template. Stops unless there is exactly one, so a
+    chart that draws a rule's level cannot drift from the rule."""
     with open(RULES_TEMPLATE, encoding="utf-8") as f:
         rules = re.split(r"^\s*- alert: ", f.read(), flags=re.M)[1:]
     found = [m.group(1) for r in rules
-             if r.startswith(alert + "\n") and re.search(r"^\s*reason: %s\s*$" % reason, r, re.M)
+             if r.startswith(alert + "\n") and (reason is None or re.search(r"^\s*reason: %s\s*$" % reason, r, re.M))
              for m in re.finditer(pattern, r.split("labels:")[0], re.M)]
     if len(found) != 1:
-        raise SystemExit("%s: the %s rule with reason %s must have one %r in its expression, not %d"
-                         % (RULES_TEMPLATE, alert, reason, pattern, len(found)))
+        raise SystemExit("%s: the %s rule%s must have one %r in its expression, not %d"
+                         % (RULES_TEMPLATE, alert, "" if reason is None else " with reason %s" % reason, pattern,
+                            len(found)))
     return int(found[0])
 
 
@@ -3564,10 +3625,10 @@ def fibre_row(s):
     budget = fibre_fact(
         204, "Storage budget used",
         "Share of this server's stake-based storage budget that its shards fill; below 100% is good. At 100% "
-        "Fibre refuses uploads (the Fibre tile reads Storage full). The share follows the whole network's Fibre "
-        "data over the 4-hour retention window, so a high one usually means network load, not a fault. No "
-        "limit: unlimited, or the validator was out of the active set when Fibre started. Not running: no "
-        "Fibre unit is active." + more(pages=[FIBRE_DASHBOARD]),
+        "Fibre refuses uploads (the Fibre tile reads Uploads failing while FibreNotServing holds). The share "
+        "follows the whole network's Fibre data over the 4-hour retention window, so a high one usually means "
+        "network load, not a fault. No limit: unlimited, or the validator was out of the active set when Fibre "
+        "started. Not running: no Fibre unit is active." + more(pages=[FIBRE_DASHBOARD]),
         one(chain("max((max by (host) (fibre_server_upload_shard_occupancy_bytes) / max by (host) "
                   "(fibre_server_upload_shard_budget_bytes > 0)) and on (host) %s)" % fibre_active(s),
                   "(max((%s == 0) and on (host) %s) - 1)" % (FIBRE_ALIVE, fibre_active(s)),
@@ -3731,8 +3792,8 @@ def fibre_row(s):
     # "false" (celestia-app fibre/server_upload.go returns the budget error through the deferred
     # uploadShardDone), so they are taken out of the failed ones and drawn as their own outlined bars.
     # Every part has its own swatch: accepted in the server's colour and served in a darker shade of it,
-    # failed uploads light grey, failed downloads a darker grey, refused uploads an amber outline (the
-    # Fibre tile's Storage full).
+    # failed uploads light grey, failed downloads a darker grey, refused uploads an amber outline. Refused
+    # uploads also count as failed ones, so once Fibre accepts none the Fibre tile reads Uploads failing.
     rejected = "fibre_server_upload_shard_rejected_total"
     downloads = "fibre_server_download_shard_duration_seconds_count"
     served = "downloads served (below)"
@@ -3804,8 +3865,8 @@ def upgrade_row(s):
     signal = cell(
         106, "Signalled version",
         "The version the validator signalled; None is fine until a round opens, then the next version is good. A round "
-        "opens when any voting power signals the next version; while the validator has not, the Network upgrade tile "
-        "turns amber, then red." + more(["UpgradeSignalMissing"]),
+        "opens when any voting power signals the next version; while the validator has not, the %s tile "
+        "turns amber, then red." % upgrade_title(s) + more(["UpgradeSignalMissing"]),
         one(checked(last(s, "celestia_mon_signal_validator_version"))), unit="prefix:v", color_mode="value",
         mappings=mapping((0, "None", "text"), unread))
     support = cell(
@@ -3889,8 +3950,8 @@ def alerts_row(s):
 
 # The Servers section: one column of charts per server, in the server's colour, each chart titled with the
 # server's name first, so a server's charts sit under its name and every line of charts compares the servers.
-# Two charts show every server at once, across the full width: Restarts and Clock offset, where each server's
-# own chart would be empty or flat. Ids: the open row 400, the closed row 450, for each line of a column chart a
+# Two charts show every server at once, across the full width: Restarts and Clock maximum error, where each
+# server's own chart would be empty or flat. Ids: the open row 400, the closed row 450, for each line of a column chart a
 # base (410, 420, ...) plus the server's place in servers order, and 480 and 490 for the two full-width charts.
 SERVERS_MAX = 10                         # servers the ids leave room for
 VALUE_AXIS_PX = 76                       # every chart's value axis width, so plots in a column start at one x
@@ -4169,17 +4230,32 @@ def restarts_chart(s, pid):
 
 
 def clock_chart(s, pid):
-    """Every server's clock offset from the time servers it syncs to, one line per server in its colour."""
-    targets = refs([("max(node_timex_offset_seconds{host=%s})" % q(h), h) for h in s.servers])
+    """Every server's clock maximum error, the value ClockNotSynced reads, one line per server in its colour,
+    with the rule's level dashed. The kernel's offset (node_timex_offset_seconds) stays 0 under chrony, which
+    never hands the kernel an offset to slew; the maximum error is set by chrony and systemd-timesyncd alike,
+    and the kernel adds 0.5 ms a second until the next update. timesyncd sets 0, which a log axis cannot
+    draw: below 1 ms the line runs along the bottom."""
+    level = rule_number("ClockNotSynced", None, r"node_timex_maxerror_seconds\{[^}]*\} >= (\d+)\s*$")
+    targets = refs([("clamp_min(max(node_timex_maxerror_seconds{host=%s}), 0.001)" % q(h), h) for h in s.servers])
     overrides = [override("byFrameRefID", t["refId"], color=fixed(server_hue(s, h)))
                  for t, h in zip(targets, s.servers)]
-    return timeseries(
-        pid, "Clock offset",
-        "How far each server's clock is from the time servers it syncs to; a few milliseconds is healthy. No alert "
-        "watches it; doctor check 9 does. Vote timestamps come from the signer's clock, so skew shifts block "
-        "times; Fibre refuses payment promises more than 10 minutes off. Tens of milliseconds or more: time sync "
-        "(chrony or systemd-timesyncd) is not working." + more(pages=[NODE_EXPORTER_FULL]),
-        targets, "s", soft_min=-0.01, soft_max=0.01, centered=True, overrides=overrides)
+    p = timeseries(
+        pid, "Clock maximum error",
+        "How far each server's clock may be off at most, by its time sync's own account; a saw tooth that peaks at "
+        "about a second or less is good. chrony sets it at each clock update and systemd-timesyncd at each "
+        "correction (to 0, drawn at 1 ms), and it rises 0.5 ms a second in between. At the dashed %d s line the "
+        "kernel counts the clock as not synchronised, and after %s ClockNotSynced sends a warning; a line that keeps "
+        "rising towards it: time sync stopped. A node stamps its votes with this clock and rejects every block once "
+        "it runs about 60 s slow; Fibre reports not ready once it runs about 2 minutes fast (max_block_age). A clock "
+        "synchronised to a wrong source still reads low here: chronyc tracking, timedatectl timesync-status and "
+        "doctor check 9 show the measured offset. The axis is logarithmic, 1 ms to 100 s."
+        % (level, s.hold("ClockNotSynced")) + more(["ClockNotSynced"]),
+        targets, "s", threshold=(level, "orange"), minimum=0.001, maximum=100,
+        overrides=overrides + [override("byType", "number", custom__axisGridShow=False)])
+    # A log axis draws a grid line at every 2-9 between its labels (as on Missed blocks and Signing time):
+    # the value axis draws none, and its labels and the dashed line carry the scale.
+    p["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"log": 10, "type": "log"}
+    return p
 
 
 # The lines of the Servers section, top to bottom: (id base, chart, height). A column chart takes one column
@@ -4201,7 +4277,7 @@ def server_ids(ids, i):
 def servers_row(s):
     """(open lines, closed lines) of the Servers section: one column per server, up to four to a line (w12,
     w8, w6; more servers wrap onto lines of equal widths), the charts of one kind side by side at one height,
-    so every server's charts keep one column; Restarts and Clock offset across the full width. A single
+    so every server's charts keep one column; Restarts and Clock maximum error across the full width. A single
     server takes two column charts to a line. Each line picks the longest legend words that fit every chart
     of it on one line."""
     n = len(s.servers)

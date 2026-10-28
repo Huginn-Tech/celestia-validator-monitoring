@@ -125,11 +125,17 @@ celestia_mon_tensile: {}
 # (celestia, mocha-5); an RPC that serves another network is skipped. rpc: CometBFT RPC URLs, tried
 # in order; a node of your own first, a public RPC after it; https, or http to this host or a node
 # named by its private address. validator: the validator's operator address (celestiavaloper1...).
-# Empty: off, and nothing watches the validator's signal.
+# It also reads the governance proposals in their voting period and whether the validator account
+# voted on each (GovVoteMissing): gov: false turns that off; gov_page: whether GovVoteMissing also
+# pages, a day before the end or at half a shorter vote (on a vote of 2 days or less the page
+# replaces the message), true on mainnet (chain_id celestia) and false elsewhere by default.
+# Empty: off, and nothing watches the validator's signal or votes.
 #   celestia_mon_signal:
 #     chain_id: celestia
 #     rpc: ["http://127.0.0.1:26657", "https://rpc.celestia.pops.one"]
 #     validator: celestiavaloper1...
+#     gov: true
+#     gov_page: true
 celestia_mon_signal: {}
 
 # Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog

@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has twenty-two alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has twenty-five alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -8,9 +8,9 @@ celestia-validator-monitoring has twenty-two alerts and a heartbeat, and can pas
 
 The dashboard calls a page alert **Urgent** (red) and a message alert **Warning** (amber).
 
-Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
+With upgrade signalling on, the validator's votes on governance proposals are watched too: [GovVoteMissing](#govvotemissing) says when a proposal nears the end of its voting period without the validator's vote. Nothing is sent when a vote opens; what a proposal changes comes through its forum post and Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon) and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about; NodePeersLow's page reads from the metrics which node signs.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), GovVoteMissing, which names the proposal, and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about; NodePeersLow's page reads from the metrics which node signs.
 
 | Alert | Severity | Catches |
 |---|---|---|
@@ -26,15 +26,18 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [FibreBothActive](#fibrebothactive) | message | Fibre active on more than one host for 5 minutes |
 | [FibreNotServing](#fibrenotserving) | message, or page when not ready for 10 minutes | Fibre running but missing the uploads of blobs sent to the validator or not serving rows it signed for (with the outside check), failing every upload (often its signer), reporting itself not ready for uploads, or sending no metrics |
 | [DiskLow](#disklow) | page or message | A watched disk filling up or turned read-only |
+| [RaidDegraded](#raiddegraded) | message, again once a day while it holds | An md software RAID array running on fewer disks than it needs for 5 minutes: a disk failed or dropped out, or a rebuild still runs |
+| [ClockNotSynced](#clocknotsynced) | message | A server's clock not synchronised for an hour: chrony or systemd-timesyncd stopped correcting it |
 | [MonitorCannotReach](#monitorcannotreach) | message; page when no host answers (monitor on a host of its own) | For 3 minutes the monitor has reached none of a host's metrics endpoints: the host is down, or the link between it and the monitor is |
 | [UpgradeSignalMissing](#upgradesignalmissing) | page | Validators signal the next app version, and yours has not (only with upgrade signalling on) |
 | [UpgradeScheduled](#upgradescheduled) | message, when scheduled (again after 4 days while it waits) | A network upgrade scheduled: version, height, when, and whether yours signalled (only with upgrade signalling on) |
 | [UpgradeSoon](#upgradesoon) | message, sent once | The scheduled upgrade less than a day away (only with upgrade signalling on) |
+| [GovVoteMissing](#govvotemissing) | message; page with less than a day left (mainnet by default) | A governance proposal less than 2 days from the end of its voting period, and the validator has not voted on it (only with upgrade signalling on) |
 | [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
 | [NotificationsFailing](#notificationsfailing) | message | Alertmanager unable to deliver through one of your receivers |
 | [DeadmanFailing](#deadmanfailing) | message | Alertmanager unable to deliver the heartbeat to your dead-man service |
 | [TensileUnreadable](#tensileunreadable) | message | The outside check of the Fibre endpoint stopped (only with the outside check on) |
-| [SignalUnreadable](#signalunreadable) | message | Upgrade signalling no longer read (only with upgrade signalling on) |
+| [SignalUnreadable](#signalunreadable) | message | Upgrade signalling or the governance votes no longer read (only with upgrade signalling on) |
 | [AnnouncementsUnreadable](#announcementsunreadable) | message | Celestia's announcements no longer read (only with [CelestiaAnnouncement](#celestiaannouncement) on) |
 | [CelestiaAnnouncement](#celestiaannouncement) | page or message, your choice | A new message in Celestia's announcement channels on Discord (optional) |
 | [Watchdog](#watchdog) | heartbeat | Monitoring itself down, or an alert that could not be delivered (through the dead-man service) |
@@ -310,7 +313,8 @@ Possible causes: the host is not registered or not reachable from outside, the v
 4. Registration and reachability: `sudo celestia-mon-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) shows your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
 5. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures add to the grey failure bars on the "Signing time" chart).
 6. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([mainnet layout](quickstart.md#mainnet-layout)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
-7. For `not_ready`: on the Fibre host in the alert, `journalctl -u <fibre unit> | grep 'health check failed'` prints each failing check, with its `check`, its `reason` and, in `message`, what to do; a `server not ready` line lists every check that fails, and `health check passed` and `server ready` show when they recover. The messages, by check:
+7. Uploads refused over their payment promise: `journalctl -u <fibre unit> | grep 'payment promise verification failed'` prints each with its `error` ([celestia-app v10.5.0 `x/fibre/keeper/keeper.go`](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/x/fibre/keeper/keeper.go)). "payment promise height … is too far in the future": the promise names a height more than one block above the newest block of the node at Fibre's `app_grpc_address`, so that node commits blocks later than the publisher's node does; check its peers ([NodePeersLow](#nodepeerslow)), its disk, and the Block processing time chart. "payment promise has already been processed", "payment promise expired" and "insufficient balance in escrow account" (or "escrow account not found") come from the publisher's side: nothing to fix on your hosts.
+8. For `not_ready`: on the Fibre host in the alert, `journalctl -u <fibre unit> | grep 'health check failed'` prints each failing check, with its `check`, its `reason` and, in `message`, what to do; a `server not ready` line lists every check that fails, and `health check passed` and `server ready` show when they recover. The messages, by check:
 
 | `check` | `message` (`reason`) | What to do |
 |---|---|---|
@@ -351,6 +355,34 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 3. Fibre store: the "Fibre disk and budget" panel shows each Fibre store's free space against the room the storage budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
+
+## RaidDegraded
+
+**What it means.** An md software RAID array (mdadm) on a host has run on fewer disks than it needs for 5 minutes: a disk failed or dropped out, the array was started without one, or a new disk is still being rebuilt. node_exporter's mdadm collector reads `/proc/mdstat` on every host it runs on; the `[2/1]` of an array's status line gives the disks it needs and the active ones. The host keeps serving the array's data from the disks left, but one more failure in it loses that data. The monthly check of an array and a resync after an unclean shutdown keep `[2/2]` and fire nothing, and a host without md arrays has nothing to watch. A hardware RAID controller hides its disks from the host: its own tools alert on them.
+
+**Severity.** message. A failed disk can wait days for its replacement, so after the first message it comes again once a day while it holds, not every 4 hours. It keeps firing through the rebuild of a new disk and through a short loss of the host's metrics, so its "resolved" message means the array is whole again. When the monitor reaches none of the host's metrics for more than 10 minutes it resolves as well; [ServiceDown](#servicedown) or [MonitorCannotReach](#monitorcannotreach) names the host then.
+
+**Check first.**
+
+1. `cat /proc/mdstat` on the host: `[U_]` marks the missing disk, `(F)` a failed one, and a `recovery` line a rebuild's progress. `mdadm --detail /dev/<device>` shows each disk's state, and `journalctl -k | grep -i md` when one dropped out. `sudo celestia-mon-doctor` (check 10) prints every array of the host, and fails for one that node_exporter does not export.
+2. A failed disk: replace it, partition the new disk like the one left, and add the partition to the array (`mdadm --manage /dev/<device> --add <partition>`); the rebuild starts at once and `/proc/mdstat` shows its progress. When the swap stops the host, silence it first ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)).
+3. Right after an install: a disk that once held half of a mirror can start as an array of its own, such as `md127 : active (auto-read-only) raid1 sdb1[1]` with `[2/1]`. If nothing mounts it, stop it (`mdadm --stop /dev/md127`) and clear that partition's RAID superblock (`mdadm --zero-superblock <partition>`), which erases its old RAID metadata.
+
+**Links.** [node_exporter v1.12.1 mdadm collector](https://github.com/prometheus/node_exporter/blob/v1.12.1/collector/mdadm_linux.go), [mdadm(8)](https://man7.org/linux/man-pages/man8/mdadm.8.html).
+
+## ClockNotSynced
+
+**What it means.** For an hour the kernel has reported a host's clock as not synchronised: its maximum error (`node_timex_maxerror_seconds`, from node_exporter's timex collector) has reached 16 seconds, the kernel's limit. That is the test of `timedatectl`'s `NTPSynchronized` and of `doctor` check 9. chrony and systemd-timesyncd set the maximum error at each update, and the kernel adds 0.5 ms a second in between, so it reaches 16 seconds about 9 hours after time sync stops, and at once when chrony has no usable time source. A clock step or a clocksource switch also sets it to 16 seconds until the daemon's next update, which the hour lets pass. Nothing fails yet, but the clock drifts freely from then on: a celestia-appd node whose clock falls about 60 seconds behind rejects every block as too far in the future ([celestia-core v0.42.3 `state/validation.go`](https://github.com/celestiaorg/celestia-core/blob/v0.42.3/state/validation.go)), and a Fibre server whose clock runs about 2 minutes ahead finds the newest block older than `max_block_age` and reports itself not ready ([FibreNotServing](#fibrenotserving) `not_ready`). A clock synchronised to a wrong time source still counts as synchronised: this alert does not catch it.
+
+**Severity.** message: a clock left to drift takes days or longer to reach those limits. It keeps firing through a short loss of the host's metrics, so its "resolved" message means time sync works again. When the monitor reaches none of the host's metrics for more than 10 minutes it resolves as well; [ServiceDown](#servicedown) or [MonitorCannotReach](#monitorcannotreach) names the host then.
+
+**Check first.**
+
+1. `chronyc tracking` and `chronyc sources` (chrony), or `timedatectl timesync-status` (systemd-timesyncd): whether the daemon runs, which sources it reaches, and the offset it measures. `sudo celestia-mon-doctor` on the host (check 9) shows the same.
+2. Outgoing NTP (UDP 123) must be allowed to the time servers. Start the daemon if it stopped (`systemctl start chrony`, or `timedatectl set-ntp true` for systemd-timesyncd); run one of the two, not both.
+3. The dashboard's Clock maximum error chart (Servers: restarts, disk activity and clocks) shows when the line began to climb.
+
+**Links.** [node_exporter v1.12.1 timex collector](https://github.com/prometheus/node_exporter/blob/v1.12.1/collector/timex.go), [Fibre health checks](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/server_health.go).
 
 ## MonitorCannotReach
 
@@ -409,15 +441,35 @@ Only with `celestia_mon_signal` set.
 
 **Check first.** On every node of this install, the validator and each backup node, confirm that the celestia-app release it runs supports the target version (`celestia-appd version`, and the release notes). After the height, the Consensus node rows of the server cards and NodeNotAdvancing show whether the nodes moved on.
 
+## GovVoteMissing
+
+Only with `celestia_mon_signal` set, unless it sets `gov: false`.
+
+**What it means.** A governance proposal (x/gov) is in its voting period, less than 2 days are left until its end (on a vote shorter than 4 days, less than half of it), and the validator account has no vote on it. The validator account is `celestia1...` with the same bytes as the operator address `celestiavaloper1...`: the tally counts that account's vote as the validator's. A vote from another wallet, or from a multisig that is not that account, does not count; a vote sent through an authz grant from the validator account does, because the vote is then the validator account's. Nothing is sent when a vote opens, and nothing at all for a validator that votes before these limits. One alert per proposal; it names the proposal, its title and the time left, and no host.
+
+celestia-mon-signal on the monitor reads the proposals with x/signal, every minute through the same RPCs: the proposals in their voting period, and those with a vote from the validator account, both at one height. For each it serves the start and end of the voting period, whether the validator account voted, and the title, which whoever submitted the proposal wrote: at most 80 characters of it on one line, square brackets made round, so no chat channel shows a link under other words. While the RPCs fail the Proposals query, the service keeps serving the proposals it read last, so the alert goes on from that reading: it still comes on time for a proposal already read, but a vote cast meanwhile does not resolve it, and a proposal opened meanwhile is not seen. The rules read each proposal's last value of the past hour, so a short outage of the service or of its scrape neither resolves the alert nor sends it again; after an hour without the service, the alert resolves. [SignalUnreadable](#signalunreadable) reports either outage.
+
+**Severity.** message once less than 2 days are left, and a page once less than 1 day is left, where the page is on: by default with `chain_id: celestia` (mainnet), and not on other networks, where the message is all ([quickstart](quickstart.md#upgrade-signalling) has `gov_page` to change it). Neither comes before half the vote has passed: a 3-day vote gets the message 36 hours before its end, and a vote of 2 days or less gets both at half its length, a 24-hour vote (an expedited proposal, or a testnet's short voting period) 12 hours before its end; where the page is on, such a vote gets the page alone, and so does a longer one first read with less than a day left (`gov` turned on then, or the readings back after more than an hour). GovVoteMissing has its own route: each notification is sent once and comes again only after 4 days, longer than the alert can last, with a "resolved" one at the end.
+
+It resolves a few minutes after the validator account's vote is in a block, or when the voting period has ended. An expedited proposal that does not pass by the end of its short voting period becomes a regular one: its voting period then ends a full voting period after it started, and x/gov removes its votes during that tally, so a vote cast during the expedited period must be sent again. The alert resolves when the end moves out, and comes again as the new end nears.
+
+**Check first.**
+
+1. The proposal and its forum post: `celestia-appd query gov proposal <proposal> --node <RPC of a synced node>`.
+2. Vote with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([mainnet layout](quickstart.md#mainnet-layout)): `celestia-appd tx gov vote <proposal> yes|no|no_with_veto|abstain --from <validator account key> --node <RPC of a synced node>`. With no view on a proposal, vote `abstain` rather than leave the vote empty or silence the alert. An ops key can vote through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/cosmos.gov.v1.MsgVote`, then `celestia-appd tx gov vote <proposal> <option> --from <validator account address> --generate-only > vote.json` and `celestia-appd tx authz exec vote.json --from <ops key>`.
+3. `celestia-appd query gov vote <proposal> <validator account address> --node <RPC of a synced node>` shows the vote on chain. `sudo celestia-mon-doctor` on the monitor (check 23) lists the proposals in their voting period, with their end and whether the validator account voted on each, and for each without its vote when GovVoteMissing comes.
+
+**Links.** [x/gov](https://github.com/celestiaorg/cosmos-sdk/tree/v0.52.12/x/gov) in the Cosmos SDK fork that celestia-app v10.5.0 builds with.
+
 ## SignalUnreadable
 
 Only with `celestia_mon_signal` set.
 
-**What it means.** For 15 minutes, then 10 more, celestia-mon-signal has read none of the RPCs in `celestia_mon_signal.rpc`, or the service is down. The upgrade alerts keep their last reading meanwhile: a page that fires stays, but a new signalling round would not page, and a scheduled upgrade would not be announced.
+**What it means.** For 15 minutes, then 10 more, celestia-mon-signal has read none of the RPCs in `celestia_mon_signal.rpc`, none has given it the governance proposals (with `gov` on, the default), or the service is down. The upgrade alerts keep their last reading meanwhile: a page that fires stays, but a new signalling round would not page, and a scheduled upgrade would not be announced. The vote alerts keep the proposals read last: GovVoteMissing still comes on time for a proposal already read, but a vote cast meanwhile does not resolve it, and a proposal opened meanwhile is not seen, so a missing vote on it gets no message, nor a page where it pages. While the service is down or not scraped, the vote alerts keep their reading for an hour only, then resolve.
 
 **Severity.** message.
 
-**Check first.** On the monitor, `journalctl -u celestia-mon-signal -n 50`: each line names the RPC that failed and why. An RPC that serves another network than `celestia_mon_signal.chain_id` is skipped (a Mocha RPC in a mainnet setting, or the reverse), and so is one whose node is catching up, has made no block for 2 minutes, or answers `/abci_info` at an older height than `/status` (`behind`: a node that is syncing, stalled, or halted at an upgrade height without the new release, or a stalled node among those behind a provider's URL). A `query` error is an x/signal query the node refused, or a signal store that does not hold the height of the read (behind a provider's URL, a node a block behind the one that gave the height): that read is skipped, never taken for a validator that has not signalled. A network error means the monitor cannot reach the RPC. A failed measurement of the block time (`block_time`) does not stop the reads: the one measured last stays. A service that does not start names its setting there too. Add a second RPC to the list so one outage does not stop the reads, and run `install.sh` on the monitor again.
+**Check first.** On the monitor, `journalctl -u celestia-mon-signal -n 50`: each line names the RPC that failed and why. An RPC that serves another network than `celestia_mon_signal.chain_id` is skipped (a Mocha RPC in a mainnet setting, or the reverse), and so is one whose node is catching up, has made no block for 2 minutes, or answers `/abci_info` at an older height than `/status` (`behind`: a node that is syncing, stalled, or halted at an upgrade height without the new release, or a stalled node among those behind a provider's URL). A `query` error is an x/signal query the node refused, or a signal store that does not hold the height of the read (behind a provider's URL, a node a block behind the one that gave the height): that read is skipped, never taken for a validator that has not signalled. A network error means the monitor cannot reach the RPC. A `gov` error is a Proposals query of x/gov that the node refused or answered in a form that does not read: the next RPC is asked for the proposals, the ones read last stay, and x/signal goes on being read. A failed measurement of the block time (`block_time`) does not stop the reads: the one measured last stays. A service that does not start names its setting there too. Add a second RPC to the list so one outage does not stop the reads, and run `install.sh` on the monitor again.
 
 ## MonitoringBroken
 

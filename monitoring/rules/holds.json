@@ -19,8 +19,12 @@
     "FibreNotServing not_ready page": {"alert": "FibreNotServing", "labels": {"reason": "not_ready", "severity": "page"}, "for": "10m"},
     "DiskLow low space": {"alert": "DiskLow", "labels": {"severity": "message"}, "expr": "node_filesystem_size_bytes", "for": "10m"},
     "DiskLow budget": {"alert": "DiskLow", "expr": "fibre_server_upload_shard_occupancy_bytes", "for": "30m"},
+    "RaidDegraded": {"alert": "RaidDegraded", "for": "5m"},
+    "ClockNotSynced": {"alert": "ClockNotSynced", "for": "1h"},
     "TensileUnreadable": {"alert": "TensileUnreadable", "for": "10m"},
     "SignalUnreadable": {"alert": "SignalUnreadable", "for": "10m"},
-    "UpgradeSignalMissing": {"alert": "UpgradeSignalMissing", "for": "10m"}
+    "UpgradeSignalMissing": {"alert": "UpgradeSignalMissing", "for": "10m"},
+    "GovVoteMissing message": {"alert": "GovVoteMissing", "labels": {"severity": "message"}, "for": "10m"},
+    "GovVoteMissing page": {"alert": "GovVoteMissing", "labels": {"severity": "page"}, "for": "10m"}
   }
 }

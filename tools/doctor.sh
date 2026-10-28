@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # celestia-mon-doctor: read-only checks for the hosts of a Celestia validator.
 #
-# It changes nothing on the host. Each check prints a line (check 12 one per group):
+# It changes nothing on the host. Each check prints a line (check 12 one per group; check 10
+# also one per md RAID array; check 23 a second one for the governance votes):
 #   OK       the check passed
 #   NOT YET  metrics that appear only after an event; the line names the event
 #   FAIL     the check failed; the line ends with the fix to apply
@@ -49,6 +50,7 @@ declare -A C=(
   [roles]=""
   [inventory_host]=""
   [signer]=""
+  [signer_multi_node]=""
   [fibre_enabled]=""
   [appd_unit]="celestia-appd"
   [fibre_unit]="fibre"
@@ -70,10 +72,12 @@ declare -A C=(
   [api_password_file]="/etc/celestia-mon/api-password"
   [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
   [prometheus_retention_size]=""
+  [gov_page]=""
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
   [node_behind_blocks]="20"
   [time_offset_max]="0.1"
+  [mdstat]="/proc/mdstat"
   [head_wait]="30"
   [private_address_regex]='^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.|127\.|::1$|f[cd][0-9a-fA-F]{2}:)'
 )
@@ -93,7 +97,10 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          entry in fibre_public_endpoint
   signer                local or remote; with local, no remote signer metrics
                          are expected (default: not set, not compared)
-  fibre_enabled          true or false; with false, no Fibre or collector
+  signer_multi_node      true when tmkms signs through several nodes on purpose
+                         (celestia_mon_signer_multi_node), so check 21 does
+                         not count ValidatorSigningTwice (default: not set)
+  fibre_enabled         true or false; with false, no Fibre or collector
                          metrics are expected (default: true if the Fibre
                          unit exists)
   appd_unit, fibre_unit  systemd unit names (default: celestia-appd, fibre)
@@ -134,10 +141,14 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   prometheus_data_dir    default /var/lib/celestia-mon/prometheus
   prometheus_retention_size  Prometheus's retention size, such as 8GB
                          (default: not compared)
+  gov_page               true when GovVoteMissing pages (celestia_mon_gov_page),
+                         so check 21 counts a silence of it (default: not set,
+                         not counted)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   node_behind_blocks     blocks a node may trail the highest node (default 20)
   time_offset_max        seconds (default 0.1)
+  mdstat                 the md software RAID status (default /proc/mdstat)
   head_wait              seconds to wait for a new block (default 30)
   private_address_regex  addresses counted as private
 EOF
@@ -1645,6 +1656,9 @@ timespan_seconds() { # systemd timespan such as +1.234ms, -312us or +1.002s -> a
   }'
 }
 
+# NTPSynchronized is the kernel's maximum error under 16 s (systemd's timedated), the test
+# ClockNotSynced makes on node_timex_maxerror_seconds. The offset is the time daemon's own
+# measurement: the kernel's offset stays 0 under chrony.
 check_time() {
   local name="time sync" synced offset="" src="" max=${C[time_offset_max]}
   if ! command -v timedatectl >/dev/null 2>&1; then report SKIP 9 "$name" "timedatectl not found"; return; fi
@@ -1658,7 +1672,7 @@ check_time() {
     src=systemd-timesyncd
   fi
   if [[ $synced != yes ]]; then
-    report FAIL 9 "$name" "clock not synchronized (NTPSynchronized=${synced:-unknown}). Fix: \"timedatectl set-ntp true\" (or start chrony) and allow outgoing NTP (UDP 123)"
+    report FAIL 9 "$name" "clock not synchronized (NTPSynchronized=${synced:-unknown}; after an hour ClockNotSynced sends a message). Fix: \"timedatectl set-ntp true\" (or start chrony) and allow outgoing NTP (UDP 123)"
     return
   fi
   if [[ -z $offset ]]; then
@@ -1711,6 +1725,90 @@ check_disks() {
   else
     report OK 10 "$name" "$(join "${ok[@]}")"
   fi
+}
+
+# The md software RAID arrays in mdstat, one line each: "device state level need active map
+# activity read-only", "-" where the array has none. need and active are the [2/1] of the status
+# line, which node_exporter's mdadm collector exports and RaidDegraded compares; activity is a
+# rebuild, resync or check in progress ("recovery=5.3%", "resync=DELAYED").
+md_arrays() {
+  awk '
+    function flush() {
+      if (dev != "") print dev, state, level, need, have, map, act, ro
+      dev = ""
+    }
+    /^md[^ ]* : / {
+      flush()
+      dev = $1; state = $3; level = "-"; need = "-"; have = "-"; map = "-"; act = "-"; ro = "no"
+      for (i = 4; i <= NF; i++) {
+        if ($i ~ /^\((auto-)?read-only\)$/) ro = "yes"
+        else if (level == "-" && $i ~ /^(raid[0-9]+|linear|multipath|faulty)$/) level = $i
+      }
+      next
+    }
+    /^[A-Za-z]/ { flush(); next }
+    dev != "" && match($0, /\[[0-9]+\/[0-9]+\]/) {
+      split(substr($0, RSTART + 1, RLENGTH - 2), f, "/")
+      need = f[1]; have = f[2]
+      if (match($0, /\[[U_]+\]/)) map = substr($0, RSTART, RLENGTH)
+    }
+    dev != "" && match($0, /(recovery|resync|check|reshape|repair) *= *[0-9.]+%/) {
+      act = substr($0, RSTART, RLENGTH); gsub(/ /, "", act)
+    }
+    dev != "" && match($0, /(recovery|resync|reshape)=(DELAYED|PENDING)/) { act = substr($0, RSTART, RLENGTH) }
+    END { flush() }
+  ' "$1" 2>/dev/null
+}
+
+# md software RAID: one line per array in mdstat (none on a host without md), as check 10. An
+# array missing a disk fails (RaidDegraded sends a message), one still rebuilding warns. It also
+# fails for an array that mdstat lists but this host's node_exporter does not export: its mdadm
+# collector reads the file whole, so one line it cannot parse leaves every array unwatched.
+check_md() {
+  local name="md RAID" arrays addr="" metrics="" exported="" note="" seen detail
+  local dev state level need have map act ro
+  [[ -r ${C[mdstat]} ]] || return 0
+  arrays=$(md_arrays "${C[mdstat]}")
+  [[ -n $arrays ]] || return 0
+  if unit_loaded celestia-mon-node-exporter; then
+    addr=$(flag_value "$(unit_argv celestia-mon-node-exporter)" web.listen-address) || addr=":9100"
+    case ${addr%:*} in "" | 0.0.0.0 | "[::]") addr="127.0.0.1:${addr##*:}" ;; esac
+    if metrics=$(curl -fsS -g --max-time 5 "http://$addr/metrics" 2>/dev/null) && [[ -n $metrics ]]; then
+      exported=$(sed -n 's/^node_md_disks_required{.*device="\([^"]*\)".*/\1/p' <<<"$metrics")
+    else
+      metrics=""
+      note="; node_exporter at $addr did not answer, so its metrics were not compared"
+    fi
+  else
+    note="; this host runs no celestia-mon node_exporter, so RaidDegraded does not watch it"
+  fi
+  while read -r dev state level need have map act ro; do
+    detail=$dev
+    if [[ $level != - ]]; then detail+=" $level"; fi
+    if [[ $need != - ]]; then detail+=" [$need/$have]"; fi
+    if [[ $map != - ]]; then detail+=" $map"; fi
+    if [[ $ro == yes ]]; then detail+=" read-only"; fi
+    if [[ $act != - ]]; then detail+=", $act"; fi
+    seen=""
+    if [[ -n $metrics ]]; then
+      if grep -qxF "$dev" <<<"$exported"; then seen=yes; else seen=no; fi
+    fi
+    if [[ $seen == no ]]; then
+      report FAIL 10 "$name" "$detail, but node_exporter at $addr exports no node_md metrics for $dev, so RaidDegraded cannot see it. Fix: read \"journalctl -u celestia-mon-node-exporter | grep -i mdadm\" for the line it cannot parse"
+    elif [[ $state == inactive ]]; then
+      report INFO 10 "$name" "$detail: inactive (not started), which RaidDegraded does not watch$note. If it is an old disk's leftover that nothing uses, \"mdadm --stop /dev/$dev\" removes it"
+    elif [[ $need == - ]]; then
+      report OK 10 "$name" "$detail: no redundancy, so nothing to degrade$note"
+    elif ((have >= need)); then
+      report OK 10 "$name" "$detail$note"
+    elif [[ $act == recovery=* || $act == reshape=* ]]; then
+      report WARN 10 "$name" "$detail: missing a disk and rebuilding; RaidDegraded keeps firing until the rebuild has finished$note"
+    elif [[ $ro == yes ]]; then
+      report FAIL 10 "$name" "$detail: missing a disk$note. Fix: if it is an old disk's leftover that nothing mounts, stop it (\"mdadm --stop /dev/$dev\") and clear its member (\"mdadm --zero-superblock <partition>\"); if it is in use, \"mdadm --detail /dev/$dev\" shows which disk is missing"
+    else
+      report FAIL 10 "$name" "$detail: missing a disk$note. Fix: \"mdadm --detail /dev/$dev\" shows which disk failed or dropped out; replace it and add the new one (\"mdadm --manage /dev/$dev --add <partition>\")"
+    fi
+  done <<<"$arrays"
 }
 
 # Memory of each celestia-mon unit against its MemoryHigh (above it the kernel
@@ -1921,7 +2019,7 @@ metric_source() {
     otelcol_*) echo otelcol ;;
     prometheus_*) echo prometheus ;;
     alertmanager_*) echo alertmanager ;;
-    celestia_mon_signal_* | celestia_mon_upgrade_* | celestia_mon_app_version | celestia_mon_chain_*) echo signal ;;
+    celestia_mon_signal_* | celestia_mon_upgrade_* | celestia_mon_gov_* | celestia_mon_app_version | celestia_mon_chain_*) echo signal ;;
     probe_*) echo fibre_health ;;
   esac
 }
@@ -1937,8 +2035,8 @@ metric_expected() {
 
 # The event after which a metric first appears, for the metrics that do not exist
 # until it happens (celestia-core privval/metrics.go and consensus/state.go, celestia-app
-# fibre/server_metrics.go, Alertmanager notify/metrics.go, tools/celestia-mon-signal,
-# tools/celestia-mon-tensile, Prometheus's ALERTS); empty for the others.
+# fibre/server_metrics.go, node_exporter's mdadm collector, Alertmanager notify/metrics.go,
+# tools/celestia-mon-signal, tools/celestia-mon-tensile, Prometheus's ALERTS); empty for the others.
 metric_event() {
   case $1 in
     cometbft_privval_signing_failures_total) echo "the first failed signing request" ;;
@@ -1950,8 +2048,11 @@ metric_event() {
     fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
     fibre_server_download_shard_duration_seconds*) echo "the first download" ;;
+    node_md_disks | node_md_disks_required) echo "node_exporter finds an md software RAID array in /proc/mdstat; a host without one, or behind a hardware RAID controller, has none" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
     celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;
+    celestia_mon_gov_voting_start_timestamp_seconds | celestia_mon_gov_voting_end_timestamp_seconds | celestia_mon_gov_validator_voted)
+      echo "a governance proposal in its voting period (x/gov)" ;;
     celestia_mon_fibre_last_assigned_timestamp_seconds) echo "a blob Tensile records for the validator (from a Tensile without last_assigned_at, the first since celestia-mon-tensile started)" ;;
     celestia_mon_fibre_obligations_24h) echo "Tensile's first answer with the validator's obligations" ;;
     ALERTS) echo "the first alert that is pending or firing" ;;
@@ -1964,7 +2065,7 @@ metric_event() {
 # source is up (WARN: most likely a renamed metric). One line per group.
 check_rule_metrics() {
   local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total nmiss=0 src why ev job state pushing=false line
-  local signal_read=false
+  local signal_read=false gov_read=false
   local -a missing=() rules=() notyet=() broken=() notexp=()
   local -A jobs=()
   if ! has_role monitor; then report SKIP 12 "$name" "not the monitor host"; return; fi
@@ -1992,6 +2093,11 @@ check_rule_metrics() {
   if awk -v t="$(prom_value 'max(celestia_mon_signal_last_success_timestamp_seconds)')" 'BEGIN { exit !(t + 0 > 0) }'; then
     signal_read=true
   fi
+  # The same for the governance proposals, which it reads on their own (gov on): until it has, no
+  # proposal can show, open or not.
+  if awk -v t="$(prom_value 'max(celestia_mon_gov_last_success_timestamp_seconds)')" 'BEGIN { exit !(t + 0 > 0) }'; then
+    gov_read=true
+  fi
   while read -r m; do
     nmiss=$((nmiss + 1))
     if ! metric_expected "$m"; then
@@ -2008,6 +2114,8 @@ check_rule_metrics() {
       why="$src target not up: check 11"
     elif [[ $src == signal && $signal_read != true ]]; then
       why="celestia-mon-signal has read no RPC since it started: check 23"
+    elif [[ $m == celestia_mon_gov_* && $gov_read != true ]]; then
+      why="celestia-mon-signal has read no governance proposals since it started: check 23"
     fi
     ev=$(metric_event "$m")
     if [[ -n $why ]]; then
@@ -2326,9 +2434,12 @@ check_fibre_active() {
 
 # The alerts of the rules with severity page (NodePeersLow and DiskLow also have message rules).
 # UpgradeSignalMissing exists only with upgrade signalling on, whose unit the install removes when
-# it is off. MonitorCannotReach's page ("Monitor cannot reach any server", next to its per-host
-# messages) exists only with the monitor on a host of its own; check_silences adds it there, once
-# the roles are known.
+# it is off. ValidatorSigningTwice exists only with a remote signer that is not set to sign through
+# several nodes (signer_multi_node), FibreNotServing's page (reason not_ready, next to its
+# messages) only with Fibre on, MonitorCannotReach's page ("Monitor cannot reach any server", next
+# to its per-host messages) only with the monitor on a host of its own, and GovVoteMissing's page
+# (next to its message) only with gov_page true; check_silences adds them there, once the roles
+# and the settings are known.
 PAGE_ALERTS=(NodeNotAdvancing NodePeersLow ValidatorNotSigning FibreDown DiskLow)
 if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
 
@@ -2396,12 +2507,13 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
 }
 
 # The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown,
-# UpgradeSignalMissing and MonitorCannotReach's page carry only alertname and severity, so each
-# other matcher must match an absent label: a silence of MonitorCannotReach for one host holds
-# back only that host's message. NodePeersLow and DiskLow also carry host and the labels of their
-# metrics (DiskLow's mountpoint among them), whose values are not known here: each counts when the
-# silence names alertname or severity, so a host silence for planned work is listed only when it
-# runs long.
+# ValidatorSigningTwice, UpgradeSignalMissing and MonitorCannotReach's page carry only alertname
+# and severity, so each other matcher must match an absent label: a silence of MonitorCannotReach
+# for one host holds back only that host's message. NodePeersLow, DiskLow and FibreNotServing also
+# carry host and the labels of their metrics (DiskLow's mountpoint among them), and GovVoteMissing
+# its proposal_id, whose values are not known here: each counts when the silence names alertname
+# or severity, so a host silence for planned work is listed only when it runs long.
+# FibreNotServing's reason is known (not_ready pages), so a silence of another reason does not count.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=()
   local a m n o v hit hosted named=false out=""
@@ -2412,7 +2524,7 @@ silence_pages() { # matchers as silences_active prints them -> page alert names,
   done
   for a in "${PAGE_ALERTS[@]}"; do
     hosted=false
-    if [[ $a == NodePeersLow || $a == DiskLow ]]; then hosted=true; fi
+    if [[ $a == NodePeersLow || $a == DiskLow || $a == FibreNotServing || $a == GovVoteMissing ]]; then hosted=true; fi
     if [[ $hosted == true && $named == false ]]; then continue; fi
     hit=true
     for m in "${ms[@]}"; do
@@ -2420,6 +2532,8 @@ silence_pages() { # matchers as silences_active prints them -> page alert names,
       case $n in
         alertname) matcher_admits "$o" "$v" "$a" || hit=false ;;
         severity) matcher_admits "$o" "$v" page || hit=false ;;
+        reason) if [[ $a == FibreNotServing ]]; then matcher_admits "$o" "$v" not_ready || hit=false
+                elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi ;;
         *) [[ $hosted == true ]] || matcher_admits "$o" "$v" "" || hit=false ;;
       esac
     done
@@ -2447,9 +2561,12 @@ check_silences() {
   local name="silences" am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
   local -a held=() other=()
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
+  if [[ ${C[signer]} == remote && ${C[signer_multi_node],,} != true ]]; then PAGE_ALERTS+=(ValidatorSigningTwice); fi
+  if fibre_on; then PAGE_ALERTS+=(FibreNotServing); fi
   # A monitor that runs no celestia-appd or Fibre (as in check 16) can lose every host at once,
   # and its rules have MonitorCannotReach's page for that.
   if ! node_host && ! has_role fibre; then PAGE_ALERTS+=(MonitorCannotReach); fi
+  if [[ ${C[gov_page],,} == true ]]; then PAGE_ALERTS+=(GovVoteMissing); fi
   reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
   code=${reply##*$'\n'}
   reply=${reply%$'\n'*}
@@ -2555,7 +2672,7 @@ check_signal() {
     else
       when="no RPC read for $((($(date +%s) - ${last%%.*}) / 60)) minutes"
     fi
-    report FAIL 23 "$name" "$when${errs:+ (read errors in the last 15 minutes by reason: $errs)}, so a signalling round would not page. Fix: read \"journalctl -u celestia-mon-signal -n 50\" on this host: wrong_network is an RPC that serves another network than celestia_mon_signal.chain_id, behind one whose node is catching up, made no block for 2 minutes or answered an old height, network one this host cannot reach, http one that refused a call, query one that refused an x/signal query or whose store did not hold the height it gave; add a working RPC to celestia_mon_signal.rpc and re-run install.sh on this host"
+    report FAIL 23 "$name" "$when${errs:+ (read errors in the last 15 minutes by reason: $errs)}, so a signalling round would not page. Fix: read \"journalctl -u celestia-mon-signal -n 50\" on this host: wrong_network is an RPC that serves another network than celestia_mon_signal.chain_id, behind one whose node is catching up, made no block for 2 minutes or answered an old height, network one this host cannot reach, http one that refused a call, query one that refused an x/signal query or whose store did not hold the height it gave, gov one that failed the Proposals query of x/gov; add a working RPC to celestia_mon_signal.rpc and re-run install.sh on this host"
     return
   fi
   rpc=$(prom_vector 'celestia_mon_signal_rpc_info{job="signal"}' rpc | cut -d ' ' -f 1 | head -n 1)
@@ -2595,6 +2712,74 @@ check_signal() {
     report WARN 23 "$name" "$line.${warn%.}"
   else
     report OK 23 "$name" "$line"
+  fi
+}
+
+# Governance votes, check 23's second line, on the monitor, from celestia-mon-signal's gov metrics
+# (gov on, the default): the proposals in their voting period as the service read them last, and
+# whether the validator account has voted on each. WARN while one has no vote from it, with when
+# GovVoteMissing comes for it, as the rules have it: the message with less than 2 days left or half
+# the vote, whichever is less, but not on a vote of 2 days or less where it pages; with gov_page the
+# page with less than 1 day left or half the vote; each 10 minutes later (its for). FAIL when
+# x/signal is read but the proposals have not been for 15 minutes. Silent where the first line
+# already reports the service down or unread.
+check_gov() {
+  local name="gov votes" last sig errs voter id v end t n now s e half when
+  local -a ids=() parts=() unvoted=()
+  local -A starts=() ends=() votes=()
+  if ! has_role monitor || ((!PROM_OK)); then return 0; fi
+  if [[ $(prom_value 'max(up{job="signal"})') != 1 ]]; then return 0; fi
+  now=$(date +%s)
+  sig=$(prom_value 'max(celestia_mon_signal_last_success_timestamp_seconds{job="signal"})')
+  if [[ -z $sig ]] || awk -v l="$sig" -v n="$now" 'BEGIN { exit !(n - l > 900) }'; then return 0; fi
+  last=$(prom_value 'max(celestia_mon_gov_last_success_timestamp_seconds{job="signal"})')
+  if [[ -z $last ]]; then
+    report SKIP 23 "$name" "the governance votes are not read (celestia_mon_signal sets gov: false)"
+    return 0
+  fi
+  if awk -v l="$last" -v n="$now" 'BEGIN { exit !(n - l > 900) }'; then
+    errs=$(num "$(prom_value 'sum(increase(celestia_mon_signal_errors_total{job="signal",reason="gov"}[15m]))')")
+    if [[ ${last%%.*} == 0 ]]; then t="no proposals read since the service started"; else t="no proposals read for $(((now - ${last%%.*}) / 60)) minutes"; fi
+    report FAIL 23 "$name" "$t, while x/signal is read$([[ $errs != 0 ]] && printf ' (%s failed reads of them in the last 15 minutes)' "$errs"), so a missing vote on a proposal opened since would not $([[ ${C[gov_page],,} == true ]] && printf page || printf 'be sent'), and a vote cast since would not resolve GovVoteMissing. Fix: read \"journalctl -u celestia-mon-signal -n 50\" on this host: it names each RPC that failed the Proposals query of x/gov and why; add an RPC whose node answers it to celestia_mon_signal.rpc and re-run install.sh on this host"
+    return 0
+  fi
+  voter=$(prom_vector 'celestia_mon_gov_voting_proposals{job="signal"}' voter | cut -d ' ' -f 1 | head -n 1)
+  while read -r id v; do starts[$id]=$v; done < <(prom_vector 'max by (proposal_id) (celestia_mon_gov_voting_start_timestamp_seconds{job="signal"})' proposal_id)
+  while read -r id v; do ends[$id]=$v; done < <(prom_vector 'max by (proposal_id) (celestia_mon_gov_voting_end_timestamp_seconds{job="signal"})' proposal_id)
+  while read -r id v; do votes[$id]=$v; done < <(prom_vector 'max by (proposal_id) (celestia_mon_gov_validator_voted{job="signal"})' proposal_id)
+  mapfile -t ids < <(printf '%s\n' "${!ends[@]}" | grep -E '^[0-9]+$' | sort -n)
+  for id in "${ids[@]}"; do
+    # The title as Prometheus's JSON carries it: & < > as unicode escapes, a quote or backslash
+    # after a backslash.
+    t=$(prom_query "max by (title) (celestia_mon_gov_proposal_info{job=\"signal\",proposal_id=\"$id\"})" |
+      sed -n 's/.*"title":"\(\([^"\\]\|\\.\)*\)".*/\1/p' | head -n 1)
+    t=$(sed 's/\\u0026/\&/g; s/\\u003c/</g; s/\\u003e/>/g; s/\\\(.\)/\1/g' <<<"$t")
+    end=$(date -u -d "@${ends[$id]%%.*}" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)
+    if [[ ${votes[$id]:-0} == 1 ]]; then
+      v="voted"
+    else
+      v="not voted"
+      e=${ends[$id]%%.*}
+      s=${starts[$id]:-0}
+      half=$(((e - ${s%%.*}) / 2))
+      when=""
+      if [[ ${C[gov_page],,} != true ]] || ((half > 86400)); then
+        when="the message from $(date -u -d "@$((e - (half < 172800 ? half : 172800) + 600))" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"
+      fi
+      if [[ ${C[gov_page],,} == true ]]; then
+        when+="${when:+, }the page from $(date -u -d "@$((e - (half < 86400 ? half : 86400) + 600))" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)"
+      fi
+      unvoted+=("$id (GovVoteMissing: $when)")
+    fi
+    parts+=("proposal $id${t:+ ($t)} ends ${end:-at an unknown time}, $v")
+  done
+  n=${#ids[@]}
+  t="read $((now - ${last%%.*}))s ago for ${voter:-the validator account}: "
+  if ((n == 0)); then t+="no proposal is in its voting period"; else t+="$(join "${parts[@]}")"; fi
+  if ((${#unvoted[@]} > 0)); then
+    report WARN 23 "$name" "$t. The validator account has not voted on proposal $(join "${unvoted[@]}"). Fix: vote from the validator account, abstain if you have no view: celestia-appd tx gov vote <proposal> yes|no|no_with_veto|abstain --from <validator account key>; a vote sent through an authz grant from that account counts, one from any other account does not (docs/alerts.md, GovVoteMissing)"
+  else
+    report OK 23 "$name" "$t"
   fi
 }
 
@@ -2773,6 +2958,7 @@ check_fibre_otel
 check_binds
 check_time
 check_disks
+check_md
 check_stack
 check_rule_metrics
 check_fibre_pipeline
@@ -2786,6 +2972,7 @@ check_signer_binds
 check_silences
 check_deadman
 check_signal
+check_gov
 check_fibre_ready
 check_node_ports
 check_service_users

@@ -1,5 +1,6 @@
 # The upgrade alerts on the example-mainnet inventory rendered with celestia_mon_signal (CI passes
-# it): celestia-mon-signal on mon-1 serves x/signal as read through an RPC. The numbers are
+# it): celestia-mon-signal on mon-1 serves x/signal as read through an RPC. gov is on there (the
+# default), so SignalUnreadable names the votes too (gov.test.yml). The numbers are
 # mainnet's: the v10 round of October 2026, with 396393243 of 463776854 voting power signalled
 # (85.47%) and the upgrade at height 15116658, 2.87 s per block.
 rule_files:
@@ -289,10 +290,12 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: The upgrade signal is not being read on mon-1
+              summary: The upgrade signal and votes are not being read on mon-1
               description: >-
-                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
-                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance
+                proposals, or it is down, so a new signalling round would not page, a new proposal would not be
+                seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
+                reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
                 journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
               runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
 
@@ -352,10 +355,12 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: The upgrade signal is not being read on mon-1
+              summary: The upgrade signal and votes are not being read on mon-1
               description: >-
-                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
-                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance
+                proposals, or it is down, so a new signalling round would not page, a new proposal would not be
+                seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
+                reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
                 journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
               runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
 
@@ -390,10 +395,12 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: The upgrade signal is not being read on mon-1
+              summary: The upgrade signal and votes are not being read on mon-1
               description: >-
-                For 15 minutes celestia-mon-signal has read none of its RPCs, or it is down, so a new
-                signalling round would not page, and the upgrade alerts keep their last reading. Run
+                For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance
+                proposals, or it is down, so a new signalling round would not page, a new proposal would not be
+                seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
+                reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
                 journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
               runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
       - eval_time: 40m
