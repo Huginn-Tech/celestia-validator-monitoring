@@ -1431,21 +1431,11 @@ jobs:
           EOF
           docker run -d --name prometheus --network host -v "$PWD/build/stub:/stub:ro" "prom/prometheus:v$PROMETHEUS_VERSION" \
             --config.file=/stub/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090
-      # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
-      # job, and a validator name, so every optional panel and query is generated and checked.
+      # The settings of every scenario (single, split, mainnet, mocha, five, nogov, nopage, table; see the
+      # script), the same the dashboard-report job compares with the base branch.
       - name: Render the dashboard settings for the example inventories
         id: render
-        run: |
-          for s in single split mainnet; do
-            extra=()
-            if [ "$s" = mainnet ]; then
-              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
-                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"},
-                          "celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"},
-                          "celestia_mon_validator_name": "CI validator"}')
-            fi
-            ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
-          done
+        run: bash tools/ci/dashboard_configs.sh build
       - name: Generate the dashboards
         id: generate
         run: |
@@ -1455,25 +1445,9 @@ jobs:
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
-          # mainnet without upgrade signalling has four answers, which the Servers and Monitoring tiles make six.
-          mkdir -p build/five
-          jq '.signal_enabled = false' build/mainnet/dashboard-config.json > build/five/dashboard-config.json
-          python monitoring/dashboards/gen_dashboard.py --config build/five/dashboard-config.json --out build/five/dashboard.json
-          # mainnet with gov: false (the Network upgrade tile, no vote words), and with the vote check but no
-          # page (as on Mocha: Vote missing never red); check_surfaces and check_words run in each.
-          for v in nogov nopage; do
-            mkdir -p "build/$v"
-            jq "if \"$v\" == \"nogov\" then .gov_enabled = false | .gov_page = false else .gov_page = false end" \
-              build/mainnet/dashboard-config.json > "build/$v/dashboard-config.json"
-            python monitoring/dashboards/gen_dashboard.py --config "build/$v/dashboard-config.json" --out "build/$v/dashboard.json"
+          for s in five nogov nopage table; do
+            python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
           done
-          # split with a backup node: five servers, so the Servers now table (26) instead of the cards, and three
-          # answers, so no Monitoring tile; check_surfaces must still find every alert.
-          mkdir -p build/table
-          jq '.nodes += ["val-2"] | .links += [{"host": "val-2", "mbps": null}]
-              | .data_mounts += [{"host": "val-2", "mount": "/var/lib/celestia"}]' \
-            build/split/dashboard-config.json > build/table/dashboard-config.json
-          python monitoring/dashboards/gen_dashboard.py --config build/table/dashboard-config.json --out build/table/dashboard.json
           jq -e '([.panels[] | select(.id == 26)] | length) == 1 and ([.panels[] | select(.id >= 30 and .id < 38)] | length) == 0
                  and ([.panels[] | select(.id == 18)] | length) == 0' build/table/dashboard.json
       # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
@@ -3307,6 +3281,38 @@ jobs:
           job: ${{ github.job }}
           steps: ${{ toJSON(steps) }}
 
+  # On a pull request, the dashboard of every scenario of the dashboard job made by the base branch's
+  # generator and by this branch's, from the same settings, and the values that differ in the job
+  # summary. It reports only: it fails when this branch cannot render or generate, not on a difference.
+  dashboard-report:
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: ./.github/actions/setup
+        with:
+          ansible: "true"
+      # The base generator reads the rules template and holds.json next to it, so it runs from its own checkout.
+      - name: The dashboards against the base branch
+        id: diff
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+          git worktree add "$RUNNER_TEMP/base" FETCH_HEAD
+          bash tools/ci/dashboard_configs.sh build
+          for s in single split mainnet five nogov nopage table mocha; do
+            python "$RUNNER_TEMP/base/monitoring/dashboards/gen_dashboard.py" --config "build/$s/dashboard-config.json" \
+              --out "build/$s/base.json" 2> "build/$s/base.err" || rm -f "build/$s/base.json"
+            python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
+          done
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
+
   # Every check of tools/ci/inventory.txt, a step of this workflow with an id, ran and passed in this
   # run: each job uploads the ids of its steps that passed (.github/actions/marks). The job summary
   # also lists what the base revision (the first parent: on a pull request, its base branch) has and
@@ -3332,6 +3338,7 @@ jobs:
       - doctor-readiness
       - install
       - molecule
+      - dashboard-report
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

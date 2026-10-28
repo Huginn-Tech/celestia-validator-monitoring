@@ -36,7 +36,7 @@ rules/routing                    | ci.yml                                       
 announcements/run                | ci.yml                                       | celestia-mon-announcements reads, posts once and reports errors
 tensile/run                      | ci.yml                                       | celestia-mon-tensile serves Tensile's verdict as metrics
 signal/run                       | ci.yml                                       | celestia-mon-signal serves x/signal as metrics
-dashboard/render                 | ci.yml                                       | Render the dashboard settings for the example inventories
+dashboard/render                 | tools/ci/dashboard_configs.sh                | Render the dashboard settings for the example inventories
 dashboard/generate               | ci.yml                                       | Generate the dashboards
 dashboard/panels-switches        | ci.yml                                       | Panels match the switches
 dashboard/missed-blocks          | ci.yml                                       | Missed blocks read the SignaturesMissed rule
@@ -77,3 +77,4 @@ install/purge-again              | ci.yml                                       
 molecule/test                    | ci.yml                                       | molecule test
 lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
+dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
