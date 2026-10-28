@@ -3707,7 +3707,8 @@ def readiness_band(s, axis):
     height = grid_rows(LANE_PX + PLOT_INSET, CHROME_UNTITLED)
 
     def spacer(i):
-        """History's empty lane (spacer_lane), kept off the plot and the tooltip below."""
+        """History's empty lane (spacer_lane), kept off the tooltip below. Grafana 12.4 stops with "An
+        unexpected error happened" on a timeline lane hidden from the plot, so it stays drawn, transparent."""
         ref, name, bars, up, words = spacer_lane()
         return ref + str(i), name * i, bars, up, words
     # Grafana 12.4 draws a timeline of one lane across its whole plot and ignores its rowHeight, which
@@ -3720,7 +3721,7 @@ def readiness_band(s, axis):
     for p in (band, share):
         p["options"]["rowHeight"] = round(BAR_PX * len(lanes) / float(plot), 2)
         p["fieldConfig"]["overrides"] += [override("byFrameRefID", lanes[i][0], custom__hideFrom=dict(
-            legend=True, tooltip=True, viz=True)) for i in (0, 2)]
+            legend=True, tooltip=True, viz=False)) for i in (0, 2)]
     return height, band, share
 
 
