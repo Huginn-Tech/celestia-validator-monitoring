@@ -1,0 +1,54 @@
+name: upstream
+
+# Checks monitoring/upstream.yml against Celestia's source. It clones celestia-app at the pin in
+# versions.yml (celestia_app), and celestia-core and the Cosmos SDK fork at the releases
+# upstream.yml names; tools/ci/check_upstream.py --online then fails on each expression that no
+# longer matches in its file, on a celestia-app go.mod that names other releases, and on a link
+# to a file, directory or heading that does not exist at its release, besides the offline checks
+# of the lint job. The job summary lists the counts and each problem. Runs when the pin, the
+# table, the check or this workflow changes, once a month (which also covers links added to the
+# docs since), and by hand.
+on:
+  push:
+    branches: [main]
+    paths:
+      - versions.yml
+      - monitoring/upstream.yml
+      - tools/ci/check_upstream.py
+      - .github/workflows/upstream.yml
+  pull_request:
+    paths:
+      - versions.yml
+      - monitoring/upstream.yml
+      - tools/ci/check_upstream.py
+      - .github/workflows/upstream.yml
+  schedule:
+    - cron: "29 6 15 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  upstream:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+      - name: Install PyYAML
+        run: pip install pyyaml
+      - name: Read the pinned releases
+        run: python tools/ci/check_upstream.py --env >> "$GITHUB_ENV"
+      - name: Clone celestia-app, celestia-core and the Cosmos SDK fork at those releases
+        run: |
+          clone() {
+            git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$2" "https://github.com/celestiaorg/$1" "$RUNNER_TEMP/$1"
+          }
+          clone celestia-app "$CELESTIA_APP"
+          clone celestia-core "$CELESTIA_CORE"
+          clone cosmos-sdk "$COSMOS_SDK"
+      - name: Every name in monitoring/upstream.yml and every upstream link holds at those releases
+        run: python tools/ci/check_upstream.py --online "$RUNNER_TEMP/celestia-app" "$RUNNER_TEMP/celestia-core" "$RUNNER_TEMP/cosmos-sdk"
