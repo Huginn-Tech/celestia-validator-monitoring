@@ -862,6 +862,12 @@ def signing_nodes(s, window="[2m]"):
     return "(max by (host) (changes(%s%s)) > 0)" % (LSH, window)
 
 
+def fibre_via(s, window):
+    """The node Fibre's signatures (raw bytes) went through in the window, such as 15m, as its place in
+    s.nodes."""
+    return "max(%s and on (host) (sum by (host) (increase(%s[%s])) > 0))" % (lookup(s.nodes), RAW, window)
+
+
 def newer(s):
     """A node that began signing in the last 2 minutes (a tmkms repoint)."""
     return "(%s unless on (host) %s)" % (signing_nodes(s), signing_nodes(s, "[2m] offset 2m"))
@@ -2274,9 +2280,7 @@ def role_lanes(s):
                (-5, "Not seen", WARN)] + no_data))
     if s.fibre and s.remote:
         # The node Fibre sends its signing requests to: raw bytes in the last 15 minutes, else the last hour.
-        raw = ["max(%s and on (host) (sum by (host) (increase(%s[%s])) > 0))" % (lookup(s.nodes), RAW, w)
-               for w in ("15m", "1h")]
-        fsv = "(%s or %s)" % tuple(raw)
+        fsv = "(%s or %s)" % (fibre_via(s, "15m"), fibre_via(s, "1h"))
         # Amber only while a node signs for the validator and Fibre's node is another: while no node
         # signs (tmkms down), that is the signer's outage, not Fibre's setup.
         lanes.append(("C", "Fibre signs through", gated(chain(
@@ -2756,14 +2760,11 @@ def fibre_signer(s):
     last 15 minutes, else the last hour, else the last day, for a quiet network. 100 more (amber) while
     the last hour's node is not the one the validator signs through. -1: none in a day."""
     sig = signing_nodes(s)
-
-    def via(window):
-        return "max(%s and on (host) (sum by (host) (increase(%s[%s])) > 0))" % (lookup(s.nodes), RAW, window)
-    recent = "(%s or %s)" % (via("15m"), via("1h"))
+    recent = "(%s or %s)" % (fibre_via(s, "15m"), fibre_via(s, "1h"))
     return chain(
         "((%s + 100 unless on () (%s == on () max(%s and on (host) %s))) unless on () absent(%s))"
         % (recent, recent, lookup(s.nodes), sig, sig),
-        recent, via("24h"), "vector(-1)")
+        recent, fibre_via(s, "24h"), "vector(-1)")
 
 
 def fibre_signer_words(s):
