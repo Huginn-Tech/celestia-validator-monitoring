@@ -21,18 +21,18 @@ collectors/resource-caps         | ci.yml                                       
 collectors/doctor-private-binds  | ci.yml                                       | doctor finds celestia-mon's units on private addresses
 collectors/port-taken            | ci.yml                                       | The playbook stops when another process holds a celestia-mon port
 rules/render                     | ci.yml                                       | Render the example inventories
-rules/holds                      | ci.yml                                       | The hold times the dashboard prints match the rules
+rules/holds                      | tools/ci/check_render.py holds               | The hold times the dashboard prints match the rules
 rules/promtool-check             | ci.yml                                       | promtool check rules
 rules/promtool-test              | ci.yml                                       | promtool test rules
-rules/vote-rules                 | ci.yml                                       | The vote rules on another network, and with gov off
+rules/vote-rules                 | ci.yml, tools/ci/check_render.py votes       | The vote rules on another network, and with gov off
 rules/promtool-config            | ci.yml                                       | promtool check config
 rules/amtool-config              | ci.yml                                       | amtool check-config
-rules/telegram-discord-text      | ci.yml                                       | Telegram and Discord messages read as text
-rules/instance-limits            | ci.yml                                       | Alerts leave Prometheus without instance, and every scrape job has its limits
-rules/mainnet-targets            | ci.yml                                       | The mainnet scrape targets follow the inventory groups
-rules/own-ports                  | ci.yml                                       | A host's own ports never become another host's
-rules/slack-pagerduty-text       | ci.yml                                       | Slack and PagerDuty messages read as text
-rules/routing                    | ci.yml                                       | amtool accepts every receiver type, and routing follows the type
+rules/telegram-discord-text      | tools/ci/check_messages.py, fixtures/        | Telegram and Discord messages read as text
+rules/instance-limits            | ci.yml, tools/ci/check_render.py limits      | Alerts leave Prometheus without instance, and every scrape job has its limits
+rules/mainnet-targets            | tools/ci/check_render.py targets             | The mainnet scrape targets follow the inventory groups
+rules/own-ports                  | ci.yml, tools/ci/check_render.py ports       | A host's own ports never become another host's
+rules/slack-pagerduty-text       | tools/ci/check_render.py, check_messages.py  | Slack and PagerDuty messages read as text
+rules/routing                    | ci.yml, tools/ci/check_render.py routing     | amtool accepts every receiver type, and routing follows the type
 announcements/run                | tools/ci/announcements.sh                    | celestia-mon-announcements reads, posts once and reports errors
 tensile/run                      | tools/ci/tensile.sh                          | celestia-mon-tensile serves Tensile's verdict as metrics
 signal/run                       | tools/ci/signal.sh                           | celestia-mon-signal serves x/signal as metrics

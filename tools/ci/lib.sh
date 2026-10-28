@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2317,SC2329
-# The helpers of the CI scripts that run doctor (tools/ci/doctor/*.sh), sourced from the repo root:
+# The helpers of the CI scripts that run doctor (tools/ci/doctor/*.sh) and of the rules job, sourced
+# from the repo root:
 #   . tools/ci/lib.sh
 # It sets no shell option: each script keeps those of the step it came from.
 

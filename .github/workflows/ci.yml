@@ -303,18 +303,16 @@ jobs:
         with:
           ansible: "true"
       # The mainnet example also reads one announcement channel, has the outside check of its
-      # Fibre endpoint and reads upgrade signalling, so its rules and scrape jobs include
-      # AnnouncementsUnreadable, FibreDown's outside branches, TensileUnreadable, the upgrade alerts
-      # and the announcements, tensile and signal jobs.
+      # Fibre endpoint and reads upgrade signalling (tools/ci/mainnet-extras.yml, as in the dashboard
+      # job), so its rules and scrape jobs include AnnouncementsUnreadable, FibreDown's outside
+      # branches, TensileUnreadable, the upgrade alerts and the announcements, tensile and signal jobs.
       - name: Render the example inventories
         id: render
         run: |
           for s in single split mainnet; do
             extra=()
             if [ "$s" = mainnet ]; then
-              extra=(-e '{"celestia_mon_announcements": [{"channel_id": "111111111111111111", "severity": "page"}],
-                          "celestia_mon_tensile": {"api": "https://tensile.example.org/api/v1", "validator": "celestiavalcons1ci"},
-                          "celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"}}')
+              extra=(-e @tools/ci/mainnet-extras.yml)
             fi
             ansible-playbook -i "ansible/inventory/example-$s" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
@@ -322,50 +320,15 @@ jobs:
       # (gen_dashboard.py reads them); each must be the for: of every rule it names.
       - name: The hold times the dashboard prints match the rules
         id: holds
-        run: |
-          python - monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml <<'EOF'
-          import json
-          import re
-          import sys
-
-          import yaml
-
-
-          def seconds(text):
-              return sum(int(n) * {"h": 3600, "m": 60, "s": 1}[u] for n, u in re.findall(r"(\d+)([hms])", text))
-
-
-          holds = json.load(open(sys.argv[1]))["holds"]
-          rules = [r for path in sys.argv[2:] for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if "alert" in r]
-          failed = False
-          for name, h in sorted(holds.items()):
-              found = [r for r in rules if r["alert"] == h["alert"] and h.get("expr", "") in r["expr"]
-                       and all(re.fullmatch(v, str(r.get("labels", {}).get(k, ""))) for k, v in h.get("labels", {}).items())]
-              wrong = sorted({str(r.get("for", "0s")) for r in found if seconds(str(r.get("for", "0s"))) != seconds(h["for"])})
-              if not found:
-                  failed = True
-                  print("%s: the dashboard prints %s, but no rule matches" % (name, h["for"]))
-              elif wrong:
-                  failed = True
-                  print("%s: the dashboard prints %s, but the rules hold for %s" % (name, h["for"], ", ".join(wrong)))
-              else:
-                  print("%s: %s in %d rules" % (name, h["for"], len(found)))
-          sys.exit(1 if failed else 0)
-          EOF
+        run: python tools/ci/check_render.py holds monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
-          prom="prometheus-$PROMETHEUS_VERSION.linux-amd64"
-          am="alertmanager-$ALERTMANAGER_VERSION.linux-amd64"
+          . tools/ci/lib.sh
           mkdir -p "$RUNNER_TEMP/celestia-mon-bin"
-          cd "$RUNNER_TEMP"
-          base="https://github.com/prometheus"
-          curl -fsSLO "$base/prometheus/releases/download/v$PROMETHEUS_VERSION/$prom.tar.gz"
-          echo "$PROMETHEUS_SHA256  $prom.tar.gz" | sha256sum -c -
-          curl -fsSLO "$base/alertmanager/releases/download/v$ALERTMANAGER_VERSION/$am.tar.gz"
-          echo "$ALERTMANAGER_SHA256  $am.tar.gz" | sha256sum -c -
-          tar -xzf "$prom.tar.gz" -C celestia-mon-bin --strip-components=1 "$prom/promtool"
-          tar -xzf "$am.tar.gz" -C celestia-mon-bin --strip-components=1 "$am/amtool"
+          cd "$RUNNER_TEMP/celestia-mon-bin"
+          fetch_release prometheus "$PROMETHEUS_VERSION" "$PROMETHEUS_SHA256" promtool
+          fetch_release alertmanager "$ALERTMANAGER_VERSION" "$ALERTMANAGER_SHA256" amtool
           echo "$RUNNER_TEMP/celestia-mon-bin" >> "$GITHUB_PATH"
       - name: promtool check rules
         id: promtool-check
@@ -404,27 +367,7 @@ jobs:
           promtool test rules monitoring/rules/tests/mocha/*.test.yml
           jq -e '.signal_enabled and .gov_enabled and (.gov_page | not)' build/mocha/dashboard-config.json
           jq -e '.signal_enabled and (.gov_enabled | not) and (.gov_page | not)' build/nogov/dashboard-config.json
-          python - build/mocha/rules/celestia-mon.rules.yml build/nogov/rules/celestia-mon.rules.yml <<'EOF'
-          import sys
-
-          import yaml
-
-
-          def rules(path, name):
-              return [r for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if r.get("alert") == name]
-
-
-          gov = rules(sys.argv[1], "GovVoteMissing")
-          assert [r["labels"]["severity"] for r in gov] == ["message"], gov
-          assert "ALERTS" not in gov[0]["expr"] and "It pages" not in gov[0]["annotations"]["description"], gov
-          unread = rules(sys.argv[1], "SignalUnreadable")
-          assert len(unread) == 1 and "celestia_mon_gov_last_success_timestamp_seconds" in unread[0]["expr"], unread
-          assert rules(sys.argv[2], "GovVoteMissing") == []
-          unread = rules(sys.argv[2], "SignalUnreadable")
-          assert len(unread) == 1 and "_gov_" not in unread[0]["expr"], unread
-          assert unread[0]["annotations"]["summary"] == "The upgrade signal is not being read on mon-1", unread
-          print("mocha: GovVoteMissing, message only; nogov: no GovVoteMissing, SignalUnreadable about x/signal only")
-          EOF
+          python tools/ci/check_render.py votes build/mocha/rules/celestia-mon.rules.yml build/nogov/rules/celestia-mon.rules.yml
       - name: promtool check config
         id: promtool-config
         run: |
@@ -439,57 +382,10 @@ jobs:
           done
       # Telegram (parse mode HTML) and Discord get celestia-mon's text: an announcement as its own
       # text under the channel it came from, an alert as one line with its summary and description;
-      # never the list of labels, never the link.
+      # never the list of labels, never the link (the texts: tools/ci/fixtures/messages.yml).
       - name: Telegram and Discord messages read as text
         id: telegram-discord-text
-        run: |
-          set -euo pipefail
-          t=monitoring/alertmanager-templates.tmpl
-          render() { amtool template render --template.glob="$t" --template.data="$1" --template.type="$2" --template.text="$3"; }
-          cat >"$RUNNER_TEMP/announcement.json" <<'EOF'
-          {"receiver": "announcement-page", "status": "firing", "alerts": [{"status": "firing",
-            "labels": {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
-                       "source": "Celestia #mainnet-announcements", "announcement": "1"},
-            "annotations": {"summary": "Celestia announcement from Celestia #mainnet-announcements",
-                            "description": "Mainnet upgrades at height 100 <b>&", "link": "https://discord.com/channels/1/2/3"}}],
-           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
-          EOF
-          out=$(render "$RUNNER_TEMP/announcement.json" html '{{ template "celestia.telegram.message" . }}')
-          printf '%s\n---\n' "$out"
-          test "$out" = "$(printf '📣 <b>Celestia #mainnet-announcements</b>\n\nMainnet upgrades at height 100 &lt;b&gt;&amp;')"
-          test "$(render "$RUNNER_TEMP/announcement.json" text '{{ template "celestia.discord.title" . }}')" = "📣 Celestia #mainnet-announcements"
-          test "$(render "$RUNNER_TEMP/announcement.json" text '{{ template "celestia.discord.message" . }}')" = "Mainnet upgrades at height 100 <b>&"
-          cat >"$RUNNER_TEMP/alerts.json" <<'EOF'
-          {"receiver": "page", "status": "firing", "alerts": [
-            {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
-             "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free."}},
-            {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
-             "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
-           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
-          EOF
-          out=$(render "$RUNNER_TEMP/alerts.json" html '{{ template "celestia.telegram.message" . }}')
-          printf '%s\n---\n' "$out"
-          want='🔴 PAGE · <b>DiskLow</b> · val-1\nDisk / on val-1 is almost full\nLess than 5%% free.\n\n'
-          want+='✅ RESOLVED · <b>DiskLow</b> · val-1\nDisk /data on val-1 is almost full'
-          test "$out" = "$(printf "$want")"
-          test "$(render "$RUNNER_TEMP/alerts.json" text '{{ template "celestia.discord.title" . }}')" = "🔴 PAGE · DiskLow · val-1"
-          out=$(render "$RUNNER_TEMP/alerts.json" text '{{ template "celestia.discord.message" . }}')
-          printf '%s\n' "$out"
-          grep -qx '\*\*Disk / on val-1 is almost full\*\*' <<<"$out"
-          grep -qx '✅ RESOLVED · DiskLow · val-1' <<<"$out"
-          # An alert that names no host, as the upgrade alerts: nothing after its name.
-          cat >"$RUNNER_TEMP/upgrade.json" <<'EOF'
-          {"receiver": "message", "status": "resolved", "alerts": [{"status": "resolved",
-            "labels": {"alertname": "UpgradeScheduled", "severity": "message"},
-            "annotations": {"summary": "Network upgrade to v11 scheduled",
-                            "description": "This alert resolves when the chain has switched to v11."}}],
-           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
-          EOF
-          out=$(render "$RUNNER_TEMP/upgrade.json" html '{{ template "celestia.telegram.message" . }}')
-          printf '%s\n---\n' "$out"
-          want='✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\nThis alert resolves when the chain has switched to v11.'
-          test "$out" = "$(printf "$want")"
-          test "$(render "$RUNNER_TEMP/upgrade.json" text '{{ template "celestia.discord.title" . }}')" = "✅ RESOLVED · UpgradeScheduled"
+        run: python tools/ci/check_messages.py telegram-discord
       # Alerts leave Prometheus without instance (a target's address), which nothing in Alertmanager
       # reads: no rule label, inhibition or template names it. Every scrape job caps its samples and
       # labels (a scrape over a cap fails, so the caps sit far above what the jobs send; the install
@@ -499,18 +395,7 @@ jobs:
         run: |
           set -euo pipefail
           for s in single split mainnet; do
-            python - "build/$s/prometheus.yml" <<'EOF'
-          import sys
-          import yaml
-          config = yaml.safe_load(open(sys.argv[1]))
-          assert config["alerting"]["alert_relabel_configs"] == [{"action": "labeldrop", "regex": "instance"}], config["alerting"]
-          want = {"prometheus": 20000, "alertmanager": 10000, "celestia-app": 100000, "node": 50000, "otelcol": 20000,
-                  "fibre_health": 1000, "tensile": 1000, "signal": 1000, "announcements": 1000}
-          for job in config["scrape_configs"]:
-              name = job["job_name"]
-              assert (job.get("sample_limit"), job.get("label_limit")) == (want[name], 128), job
-          print(sys.argv[1], sorted(j["job_name"] for j in config["scrape_configs"]))
-          EOF
+            python tools/ci/check_render.py limits "build/$s/prometheus.yml"
           done
           # A label reference: $labels.instance, .Labels.instance, a matcher, or a by, on, without or equal list.
           use='(\$labels|\.Labels)\.instance|\binstance *(=|!=|=~|!~)|\b(by|on|ignoring|without|group_left|group_right|equal:) *[([][^])]*\binstance\b'
@@ -523,40 +408,10 @@ jobs:
       # service, in the node job (role monitor).
       - name: The mainnet scrape targets follow the inventory groups
         id: mainnet-targets
-        run: |
-          set -euo pipefail
-          python - build/mainnet/prometheus.yml <<'EOF'
-          import sys
-          import yaml
-          jobs = {j["job_name"]: j for j in yaml.safe_load(open(sys.argv[1]))["scrape_configs"]}
-          def hosts(job):
-              return sorted((c["labels"]["host"], c["labels"]["role"]) for c in jobs[job]["static_configs"])
-          assert hosts("celestia-app") == [("fibre-1", "backup_node"), ("val-1", "validator")], hosts("celestia-app")
-          assert hosts("node") == [("fibre-1", "fibre"), ("mon-1", "monitor"), ("val-1", "validator")], hosts("node")
-          assert [c["targets"] for c in jobs["node"]["static_configs"] if c["labels"]["host"] == "mon-1"] == [["10.20.0.3:9910"]], jobs["node"]
-          assert hosts("otelcol") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("otelcol")
-          assert hosts("announcements") == [("mon-1", "monitor")], hosts("announcements")
-          assert hosts("tensile") == [("mon-1", "monitor")], hosts("tensile")
-          assert hosts("signal") == [("mon-1", "monitor")], hosts("signal")
-          assert [c["targets"] for c in jobs["signal"]["static_configs"]] == [["127.0.0.1:9918"]], jobs["signal"]
-          # Fibre's readiness: every Fibre host's own port, asked through celestia-mon-blackbox on the monitor.
-          fh = jobs["fibre_health"]
-          assert hosts("fibre_health") == [("fibre-1", "fibre"), ("val-1", "fibre")], hosts("fibre_health")
-          assert sorted(c["targets"] for c in fh["static_configs"]) == [["10.20.0.1:7980"], ["10.20.0.2:7980"]], fh
-          assert fh["metrics_path"] == "/probe" and fh["params"] == {"module": ["fibre_health"]}, fh
-          # blackbox takes only requests with the API password, as Prometheus and Alertmanager do.
-          assert fh["basic_auth"] == jobs["prometheus"]["basic_auth"] == jobs["alertmanager"]["basic_auth"], fh
-          assert fh["basic_auth"]["username"] == "celestia-mon" and "password_file" in fh["basic_auth"], fh
-          assert fh["relabel_configs"] == [
-              {"source_labels": ["__address__"], "target_label": "__param_target"},
-              {"source_labels": ["__param_target"], "target_label": "instance"},
-              {"target_label": "__address__", "replacement": "127.0.0.1:9919"},
-          ], fh["relabel_configs"]
-          print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal", "fibre_health")})
-          EOF
+        run: python tools/ci/check_render.py targets build/mainnet/prometheus.yml
       # A port set on one host is that host's only: here the monitor sets its own node metrics and
       # Fibre ports, and fibre-1 another node metrics port; val-1, which sets none, keeps the defaults.
-      # This renders a copy of the mainnet example, and puts the mainnet build back afterwards.
+      # This renders a copy of the mainnet example into build/ports.
       - name: A host's own ports never become another host's
         id: own-ports
         run: |
@@ -565,112 +420,41 @@ jobs:
           cp -r ansible/inventory/example-mainnet "$inv"
           printf '%s\n' 'celestia_mon_node_metrics_port: 13060' 'celestia_mon_fibre_port: 7990' >"$inv/host_vars/mon-1/ports.yml"
           printf '%s\n' 'celestia_mon_node_metrics_port: 26670' >"$inv/host_vars/fibre-1.yml"
-          cp -r build/mainnet "$RUNNER_TEMP/mainnet-build"
-          cp monitoring/rules/tests/mainnet/celestia-mon.rules.yml "$RUNNER_TEMP/mainnet-rules.yml"
-          ansible-playbook -i "$inv" tools/ci/render.yml -e celestia_mon_ci_scenario=mainnet
-          python - build/mainnet/prometheus.yml <<'EOF'
-          import sys
-          import yaml
-          jobs = {j["job_name"]: j for j in yaml.safe_load(open(sys.argv[1]))["scrape_configs"]}
-          def targets(job):
-              return sorted((c["labels"]["host"], c["targets"][0]) for c in jobs[job]["static_configs"])
-          assert targets("celestia-app") == [("fibre-1", "10.20.0.2:26670"), ("val-1", "10.20.0.1:26660")], targets("celestia-app")
-          assert targets("fibre_health") == [("fibre-1", "10.20.0.2:7980"), ("val-1", "10.20.0.1:7980")], targets("fibre_health")
-          print(targets("celestia-app"), targets("fibre_health"))
-          EOF
-          rm -rf build/mainnet
-          cp -r "$RUNNER_TEMP/mainnet-build" build/mainnet
-          cp "$RUNNER_TEMP/mainnet-rules.yml" monitoring/rules/tests/mainnet/celestia-mon.rules.yml
+          ansible-playbook -i "$inv" tools/ci/render.yml -e celestia_mon_ci_scenario=mainnet \
+            -e "celestia_mon_ci_build=$PWD/build/ports" -e "celestia_mon_ci_tests=$PWD/build/ports/tests"
+          python tools/ci/check_render.py ports build/ports/prometheus.yml
       # Slack and PagerDuty get celestia-mon's text too, never Alertmanager's list of labels or its
       # links: Slack's title, text and fallback, with &, < and > escaped (Slack reads them as markup),
       # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
-      # details. This renders the split example with both (the next step renders it again).
+      # details. This renders the split example with both into build/split-text.
       - name: Slack and PagerDuty messages read as text
         id: slack-pagerduty-text
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/receivers-text.yml" <<'EOF'
-          celestia_mon_receivers:
-            - {type: pagerduty, routing_key: ci-only}
-            - {type: slack, api_url: "https://slack.example.invalid/one"}
-          EOF
           ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
-            -e @"$RUNNER_TEMP/receivers-text.yml"
-          amtool check-config build/split/alertmanager.yml
-          python - build/split/alertmanager.yml <<'EOF'
-          import sys
-          import yaml
-          receivers = {r["name"]: r for r in yaml.safe_load(open(sys.argv[1]))["receivers"]}
-          pd = receivers["page"]["pagerduty_configs"][0]
-          assert pd["description"] == '{{ template "celestia.pagerduty.description" . }}', pd
-          assert pd["details"] == {"firing": '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}',
-                                   "resolved": '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}'}, pd
-          for name in ("page", "message", "announcement-page", "announcement-message"):
-              slack = receivers[name]["slack_configs"][0]
-              assert slack["title"] == slack["fallback"] == '{{ template "celestia.slack.title" . }}', slack
-              assert slack["text"] == '{{ template "celestia.slack.text" . }}' and slack["title_link"] == "", slack
-          EOF
-          t=monitoring/alertmanager-templates.tmpl
-          render() { amtool template render --template.glob="$t" --template.data="$1" --template.type=text --template.text="$2"; }
-          cat >"$RUNNER_TEMP/text-announcement.json" <<'EOF'
-          {"receiver": "announcement-page", "status": "firing", "alerts": [{"status": "firing",
-            "labels": {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
-                       "source": "Celestia #mainnet-announcements", "announcement": "1"},
-            "annotations": {"summary": "Celestia announcement from Celestia #mainnet-announcements",
-                            "description": "Mainnet upgrades at height 100 <b>&", "link": "https://discord.com/channels/1/2/3"}}],
-           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
-          EOF
-          a="$RUNNER_TEMP/text-announcement.json"
-          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "📣 Celestia #mainnet-announcements"
-          test "$(render "$a" '{{ template "celestia.slack.text" . }}')" = "Mainnet upgrades at height 100 &lt;b&gt;&amp;"
-          test "$(render "$a" '{{ template "celestia.pagerduty.description" . }}')" = "Celestia announcement from Celestia #mainnet-announcements"
-          cat >"$RUNNER_TEMP/text-alerts.json" <<'EOF'
-          {"receiver": "page", "status": "firing", "alerts": [
-            {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
-             "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free & falling."}},
-            {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
-             "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
-           "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": "http://127.0.0.1:9913/"}
-          EOF
-          a="$RUNNER_TEMP/text-alerts.json"
-          test "$(render "$a" '{{ template "celestia.slack.title" . }}')" = "🔴 PAGE · DiskLow · val-1"
-          out=$(render "$a" '{{ template "celestia.slack.text" . }}')
-          printf '%s\n---\n' "$out"
-          want='*Disk / on val-1 is almost full*\nLess than 5%% free &amp; falling.\n\n'
-          want+='✅ RESOLVED · DiskLow · val-1\n*Disk /data on val-1 is almost full*'
-          test "$out" = "$(printf "$want")"
-          out=$(render "$a" '{{ template "celestia.pagerduty.description" . }}')
-          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full (2 alerts)" || { echo "$out"; exit 1; }
-          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}')
-          test "$out" = "DiskLow · val-1: Disk / on val-1 is almost full Less than 5% free & falling." || { echo "$out"; exit 1; }
-          out=$(render "$a" '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}')
-          test "$out" = "DiskLow · val-1: Disk /data on val-1 is almost full" || { echo "$out"; exit 1; }
-      # celestia_mon_receivers is one list; routing follows the type. This renders the split
-      # example again with every receiver type (it overwrites build/split, so it runs last), checks
-      # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
-      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, NodePeersLow by
-      # its severity, Watchdog -> deadman, UpgradeScheduled and UpgradeSoon -> message on a route of
-      # their own that sends each once, UpgradeSignalMissing -> page, GovVoteMissing by its severity
-      # on a route of its own that sends each once per proposal), the inhibitions of one cause,
-      # and checks that the receiver check refuses a PagerDuty-only list and the old page/message lists.
+            -e "celestia_mon_ci_build=$PWD/build/split-text" -e "celestia_mon_ci_tests=$PWD/build/split-text/tests" \
+            -e @tools/ci/fixtures/receivers-text.yml
+          amtool check-config build/split-text/alertmanager.yml
+          python tools/ci/check_render.py receivers-text build/split-text/alertmanager.yml
+          python tools/ci/check_messages.py slack-pagerduty
+      # celestia_mon_receivers is one list; routing follows the type. This renders the split example
+      # again with every receiver type into build/receivers, checks it with amtool, checks the routing
+      # (page -> PagerDuty and every other receiver, message -> every receiver but PagerDuty,
+      # DeadmanFailing and SignaturesMissed -> message, NodePeersLow by its severity, Watchdog ->
+      # deadman, UpgradeScheduled and UpgradeSoon -> message on a route of their own that sends each
+      # once, UpgradeSignalMissing -> page, GovVoteMissing by its severity on a route of its own that
+      # sends each once per proposal), the inhibitions of one cause, and checks that the receiver
+      # check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         id: routing
         run: |
           set -euo pipefail
           render() {
-            ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split -e @"$1"
+            ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
+              -e "celestia_mon_ci_build=$PWD/build/receivers" -e "celestia_mon_ci_tests=$PWD/build/receivers/tests" -e @"$1"
           }
-          cat > "$RUNNER_TEMP/receivers.yml" <<'EOF'
-          celestia_mon_receivers:
-            - {type: pagerduty, routing_key: ci-only}
-            - {type: telegram, bot_token: "000000000:ci-only", chat_id: -1000000000000}
-            - {type: discord, webhook_url: "https://discord.example.invalid/api/webhooks/0/ci-only"}
-            - {type: slack, api_url: "https://slack.example.invalid/one"}
-            - {type: slack, api_url: "https://slack.example.invalid/two", channel: "#validator"}
-            - {type: webhook, url: "https://webhook.example.invalid/hook"}
-          EOF
-          render "$RUNNER_TEMP/receivers.yml"
-          am=build/split/alertmanager.yml
+          render tools/ci/fixtures/receivers.yml
+          am=build/receivers/alertmanager.yml
           amtool check-config "$am"
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=FibreDown severity=page
           amtool config routes test --config.file="$am" --verify.receivers=page \
@@ -698,82 +482,12 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=ClockNotSynced severity=message host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=GovVoteMissing severity=page proposal_id=9
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=GovVoteMissing severity=message proposal_id=9
-          python - "$am" <<'EOF'
-          import sys
-          import yaml
-          config = yaml.safe_load(open(sys.argv[1]))
-          # UpgradeScheduled and UpgradeSoon: their own route, each alert sent once, before the message route.
-          routes = config["route"]["routes"]
-          upgrade = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname=~"UpgradeScheduled|UpgradeSoon"']]
-          assert len(upgrade) == 1, routes
-          r = routes[upgrade[0]]
-          assert (r["receiver"], r["group_by"], r["group_wait"], r["repeat_interval"]) == ("message", ["..."], "0s", "96h"), r
-          assert "routes" not in r and not r.get("continue", False), r
-          assert upgrade[0] < [i for i, r in enumerate(routes) if r.get("receiver") == "message" and i != upgrade[0]][0], routes
-          # RaidDegraded: its own route before the page and message routes, a reminder once a day.
-          raid = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname="RaidDegraded"']]
-          assert len(raid) == 1 and raid[0] < [i for i, r in enumerate(routes) if r.get("matchers") == ['severity="page"']][0], routes
-          r = routes[raid[0]]
-          assert (r["receiver"], r["repeat_interval"]) == ("message", "24h") and "group_by" not in r, r
-          assert "routes" not in r and not r.get("continue", False), r
-          # GovVoteMissing: its own route before the page and message routes, one notification per proposal and
-          # severity, sent at once and not again while the vote lasts; by severity to page or message.
-          gov = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname="GovVoteMissing"']]
-          assert len(gov) == 1 and gov[0] < [i for i, r in enumerate(routes) if r.get("matchers") == ['severity="page"']][0], routes
-          r = routes[gov[0]]
-          assert (r["group_by"], r["group_wait"], r["repeat_interval"]) == (["..."], "0s", "96h") and "receiver" not in r, r
-          assert [(c["receiver"], c["matchers"]) for c in r["routes"]] == [("page", ['severity="page"']),
-                                                                           ("message", ['severity="message"'])], r
-          assert not r.get("continue", False), r
-          # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
-          # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready.
-          inhibit = config["inhibit_rules"]
-          assert {"source_matchers": ['alertname="ValidatorNotSigning"'],
-                  "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
-          assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
-                  "target_matchers": ['alertname="FibreNotServing"', 'reason!="not_ready"'], "equal": ["host"]} in inhibit, inhibit
-          # The signing node without peers pages once: not also as the signatures that stop or the nodes that
-          # stop advancing (no host), nor as that host's lag and its message about few peers.
-          peers = ['alertname="NodePeersLow"', 'severity="page"']
-          assert {"source_matchers": peers,
-                  "target_matchers": ['alertname=~"ValidatorNotSigning|SignaturesMissed|NodeNotAdvancing"']} in inhibit, inhibit
-          assert {"source_matchers": peers, "target_matchers": ['alertname=~"NodeBehind|NodePeersLow"', 'severity="message"'],
-                  "equal": ["host"]} in inhibit, inhibit
-          receivers = {r["name"]: r for r in config["receivers"]}
-          def count(name):
-              return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
-          chat = {"telegram_configs": 1, "discord_configs": 1, "slack_configs": 2, "webhook_configs": 1}
-          assert count("page") == {"pagerduty_configs": 1, **chat}, count("page")
-          assert count("message") == chat, count("message")
-          # Announcements go to the same receivers, without a "resolved" message.
-          assert count("announcement-page") == count("page"), count("announcement-page")
-          assert count("announcement-message") == chat, count("announcement-message")
-          def resolved(name):
-              return {c["send_resolved"] for k, v in receivers[name].items() if k.endswith("_configs") for c in v}
-          assert resolved("page") == resolved("message") == {True}, (resolved("page"), resolved("message"))
-          assert resolved("announcement-message") == {False}, resolved("announcement-message")
-          # PagerDuty closes its incident when the announcement ends; the chats get no "resolved".
-          ann = receivers["announcement-page"]
-          assert {c["send_resolved"] for c in ann["pagerduty_configs"]} == {True}, ann
-          assert {c["send_resolved"] for k, v in ann.items() if k.endswith("_configs") and k != "pagerduty_configs" for c in v} == {False}
-          print("page:", count("page"), "message:", count("message"))
-          EOF
-          cat > "$RUNNER_TEMP/pagerduty-only.yml" <<'EOF'
-          celestia_mon_receivers:
-            - {type: pagerduty, routing_key: ci-only}
-          EOF
-          if render "$RUNNER_TEMP/pagerduty-only.yml"; then
+          python tools/ci/check_render.py routing "$am"
+          if render tools/ci/fixtures/pagerduty-only.yml; then
             echo "a PagerDuty-only receiver list was accepted: message alerts would go nowhere"
             exit 1
           fi
-          cat > "$RUNNER_TEMP/old-shape.yml" <<'EOF'
-          celestia_mon_receivers:
-            page:
-              - {type: pagerduty, routing_key: ci-only}
-            message:
-              - {type: webhook, url: "https://webhook.example.invalid/hook"}
-          EOF
-          if render "$RUNNER_TEMP/old-shape.yml"; then
+          if render tools/ci/fixtures/old-shape.yml; then
             echo "the old page/message receiver lists were accepted"
             exit 1
           fi
@@ -788,13 +502,7 @@ jobs:
             fi
             grep -q "must be https" "$RUNNER_TEMP/plain-http.log" || { cat "$RUNNER_TEMP/plain-http.log"; exit 1; }
           done
-          cat > "$RUNNER_TEMP/private-http.yml" <<'EOF'
-          celestia_mon_receivers:
-            - {type: webhook, url: "http://10.20.0.9:8080/hook"}
-            - {type: slack, api_url: "http://[fd00::9]/one"}
-            - {type: discord, webhook_url: "http://localhost:8081/api/webhooks/0/ci-only"}
-          EOF
-          render "$RUNNER_TEMP/private-http.yml"
+          render tools/ci/fixtures/private-http.yml
       - uses: ./.github/actions/marks
         if: always()
         with:

@@ -1,0 +1,78 @@
+# The text tests of the rules job (tools/ci/check_messages.py SECTION): each renders its template with
+# amtool over the alert data of tools/ci/fixtures/<data>, as html (Telegram) or text (the others), and
+# wants the output to be "equals" (trailing newlines aside, as the shell's $(...) drops them) or to have
+# "line" as one of its lines.
+telegram-discord:
+  - data: announcement.json
+    type: html
+    template: '{{ template "celestia.telegram.message" . }}'
+    equals: "📣 <b>Celestia #mainnet-announcements</b>\n\nMainnet upgrades at height 100 &lt;b&gt;&amp;"
+  - data: announcement.json
+    type: text
+    template: '{{ template "celestia.discord.title" . }}'
+    equals: "📣 Celestia #mainnet-announcements"
+  - data: announcement.json
+    type: text
+    template: '{{ template "celestia.discord.message" . }}'
+    equals: "Mainnet upgrades at height 100 <b>&"
+  - data: alerts.json
+    type: html
+    template: '{{ template "celestia.telegram.message" . }}'
+    equals: "🔴 PAGE · <b>DiskLow</b> · val-1\nDisk / on val-1 is almost full\nLess than 5% free.\n\n\
+      ✅ RESOLVED · <b>DiskLow</b> · val-1\nDisk /data on val-1 is almost full"
+  - data: alerts.json
+    type: text
+    template: '{{ template "celestia.discord.title" . }}'
+    equals: "🔴 PAGE · DiskLow · val-1"
+  - data: alerts.json
+    type: text
+    template: '{{ template "celestia.discord.message" . }}'
+    line: "**Disk / on val-1 is almost full**"
+  - data: alerts.json
+    type: text
+    template: '{{ template "celestia.discord.message" . }}'
+    line: "✅ RESOLVED · DiskLow · val-1"
+  # An alert that names no host, as the upgrade alerts: nothing after its name.
+  - data: upgrade.json
+    type: html
+    template: '{{ template "celestia.telegram.message" . }}'
+    equals: "✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\n\
+      This alert resolves when the chain has switched to v11."
+  - data: upgrade.json
+    type: text
+    template: '{{ template "celestia.discord.title" . }}'
+    equals: "✅ RESOLVED · UpgradeScheduled"
+slack-pagerduty:
+  - data: text-announcement.json
+    type: text
+    template: '{{ template "celestia.slack.title" . }}'
+    equals: "📣 Celestia #mainnet-announcements"
+  - data: text-announcement.json
+    type: text
+    template: '{{ template "celestia.slack.text" . }}'
+    equals: "Mainnet upgrades at height 100 &lt;b&gt;&amp;"
+  - data: text-announcement.json
+    type: text
+    template: '{{ template "celestia.pagerduty.description" . }}'
+    equals: "Celestia announcement from Celestia #mainnet-announcements"
+  - data: text-alerts.json
+    type: text
+    template: '{{ template "celestia.slack.title" . }}'
+    equals: "🔴 PAGE · DiskLow · val-1"
+  - data: text-alerts.json
+    type: text
+    template: '{{ template "celestia.slack.text" . }}'
+    equals: "*Disk / on val-1 is almost full*\nLess than 5% free &amp; falling.\n\n\
+      ✅ RESOLVED · DiskLow · val-1\n*Disk /data on val-1 is almost full*"
+  - data: text-alerts.json
+    type: text
+    template: '{{ template "celestia.pagerduty.description" . }}'
+    equals: "DiskLow · val-1: Disk / on val-1 is almost full (2 alerts)"
+  - data: text-alerts.json
+    type: text
+    template: '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}'
+    equals: "DiskLow · val-1: Disk / on val-1 is almost full Less than 5% free & falling."
+  - data: text-alerts.json
+    type: text
+    template: '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}'
+    equals: "DiskLow · val-1: Disk /data on val-1 is almost full"

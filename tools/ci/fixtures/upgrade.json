@@ -1,0 +1,5 @@
+{"receiver": "message", "status": "resolved", "alerts": [{"status": "resolved",
+  "labels": {"alertname": "UpgradeScheduled", "severity": "message"},
+  "annotations": {"summary": "Network upgrade to v11 scheduled",
+                  "description": "This alert resolves when the chain has switched to v11."}}],
+ "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}

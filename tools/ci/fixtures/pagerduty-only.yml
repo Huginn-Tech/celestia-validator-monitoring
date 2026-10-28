@@ -1,0 +1,2 @@
+celestia_mon_receivers:
+  - {type: pagerduty, routing_key: ci-only}
