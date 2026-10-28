@@ -4145,8 +4145,10 @@ LEGEND_PX, LEGEND_ITEM, LEGEND_ROOM = 12, 32, 6
 # whatever their labels ("100%", "96 GiB", "-300 Mb/s").
 SERVER_AXIS_PX = VALUE_AXIS_PX
 # The parts of a whole in shades of the server's colour, the same for a part on every server: the full colour,
-# then darker ones (darker() factors), opaque, so each legend swatch differs; all at one fill opacity.
-PART_SHADES = {"node": 1, "fibre": 0.7, "monitoring": 0.5, "other": 0.35}
+# then darker ones (darker() factors), opaque, so each legend swatch differs; all at one fill opacity. The
+# darkest, Other, is often the largest layer: at 0.45 its swatch keeps about 1.7:1 (blue) to 2:1 (light purple)
+# against the panel, and neighbouring parts still tell apart. All in use is a line in the text colour, not a part.
+PART_SHADES = {"node": 1, "fibre": 0.8, "monitoring": 0.62, "other": 0.45}
 ORDER_SHADES = (1, 0.7, 0.5, 0.35)       # a server's disks, its units and the two sides of a mirrored chart
 PART_FILL = 60
 # The legend words of the stacked charts, the board's names of the services: in full, and with "Node" for
@@ -4216,12 +4218,14 @@ def stack_parts(s, h, metric):
 def stacked(s, h, pid, width, variant, metric):
     """(chart, legend entries) of CPU or memory by service on server h: the parts read separately, stacked
     in shades of the server's colour, the rest of what is in use above them (Other) and the total in use as
-    a line on top. The total is never in the legend: it is the top line, in the server's full colour, and
-    the tooltip names it. The installed memory is not drawn: its line would set the axis and press the
-    parts into the bottom of the chart (the Memory bar under the cards shows the share); an unseen series
-    a fifth above the top line ends the axis there instead. On a Fibre host the rest of the CPU is "Fibre
-    and other" while the Fibre unit is active there and "Other" while it is not, as two series of which one
-    has values at a time. variant 0: long words; 1 and 2: short ones."""
+    a line on top. The total is a context line over the parts, 1 px in the text colour, so the server's full
+    colour names only the consensus node; the legend names it In use where there is room, and the tooltip
+    always. The installed memory is not drawn: its line would set the axis and press the parts into the
+    bottom of the chart (the Memory bar under the cards shows the share); an unseen series a fifth above the
+    top line ends the axis there instead. On a Fibre host the rest of the CPU is "Fibre and other" while the
+    Fibre unit is active there and "Other" while it is not, as two series of which one has values at a time.
+    variant 0: long words and In use; 1: short ones and In use; 2: the short words without In use, the
+    line kept off the legend."""
     hue, hs = server_hue(s, h), "host=%s" % q(h)
     names = PART_NAMES[1 if variant else 0]
     parts = stack_parts(s, h, metric)
@@ -4249,27 +4253,31 @@ def stacked(s, h, pid, width, variant, metric):
                  for r, k, _ in parts]
     overrides += [override("byFrameRefID", r, color=fixed(tone(hue, PART_SHADES["other"])),
                            custom__fillOpacity=PART_FILL) for r in ("DG" if fibre else "D")]
-    overrides.append(override("byFrameRefID", "E", color=fixed(hue), custom__stacking={"group": "A", "mode": "none"},
-                              custom__fillOpacity=0, custom__lineWidth=2, custom__hideFrom=HIDDEN))
-    # The legend as it can look: the parts and the rest under its longer name.
-    legend = [names[k] for _, k, _ in parts] + [names["other_fibre" if fibre else "other"]]
+    # All in use: a context line in the text colour, named in the legend except in variant 2.
+    shown = variant < 2
+    line = {} if shown else {"custom__hideFrom": HIDDEN}
+    overrides.append(override("byFrameRefID", "E", color=fixed(NETWORK), custom__stacking={"group": "A", "mode": "none"},
+                              custom__fillOpacity=0, custom__lineWidth=1, **line))
+    # The legend as it can look: the parts, the rest under its longer name, and the line where there is room.
+    legend = ([names[k] for _, k, _ in parts] + [names["other_fibre" if fibre else "other"]]
+              + ([names["total"]] if shown else []))
     said = [{"node": "Consensus node (celestia-appd)", "fibre": "Fibre (its Go runtime's memory, a little under "
              "its real use)", "monitoring": "Monitoring (Prometheus and Alertmanager)"}[k] for _, k, _ in parts]
     if metric == "cpu":
         rest = "Other (everything else%s)" % ("; Fibre and other while Fibre runs here, as Fibre reports no CPU time "
                                               "of its own" if fibre else "")
         desc = ("What uses %s's CPU, as a share of all its cores; well under 100%% is healthy. No alert watches "
-                "it. Stacked: %s. The line on top is all in use, 5-minute averages; iowait is not counted, steal on "
-                "a VM is." % (h, phrase(said + [rest])))
+                "it. Stacked: %s. The line on top, in the text colour, is all in use (In use), 5-minute averages; "
+                "iowait is not counted, steal on a VM is." % (h, phrase(said + [rest])))
         return timeseries(pid, server_title(s, h, "CPU by service", "CPU", width), desc + more(pages=[NODE_EXPORTER_FULL]),
                           targets, "percent", maximum=100, decimals=0, stack=True, color=hue,
                           overrides=overrides), legend
     # Room above the top line: unseen and outside the stack, so it only sets the axis.
     overrides.append(override("byFrameRefID", "F", custom__stacking={"group": "A", "mode": "none"}, **UNSEEN))
     desc = ("What holds %s's memory; healthy while the top line stays well under the installed memory; the share "
-            "of installed memory is the Memory bar under the server cards. Stacked: %s. The top line is all in "
-            "use: installed minus available, so cache that can be freed is left out.%s A marker in the text "
-            "colour shows each time the kernel killed a process for lack of memory."
+            "of installed memory is the Memory bar under the server cards. Stacked: %s. The top line, in the text "
+            "colour, is all in use (In use): installed minus available, so cache that can be freed is left out.%s "
+            "A marker in the text colour shows each time the kernel killed a process for lack of memory."
             % (h, phrase(said + ["Other"]),
                " Fibre can use about 27 GiB at its default limits." if h in s.fibre_hosts else ""))
     title = server_title(s, h, "Memory by service", "Memory", width)
@@ -4424,14 +4432,15 @@ def restarts_chart(s, pid):
     # A bar covers the time block up to its time, so it is drawn to the left of it. Bars have no outline, so
     # a block without a restart draws nothing.
     p["fieldConfig"]["defaults"]["custom"].update({"barAlignment": -1, "lineWidth": 0})
-    p["fieldConfig"]["defaults"]["noValue"] = "No restarts in this time"
+    # "automatic": the start markers on each server's charts show starts by hand, which this chart does not count.
+    p["fieldConfig"]["defaults"]["noValue"] = "No automatic restarts in this time"
     p["description"] = ("Times systemd restarted a service by itself, per server and service. Each bar is the most "
                         "restarts within any 30 minutes that end in its time block (30 minutes on 24 hours, longer on "
                         "long ranges): the value ServiceDown's crash-loop check compares, so a bar above the dashed "
                         "line, more than %g, means ServiceDown reported a crash loop. A single restart lifts the bars "
                         "of the 30 minutes after it, so at most two bars show it. Bars at one time can overlap: the "
-                        "tooltip lists each. A grey marker shows every start, manual ones too."
-                        % s.CL + more(["ServiceDown"]))
+                        "tooltip lists each. A start by hand is not counted here; it shows as a grey marker on its "
+                        "server's charts." % s.CL + more(["ServiceDown"]))
     return p
 
 
@@ -4439,32 +4448,28 @@ def clock_chart(s, pid):
     """Every server's clock maximum error, the value ClockNotSynced reads, one line per server in its colour,
     with the rule's level dashed. The kernel's offset (node_timex_offset_seconds) stays 0 under chrony, which
     never hands the kernel an offset to slew; the maximum error is set by chrony and systemd-timesyncd alike,
-    and the kernel adds 0.5 ms a second until the next update. timesyncd sets 0, which a log axis cannot
-    draw: below 1 ms the line runs along the bottom."""
+    and the kernel adds 0.5 ms a second until the next update. A linear axis from 0 to a quarter above the
+    level, so a healthy clock lies on the floor, well clear of the line, and a stopped sync climbs to it."""
     level = rule_number("ClockNotSynced", None, r"node_timex_maxerror_seconds\{[^}]*\} >= (\d+)\s*$")
-    targets = refs([("clamp_min(max(node_timex_maxerror_seconds{host=%s}), 0.001)" % q(h), h) for h in s.servers])
+    top = level * 1.25
+    targets = refs([("max(node_timex_maxerror_seconds{host=%s})" % q(h), h) for h in s.servers])
     overrides = [override("byFrameRefID", t["refId"], color=fixed(server_hue(s, h)))
                  for t, h in zip(targets, s.servers)]
-    p = timeseries(
+    return timeseries(
         pid, "Clock maximum error (alert at %d s)" % level,
-        "How far each server's clock may be off at most, by its time sync's own account; a saw tooth that peaks at "
-        "about a second or less is good. chrony sets it at each clock update and systemd-timesyncd at each "
-        "correction (to 0, drawn at 1 ms), and it rises 0.5 ms a second in between. At the dashed %d s line the "
-        "kernel counts the clock as not synchronised, and after %s ClockNotSynced sends a warning; a line that keeps "
-        "rising towards it: time sync stopped. A node stamps its votes with this clock and rejects every block once "
-        "it runs about 60 s slow; Fibre reports not ready once it runs about 2 minutes fast (max_block_age). A clock "
-        "synchronised to a wrong source still reads low here: chronyc tracking, timedatectl timesync-status and "
-        "doctor check 9 show the measured offset. The axis is logarithmic, 1 ms to 100 s."
-        % (level, s.hold("ClockNotSynced")) + more(["ClockNotSynced"]),
-        targets, "s", threshold=(level, "orange"), minimum=0.001, maximum=100,
-        overrides=overrides + [override("byType", "number", custom__axisGridShow=False)])
-    # A log axis draws a grid line at every 2-9 between its labels (as on Missed blocks and Signing time):
-    # the value axis draws none, and its labels and the dashed line carry the scale.
-    p["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"log": 10, "type": "log"}
-    # Grafana writes the top tick in the "s" unit as "1.67 mins"; it formats axis ticks through the mappings,
-    # so this one reads "100 s". The kernel caps the maximum error at 16 s, so no value reaches it.
-    p["fieldConfig"]["defaults"]["mappings"] = range_map(99.5, 100.5, "100 s")
-    return p
+        "How far each server's clock may be off at most, by its time sync's own account; a line along the floor, "
+        "about a second or less, is good. chrony sets it at each clock update and systemd-timesyncd at each "
+        "correction (to 0), and the kernel adds 0.5 ms a second between updates, so working time sync draws a low "
+        "ripple. At the dashed %d s line the kernel counts the clock as not synchronised, and after %s "
+        "ClockNotSynced sends a warning. A line that climbs steadily towards the dashed %d s line, which it reaches "
+        "about %d hours after the last update, means time sync stopped; the kernel caps the value at %d s, so it "
+        "then lies on the line. A node stamps its votes with this clock and rejects every block once it runs about 60 s slow; Fibre "
+        "reports not ready once it runs about 2 minutes fast (max_block_age). A clock synchronised to a wrong source "
+        "still reads low here: chronyc tracking, timedatectl timesync-status and doctor check 9 show the measured "
+        "offset. The axis is linear, 0 to %g s."
+        % (level, s.hold("ClockNotSynced"), level, round(level / 0.0005 / 3600), level, top)
+        + more(["ClockNotSynced"]),
+        targets, "s", threshold=(level, "orange"), soft_max=top, overrides=overrides)
 
 
 # The lines of the Servers section, top to bottom: (id base, chart, height). A column chart takes one column
@@ -4556,16 +4561,40 @@ def host_colors(s):
 # Routine markers (starts, repoints, announcements, upgrades): a faint grey, so Grafana's dashed line
 # sits behind the data and reads fainter than the alert levels' dashed lines.
 MARKER = "#8E8E8E66"
+# What each routine marker marks, in the words of the sentence build() adds to the (i) of every panel it
+# reaches; keyed by the marker's name, "Service starts on <server>" by its start. "%s": the node's units.
+MARKER_WORDS = {"Node and signer starts": "%s starts", "Fibre starts": "Fibre starts",
+                "Validator signs through": "repoints (the validator moving to another node)",
+                "Service starts on": "starts of its services", "Celestia announcement": "Celestia announcements",
+                "Network upgrade": "network upgrades"}
+
+
+def node_units(s):
+    """The units whose starts the Validator charts mark: the node's, and tmkms's where its host is scraped."""
+    return [s.units[k] for k in ["appd"] + (["tmkms"] if s.kms_hosts else [])]
+
+
+def marker_words(s, name):
+    """The MARKER_WORDS of the routine marker called name: 'celestia-appd and tmkms starts', 'network
+    upgrades'. A routine marker without words stops the generator, so no grey line goes unexplained."""
+    key = next((k for k in MARKER_WORDS if name == k or name.startswith(k + " ")), None)
+    if key is None:
+        raise SystemExit("the marker %r has no words in MARKER_WORDS, which its charts' (i) print" % name)
+    words = MARKER_WORDS[key]
+    return words % phrase([u[:-len(".service")] for u in node_units(s)]) if "%s" in words else words
 
 
 def annotations(s, ids):
     """Markers on the charts, each kept off the status board by its panel list; their toggles are hidden.
     Routine markers are faint grey and Out of memory is in the text colour: no alert watches them. A start
     shows where it explains something: the node's and the signer's on the Validator charts, Fibre's on the
-    Fibre charts, both on Restarts. Two red regions shade the time an outage that blanks the charts paged:
-    ValidatorNotSigning on the Validator charts and FibreDown (no Fibre running) on the Fibre charts, in the
-    words of TITLES. Grafana joins the samples of an annotation query that lie a step apart into one region.
-    The other alerts read a chart's own value and show as its line crossing the dashed level."""
+    Fibre charts, each server's own on its column charts; Restarts carries none, as Grafana draws no marker
+    on a chart without data, its healthy state. Celestia announcements mark the role band, the Validator
+    and the Fibre charts, network upgrades every chart. Two red regions shade the time an outage that
+    blanks the charts paged: ValidatorNotSigning on the Validator charts and FibreDown (no Fibre running) on
+    the Fibre charts, in the words of TITLES. Grafana joins the samples of an annotation query that lie a
+    step apart into one region. The other alerts read a chart's own value and show as its line crossing the
+    dashed level."""
     def note(name, expr, title, color, panel_ids):
         return {"datasource": s.ds, "enable": True, "expr": expr,
                 "filter": {"exclude": False, "ids": sorted(i for i in panel_ids if i in ids)},
@@ -4577,9 +4606,8 @@ def annotations(s, ids):
         return ("node_systemd_unit_start_time_seconds%s > node_systemd_unit_start_time_seconds%s offset 1m"
                 % (sel, sel))
     sentence = {t[0]: t[1] for t in TITLES}
-    # The node's unit, and tmkms's where its host is scraped.
-    units = [s.units[k] for k in ["appd"] + (["tmkms"] if s.kms_hosts else [])]
-    node_units = "{name=%s}" % q(units[0]) if len(units) == 1 else "{name=~%s}" % q("|".join(re2(u) for u in units))
+    units = node_units(s)
+    node_sel = "{name=%s}" % q(units[0]) if len(units) == 1 else "{name=~%s}" % q("|".join(re2(u) for u in units))
     charts = sorted(i for i in ids if i >= 100 and ids[i] == "timeseries")
     if s.remote:
         moved = ("(sum by (host) (increase(%s[2m])) > 0) unless on (host) (sum by (host) (increase(%s[2m] offset 3m)) > 0)"
@@ -4590,12 +4618,12 @@ def annotations(s, ids):
     notes = [
         {"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": False, "hide": True,
          "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"},
-        note("Node and signer starts", starts(node_units), "{{name}} started on {{host}}", MARKER,
-             [111, 112, 115, 116, 480]),
+        note("Node and signer starts", starts(node_sel), "{{name}} started on {{host}}", MARKER,
+             [111, 112, 115, 116]),
     ]
     if s.fibre:
         notes.append(note("Fibre starts", starts("{name=%s}" % q(s.units["fibre"])), "{{name}} started on {{host}}",
-                          MARKER, [210, 211, 212, 213, 215, 480]))
+                          MARKER, [210, 211, 212, 213, 215]))
     notes.append(note("Validator signs through", moved, "Validator signs through {{host}}", MARKER,
                       [25, 111, 112, 115, 116]))
     notes.append(note("Validator not signing", 'ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}',
@@ -4614,7 +4642,8 @@ def annotations(s, ids):
         # The counter starts at 0 for every channel when celestia-mon-announcements starts.
         notes.append(note("Celestia announcement", "celestia_mon_announcements_forwarded_total > "
                           "celestia_mon_announcements_forwarded_total offset 1m",
-                          "Celestia announcement (the text is in your alert channel)", MARKER, [25] + charts))
+                          "Celestia announcement (the text is in your alert channel)", MARKER,
+                          [25] + [i for i in charts if i < 300]))
     if s.signal:
         notes.append(note("Network upgrade", "celestia_mon_app_version > celestia_mon_app_version offset 2m",
                           "Network upgrade: new app version", MARKER, [25] + charts))
@@ -4683,6 +4712,21 @@ def build(cfg):
     check_surfaces(s, every)
     check_words(s, every)
     ids = {p["id"]: p["type"] for p in every}
+    notes = annotations(s, ids)
+    # Every panel a routine marker reaches says in its (i) what its grey lines mark, generated from the notes
+    # that draw them, so the words cannot drift from the lines: one sentence, before the links.
+    kinds = {}
+    for note in notes:
+        if note["iconColor"] == MARKER:
+            for pid in note["filter"]["ids"]:
+                kinds.setdefault(pid, []).append(marker_words(s, note["name"]))
+    for p in every:
+        if p["id"] not in kinds:
+            continue
+        said = "Grey dashed lines: %s; point at the mark at the foot of a line to read it." % phrase(kinds[p["id"]])
+        desc = p["description"]
+        cut = desc.rfind(" More:")
+        p["description"] = desc[:cut] + " " + said + desc[cut:] if cut >= 0 else " ".join(t for t in (desc, said) if t)
 
     return {
         "uid": UID,
@@ -4698,7 +4742,7 @@ def build(cfg):
         "timezone": "utc",
         "schemaVersion": 41,
         "version": 1,
-        "annotations": {"list": annotations(s, ids)},
+        "annotations": {"list": notes},
         "links": [{"asDropdown": False, "icon": "external link", "includeVars": False, "keepTime": False,
                    "placement": "inControlsMenu", "tags": [], "targetBlank": True, "title": lt, "tooltip": "",
                    "type": "link", "url": lu}
