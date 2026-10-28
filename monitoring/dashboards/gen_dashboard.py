@@ -3970,8 +3970,8 @@ def fibre_row(s):
     # the budget error through the deferred uploadShardDone), so they are taken out of the failed ones
     # and drawn as their own outlined bars, in the text colour: no rule fires on a refusal. Refused
     # uploads also count as failed ones, so once Fibre accepts none the Fibre tile reads Uploads failing.
-    # Accepted uploads take the server's colour and served downloads a darker shade of it; failed uploads
-    # are light grey, and downloads Fibre did not hold a faint darker grey, since most of them are routine.
+    # Accepted uploads and served downloads take the server's colour; failed uploads are light grey, and
+    # downloads Fibre did not hold or that failed are grey outlines, since most are routine.
     rejected = "fibre_server_upload_shard_rejected_total"
     downloads = "fibre_server_download_shard_duration_seconds_count"
     served = "served"
@@ -3999,8 +3999,8 @@ def fibre_row(s):
          override("byFrameRefID", "C", color=fixed(NETWORK), custom__fillOpacity=0)])
     downloads_chart = requests(
         213, "Downloads",
-        "Shard download requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in a "
-        "darker shade of the server's colour, shards served, are good. Grey: not held or failed. Most failed "
+        "Shard download requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in the "
+        "server's colour, shards served, are good. Grey outlines: not held or failed. Most failed "
         "downloads ask for shards Fibre does not hold (pruned after the 4-hour window, or never assigned to it), "
         "which is normal; "
         + ("Rows served tells whether the validator's own rows are served." if s.tensile else
@@ -4009,9 +4009,7 @@ def fibre_row(s):
         [('round(sum by (host) (increase(%s{success="true"}[$__interval]))) > 0' % downloads, "{{host}} " + served),
          ('round(sum(increase(%s{success="false"}[$__interval]))) > 0' % downloads, "Not held or failed")],
         "No downloads in this time",
-        [override("byFrameRefID", "B", color=fixed(darker(NETWORK, 0.6)), custom__fillOpacity=25)]
-        + [override("byName", "%s %s" % (h, served), color=fixed(darker(server_hue(s, h), 0.7)))
-           for h in s.fibre_hosts])
+        [override("byFrameRefID", "B", color=fixed(darker(NETWORK, 0.6)), custom__fillOpacity=0)])
     # The legend entries each chart can show at once, one line each, so the plots of a line stay level.
     shown = {210: [first_legend], 212: [t["legendFormat"] for t in disk_targets if t["refId"] != "C"],
              211: ["{{host}} accepted", "Failed", "Refused, budget full"],
