@@ -168,6 +168,8 @@ load_conf() {
     key=${key//[[:space:]]/}
     val=${line#*=}
     if [[ $val == \"*\" ]]; then val=${val:1:${#val}-2}; fi
+    # Settings that earlier installs wrote and doctor no longer reads, so their file still loads.
+    case $key in signer_multi_node | prometheus_data_dir | prometheus_retention_size) continue ;; esac
     set_opt "$key" "$val"
   done <"$1"
 }
