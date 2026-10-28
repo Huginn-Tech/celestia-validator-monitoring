@@ -38,10 +38,10 @@ worst alert in a few words); up to six one-word answers; the Servers band, one c
 now; History, one line of bars per check and, after a gap, per server (the monitor's line also
 carries the monitoring's own alerts), with each line's uptime;
 the role band, which server held each role; and the key line (the range's ends and the colours).
-Then the rows Validator, Fibre (its facts, the Upload readiness band and its charts) and Servers
-(expanded; Servers has a column of hardware charts per server) and Servers: restarts, disk
-activity and clocks, Network upgrade and All firing alerts (collapsed). Panels that do not apply to
-the install are left out.
+Then All firing alerts (collapsed), the rows Validator, Fibre (its facts, the Upload readiness band
+and its charts) and Servers (expanded; Servers has a column of hardware charts per server) and
+Servers: restarts, disk activity and clocks and Network upgrade (collapsed). Panels that do not
+apply to the install are left out.
 
 Colour has three layers. Each server has one identity colour (HOST_COLORS) on every line, fill,
 bar and sparkline it owns, so a section reads in the colour of the server that holds its role and a
@@ -3338,19 +3338,26 @@ def validator_row(s):
     # axes of Missed blocks and Signing time draw none (the time axis keeps its lines), and the labels
     # and the dashed alert line carry the scale.
     no_value_grid = override("byType", "number", custom__axisGridShow=False)
+    # While no node signs, the share has no node to take its colour from: a grey dotted helper line, off
+    # the legend (it would read as a second validator line) and named in the tooltip, under the red
+    # ValidatorNotSigning band. The axis keeps Grafana's own decimals ("0.5%", "10%").
     missed_chart = timeseries(
         111, "Missed blocks",
         "The share of the last hour's blocks the validator did not sign, over time; a line near 0 is good. It is "
         "the share SignaturesMissed reads: above the dashed %g%% line for %s it sends a warning. A miss lifts the "
-        "line for an hour, in the colour of the node the validator signs through. Dashed grey: the whole network's "
-        "share of voting power missing; yours high and the network low points at this setup. The axis ends at %g%%; "
-        "a higher share runs along the top."
-        % (s.R * 100, s.hold("SignaturesMissed"), 2 * s.R * 100) + more(["SignaturesMissed"]),
+        "line for an hour, in the colour of the node the validator signs through. Dashed, in the text colour: the "
+        "whole network's share of voting power missing; yours high and the network low points at this setup. "
+        "Dotted grey, named in the tooltip only: the share the nodes count while no node signs. Red band: "
+        "ValidatorNotSigning paged; no node signed, so the coloured line stops. The axis ends at %g%%; a higher "
+        "share runs along the top."
+        % (s.R * 100, s.hold("SignaturesMissed"), 2 * s.R * 100) + more(["SignaturesMissed", "ValidatorNotSigning"]),
         refs([(as_signer(share, sig_now), "{{host}} missed, 1 h (%s)" % missed_level),
-              (unsigned(share, sig_now), "Missed, 1 h (%s)" % missed_level),
+              (unsigned(share, sig_now), "Missed, 1 h, while no node signs"),
               (net, "Network, 1 h")]),
-        "percentunit", threshold=(s.R, "orange"), decimals=2, maximum=2 * s.R,
-        overrides=[override("byFrameRefID", "C", color=fixed(NETWORK), custom__lineWidth=1, custom__fillOpacity=0,
+        "percentunit", threshold=(s.R, "orange"), maximum=2 * s.R,
+        overrides=[override("byFrameRefID", "B", color=fixed(GREY), custom__lineStyle=dash([2, 4]),
+                            custom__lineWidth=1, custom__fillOpacity=0, custom__hideFrom=HIDDEN),
+                   override("byFrameRefID", "C", color=fixed(NETWORK), custom__lineWidth=1, custom__fillOpacity=0,
                             custom__lineStyle=dash([6, 4])), no_value_grid])
     missed_chart["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"type": "symlog", "log": 10,
                                                                              "linearThreshold": 0.001}
@@ -3369,7 +3376,8 @@ def validator_row(s):
         "bars take its colour, and missed proposals stack on top in grey. Expected is what the validator's share of "
         "voting power should bring; proposers take turns by stake, so hours differ by one or two. A signer that signs "
         "votes but not proposals leaves the bars short. Each bar is a whole hour, so the hour that runs now shows "
-        "once it ends." % prop_word,
+        "once it ends. Red band: ValidatorNotSigning paged; no node signed, proposals included."
+        % prop_word + more(["ValidatorNotSigning"]),
         refs([("%s > 0" % grown_before(prop, "sum"), "{{host}} proposals"),
               ("max(%s) > 0" % grown_before("(%s and on (proposer_address) %s)" % (mpp, own), "max"), "Missed"),
               ("(max(%s) - max(%s offset $__interval)) * max(%s) / max(%s) and on () %s" % (H, H, POWER, TOTAL, IN_SET),
@@ -3382,7 +3390,10 @@ def validator_row(s):
 
     # Block processing time per node over each point's own time ($__interval, at least 10 minutes):
     # the slowest 1% of checking a proposed block plus the slowest 1% of applying a committed one.
-    # The signing node first and solid; the others, the backups, dashed.
+    # The signing node first and solid; the others, the backups, dashed. A log axis of three decades,
+    # 10 ms to 10 s, as Signing time has: one slow block after a restart (half a second) would set a
+    # linear axis and press the usual 40-60 ms lines onto the floor; here they sit a quarter up, so a
+    # node that slowly gets slower shows.
     worst = ('sum by (host) (histogram_quantile(0.99, sum by (host, method, le) (rate('
              'cometbft_abci_connection_method_timing_seconds_bucket{job="celestia-app",'
              'method=~"process_proposal|finalize_block"}[$__interval]))))')
@@ -3392,11 +3403,14 @@ def validator_row(s):
         "Each node's slowest 1% of checking and applying a block; well under a second is good. It adds the slowest 1% "
         "of checking a proposed block and of applying a committed one; blocks come about every 3 seconds. Solid: the "
         "node the validator signs through; dashed: the backups. A slow node votes late, which shows as missed blocks. "
-        "All nodes slow: a heavy block; one node slow: its CPU or disk.",
+        "All nodes slow: a heavy block; one node slow: its CPU or disk. Red band: ValidatorNotSigning paged, as no "
+        "node signed; a running node keeps its line. The axis is logarithmic, 10 ms to 10 s."
+        + more(["ValidatorNotSigning"]),
         refs([("%s and on (host) %s" % (worst, sig_point), "{{host}}"),
               ("%s unless on (host) %s" % (worst, sig_point), "{{host}} backup")]),
-        "s", soft_max=0.1, fill=10, smooth=True,
-        overrides=[override("byFrameRefID", "B", custom__lineStyle=dash([6, 4]), custom__fillOpacity=0)])
+        "s", minimum=0.01, maximum=10, fill=10, smooth=True,
+        overrides=[override("byFrameRefID", "B", custom__lineStyle=dash([6, 4]), custom__fillOpacity=0), no_value_grid])
+    processing["fieldConfig"]["defaults"]["custom"]["scaleDistribution"] = {"log": 10, "type": "log"}
     processing["interval"] = "10m"
     processing["maxDataPoints"] = 100
 
@@ -3419,9 +3433,9 @@ def validator_row(s):
             "How fast the remote signer answers on the node the validator signs through; a median under %s ms is good. "
             "Solid: the median of the last 50 signatures, the value RemoteSignerProblem watches; above the dashed %s ms "
             "line for %s it sends a warning. Dotted, darker: the slowest 1%% of vote signatures over 5 minutes, context "
-            "only. Grey bars, right axis: failed signing requests (timeouts, lost connections, every retry). The axis is "
-            "logarithmic, 0.1 to 100 ms."
-            % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem"]),
+            "only. Grey bars, right axis: failed signing requests (timeouts, lost connections, every retry). Red band: "
+            "ValidatorNotSigning paged; no node signed, so the lines stop. The axis is logarithmic, 0.1 to 100 ms."
+            % (s.ms(), s.ms(), s.hold("RemoteSignerProblem slow")) + more(["RemoteSignerProblem", "ValidatorNotSigning"]),
             [target("A", 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"}) '
                          'and on (host) %s' % sig_now, median)]
             + [target(ref, expr, "Slowest 1%, votes") for expr, ref, _ in slow]
@@ -3862,13 +3876,18 @@ def upgrade_row(s):
         "The version validators signal for next: the app version plus one.",
         one(checked(last(s, "celestia_mon_signal_next_version"))), unit="prefix:v", color_mode="value",
         mappings=mapping(unread))
+    # The validator's signal counts only while it is for the next version: a signal left from the last
+    # round would read as a signal for the old version, so it reads None, as before any signal.
+    signalled = last(s, "celestia_mon_signal_validator_version")
     signal = cell(
         106, "Signalled version",
-        "The version the validator signalled; None is fine until a round opens, then the next version is good. A round "
-        "opens when any voting power signals the next version; while the validator has not, the %s tile "
-        "turns amber, then red." % upgrade_title(s) + more(["UpgradeSignalMissing"]),
-        one(checked(last(s, "celestia_mon_signal_validator_version"))), unit="prefix:v", color_mode="value",
-        mappings=mapping((0, "None", "text"), unread))
+        "The version the validator signalled for the next upgrade. None: no signal for the next version yet, which is "
+        "fine until a round opens; then the next version is good. A round opens when any voting power signals the "
+        "next version; while the validator has not, the %s tile turns amber, then red."
+        % upgrade_title(s) + more(["UpgradeSignalMissing"]),
+        one(checked("(%s >= on () %s) or on () (%s * 0)"
+                    % (signalled, last(s, "celestia_mon_signal_next_version"), signalled))),
+        unit="prefix:v", color_mode="value", mappings=mapping((0, "None", "text"), unread))
     support = cell(
         105, "Voting power signalled",
         "The share of all voting power that signalled the next version; it climbs towards Needed to schedule. Once it "
@@ -3906,42 +3925,62 @@ def upgrade_row(s):
 
 
 def alerts_row(s):
-    """The collapsed All firing alerts row: every alert firing or pending, in the notifications' sentences."""
+    """The collapsed All firing alerts row, right under the first screen: every alert firing or pending,
+    in the notifications' sentences, with the rule name their first line carries ("PAGE ·
+    ValidatorNotSigning · val-1"), linked to the rule's entry in the alert reference."""
     levels = " or ".join("%s * 0 + %s" % (by_alert('ALERTS{alertstate="%s",severity="%s"}' % (state, sev)), num(v))
                          for state, sev, v in [("firing", "page", 3), ("pending", "page", 2),
                                                ("firing", "message", 1), ("pending", "message", 0.5)])
-    level = "max by (title) (%s)" % titled(s, "(%s)" % levels)
-    since = ("(time() - max by (title) (%s)) and on (title) (%s)"
+    level = "max by (title, alertname) (%s)" % titled(s, "(%s)" % levels)
+    since = ("(time() - max by (title, alertname) (%s)) and on (title, alertname) (%s)"
              % (titled(s, by_alert('ALERTS_FOR_STATE{severity=~"page|message"}')), level))
+    # The anchor of each rule's entry in the alert reference, its heading in lower case (as more()
+    # links it): a label of the level's rows, for the Rule column's link, which can read only the
+    # fields of its row.
+    anchored = level
+    for a in s.alert_names:
+        anchored = "label_replace(%s, %s, %s, %s, %s)" % (anchored, q("anchor"), q(a.lower()), q("alertname"), q(a))
+    # The Rule column fits the longest alert name. Names in CamelCase run wider than the table's words:
+    # AnnouncementsUnreadable measured 188 px in the table's 14 px text (0.58 em), so 0.6 em.
+    rule_px = int(math.ceil(max(text_px(a, 14, 0.6) for a in s.alert_names))) + TABLE_PAD
     table = panel(
         301, "table", "Firing alerts",
         "Every alert Prometheus has firing now, plus alerts whose problem is true but has not lasted long enough to be "
-        "sent, in the sentences of your notifications; the Status cell at the top names the worst one. Active for: how "
-        "long since the problem started, "
+        "sent, in the sentences of your notifications; the Status cell at the top names the worst one. Rule: the "
+        "alert's name, as the first line of its notification carries it; it opens the alert's entry in the "
+        "[alert reference](%s), with its meaning and first checks. Active for: how long since the problem started, "
         "including the waiting time before it fired. The heartbeat (Watchdog) is left out. Silences do not hide alerts "
-        "here. Each alert's meaning and first checks: the [alert reference](%s)." % DOCS,
-        [target("A", level, "", instant=True, fmt="table"), target("B", since, "", instant=True, fmt="table")],
+        "here." % DOCS,
+        [target("A", anchored, "", instant=True, fmt="table"), target("B", since, "", instant=True, fmt="table")],
         {"color": {"mode": "thresholds"}, "noValue": "No alerts firing", "thresholds": steps(("text", None)),
          "custom": {"align": "auto", "cellOptions": {"type": "color-text"}, "filterable": False, "inspect": False}},
-        [override("byName", "Level", custom__width=190,
+        [override("byName", "Rule", custom__width=rule_px,
+                  links=[{"title": "Alert reference", "url": DOCS + "#${__data.fields.anchor}", "targetBlank": True}]),
+         override("byName", "Level", custom__width=190,
                   mappings=mapping((3, "Urgent", "red"), (2, "Urgent, not paged yet", "orange"),
                                    (1, "Warning", "orange"), (0.5, "Warning, not sent yet", "orange"))),
-         override("byName", "Active for", custom__width=140, unit="dtdurations", noValue="–")],
+         override("byName", "Active for", custom__width=140, unit="dtdurations", noValue="–"),
+         override("byName", "anchor", custom__hidden=True)],
         {"cellHeight": "sm", "enablePagination": False,
          "footer": {"countRows": False, "fields": "", "reducer": ["sum"], "show": False},
          "showHeader": True, "sortBy": [{"desc": True, "displayName": "Level"}]})
     # With nothing firing, Prometheus still returns empty frames with value fields, and a table would
-    # show bare column headers. Grouping by Alert drops a frame without that field, so the panel has
-    # no data and shows its no-value text; with alerts it changes nothing (one row per sentence), and
-    # the last step takes the reducer's name back off the columns.
+    # show bare column headers. Grouping by Alert, Rule and anchor drops a frame without those label
+    # fields, so the panel has no data and shows its no-value text; with alerts it changes nothing (one
+    # row per sentence), and the last step takes the reducer's name back off the columns. anchor keeps
+    # its name (renamed to itself, so it is a named column as the others) and is hidden by an override,
+    # not left out, so the link still reads it.
     table["transformations"] = [
         {"id": "merge", "options": {}},
         {"id": "organize", "options": {"excludeByName": {"Time": True},
-                                       "indexByName": {"title": 0, "Value #A": 1, "Value #B": 2},
-                                       "renameByName": {"title": "Alert", "Value #A": "Level",
-                                                        "Value #B": "Active for"}}},
+                                       "indexByName": {"title": 0, "alertname": 1, "Value #A": 2, "Value #B": 3,
+                                                       "anchor": 4},
+                                       "renameByName": {"title": "Alert", "alertname": "Rule", "Value #A": "Level",
+                                                        "Value #B": "Active for", "anchor": "anchor"}}},
         {"id": "groupBy", "options": {"fields": {
             "Alert": {"aggregations": [], "operation": "groupby"},
+            "Rule": {"aggregations": [], "operation": "groupby"},
+            "anchor": {"aggregations": [], "operation": "groupby"},
             "Level": {"aggregations": ["max"], "operation": "aggregate"},
             "Active for": {"aggregations": ["max"], "operation": "aggregate"}}}},
         {"id": "renameByRegex", "options": {"regex": "^(Level|Active for) \\(.*\\)$", "renamePattern": "$1"}}]
@@ -4402,7 +4441,9 @@ def build(cfg):
     s = Setup(cfg)
     check_titles(s)
     # (row id, title and collapsed, or None for the first screen without a row header; lines)
-    sections = [(None, first_screen(s)), ((100, "Validator", False), validator_row(s))]
+    # The alert list, closed, right under the first screen: one click from the Status cell.
+    sections = [(None, first_screen(s)), ((300, "All firing alerts", True), alerts_row(s)),
+                ((100, "Validator", False), validator_row(s))]
     if s.fibre:
         sections.append(((200, "Fibre", False), fibre_row(s)))
     hardware, detail = servers_row(s)
@@ -4410,7 +4451,6 @@ def build(cfg):
     sections.append(((450, "Servers: restarts, disk activity and clocks", True), detail))
     if s.signal:
         sections.append(((250, "Network upgrade", True), upgrade_row(s)))
-    sections.append(((300, "All firing alerts", True), alerts_row(s)))
     colors = host_colors(s)
 
     panels, every, y = [], [], 0
