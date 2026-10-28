@@ -14,7 +14,6 @@
 roles={{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
 inventory_host={{ inventory_hostname }}
 signer={{ celestia_mon_signer }}
-signer_multi_node={{ 'true' if celestia_mon_signer_multi_node | default(false) | bool else 'false' }}
 fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
 appd_unit={{ celestia_mon_units.appd }}
 fibre_unit={{ celestia_mon_units.fibre }}

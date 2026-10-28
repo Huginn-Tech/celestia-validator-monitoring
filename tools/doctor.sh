@@ -51,7 +51,6 @@ declare -A C=(
   [roles]=""
   [inventory_host]=""
   [signer]=""
-  [signer_multi_node]=""
   [fibre_enabled]=""
   [appd_unit]="celestia-appd"
   [fibre_unit]="fibre"
@@ -96,9 +95,6 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          entry in fibre_public_endpoint
   signer                local or remote; with local, no remote signer metrics
                          are expected (default: not set, not compared)
-  signer_multi_node      true when tmkms signs through several nodes on purpose
-                         (celestia_mon_signer_multi_node), so check 21 does
-                         not count ValidatorSigningTwice (default: not set)
   fibre_enabled         true or false; with false, no Fibre or collector
                          metrics are expected (default: true if the Fibre
                          unit exists)
@@ -137,9 +133,9 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   api_user, api_password_file  HTTP basic auth for those three (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)
-  gov_page              true when GovVoteMissing pages (celestia_mon_gov_page),
-                         so check 21 counts a silence of it (default: not set,
-                         not counted)
+  gov_page               true when GovVoteMissing pages (celestia_mon_gov_page),
+                         so check 23 says when the page comes (default: not
+                         set)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   node_behind_blocks     blocks a node may trail the highest node (default 20)
@@ -2331,43 +2327,13 @@ check_fibre_active() {
   fi
 }
 
-# The alerts of the rules with severity page (NodePeersLow and DiskLow also have message rules).
-# UpgradeSignalMissing exists only with upgrade signalling on, whose unit the install removes when
-# it is off. ValidatorSigningTwice exists only with a remote signer that is not set to sign through
-# several nodes (signer_multi_node), FibreNotServing's page (reason not_ready, next to its
-# messages) only with Fibre on, MonitorCannotReach's page ("Monitor cannot reach any server", next
-# to its per-host messages) only with the monitor on a host of its own, and GovVoteMissing's page
-# (next to its message) only with gov_page true; check_silences adds them there, once the roles
-# and the settings are known.
-PAGE_ALERTS=(NodeNotAdvancing NodePeersLow ValidatorNotSigning FibreDown DiskLow)
-if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
-
-# Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
-# endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
-# name \037 operator \037 value. A small JSON reader, so values may hold any character.
-silences_active() {
-  awk '
-    function value(v) {
-      if (d == 2 && key[2] == "id") id = v
-      else if (d == 2 && key[2] == "createdBy") by = v
-      else if (d == 2 && key[2] == "endsAt") ends = v
-      else if (d == 3 && key[2] == "status" && key[3] == "state") state = v
-      else if (d == 4 && key[2] == "matchers") m[key[4]] = v
-    }
-    function opened() {
-      if (d == 2 && obj[2]) { id = ""; by = ""; ends = ""; state = ""; ms = "" }
-      if (d == 4 && obj[4] && key[2] == "matchers") { m["name"] = ""; m["value"] = ""; m["isRegex"] = "false"; m["isEqual"] = "true" }
-    }
-    function closed(op) {
-      if (d == 4 && obj[4] && key[2] == "matchers") {
-        op = (m["isEqual"] == "false") ? "!" : "="
-        op = op ((m["isRegex"] == "true") ? "~" : ((op == "!") ? "=" : ""))
-        ms = ms ((ms == "") ? "" : "\036") m["name"] "\037" op "\037" m["value"]
-      }
-      if (d == 2 && obj[2] && state == "active") print id "\034" ends "\034" by "\034" ms
-    }
-    { s = s $0 " " }
-    END {
+# The end of an awk program that reads JSON, a small reader, so values may hold any character. The
+# program's start defines value(v), called with each value that is not a key, opened(), called
+# after each { or [, and closed(), called before each } or ]; d is the depth, obj[d] whether the
+# container there is an object, and key[d] the key being read in it.
+JSON_READER='
+    BEGIN {
+      while ((getline line) > 0) s = s line " "
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
@@ -2392,6 +2358,57 @@ silences_active() {
         }
       }
     }'
+
+# Prometheus's GET /api/v1/rules reply (JSON) -> one line per alerting rule with severity page, in
+# the order Prometheus lists them (by rule file, then as in the file): its name, its labels and
+# whether it is hosted, split by \034; the labels are split by \036, each one name \037 value.
+# Hosted: an annotation reads $labels., so its alerts also carry labels from the rule's metrics.
+page_rules() {
+  awk '
+    function value(v) {
+      if (d == 6 && key[6] == "name") name = v
+      else if (d == 6 && key[6] == "type") type = v
+      else if (d == 7 && key[6] == "labels") {
+        if (key[7] == "severity") sev = v
+        ls = ls ((ls == "") ? "" : "\036") key[7] "\037" v
+      } else if (d == 7 && key[6] == "annotations" && index(v, "$labels.")) hosted = "true"
+    }
+    function opened() {
+      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules") { name = ""; type = ""; sev = ""; ls = ""; hosted = "false" }
+    }
+    function closed() {
+      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules" && type == "alerting" && sev == "page") {
+        print name "\034" ls "\034" hosted
+      }
+    }'"$JSON_READER"
+}
+# The page rules Prometheus has loaded, as page_rules prints them; check_silences reads them.
+PAGE_RULES=()
+
+# Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
+# endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
+# name \037 operator \037 value.
+silences_active() {
+  awk '
+    function value(v) {
+      if (d == 2 && key[2] == "id") id = v
+      else if (d == 2 && key[2] == "createdBy") by = v
+      else if (d == 2 && key[2] == "endsAt") ends = v
+      else if (d == 3 && key[2] == "status" && key[3] == "state") state = v
+      else if (d == 4 && key[2] == "matchers") m[key[4]] = v
+    }
+    function opened() {
+      if (d == 2 && obj[2]) { id = ""; by = ""; ends = ""; state = ""; ms = "" }
+      if (d == 4 && obj[4] && key[2] == "matchers") { m["name"] = ""; m["value"] = ""; m["isRegex"] = "false"; m["isEqual"] = "true" }
+    }
+    function closed(op) {
+      if (d == 4 && obj[4] && key[2] == "matchers") {
+        op = (m["isEqual"] == "false") ? "!" : "="
+        op = op ((m["isRegex"] == "true") ? "~" : ((op == "!") ? "=" : ""))
+        ms = ms ((ms == "") ? "" : "\036") m["name"] "\037" op "\037" m["value"]
+      }
+      if (d == 2 && obj[2] && state == "active") print id "\034" ends "\034" by "\034" ms
+    }'"$JSON_READER"
 }
 
 matcher_admits() { # operator, pattern, label value -> true when the matcher matches that value (absent label: "")
@@ -2405,38 +2422,40 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
   esac
 }
 
-# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown,
-# ValidatorSigningTwice, UpgradeSignalMissing and MonitorCannotReach's page carry only alertname
-# and severity, so each other matcher must match an absent label: a silence of MonitorCannotReach
-# for one host holds back only that host's message. NodePeersLow, DiskLow and FibreNotServing also
-# carry host and the labels of their metrics (DiskLow's mountpoint among them), and GovVoteMissing
-# its proposal_id, whose values are not known here: each counts when the silence names alertname
-# or severity, so a host silence for planned work is listed only when it runs long.
-# FibreNotServing's reason is known (not_ready pages), so a silence of another reason does not count.
+# The page alerts a silence holds back, from the page rules Prometheus has loaded (PAGE_RULES). A
+# matcher on alertname reads the rule's name, and one on a label the rule sets (severity, and a
+# reason or check where it has one) reads that label's value. A hosted alert also carries host and
+# the labels of its metrics, whose values are not known here: it counts when the silence names
+# alertname or severity, and its matchers on those labels are not read, so a host silence for
+# planned work is listed only when it runs long. Any other page alert carries no other label, so
+# each other matcher must match an absent label: a silence for one host does not hold back a page
+# that names no host. Each alert is listed once, at its first rule held back.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
-  local -a ms=()
-  local a m n o v hit hosted named=false out=""
+  local -a ms=() kv=()
+  local -A lab=() listed=()
+  local r a l m n o v hit hosted named=false out=""
   IFS=$'\036' read -r -a ms <<<"$1"
   for m in "${ms[@]}"; do
     n=${m%%$'\037'*}
     if [[ $n == alertname || $n == severity ]]; then named=true; fi
   done
-  for a in "${PAGE_ALERTS[@]}"; do
-    hosted=false
-    if [[ $a == NodePeersLow || $a == DiskLow || $a == FibreNotServing || $a == GovVoteMissing ]]; then hosted=true; fi
-    if [[ $hosted == true && $named == false ]]; then continue; fi
+  for r in "${PAGE_RULES[@]}"; do
+    IFS=$'\034' read -r a l hosted <<<"$r"
+    if [[ -n ${listed[$a]+set} || ($hosted == true && $named == false) ]]; then continue; fi
+    lab=()
+    IFS=$'\036' read -r -a kv <<<"$l"
+    for m in "${kv[@]}"; do lab[${m%%$'\037'*}]=${m#*$'\037'}; done
     hit=true
     for m in "${ms[@]}"; do
       IFS=$'\037' read -r n o v <<<"$m"
-      case $n in
-        alertname) matcher_admits "$o" "$v" "$a" || hit=false ;;
-        severity) matcher_admits "$o" "$v" page || hit=false ;;
-        reason) if [[ $a == FibreNotServing ]]; then matcher_admits "$o" "$v" not_ready || hit=false
-                elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi ;;
-        *) [[ $hosted == true ]] || matcher_admits "$o" "$v" "" || hit=false ;;
-      esac
+      if [[ $n == alertname ]]; then matcher_admits "$o" "$v" "$a" || hit=false
+      elif [[ -n ${lab[$n]+set} ]]; then matcher_admits "$o" "$v" "${lab[$n]}" || hit=false
+      elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi
     done
-    if [[ $hit == true ]]; then out+="${out:+, }$a"; fi
+    if [[ $hit == true ]]; then
+      listed[$a]=1
+      out+="${out:+, }$a"
+    fi
   done
   printf '%s' "$out"
 }
@@ -2454,18 +2473,20 @@ silence_text() { # matchers as silences_active prints them -> {name="value", ...
 
 # Active silences, on the monitor. A silence holds back every alert it matches until it ends,
 # and the dead-man heartbeat stays green meanwhile, so a mistyped matcher or a forgotten end
-# hides the next outage. Warns on a silence that holds back a page alert or runs for more than
-# 4 hours more, with its matchers, author and end. Reads GET /api/v2/silences; changes nothing.
+# hides the next outage. Warns on a silence that holds back a page alert (of an alert rule with
+# severity page that Prometheus has loaded, so the list follows the install's rules) or runs for
+# more than 4 hours more, with its matchers, author and end. Reads GET /api/v1/rules and
+# GET /api/v2/silences; changes nothing.
 check_silences() {
-  local name="silences" am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
+  local name="silences" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
   local -a held=() other=()
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
-  if [[ ${C[signer]} == remote && ${C[signer_multi_node],,} != true ]]; then PAGE_ALERTS+=(ValidatorSigningTwice); fi
-  if fibre_on; then PAGE_ALERTS+=(FibreNotServing); fi
-  # A monitor that runs no celestia-appd or Fibre can lose every host at once,
-  # and its rules have MonitorCannotReach's page for that.
-  if ! node_host && ! has_role fibre; then PAGE_ALERTS+=(MonitorCannotReach); fi
-  if [[ ${C[gov_page],,} == true ]]; then PAGE_ALERTS+=(GovVoteMissing); fi
+  if ((!PROM_OK)); then report SKIP 21 "$name" "Prometheus not answering (check 11)"; return; fi
+  mapfile -t PAGE_RULES < <(http_get "$prom/api/v1/rules?type=alert&exclude_alerts=true" | page_rules)
+  if ((${#PAGE_RULES[@]} == 0)); then
+    report SKIP 21 "$name" "Prometheus has no page alert rules loaded (check 12)"
+    return
+  fi
   reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
   code=${reply##*$'\n'}
   reply=${reply%$'\n'*}
