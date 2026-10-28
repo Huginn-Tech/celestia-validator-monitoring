@@ -32,23 +32,38 @@ jobs:
       - name: Install linters
         run: pip install "ansible-core==$ANSIBLE_CORE_VERSION" "ansible-lint>=25,<26" "yamllint>=1.35,<2"
       - name: yamllint
+        id: yamllint
         run: yamllint --strict .
       - name: ansible-lint
+        id: ansible-lint
         run: ansible-lint
       - name: shellcheck
+        id: shellcheck
         run: shellcheck install.sh tools/*.sh
       # Links, version phrases and cometbft_/fibre_server_ metric names against the celestia_app pin
       # and monitoring/upstream.yml, without network (the upstream workflow checks the table itself).
       - name: Upstream links, versions and names follow the pin
+        id: upstream
         run: python tools/ci/check_upstream.py
       # The docs run it as ./install.sh, and git archive keeps the mode git records.
       - name: install.sh is executable
+        id: install-sh-mode
         run: |
           mode=$(git ls-files --stage install.sh | cut -d ' ' -f 1)
           if [ "$mode" != 100755 ]; then
             echo "install.sh has mode $mode in git; set it with: git update-index --chmod=+x install.sh"
             exit 1
           fi
+      # A step with an id is a check: tools/ci/inventory.txt lists it, and the inventory job holds
+      # every run to the list.
+      - name: Every check is in the test inventory
+        id: inventory
+        run: python tools/ci/inventory.py lint tools/ci/inventory.txt .github/workflows/ci.yml
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   secrets:
     runs-on: ubuntu-24.04
@@ -61,6 +76,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Owner-only files are ignored and absent
+        id: owner-files
         run: |
           git check-ignore -q --no-index reference/any-file || { echo "reference/ is not in .gitignore"; exit 1; }
           git check-ignore -q --no-index CLAUDE.local.md || { echo "CLAUDE.local.md is not in .gitignore"; exit 1; }
@@ -68,8 +84,14 @@ jobs:
             echo "owner-only files are tracked"; exit 1
           fi
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
+        id: gitleaks
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   collectors:
     runs-on: ubuntu-24.04
@@ -141,14 +163,18 @@ jobs:
                   tasks_from: bind_check
           EOF
       - name: Dry run on a fresh host
+        id: dry-run
         run: ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml --check --diff "$CI_DIR/site.yml"
       - name: Install
+        id: install
         run: ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml "$CI_DIR/site.yml"
       - name: Second run changes nothing
+        id: second-run
         run: |
           ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml "$CI_DIR/site.yml" | tee "$CI_DIR/second.log"
           grep -Eq '^ci +: ok=[0-9]+ +changed=0 +unreachable=0 +failed=0' "$CI_DIR/second.log"
       - name: node_exporter lists only the configured units
+        id: node-exporter-units
         run: |
           sudo systemctl is-active celestia-mon-node-exporter
           node=$(curl -sf http://127.0.0.1:9910/metrics)
@@ -165,6 +191,7 @@ jobs:
               { echo "node_exporter's $c collector fails under the unit sandbox"; exit 1; }
           done
       - name: The collector sums Fibre's size attributes away and drops traces
+        id: otelcol-sums
         run: |
           sudo systemctl is-active celestia-mon-otelcol
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9911/metrics && break; sleep 1; done
@@ -197,6 +224,7 @@ jobs:
       # `validate` loaded stay charged to the runner's cgroup, so only a cold start counts them
       # against the unit's own cgroup (cgroup v2; memory.peak exists from kernel 5.19).
       - name: The collector units run under the resource caps
+        id: resource-caps
         run: |
           sudo systemctl stop celestia-mon-otelcol celestia-mon-node-exporter
           sync
@@ -228,12 +256,14 @@ jobs:
           check celestia-mon-node-exporter $((128 * 1048576)) $((256 * 1048576))
           check celestia-mon-otelcol $((384 * 1048576)) $((1024 * 1048576))
       - name: doctor finds celestia-mon's units on private addresses
+        id: doctor-private-binds
         run: |
           out=$(sudo bash tools/doctor.sh --config /dev/null --roles kms --data-mounts / --head-wait 2 || true)
           printf '%s\n' "$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-node-exporter 127\.0\.0\.1:9910' <<<"$out"
           grep -Eq '^OK +8 .*celestia-mon-otelcol 127\.0\.0\.1:9915' <<<"$out"
       - name: The playbook stops when another process holds a celestia-mon port
+        id: port-taken
         run: |
           python3 -m http.server 9920 --bind 127.0.0.1 >/dev/null 2>&1 &
           server=$!
@@ -253,6 +283,11 @@ jobs:
       - name: Show the collector logs
         if: failure()
         run: sudo journalctl -u celestia-mon-node-exporter -u celestia-mon-otelcol --no-pager -n 200
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # Renders the rules, Alertmanager, Prometheus and dashboard settings for the three example
   # inventories (single, split, and mainnet with a backup node and a standby Fibre; the mainnet one
@@ -272,6 +307,7 @@ jobs:
       # AnnouncementsUnreadable, FibreDown's outside branches, TensileUnreadable, the upgrade alerts
       # and the announcements, tensile and signal jobs.
       - name: Render the example inventories
+        id: render
         run: |
           for s in single split mainnet; do
             extra=()
@@ -285,6 +321,7 @@ jobs:
       # The dashboard's descriptions print the hold times in monitoring/rules/holds.json
       # (gen_dashboard.py reads them); each must be the for: of every rule it names.
       - name: The hold times the dashboard prints match the rules
+        id: holds
         run: |
           python - monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml <<'EOF'
           import json
@@ -331,6 +368,7 @@ jobs:
           tar -xzf "$am.tar.gz" -C celestia-mon-bin --strip-components=1 "$am/amtool"
           echo "$RUNNER_TEMP/celestia-mon-bin" >> "$GITHUB_PATH"
       - name: promtool check rules
+        id: promtool-check
         # Several rules share an alert name and severity on purpose (one per branch,
         # host or mount), which the duplicate-rules lint would report.
         run: |
@@ -338,6 +376,7 @@ jobs:
             promtool check rules --lint=none "monitoring/rules/tests/$s/celestia-mon.rules.yml"
           done
       - name: promtool test rules
+        id: promtool-test
         run: |
           for s in single split mainnet; do
             promtool test rules monitoring/rules/tests/"$s"/*.test.yml
@@ -347,6 +386,7 @@ jobs:
       # vote rule; SignalUnreadable about x/signal only) into build/nogov. The dashboard settings of each
       # read the same switches.
       - name: The vote rules on another network, and with gov off
+        id: vote-rules
         run: |
           set -euo pipefail
           for v in mocha nogov; do
@@ -386,11 +426,13 @@ jobs:
           print("mocha: GovVoteMissing, message only; nogov: no GovVoteMissing, SignalUnreadable about x/signal only")
           EOF
       - name: promtool check config
+        id: promtool-config
         run: |
           for s in single split mainnet; do
             promtool check config --lint=none "build/$s/prometheus.yml"
           done
       - name: amtool check-config
+        id: amtool-config
         run: |
           for s in single split mainnet; do
             amtool check-config "build/$s/alertmanager.yml"
@@ -399,6 +441,7 @@ jobs:
       # text under the channel it came from, an alert as one line with its summary and description;
       # never the list of labels, never the link.
       - name: Telegram and Discord messages read as text
+        id: telegram-discord-text
         run: |
           set -euo pipefail
           t=monitoring/alertmanager-templates.tmpl
@@ -452,6 +495,7 @@ jobs:
       # labels (a scrape over a cap fails, so the caps sit far above what the jobs send; the install
       # and molecule jobs see every target up).
       - name: Alerts leave Prometheus without instance, and every scrape job has its limits
+        id: instance-limits
         run: |
           set -euo pipefail
           for s in single split mainnet; do
@@ -478,6 +522,7 @@ jobs:
       # active or standby, in the otelcol job, and the monitor host mon-1, which runs no Celestia
       # service, in the node job (role monitor).
       - name: The mainnet scrape targets follow the inventory groups
+        id: mainnet-targets
         run: |
           set -euo pipefail
           python - build/mainnet/prometheus.yml <<'EOF'
@@ -513,6 +558,7 @@ jobs:
       # Fibre ports, and fibre-1 another node metrics port; val-1, which sets none, keeps the defaults.
       # This renders a copy of the mainnet example, and puts the mainnet build back afterwards.
       - name: A host's own ports never become another host's
+        id: own-ports
         run: |
           set -euo pipefail
           inv="$RUNNER_TEMP/ports-inventory"
@@ -540,6 +586,7 @@ jobs:
       # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
       # details. This renders the split example with both (the next step renders it again).
       - name: Slack and PagerDuty messages read as text
+        id: slack-pagerduty-text
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/receivers-text.yml" <<'EOF'
@@ -607,6 +654,7 @@ jobs:
       # on a route of its own that sends each once per proposal), the inhibitions of one cause,
       # and checks that the receiver check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
+        id: routing
         run: |
           set -euo pipefail
           render() {
@@ -747,6 +795,11 @@ jobs:
             - {type: discord, webhook_url: "http://localhost:8081/api/webhooks/0/ci-only"}
           EOF
           render "$RUNNER_TEMP/private-http.yml"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # celestia-mon-announcements against tools/ci/discord_stub.py, which stands in for Discord and
   # for Alertmanager's alerts API: the first read only notes the newest message, the next posts
@@ -761,6 +814,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-announcements reads, posts once and reports errors
+        id: run
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/ann"
@@ -841,6 +895,11 @@ jobs:
           once
           grep -q 'Discord refused the bot token (401)' "$d/log"
           if grep -qF "$token" "$d/log"; then echo "the log holds the token"; exit 1; fi
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # celestia-mon-tensile against a stand-in of Tensile's API (python's http.server on static
   # files): a reachable endpoint with its blob record, a validator with no Fibre host registered,
@@ -853,6 +912,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-tensile serves Tensile's verdict as metrics
+        id: run
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/tensile"
@@ -972,6 +1032,11 @@ jobs:
           old 231
           wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304715\.0$'
           kill "$svc"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # celestia-mon-signal against tools/ci/rpc_stub.py, which stands in for a node's CometBFT RPC with
   # mainnet's x/signal answers of 19 October 2026 (app v9; v10 signalled by 396393243 of 463776854
@@ -992,6 +1057,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: celestia-mon-signal serves x/signal as metrics
+        id: run
         run: |
           set -euo pipefail
           d="$RUNNER_TEMP/signal"
@@ -1331,6 +1397,11 @@ jobs:
           test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" = "$at" ||
             { echo "the last read time moved without a read"; exit 1; }
           kill "$service"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   dashboard:
     runs-on: ubuntu-24.04
@@ -1363,6 +1434,7 @@ jobs:
       # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
       # job, and a validator name, so every optional panel and query is generated and checked.
       - name: Render the dashboard settings for the example inventories
+        id: render
         run: |
           for s in single split mainnet; do
             extra=()
@@ -1375,6 +1447,7 @@ jobs:
             ansible-playbook -i "ansible/inventory/example-$s/hosts.yml" tools/ci/render.yml -e "celestia_mon_ci_scenario=$s" "${extra[@]}"
           done
       - name: Generate the dashboards
+        id: generate
         run: |
           for s in single split mainnet; do
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
@@ -1429,6 +1502,7 @@ jobs:
       # titled with its name first; its out-of-memory marker on its own memory chart. Restarts (480) and Clock
       # maximum error (490) show every server in one chart across the full width, at the end of the closed row.
       - name: Panels match the switches
+        id: panels-switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
@@ -1548,6 +1622,7 @@ jobs:
       # comparison, and Missed blocks (the fact and the chart) draws A over B with its level at R, so
       # neither side can change alone.
       - name: Missed blocks read the SignaturesMissed rule
+        id: missed-blocks
         run: |
           python - <<'EOF'
           import json
@@ -1587,6 +1662,7 @@ jobs:
       # share (216, an untitled state timeline of the same lanes and rowHeight) in the Uptime column's 3.
       # Then four charts of one height, right under it, in two lines of two on columns 0 and 12.
       - name: The Fibre row is symmetric
+        id: fibre-row
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
@@ -1611,6 +1687,7 @@ jobs:
       # (a message after 3 minutes, a page after 10) watch one NOT_SERVING selector, which the band's
       # amber reads, and its red is the page firing.
       - name: Upload readiness reads the not_ready rules
+        id: upload-readiness
         run: |
           python - <<'EOF'
           import json
@@ -1645,6 +1722,7 @@ jobs:
       # compares, which is the rule's expression without its comparison (inside the clamp that draws an
       # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
       - name: Fibre behind the network draws the missed_uploads rule
+        id: fibre-behind
         run: |
           python - build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml <<'EOF'
           import json
@@ -1671,6 +1749,7 @@ jobs:
       # Clock maximum error (490) draws, for every server, the metric ClockNotSynced compares, and its
       # dashed line at the rule's number, so neither side can change alone.
       - name: Clock maximum error draws the ClockNotSynced rule
+        id: clock
         run: |
           python - <<'EOF'
           import json
@@ -1702,6 +1781,7 @@ jobs:
       # (its restarts in the last 30 minutes), its dashed line at the rule's number and that number in its
       # title, so neither side can change alone.
       - name: Restarts draw the crash-loop rule
+        id: restarts
         run: |
           python - <<'EOF'
           import json
@@ -1738,6 +1818,7 @@ jobs:
       # The stub series, served on loopback; the check waits until a minute step of Prometheus holds
       # them, so the queries' 1-minute subqueries read data too.
       - name: Serve the dashboards' series to Prometheus
+        id: serve-series
         run: |
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
             build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json \
@@ -1753,10 +1834,16 @@ jobs:
           docker logs prometheus 2>&1 | tail -20
           exit 1
       - name: Every panel query runs in Prometheus without an error, warning or info
+        id: panel-queries
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
           build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
           build/table/dashboard.json
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   doctor:
     runs-on: ubuntu-24.04
@@ -1764,6 +1851,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: Run doctor for each role
+        id: run
         run: |
           bash tools/doctor.sh --help >/dev/null
           run() {
@@ -1790,6 +1878,11 @@ jobs:
           cat "$RUNNER_TEMP/doctor.conf"
           run sudo bash tools/doctor.sh --config "$RUNNER_TEMP/doctor.conf" --head-wait 2
           echo "::endgroup::"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # doctor on the mainnet roles, on the runner: a stopped stand-in for a standby Fibre unit
   # (loaded, inactive, signer named by host name) and a backup node's config.toml. With two
@@ -1801,6 +1894,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on a standby Fibre host and a backup node
+        id: run
         run: |
           set -euo pipefail
           run() {
@@ -1836,6 +1930,11 @@ jobs:
           run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^INFO +2 +remote signer +backup node: priv_validator_laddr = tcp://127\.0\.0\.1:26658' <<<"$out"
           if grep -Eq '^FAIL +2 ' <<<"$out"; then echo "check 2 failed on a backup node"; exit 1; fi
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # doctor's md RAID lines (check 10, one per array) on the runner, which has no md array: stand-in
   # mdstat files (--mdstat) and a stand-in node_exporter, a loaded unit whose --web.listen-address
@@ -1849,6 +1948,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor reads the md RAID arrays
+        id: run
         run: |
           set -euo pipefail
           run() {
@@ -1923,6 +2023,11 @@ jobs:
 
           run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
           if grep -Eq ' md RAID ' <<<"$out"; then echo "an md RAID line without md arrays"; exit 1; fi
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
   # (WARN 6) whose plaintext signer warns even on loopback (WARN 17), a standby whose plaintext
@@ -1936,6 +2041,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on the signing path
+        id: run
         run: |
           set -euo pipefail
           run() {
@@ -2035,6 +2141,11 @@ jobs:
             --fibre-unit ci-mtls --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
           line=$(grep -E '^WARN +17 +fibre signer +standby: ' <<<"$out")
           grep -qF 'an mTLS signer on this host, but the node serves its privval gRPC on 127.0.0.1:26669 in plaintext' <<<"$line"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # doctor's port checks on the runner (1, 20, 25 and 26), which read where each port listens and
   # ufw's rules and never connect to the ports. python http.server stands in where a node would
@@ -2053,6 +2164,7 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - name: doctor on the validator's ports
+        id: run
         run: |
           set -euo pipefail
           run() {
@@ -2198,6 +2310,11 @@ jobs:
           done
           # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
           if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "the monitor-only host printed a line numbered 15 or 16"; exit 1; fi
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
@@ -2217,6 +2334,7 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
       - uses: ./.github/actions/setup
       - name: doctor checks 11 and 12 against Prometheus on loopback
+        id: run
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/monitor"
@@ -2404,6 +2522,11 @@ jobs:
       - name: Show the Prometheus log
         if: failure()
         run: cat "$RUNNER_TEMP/monitor/prometheus.log" || true
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # Fibre's readiness probe end to end on the runner: the module the install writes, at the pinned
   # blackbox_exporter, against stand-ins of Fibre's port with TLS and a self-signed certificate
@@ -2420,6 +2543,7 @@ jobs:
       - name: Install the gRPC packages of the stand-ins
         run: pip install "grpcio>=1.66,<2" "grpcio-health-checking>=1.66,<2"
       - name: The readiness probe and doctor check 24
+        id: run
         run: |
           set -euo pipefail
           dir="$RUNNER_TEMP/readiness"
@@ -2530,6 +2654,11 @@ jobs:
         run: |
           cd "$RUNNER_TEMP/readiness" || exit 0
           tail -n 50 stub.log blackbox.log prometheus.log || true
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   # install.sh end to end on the runner, as an operator runs it on a host: a dry run that
   # changes nothing, the install, a second run that changes nothing, root-owned binaries that
@@ -2643,6 +2772,7 @@ jobs:
       # Each gate stops install.sh before any change: a placeholder dead-man URL, a firewall
       # source wider than its private block, a vault.yml in plain text or readable by others.
       - name: The install refuses unsafe settings
+        id: refuses-unsafe
         run: |
           set -euo pipefail
           refused() {
@@ -2712,6 +2842,7 @@ jobs:
           rm -r "$(dirname "$INV")/host_vars"
           test ! -e /var/tmp/celestia-mon-install
       - name: The dry run changes nothing and lists the ufw rules
+        id: dry-run
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --check | tee "$RUNNER_TEMP/check.log"
           grep -q 'ufw rule:  allow from 10.255.255.1 to port 9910/tcp' "$RUNNER_TEMP/check.log"
@@ -2726,6 +2857,7 @@ jobs:
       # editor is a script: it writes the file the first time and copies what it is shown the second,
       # and notes the path of each decrypted copy it is shown, which must be in memory (/run).
       - name: --edit-vault creates and edits an encrypted vault.yml
+        id: edit-vault
         run: |
           set -euo pipefail
           sudo apt-get install -y -qq expect >/dev/null
@@ -2768,6 +2900,7 @@ jobs:
           grep -qF 'is a symbolic link' <<<"$out"
       # A first install sends one test message to the chat receivers; a run that changes nothing does not.
       - name: Install
+        id: install
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/install.log"
           grep -q '^A test message went to the chat receivers' "$RUNNER_TEMP/install.log"
@@ -2777,6 +2910,7 @@ jobs:
           sudo grep -q '^TASK \[celestia_mon_prometheus' /var/log/celestia-mon/install.log
           test "$(sudo stat -c '%U %a' /var/log/celestia-mon) $(sudo stat -c '%a' /var/log/celestia-mon/install.log)" = "root 700 600"
       - name: A second run changes nothing
+        id: second-run
         run: |
           sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/second.log"
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
@@ -2791,6 +2925,7 @@ jobs:
       # writable by every user. Each binary matches the sha256 the install recorded next to it, and
       # no staging directory is left.
       - name: Every file under /opt/celestia-mon belongs to root and matches its recorded sha256
+        id: opt-sha256
         run: |
           set -euo pipefail
           bad=$(sudo find /opt/celestia-mon \( ! -user 0 -o ! -group 0 -o \( ! -type l -perm -0002 \) \) -printf '%u:%g %m %p\n')
@@ -2814,6 +2949,7 @@ jobs:
       # password the install generated (readable by root and the celestia-mon-prometheus group);
       # amtool, as root, reads it through its --http.config.file.
       - name: Prometheus and Alertmanager answer only with the API password
+        id: api-password
         run: |
           set -euo pipefail
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/api-password)" = "root:celestia-mon-prometheus 640"
@@ -2838,6 +2974,7 @@ jobs:
       # reach Alertmanager as two CelestiaAnnouncement alerts. Prometheus scrapes the reader.
       # celestia-mon-tensile reads the stand-in and Prometheus scrapes it.
       - name: The outside check of the Fibre endpoint is read
+        id: outside-check
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-tensile
@@ -2855,6 +2992,7 @@ jobs:
       # default), GovVoteMissing's message and page are loaded (chain_id celestia), and with 6 days
       # and 23 hours left neither fires.
       - name: Upgrade signalling is read
+        id: signal
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-signal
@@ -2890,6 +3028,7 @@ jobs:
       # applies the rules: under signal's, a request reaches the RPC stand-in on 10.255.0.3; under
       # tensile's, it does not.
       - name: Each unit exchanges traffic only with its peers
+        id: unit-traffic
         run: |
           set -euo pipefail
           rules() { grep '^IPAddress' "/etc/systemd/system/celestia-mon-$1.service"; }
@@ -2919,6 +3058,7 @@ jobs:
       # here (127.0.0.1:7980), so every probe fails, and journald keeps neither of the two error
       # lines blackbox logs for each failed probe. blackbox answers only with the API password.
       - name: Fibre's readiness is asked through celestia-mon-blackbox
+        id: readiness
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-blackbox
@@ -2947,6 +3087,7 @@ jobs:
             echo "journald keeps the error lines of failed probes"; exit 1
           fi
       - name: Celestia announcements reach Alertmanager
+        id: announcements
         run: |
           set -euo pipefail
           systemctl is-active celestia-mon-announcements
@@ -2963,6 +3104,7 @@ jobs:
             grep -Eq '^celestia_mon_announcements_last_success_timestamp_seconds\{channel="111111111111111111"\} [1-9]'
           login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="announcements"}' | jq -e '.data.result[0].value[1] == "1"'
       - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
+        id: caps-ufw
         run: |
           for u in node-exporter otelcol prometheus alertmanager grafana blackbox; do
             systemctl is-active "celestia-mon-$u"
@@ -2981,6 +3123,7 @@ jobs:
       # metrics they export must have series. systemd-logind stands in for Fibre and pushes
       # nothing, so check 12 names the broken sources and check 13 reports that Fibre does not push.
       - name: doctor reads Prometheus and Alertmanager on loopback
+        id: doctor
         run: |
           out=$(sudo celestia-mon-doctor || true)
           printf '%s\n' "$out"
@@ -3036,6 +3179,7 @@ jobs:
       # Pages of the binaries that the install read stay charged to the installer; the
       # collectors job measures node_exporter and the collector after a cold start.
       - name: Every unit's peak memory stays at or below half its MemoryHigh
+        id: memory-peak
         run: |
           fail=0
           for u in node-exporter otelcol prometheus alertmanager grafana blackbox; do
@@ -3053,6 +3197,7 @@ jobs:
       # from it) and the client. A request from the client's address gets an answer; one from
       # another address of the private network (10.255.0.4) gets none.
       - name: Grafana on a private address exchanges traffic only with its clients
+        id: grafana-private
         run: |
           set -euo pipefail
           inv="$RUNNER_TEMP/grafana-private"
@@ -3072,6 +3217,7 @@ jobs:
           test "$(from 10.255.0.9)" = 200
           test "$(from 10.255.0.4)" = 000
       - name: Uninstall removes the services and the recorded rules, and keeps data, settings and users
+        id: uninstall
         run: |
           sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/uninstall.log"
           left=0
@@ -3100,10 +3246,12 @@ jobs:
           grep -qF -- '--uninstall --purge --host ci' "$RUNNER_TEMP/uninstall.log" || { echo "no --purge hint"; left=1; }
           exit "$left"
       - name: A second uninstall changes nothing
+        id: uninstall-again
         run: |
           sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/again.log"
           grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again.log"
       - name: Uninstall --purge leaves nothing behind
+        id: purge
         run: |
           sudo bash ./install.sh --uninstall --purge --host ci --check | tee "$RUNNER_TEMP/purge-plan.log"
           grep -q '^Purge: .*/var/lib/celestia-mon' "$RUNNER_TEMP/purge-plan.log"
@@ -3123,12 +3271,18 @@ jobs:
           grep -qx 'ufw allow 22/tcp' <<<"$added" || { echo "purge touched another ufw rule"; left=1; }
           exit "$left"
       - name: A second purge changes nothing
+        id: purge-again
         run: |
           sudo bash ./install.sh --uninstall --purge --host ci --yes | tee "$RUNNER_TEMP/again-purge.log"
           grep -qF 'celestia-mon is removed from ci (0 change(s)).' "$RUNNER_TEMP/again-purge.log"
       - name: Show the service logs
         if: failure()
         run: sudo journalctl -u 'celestia-mon-*' --no-pager -n 200
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
 
   molecule:
     runs-on: ubuntu-24.04
@@ -3142,7 +3296,56 @@ jobs:
           pip install "ansible-core==$ANSIBLE_CORE_VERSION" "molecule>=26.8,<27" "molecule-plugins[docker]>=26.7,<27"
           ansible-galaxy collection install "community.docker:>=4.0.0,<6.0.0" "ansible.posix:>=1.6.0,<3.0.0"
       - name: molecule test
+        id: test
         run: molecule test
         env:
           PY_COLORS: "1"
           ANSIBLE_FORCE_COLOR: "1"
+      - uses: ./.github/actions/marks
+        if: always()
+        with:
+          job: ${{ github.job }}
+          steps: ${{ toJSON(steps) }}
+
+  # Every check of tools/ci/inventory.txt, a step of this workflow with an id, ran and passed in this
+  # run: each job uploads the ids of its steps that passed (.github/actions/marks). The job summary
+  # also lists what the base revision (the first parent: on a pull request, its base branch) has and
+  # this one does not, and counts the rule test cases, the wording assertions of the CI code that runs
+  # doctor and molecule's verify tasks in both.
+  inventory:
+    if: ${{ !cancelled() }}
+    needs:
+      - lint
+      - secrets
+      - collectors
+      - rules
+      - announcements
+      - tensile
+      - signal
+      - dashboard
+      - doctor
+      - doctor-standby
+      - doctor-md
+      - doctor-signer
+      - doctor-ports
+      - doctor-monitor
+      - doctor-readiness
+      - install
+      - molecule
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 2
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: marks-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/marks
+      - name: Every check of the inventory ran and passed
+        run: python tools/ci/inventory.py check tools/ci/inventory.txt "$RUNNER_TEMP/marks" "$GITHUB_EVENT_NAME" HEAD^1
+      - name: The tests here and on the base
+        if: always()
+        run: python tools/ci/inventory.py counts HEAD^1

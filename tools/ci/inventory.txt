@@ -1,0 +1,79 @@
+# The test inventory: each check of .github/workflows/ci.yml, one per line:
+#   <job>/<step id> | where its code lives | the step's name [| pull_request]
+# Every step of ci.yml with an id is a check and has a line here, under its name; the lint job
+# checks that (tools/ci/inventory.py lint). In every run, the inventory job fails unless each check
+# ran and passed; a line ending in "| pull_request" runs on pull requests only. A case of the doctor
+# matrix is listed under the job name it gives (matrix.include[].job). The first 69 lines are the
+# checks of ci.yml at 18da682, before the CI code moved to tools/ci; the inventory job's summary
+# lists what the base revision has and this file does not.
+lint/yamllint                    | ci.yml                                       | yamllint
+lint/ansible-lint                | ci.yml                                       | ansible-lint
+lint/shellcheck                  | ci.yml                                       | shellcheck
+lint/install-sh-mode             | ci.yml                                       | install.sh is executable
+secrets/owner-files              | ci.yml                                       | Owner-only files are ignored and absent
+secrets/gitleaks                 | ci.yml                                       | gitleaks/gitleaks-action
+collectors/dry-run               | ci.yml                                       | Dry run on a fresh host
+collectors/install               | ci.yml                                       | Install
+collectors/second-run            | ci.yml                                       | Second run changes nothing
+collectors/node-exporter-units   | ci.yml                                       | node_exporter lists only the configured units
+collectors/otelcol-sums          | ci.yml                                       | The collector sums Fibre's size attributes away and drops traces
+collectors/resource-caps         | ci.yml                                       | The collector units run under the resource caps
+collectors/doctor-private-binds  | ci.yml                                       | doctor finds celestia-mon's units on private addresses
+collectors/port-taken            | ci.yml                                       | The playbook stops when another process holds a celestia-mon port
+rules/render                     | ci.yml                                       | Render the example inventories
+rules/holds                      | ci.yml                                       | The hold times the dashboard prints match the rules
+rules/promtool-check             | ci.yml                                       | promtool check rules
+rules/promtool-test              | ci.yml                                       | promtool test rules
+rules/vote-rules                 | ci.yml                                       | The vote rules on another network, and with gov off
+rules/promtool-config            | ci.yml                                       | promtool check config
+rules/amtool-config              | ci.yml                                       | amtool check-config
+rules/telegram-discord-text      | ci.yml                                       | Telegram and Discord messages read as text
+rules/instance-limits            | ci.yml                                       | Alerts leave Prometheus without instance, and every scrape job has its limits
+rules/mainnet-targets            | ci.yml                                       | The mainnet scrape targets follow the inventory groups
+rules/own-ports                  | ci.yml                                       | A host's own ports never become another host's
+rules/slack-pagerduty-text       | ci.yml                                       | Slack and PagerDuty messages read as text
+rules/routing                    | ci.yml                                       | amtool accepts every receiver type, and routing follows the type
+announcements/run                | ci.yml                                       | celestia-mon-announcements reads, posts once and reports errors
+tensile/run                      | ci.yml                                       | celestia-mon-tensile serves Tensile's verdict as metrics
+signal/run                       | ci.yml                                       | celestia-mon-signal serves x/signal as metrics
+dashboard/render                 | ci.yml                                       | Render the dashboard settings for the example inventories
+dashboard/generate               | ci.yml                                       | Generate the dashboards
+dashboard/panels-switches        | ci.yml                                       | Panels match the switches
+dashboard/missed-blocks          | ci.yml                                       | Missed blocks read the SignaturesMissed rule
+dashboard/fibre-row              | ci.yml                                       | The Fibre row is symmetric
+dashboard/upload-readiness       | ci.yml                                       | Upload readiness reads the not_ready rules
+dashboard/fibre-behind           | ci.yml                                       | Fibre behind the network draws the missed_uploads rule
+dashboard/clock                  | ci.yml                                       | Clock maximum error draws the ClockNotSynced rule
+dashboard/restarts               | ci.yml                                       | Restarts draw the crash-loop rule
+dashboard/serve-series           | ci.yml                                       | Serve the dashboards' series to Prometheus
+dashboard/panel-queries          | ci.yml                                       | Every panel query runs in Prometheus without an error, warning or info
+doctor/run                       | ci.yml                                       | Run doctor for each role
+doctor-standby/run               | ci.yml                                       | doctor on a standby Fibre host and a backup node
+doctor-md/run                    | ci.yml                                       | doctor reads the md RAID arrays
+doctor-signer/run                | ci.yml                                       | doctor on the signing path
+doctor-ports/run                 | ci.yml                                       | doctor on the validator's ports
+doctor-monitor/run               | ci.yml                                       | doctor checks 11 and 12 against Prometheus on loopback
+doctor-readiness/run             | ci.yml                                       | The readiness probe and doctor check 24
+install/refuses-unsafe           | ci.yml                                       | The install refuses unsafe settings
+install/dry-run                  | ci.yml                                       | The dry run changes nothing and lists the ufw rules
+install/edit-vault               | ci.yml                                       | --edit-vault creates and edits an encrypted vault.yml
+install/install                  | ci.yml                                       | Install
+install/second-run               | ci.yml                                       | A second run changes nothing
+install/opt-sha256               | ci.yml                                       | Every file under /opt/celestia-mon belongs to root and matches its recorded sha256
+install/api-password             | ci.yml                                       | Prometheus and Alertmanager answer only with the API password
+install/outside-check            | ci.yml                                       | The outside check of the Fibre endpoint is read
+install/signal                   | ci.yml                                       | Upgrade signalling is read
+install/unit-traffic             | ci.yml                                       | Each unit exchanges traffic only with its peers
+install/readiness                | ci.yml                                       | Fibre's readiness is asked through celestia-mon-blackbox
+install/announcements            | ci.yml                                       | Celestia announcements reach Alertmanager
+install/caps-ufw                 | ci.yml                                       | The units run with the resource caps, and the ufw rules carry the comment and are recorded
+install/doctor                   | ci.yml                                       | doctor reads Prometheus and Alertmanager on loopback
+install/memory-peak              | ci.yml                                       | Every unit's peak memory stays at or below half its MemoryHigh
+install/grafana-private          | ci.yml                                       | Grafana on a private address exchanges traffic only with its clients
+install/uninstall                | ci.yml                                       | Uninstall removes the services and the recorded rules, and keeps data, settings and users
+install/uninstall-again          | ci.yml                                       | A second uninstall changes nothing
+install/purge                    | ci.yml                                       | Uninstall --purge leaves nothing behind
+install/purge-again              | ci.yml                                       | A second purge changes nothing
+molecule/test                    | ci.yml                                       | molecule test
+lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
+lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
