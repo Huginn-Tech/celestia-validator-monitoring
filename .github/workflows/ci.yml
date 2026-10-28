@@ -1535,7 +1535,8 @@ jobs:
   # run: each job uploads the ids of its steps that passed (.github/actions/marks). The job summary
   # also lists what the base revision (the first parent: on a pull request, its base branch) has and
   # this one does not, and counts the rule test cases, the wording assertions of the CI code that runs
-  # doctor and molecule's verify tasks in both.
+  # doctor, the checks of every kind in all the CI code (Python asserts, jq -e and grep -q tests, amtool
+  # routes tests, in workflow steps and scripts alike) and molecule's verify tasks in both.
   inventory:
     if: ${{ !cancelled() }}
     needs:

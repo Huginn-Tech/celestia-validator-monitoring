@@ -14,8 +14,10 @@ passed.
       of its ci.yml, matched by job and name.
   python tools/ci/inventory.py counts BASE
       counts, in HEAD and in BASE: the test cases of the promtool rule tests, the wording
-      assertions of the CI code that runs doctor, and the tasks of molecule's verify playbook; and
-      lists the wording assertions that only one of them has. It only reports.
+      assertions of the CI code that runs doctor, the checks of every kind in all the CI code
+      (Python asserts, jq -e and grep -q tests, amtool routes tests, wherever they live), and the
+      tasks of molecule's verify playbook; and lists the wording assertions that only one of them
+      has. It only reports.
 
 Run it from the repository root; it reads HEAD and BASE with git. GITHUB_STEP_SUMMARY, when set,
 receives the results in Markdown. Needs PyYAML.
@@ -46,6 +48,15 @@ SAYS = re.compile(r"\bsays (\d+) '([^']*)'")
 GREP = re.compile(r"\bgrep(?: +-[A-Za-z]+)*(?: +--)? +$")
 VARIABLE = re.compile(r"\$(\w+|\{\w+\}|[@*])")
 KINDS = {"line": "doctor line patterns", "says": "says N 'text'", "want": "wanted texts", "grep": "other grep texts"}
+# The checks of every kind in all the CI code, every file under .github and tools/ci but this one, so
+# that a check moved from a workflow step into a script counts on both sides.
+CHECKS = {
+    "Python assert statements": re.compile(r"^\s*assert\b", re.M),
+    "jq -e tests": re.compile(r"\bjq -e"),
+    "grep -q tests": re.compile(r"\bgrep(?: +-[A-Za-z]+)* +-[A-Za-z]*q"),
+    "amtool routes tests": re.compile(r"\broutes test\b"),
+}
+CI_CODE = (".github", "tools/ci")
 
 
 def git(*args):
@@ -243,6 +254,17 @@ def doctor_assertions(rev):
     return found
 
 
+def ci_checks(rev):
+    """The number of checks of each kind of CHECKS in all the CI code at rev."""
+    found = collections.Counter()
+    for path in [p for folder in CI_CODE for p in files(rev, folder)]:
+        if path != "tools/ci/inventory.py":
+            text = git("show", f"{rev}:{path}") or ""
+            for kind, pattern in CHECKS.items():
+                found[kind] += len(pattern.findall(text))
+    return found
+
+
 def rule_tests(rev):
     total = 0
     for path in files(rev, RULE_TESTS):
@@ -269,6 +291,8 @@ def counts(base):
     rows = [("promtool rule test cases", rule_tests(base), rule_tests("HEAD"))]
     rows += [(f"doctor wording assertions: {KINDS[k]}", sum(n for (kind, _), n in there.items() if kind == k),
               sum(n for (kind, _), n in here.items() if kind == k)) for k in KINDS]
+    checks_there, checks_here = ci_checks(base), ci_checks("HEAD")
+    rows += [(f"CI code checks: {k}", checks_there[k], checks_here[k]) for k in CHECKS]
     rows += [("molecule verify tasks", verify_tasks(base), verify_tasks("HEAD"))]
     lines = ["## Tests here and on the base", "",
              f"| | base ({rev}) | here | |", "|---|---|---|---|"]
