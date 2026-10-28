@@ -293,8 +293,9 @@ BOARD_PANELS = {20, 21, 25, 216}
 # (uploads_failing) reads a 5-minute window before its hold.
 TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 900, 900, 300
 
-# Plain sentences for the alerts, the words of the notifications, for the alert list, and short
-# names for the Status cell: (key, sentence, short, part, needs). The key is a regex over
+# Plain sentences for the alerts, for the alert list and the red regions on the charts; a notification
+# carries the rule's own summary instead, and the two share the alert name and the host. Each entry also
+# has a short name for the Status cell: (key, sentence, short, part, needs). The key is a regex over
 # alertname:severity:unit:reason:check:host of a series grouped by by_alert(); Prometheus anchors it,
 # and $1 is the host at the end of the key. short: the Status cell's words, without a host, the same
 # words the tiles, cards and lines use for the state, at most what the cell holds (the intro strip's
@@ -3328,10 +3329,16 @@ def shade(s, host, k):
 def grown_before(sel, agg, job="celestia-app"):
     """grown() for a bar that ends at its time (barAlignment -1): how much the counter grew in the
     $__interval before the bar's time, so the newest bar is the last whole block and none is half
-    full. The start value is x one block earlier, read in 1-minute steps (sel may be an expression)."""
+    full. Both ends are read in 1-minute steps (sel may be an expression), so a node Prometheus could
+    not read for part of the block keeps the minutes it could: the end is x's last value in the block,
+    and the start is x one block earlier or, when the node was not read then, the block's lowest value,
+    its first after the node came back (a counter only grows, and starts again at 0 with the process).
+    A block without a sample of x has no bar."""
     x = "(%s by (host) (%s) or on (host) (max by (host) (up{job=%s}) == 1) * 0)" % (agg, sel, q(job))
-    start = "last_over_time(%s[1m:1m] offset $__interval)" % x
-    return "(((%s - %s) >= 0) or (%s < %s))" % (x, start, x, start)
+    end = "last_over_time(%s[$__interval:1m])" % x
+    start = ("(last_over_time(%s[1m:1m] offset $__interval) or on (host) min_over_time(%s[$__interval:1m]))"
+             % (x, x))
+    return "(((%s - %s) >= 0) or (%s < %s))" % (end, start, end, start)
 
 
 # A chart legend's entry: its text at LEGEND_PX and LEGEND_ITEM_PX for the colour mark and the gap
@@ -3395,13 +3402,21 @@ def validator_row(s):
             one('max(max by (host) (cometbft_p2p_peers{job="celestia-app"}) and on (host) %s)' % sig_now),
             no_value="No node signs")
     cells = [
+        # Red "Not signing" (-1) while ValidatorNotSigning pages, as every other surface says it: by then
+        # the count shows only its cap. While no node advances, the Status reads Nodes stalled and folds
+        # Not signing into it, so the cell keeps the count. Plain ALERTS selectors, as VNS10 and NNA10:
+        # firing() reads a bar's time block, not the instant.
         cell(109, "Blocks since signature",
-             "Blocks since the validator's last signature on any node; 0 or 1 is good. Above %g it turns amber, and "
-             "after %s ValidatorNotSigning sends an urgent alert. The count carries on after a repoint, stops at %g, "
-             "and right after a node start reads that until the first signature."
+             "Blocks since the validator's last signature on any node; 0 or 1 is good. Above %g it turns amber; after "
+             "%s ValidatorNotSigning sends an urgent alert, and the cell reads red Not signing while it pages, unless "
+             "no node makes new blocks. The count carries on after a repoint, stops at %g, and right after a node "
+             "start reads that until the first signature."
              % (n, s.hold("ValidatorNotSigning"), 10 * n) + more(["ValidatorNotSigning"]),
-             one(blocks_since_signature(10 * n)), color_mode="value",
-             thresholds=steps(("text", None), ("orange", n + 1)), no_value="No data"),
+             one(chain('((max(ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}) unless on () '
+                       'max(ALERTS{alertname="NodeNotAdvancing",alertstate="firing"})) * 0 - 1)',
+                       blocks_since_signature(10 * n))),
+             color_mode="value", thresholds=steps(("text", None), ("orange", n + 1)),
+             mappings=mapping((-1, "Not signing", "red")), no_value="No data"),
         cell(117, "Missed blocks, 1 h",
              "The share of the last hour's blocks without the validator's signature; 0.00%% or a few hundredths is "
              "good. SignaturesMissed reads the same share: above %g%% it turns amber, and after %s the alert sends a "
@@ -3487,8 +3502,9 @@ def validator_row(s):
         "Block proposals the validator %s per hour; bars that reach the dashed Expected line are good. Each node's "
         "bars take its colour, and missed proposals stack on top in grey. Expected is what the validator's share of "
         "voting power should bring; proposers take turns by stake, so hours differ by one or two. A signer that signs "
-        "votes but not proposals leaves the bars short. Each bar is a whole hour, so the hour that runs now shows "
-        "once it ends. Red band: ValidatorNotSigning paged; no node signed, proposals included."
+        "votes but not proposals leaves the bars short. A bar beside an outage counts only the minutes Prometheus "
+        "could read its node. Each bar is a whole hour, so the hour that runs now shows once it ends. Red band: "
+        "ValidatorNotSigning paged; no node signed, proposals included."
         % prop_word + more(["ValidatorNotSigning"]),
         refs([("%s > 0" % grown_before(prop, "sum"), "{{host}} proposals"),
               ("max(%s) > 0" % grown_before("(%s and on (proposer_address) %s)" % (mpp, own), "max"), "Missed"),
@@ -4067,8 +4083,9 @@ def upgrade_row(s):
 
 def alerts_row(s):
     """The collapsed All firing alerts row, right under the first screen: every alert firing or pending,
-    in the notifications' sentences, with the rule name their first line carries ("PAGE ·
-    ValidatorNotSigning · val-1"), linked to the rule's entry in the alert reference."""
+    each in a plain sentence, with the alert's name as the first line of its notification carries it
+    ("PAGE · ValidatorNotSigning · val-1"), so the notification can be found in its channel, linked to
+    the rule's entry in the alert reference."""
     levels = " or ".join("%s * 0 + %s" % (by_alert('ALERTS{alertstate="%s",severity="%s"}' % (state, sev)), num(v))
                          for state, sev, v in [("firing", "page", 3), ("pending", "page", 2),
                                                ("firing", "message", 1), ("pending", "message", 0.5)])
@@ -4087,11 +4104,11 @@ def alerts_row(s):
     table = panel(
         301, "table", "Firing alerts",
         "Every alert Prometheus has firing now, plus alerts whose problem is true but has not lasted long enough to be "
-        "sent, in the sentences of your notifications; the Status cell at the top names the worst one. Rule: the "
-        "alert's name, as the first line of its notification carries it; it opens the alert's entry in the "
-        "[alert reference](%s), with its meaning and first checks. Active for: how long since the problem started, "
-        "including the waiting time before it fired. The heartbeat (Watchdog) is left out. Silences do not hide alerts "
-        "here." % DOCS,
+        "sent, each in a plain sentence; the Status cell at the top names the worst one. Rule: the alert's name, as "
+        "the first line of its notification carries it (PAGE · ValidatorNotSigning · val-1), so you can find the "
+        "notification in your channel; it opens the alert's entry in the [alert reference](%s), with its meaning and "
+        "first checks. Active for: how long since the problem started, including the waiting time before it fired. "
+        "The heartbeat (Watchdog) is left out. Silences do not hide alerts here." % DOCS,
         [target("A", anchored, "", instant=True, fmt="table"), target("B", since, "", instant=True, fmt="table")],
         {"color": {"mode": "thresholds"}, "noValue": "No alerts firing", "thresholds": steps(("text", None)),
          "custom": {"align": "auto", "cellOptions": {"type": "color-text"}, "filterable": False, "inspect": False}},
