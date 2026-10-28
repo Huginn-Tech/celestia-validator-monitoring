@@ -83,6 +83,8 @@ celestia_mon_thresholds:
   not_signing_blocks: 10
   signatures_missed_ratio: 0.05
   node_behind_blocks: 20
+  peers_message_below: 2
+  peers_page_below: 1
   signer_median_seconds: 0.010
   disk_page_free_ratio: 0.05
   disk_message_free_ratio: 0.10

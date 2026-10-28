@@ -565,10 +565,10 @@ jobs:
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
-      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, Watchdog ->
-      # deadman, UpgradeScheduled and UpgradeSoon -> message on a route of their own that sends each
-      # once, UpgradeSignalMissing -> page), and checks that the receiver check refuses a
-      # PagerDuty-only list and the old page/message lists.
+      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, NodePeersLow by
+      # its severity, Watchdog -> deadman, UpgradeScheduled and UpgradeSoon -> message on a route of
+      # their own that sends each once, UpgradeSignalMissing -> page), the inhibitions of one cause,
+      # and checks that the receiver check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         run: |
           set -euo pipefail
@@ -598,6 +598,8 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=NodePeersLow severity=page host=val-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=NodePeersLow severity=message host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
           amtool config routes test --config.file="$am" --verify.receivers=announcement-page \
             alertname=CelestiaAnnouncement severity=page host=mon-1 source=ci announcement=1
@@ -626,6 +628,13 @@ jobs:
                   "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
           assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
                   "target_matchers": ['alertname="FibreNotServing"', 'reason!="not_ready"'], "equal": ["host"]} in inhibit, inhibit
+          # The signing node without peers pages once: not also as the signatures that stop or the nodes that
+          # stop advancing (no host), nor as that host's lag and its message about few peers.
+          peers = ['alertname="NodePeersLow"', 'severity="page"']
+          assert {"source_matchers": peers,
+                  "target_matchers": ['alertname=~"ValidatorNotSigning|SignaturesMissed|NodeNotAdvancing"']} in inhibit, inhibit
+          assert {"source_matchers": peers, "target_matchers": ['alertname=~"NodeBehind|NodePeersLow"', 'severity="message"'],
+                  "equal": ["host"]} in inhibit, inhibit
           receivers = {r["name"]: r for r in config["receivers"]}
           def count(name):
               return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
@@ -1949,8 +1958,8 @@ jobs:
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
           line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
           for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
-                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, ' \
-                      'FibreDown, DiskLow, MonitorCannotReach; ends in ' \
+                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ' \
+                      'ValidatorNotSigning, FibreDown, DiskLow, MonitorCannotReach; ends in ' \
                       ' hours); the others: {host="val-1"} by op'; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done

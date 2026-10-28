@@ -2324,12 +2324,12 @@ check_fibre_active() {
   fi
 }
 
-# The alerts of the rules with severity page (DiskLow also has message rules). UpgradeSignalMissing
-# exists only with upgrade signalling on, whose unit the install removes when it is off.
-# MonitorCannotReach's page ("Monitor cannot reach any server", next to its per-host messages)
-# exists only with the monitor on a host of its own; check_silences adds it there, once the roles
-# are known.
-PAGE_ALERTS=(NodeNotAdvancing ValidatorNotSigning FibreDown DiskLow)
+# The alerts of the rules with severity page (NodePeersLow and DiskLow also have message rules).
+# UpgradeSignalMissing exists only with upgrade signalling on, whose unit the install removes when
+# it is off. MonitorCannotReach's page ("Monitor cannot reach any server", next to its per-host
+# messages) exists only with the monitor on a host of its own; check_silences adds it there, once
+# the roles are known.
+PAGE_ALERTS=(NodeNotAdvancing NodePeersLow ValidatorNotSigning FibreDown DiskLow)
 if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
 
 # Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
@@ -2398,26 +2398,29 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
 # The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown,
 # UpgradeSignalMissing and MonitorCannotReach's page carry only alertname and severity, so each
 # other matcher must match an absent label: a silence of MonitorCannotReach for one host holds
-# back only that host's message. DiskLow also carries host, mountpoint and the node_exporter
-# labels, whose values are not known here: it counts when the silence names alertname or
-# severity, so a host silence for planned work is listed only when it runs long.
+# back only that host's message. NodePeersLow and DiskLow also carry host and the labels of their
+# metrics (DiskLow's mountpoint among them), whose values are not known here: each counts when the
+# silence names alertname or severity, so a host silence for planned work is listed only when it
+# runs long.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=()
-  local a m n o v hit named=false out=""
+  local a m n o v hit hosted named=false out=""
   IFS=$'\036' read -r -a ms <<<"$1"
   for m in "${ms[@]}"; do
     n=${m%%$'\037'*}
     if [[ $n == alertname || $n == severity ]]; then named=true; fi
   done
   for a in "${PAGE_ALERTS[@]}"; do
-    if [[ $a == DiskLow && $named == false ]]; then continue; fi
+    hosted=false
+    if [[ $a == NodePeersLow || $a == DiskLow ]]; then hosted=true; fi
+    if [[ $hosted == true && $named == false ]]; then continue; fi
     hit=true
     for m in "${ms[@]}"; do
       IFS=$'\037' read -r n o v <<<"$m"
       case $n in
         alertname) matcher_admits "$o" "$v" "$a" || hit=false ;;
         severity) matcher_admits "$o" "$v" page || hit=false ;;
-        *) [[ $a == DiskLow ]] || matcher_admits "$o" "$v" "" || hit=false ;;
+        *) [[ $hosted == true ]] || matcher_admits "$o" "$v" "" || hit=false ;;
       esac
     done
     if [[ $hit == true ]]; then out+="${out:+, }$a"; fi
