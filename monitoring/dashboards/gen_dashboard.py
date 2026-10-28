@@ -258,6 +258,8 @@ NOTIFY_ERRORS = 'prometheus_notifications_errors_total{job="prometheus"}'
 NOTIFY_DROPPED = 'prometheus_notifications_dropped_total{job="prometheus"}'
 NOTIFY_SENT = 'prometheus_notifications_sent_total{job="prometheus"}'
 AM_DISCOVERED = 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}'
+# When each rule group last ran: the alert rules run while this moves.
+RULES_RUN = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
 NNA = 'max(ALERTS{alertname="NodeNotAdvancing"})'
 # NodePeersLow's page: the node the validator signs through has no peers.
 PEERS_PAGE = 'alertname="NodePeersLow",severity="page"'
@@ -1356,10 +1358,9 @@ def alert_items(s):
 
 def synth_items(s):
     """(level, sentence, short, part, condition) of the Status cell's items no alert rule carries."""
-    evaluated = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
     items = [
-        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "(time() - max(%s) > 120)" % evaluated),
-        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "max(absent(%s))" % evaluated),
+        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "(time() - max(%s) > 120)" % RULES_RUN),
+        (2.95, "Alert rules are not running", "Rules stopped", P_MON, "max(absent(%s))" % RULES_RUN),
         (2.9, "Alertmanager down, alerts not sent", "Alerting down", P_MON, '(min(up{job="alertmanager"}) == 0)'),
         # Not while Alertmanager is down: "Alerting down" already says so, as one item.
         (2.85, "Alerts not reaching Alertmanager", "Alerts unsent", P_MON,
@@ -1368,7 +1369,7 @@ def synth_items(s):
         (2.8, "A notification failed in the last hour", "No heartbeat", P_MON,
          '(((((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 1) '
          "and on () (time() - max(%s) <= 120)) unless on () max(ALERTS{alertname=\"NotificationsFailing\"}))"
-         % evaluated),
+         % RULES_RUN),
     ]
     if s.announcements:
         # A Celestia announcement goes to Alertmanager directly, not through the rules. It is news, not a
@@ -1872,8 +1873,8 @@ def servers_tile(s):
         return 'max(ALERTS{alertstate="firing",%s,%s})' % (match, sel)
 
     # As a line's green: the alert rules ran in the last 2 minutes and none failed.
-    rules = ('((time() - max(prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}) <= 120) '
-             'unless on () max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}))')
+    rules = ('((time() - max(%s) <= 120) unless on () max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}))'
+             % RULES_RUN)
     down = service_down(s)
     # MonitorCannotReach's page names no server.
     unreached = (['max(ALERTS{alertstate="firing",%s}) * 0 + 5' % UNREACHED_PAGE] if s.mon_only else []) + (
@@ -1912,10 +1913,9 @@ def monitoring_now(s):
     """The monitoring itself now, as a code of MONITOR_WORDS: the alert rules run and none fails,
     Alertmanager is up and reached, notifications and the heartbeat go out, and the announcements are
     read (when on). The same items as the Status cell's monitoring words, and the alerts that watch them."""
-    evaluated = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
     return chain(
-        "(time() - max(%s) > 120) * 0 + 5" % evaluated,
-        "max(absent(%s)) * 0 + 5" % evaluated,
+        "(time() - max(%s) > 120) * 0 + 5" % RULES_RUN,
+        "max(absent(%s)) * 0 + 5" % RULES_RUN,
         'max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}) * 0 + 2',
         '(min(up{job="alertmanager"}) == 0) * 0 + 3',
         "%s * 0 + 4" % unsent("3m"),
