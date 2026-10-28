@@ -352,7 +352,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 1. Read-only: `journalctl -k` or `dmesg` for I/O or filesystem errors. The disk may be failing; find out why before you remount it read-write.
 2. Free space: `du -xh --max-depth=2 <mount> | sort -h | tail` shows what grew. On the node, check pruning in `app.toml` and blockstore compaction in `config.toml`.
-3. Fibre store: the "Fibre disk and budget" panel shows each Fibre store's free space against the room the storage budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
+3. Fibre store: the "Fibre disk and budget" panel shows the free space on the store of the Fibre that runs against what Fibre may still write under its storage budget, the room the budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 
 **Links.** [celestia-app v10 release notes: Fibre](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#fibre), [blockstore compaction](https://github.com/celestiaorg/celestia-app/blob/v10.4.0/docs/release-notes/release-notes.md#blockstore-compaction).
 
@@ -380,7 +380,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 
 1. `chronyc tracking` and `chronyc sources` (chrony), or `timedatectl timesync-status` (systemd-timesyncd): whether the daemon runs, which sources it reaches, and the offset it measures. `sudo celestia-mon-doctor` on the host (check 9) shows the same.
 2. Outgoing NTP (UDP 123) must be allowed to the time servers. Start the daemon if it stopped (`systemctl start chrony`, or `timedatectl set-ntp true` for systemd-timesyncd); run one of the two, not both.
-3. The dashboard's Clock maximum error chart (Servers: restarts, disk activity and clocks) shows when the line began to climb.
+3. The dashboard's Clock maximum error chart (Servers: disks, restarts and clocks) shows when the line began to climb.
 
 **Links.** [node_exporter v1.12.1 timex collector](https://github.com/prometheus/node_exporter/blob/v1.12.1/collector/timex.go), [Fibre health checks](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/server_health.go).
 

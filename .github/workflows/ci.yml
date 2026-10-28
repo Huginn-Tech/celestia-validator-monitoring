@@ -1419,31 +1419,35 @@ jobs:
       # host's third, the monitor's last). mainnet: a backup node, a standby Fibre, the outside check and
       # upgrade signalling on top (six answer tiles, the Network upgrade row; four columns: val-1,
       # fibre-1, the monitor mon-1, and last the remote signer's, which is not scraped). five: mainnet
-      # without signalling (the Servers and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the Validator
-      # row starts; the top strip's six cells and the answer tiles below them share their column edges.
+      # without signalling (the Servers and Monitoring tiles). Panels of collapsed rows count too; the first screen ends where the
+      # closed All firing alerts row (300) starts, and the Validator row follows it; the top strip's six cells and the answer
+      # tiles below them share their column edges.
       # Every six-cell row (the strip, the answers and the Validator, Fibre and Network upgrade facts: the
-      # stats 3 rows high, untitled, labelled at 13 px) has one value size, 22, 20 or 18 px.
+      # stats 3 rows high, untitled, labelled at 13 px; not the Servers band's cards 30-33, which are 3 high
+      # with one or two rows) has one value size, 22, 20 or 18 px.
       # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
-      # many rows, over one lower panel per column (ids 34-37) of four bars, all 4 rows high with the
-      # names left of the bars (5 with the names above them, where no name size fits the left); the
+      # many rows (a card whose server runs fewer parts ends in blank rows), over one lower panel per
+      # column (ids 34-37) of four bars, all 4 rows high with the names left of the bars (5 with the
+      # names above them, where no name size fits the left); the
       # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
       # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
       # role band (25) and the key line (24, 1 row) at History's x and width, each under the last. The Servers rows
       # (open, then closed) hold six charts per server (single: one server, mainnet and five: three, the
-      # monitor's among them, split: four, its KMS host scraped), each line one kind of chart, at one width and height,
-      # filling the 24 columns; each server's charts in one column, titled with its name first; its
-      # out-of-memory marker on its own memory chart. Restarts (480) and Clock maximum error (490) show
-      # every server in one chart across the full width.
+      # monitor's among them, split: four, its KMS host scraped): CPU, memory and network in the open row (400),
+      # disk used, latency and I/O in the closed one (450). Each line holds one kind of chart (a single server's
+      # three to a line), at one width and height, filling the 24 columns; each server's charts in one column,
+      # titled with its name first; its out-of-memory marker on its own memory chart. Restarts (480) and Clock
+      # maximum error (490) show every server in one chart across the full width, at the end of the closed row.
       - name: Panels match the switches
         run: |
           count() { jq '[.panels[] | ., (.panels // [])[] | select(.type != "row")] | length' "build/$1/dashboard.json"; }
           tiles() { jq -c '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .id]' "build/$1/dashboard.json"; }
           columns() { jq '[.panels[] | select(.id >= 30 and .id < 34)] | length' "build/$1/dashboard.json"; }
           test "$(count single)" = 32
-          test "$(count split)" = 68
-          test "$(count mainnet)" = 71
-          test "$(count five)" = 65
+          test "$(count split)" = 70
+          test "$(count mainnet)" = 73
+          test "$(count five)" = 67
           test "$(tiles single)" = '[11,12]'
           test "$(tiles split)" = '[11,12,14]'
           test "$(tiles mainnet)" = '[11,12,17,14,15,16]'
@@ -1451,7 +1455,7 @@ jobs:
           # The upgrade tile is Governance with the vote check on: Vote missing amber (6) and, where
           # GovVoteMissing pages, red (16); Network upgrade, without a vote word, with gov: false.
           for v in nogov nopage; do
-            test "$(count "$v")" = 71
+            test "$(count "$v")" = 73
             test "$(tiles "$v")" = '[11,12,17,14,15,16]'
           done
           tile16() {
@@ -1472,14 +1476,16 @@ jobs:
           test "$(columns five)" = 4
           for s in single split mainnet five; do
             jq -e '.uid == "celestia-mon-validator" and .title == "Celestia validator" and .templating.list == []' "build/$s/dashboard.json"
-            jq -e '([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max)
-                   == (.panels[] | select(.id == 100) | .gridPos.y)' "build/$s/dashboard.json"
+            jq -e '(.panels[] | select(.id == 300) | .gridPos.y) as $y
+                   | ([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max) == $y
+                   and (.panels[] | select(.id == 300) | .collapsed)
+                   and (.panels[] | select(.id == 100) | .gridPos.y) == $y + 1' "build/$s/dashboard.json"
             jq -e '[.panels[] | select(.gridPos.y == 0) | [.gridPos.x, .gridPos.w, .gridPos.h]]
                    == [[0,4,3],[4,4,3],[8,4,3],[12,4,3],[16,4,3],[20,4,3]]' "build/$s/dashboard.json"
             jq -e '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .gridPos] as $t
                    | ($t | map(.w) | unique | length) == 1 and ($t | map(.h) | unique) == [3]
                    and ($t | map(.w) | add) == 24' "build/$s/dashboard.json"
-            jq -e '[.panels[] | ., (.panels // [])[] | select(.type == "stat" and .gridPos.h == 3)]
+            jq -e '[.panels[] | ., (.panels // [])[] | select(.type == "stat" and .gridPos.h == 3 and (.id < 30 or .id > 33))]
                    | all(.title == "" and .options.text.titleSize == 13)
                      and (map(.options.text.valueSize) | unique | length == 1 and (.[0] | IN(22, 20, 18)))' \
               "build/$s/dashboard.json"
@@ -1490,6 +1496,8 @@ jobs:
                    | ($p | length) == 6 * $n
                    and ($all | map(select(.id >= 480) | [.id, .gridPos.x, .gridPos.w]) | sort) == [[480, 0, 24], [490, 0, 24]]
                    and ([.panels[] | select(.id == 400 or .id == 450) | .collapsed] == [false, true])
+                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 410 and . < 440)] | length) == 0
+                   and ([.panels[] | select(.id == 450) | .panels[] | .id | select(. >= 440)] | length) == 3 * $n + 2
                    and ($p | group_by(.gridPos.y) | all((map(.gridPos.h) | unique | length) == 1
                                                         and (map(.gridPos.w) | unique | length) == 1
                                                         and (map(.gridPos.w) | add) == 24))
@@ -1585,26 +1593,29 @@ jobs:
           EOF
       # The Fibre row (ids 201-249): six facts in the top strip's cell style (untitled, label over value,
       # set from the left, 3 rows high, width 4 across the 24 columns, one value size, no sparkline), then
-      # the Upload readiness band (215: one untitled lane across the row, 2 rows high, right under the
-      # facts), then three charts of one height, right under the band: two side by side on columns 0 and
-      # 12, then one across the row.
+      # the Upload readiness line, 2 rows high, right under the facts, in History's form: its bars (215, an
+      # untitled status history with its lane between two hidden ones) on History's 21 columns and its
+      # share (216, an untitled state timeline of the same lanes and rowHeight) in the Uptime column's 3.
+      # Then four charts of one height, right under it, in two lines of two on columns 0 and 12.
       - name: The Fibre row is symmetric
         run: |
           for s in split mainnet five; do
             jq -e '[.panels[] | select(.id > 200 and .id < 250)] as $f
                    | [$f[] | select(.type == "stat")] as $p | ($p | map(.gridPos)) as $s
                    | [$f[] | select(.type == "timeseries") | .gridPos] as $c
-                   | [$f[] | select(.type == "state-timeline")] as $b
+                   | [$f[] | select(.type == "status-history")] as $b | [$f[] | select(.type == "state-timeline")] as $u
                    | ($s | map(.y) | unique | length) == 1 and ($s | map(.h) | unique) == [3]
                      and ($s | map(.w) | unique) == [4] and ($s | map(.w) | add) == 24
                      and ($p | all(.title == "" and .options.graphMode == "none" and .options.justifyMode == "auto"
                                    and .options.textMode == "value_and_name" and .options.text.titleSize == 13))
                      and ($p | map(.options.text.valueSize) | unique | length) == 1
                      and ($b | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h]))
-                         == [[215, "", 1, 0, 24, 2]]
+                         == [[215, "", 3, 0, 21, 2]]
+                     and ($u | map([.id, .title, (.targets | length), .gridPos.x, .gridPos.w, .gridPos.h, .gridPos.y, .options.rowHeight]))
+                         == [[216, "", 3, 21, 3, 2, $b[0].gridPos.y, $b[0].options.rowHeight]]
                      and $b[0].gridPos.y == ($s | map(.y + .h) | max)
                      and ($c | map(.h) | unique | length) == 1 and ($c | map(.y) | min) == $b[0].gridPos.y + 2
-                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 24]]' \
+                     and ($c | sort_by(.y, .x) | map([.x, .w])) == [[0, 12], [12, 12], [0, 12], [12, 12]]' \
               "build/$s/dashboard.json"
           done
       # Upload readiness (215) and the Fibre tile, History and cards read the not_ready rules: both rules
@@ -1633,7 +1644,7 @@ jobs:
                   p = todo.pop()
                   panels[p["id"]] = p
                   todo += p.get("panels", [])
-              band = " ".join(panels[215]["targets"][0]["expr"].split())
+              band = " ".join(next(t["expr"] for t in panels[215]["targets"] if t["legendFormat"] == "Upload readiness").split())
               assert "max_over_time(%s[$__interval] offset -$__interval)" % m.group(1) in band, band
               page = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
               assert 'ALERTS{alertstate="firing",%s}' % page in band, band
@@ -1695,7 +1706,43 @@ jobs:
               assert chart["targets"] and all(m.group(1) + "{" in t["expr"] for t in chart["targets"]), chart["targets"]
               level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
               assert level == int(m.group(2)), "%s: 490's line at %s, the rule's %s" % (s, level, m.group(2))
+              assert chart["title"].endswith("(alert at %d s)" % level), "%s: 490 is titled %r" % (s, chart["title"])
               print("%s: 490 draws %s, its line at %s s" % (s, m.group(1), level))
+          EOF
+      # Restarts (480) draws, for each service of each server, the value ServiceDown's crash-loop rule compares
+      # (its restarts in the last 30 minutes), its dashed line at the rule's number and that number in its
+      # title, so neither side can change alone.
+      - name: Restarts draw the crash-loop rule
+        run: |
+          python - <<'EOF'
+          import json
+          import re
+
+          import yaml
+
+          for s in ("single", "split", "mainnet", "five"):
+              rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
+              exprs = [" ".join(r["expr"].split()) for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
+                       if r.get("alert") == "ServiceDown" and "node_systemd_service_restart_total" in r["expr"]]
+              found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)", e)
+                       for e in exprs]
+              assert found and all(found), "%s: the crash-loop rules %s" % (s, exprs)
+              levels = {int(m.group(1)) for m in found}
+              assert len(levels) == 1, "%s: crash-loop levels %s" % (s, levels)
+              n = levels.pop()
+              panels = {}
+              todo = json.load(open("build/%s/dashboard.json" % s))["panels"]
+              while todo:
+                  p = todo.pop()
+                  panels[p["id"]] = p
+                  todo += p.get("panels", [])
+              chart = panels[480]
+              assert chart["targets"] and all("increase(node_systemd_service_restart_total{" in t["expr"] and "[30m]" in t["expr"]
+                                              for t in chart["targets"]), chart["targets"]
+              level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
+              assert level == n, "%s: 480's line at %s, the rule's %s" % (s, level, n)
+              assert chart["title"] == "Restarts (alert above %d in 30 min)" % n, "%s: 480 is titled %r" % (s, chart["title"])
+              print("%s: 480 draws %d series, its line at %s" % (s, len(chart["targets"]), level))
           EOF
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
