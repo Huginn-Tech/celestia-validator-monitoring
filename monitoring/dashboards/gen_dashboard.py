@@ -3087,7 +3087,9 @@ def signing_time(s, pid, hue, title, name_px=None):
 
 
 def card_desc(s, kind, rows):
-    """The (i) of a card that shows rows (as card_rows gives them): a sentence for each row it has."""
+    """The (i) of a card that shows rows (as card_rows gives them): a sentence for each row it has, and a
+    link to every alert whose word a row can show."""
+    twice = s.remote and not s.multi
     if kind == "server":
         parts = {name for name, _, _, _ in rows}
         node, fibre, watched = bool(parts & {"Consensus node", "Node"}), "Fibre" in parts, "Monitoring" in parts
@@ -3100,27 +3102,41 @@ def card_desc(s, kind, rows):
         if node:
             desc += (" Consensus node: Signing or Backup, with its peers; amber 'Node behind' past %g blocks "
                      "(NodeBehind); amber 'Few peers' under %d peers, red 'No peers' once NodePeersLow pages for the "
-                     "node the validator signs through." % (s.NB, s.PM))
-            if s.remote and not s.multi:
+                     "node the validator signs through; amber 'Not signing' while no node signs, red once "
+                     "ValidatorNotSigning pages." % (s.NB, s.PM))
+            if twice:
                 desc += " Two signers: ValidatorSigningTwice; stop one signer."
         if fibre:
-            desc += " Fibre: Active or Standby, or a Fibre alert's words."
+            desc += (" Fibre: Active or Standby, or a Fibre alert's words: amber 'Not running' while no Fibre runs "
+                     "anywhere, red once FibreDown pages; amber 'Two Fibres' (FibreBothActive); FibreNotServing's "
+                     "reasons.")
         if watched:
+            failed = (["'Rules stopped'", "'Rules failing' (MonitoringBroken)", "'Alerting down'",
+                       "'Alerts unsent' (NotificationsFailing)", "'No heartbeat' (DeadmanFailing)"]
+                      + (["'Feed stopped' (AnnouncementsUnreadable)"] if s.announcements else []))
             desc += (" Monitoring, on %s, the monitor: Working while the alert rules run and alerts go out, else "
-                     "what failed." % s.monitor)
+                     "what failed, in amber: %s or %s." % (s.monitor, ", ".join(failed[:-1]), failed[-1]))
+        # The links: the node's and Fibre's alerts (each in the alert reference's order), ServiceDown, then
+        # the monitoring's (monitoring_tile's).
         return desc + " Every word: the panel guide." + more(
-            (["NodeBehind", "NodePeersLow"] if node else []) + (["ServiceDown"] if node or fibre else [])
-            + (["FibreNotServing"] if fibre else []) + (["MonitoringBroken"] if watched else []), [PANEL_GUIDE])
+            (["NodeBehind", "NodePeersLow", "ValidatorNotSigning"] + (["ValidatorSigningTwice"] if twice else [])
+             if node else [])
+            + (["FibreDown", "FibreBothActive", "FibreNotServing"] if fibre else [])
+            + (["ServiceDown"] if node or fibre else [])
+            + (["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]
+               + (["AnnouncementsUnreadable"] if s.announcements else []) if watched else []), [PANEL_GUIDE])
     desc = ("Where the remote signer signs now: the node the validator's signatures go through")
     if s.fibre:
         desc += (", and the node Fibre's go through, amber when they differ, because then Fibre's uploads fail")
     desc += "."
+    if twice:
+        desc += " Two signers: ValidatorSigningTwice; stop one signer."
     if kind == "kms":
         desc += " Signer service: tmkms's unit on this server, as ServiceDown reads it."
     else:
         desc += " tmkms's own server is not scraped (celestia_mon_kms_scrape): only its signing is seen."
-    return desc + more(["ValidatorNotSigning", "RemoteSignerProblem"] + (["ServiceDown"] if kind == "kms" else []),
-                       [MAINNET_LAYOUT])
+    return desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if twice else []) + ["RemoteSignerProblem"]
+                       + (["ServiceDown"] if kind == "kms" else []), [MAINNET_LAYOUT])
 
 
 def card(s, pid, title, desc, rows, size):
