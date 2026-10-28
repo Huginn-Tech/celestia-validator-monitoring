@@ -112,7 +112,7 @@ VIRT = (r"lo|docker.*|veth.*|br.*|vmbr.*|virbr.*|cni.*|flannel.*|cali.*|cilium.*
 DISK = r"dm-.*|md.*|zd.*|sr.*|nbd.*"
 
 # One identity colour per server, in servers order: every line, fill, bar and sparkline of the
-# server, its name and the role band's tints (the hex at 20% alpha). Never green, yellow, orange,
+# server, its name and the role band's tints (the hex at 35% alpha). Never green, yellow, orange,
 # red or grey, which mean state; neighbours differ in hue and lightness, and each keeps at least
 # 5:1 against the panel background. Servers past the list are drawn in the text colour.
 HOST_COLORS = [("#5794F2", "#5794F2"), ("#CA95E5", "#CA95E5"), ("#6ED0E0", "#6ED0E0"), ("#8AB8FF", "#8AB8FF")]
@@ -792,9 +792,11 @@ class Setup:
         return HOST_COLORS[i] if i < len(HOST_COLORS) else ("text", None)
 
     def tint(self, host):
-        """A server's identity colour at 20% alpha, for the role band."""
+        """A server's identity colour at 35% alpha, for the role band: enough that the servers' segments
+        tell apart at a glance, while the band's white words keep at least 7:1 on every HOST_COLORS tint
+        (Grafana writes them white while they keep 3:1)."""
         hexa = self.color(host)[1]
-        return hexa + "33" if hexa else GREY + "33"
+        return hexa + "59" if hexa else GREY + "59"
 
     def hold(self, name, extra=0):
         """How long after its condition a rule fires, as text, from monitoring/rules/holds.json, plus
@@ -2323,32 +2325,41 @@ def role_band(s, lanes, height, axis):
 def key_line(s, axis, width):
     """The line under the role band: the selected range's first and last moment (in the dashboard's time
     zone, UTC) under the two ends of the plots, which have no time axis, and between them the one rule
-    for every colour on the screen: each server's colour with its name, then the states. It is one line
-    in an untitled h1 (width columns) whose font sets the line height to KEY_PX, lifted 1 px because the
-    font's glyph box is a little taller than its line, so Grafana never scrolls it (the text panel's
-    sanitiser drops line-height, overflow, flex and column-gap, but keeps font, gap, flex-grow,
-    flex-basis, flex-wrap and margin). The servers and the states are two groups in a box laid out from
-    the right that wraps upwards: where the line has no room for the servers they wrap above the panel's
-    top, which its scroll box clips without scrolling, and the states stay."""
-    swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:10px;height:10px;'
-              'border-radius:2px;background-color:%s;margin-right:4px"></span>%s</span>')
-    states = [(OK, "Fine"), (WARN, "Warning"), (ALERT, "Urgent"), (NODATA, "No data")]
+    for every colour on the screen: each server's name in its colour, a divider, then the states, each
+    with its 10 px square, so a square always means a state. It is one line in an untitled h1 (width
+    columns) whose font sets the line height to KEY_PX, lifted 1 px because the font's glyph box is a
+    little taller than its line, so Grafana never scrolls it (the text panel's sanitiser drops
+    line-height, overflow, flex and column-gap, but keeps font, gap, flex-grow, flex-basis, flex-wrap,
+    margin, padding and border). The servers and the states are two groups in a box laid out from the
+    right that wraps upwards: where the line has no room for the servers they wrap above the panel's
+    top, which its scroll box clips without scrolling, and the states stay. The divider is the servers
+    group's right border, so it wraps away with them."""
+    swatch = ('<span style="display:flex;align-items:center"><span style="display:block;width:%dpx;height:%dpx;'
+              'border-radius:2px;background-color:%s;%smargin-right:4px"></span>%s</span>')
+    # No data's fill is nearly invisible on the dark panel: its square has a 1 px border within the same 10 px.
+    states = [(OK, "Fine", ""), (WARN, "Warning", ""), (ALERT, "Urgent", ""),
+              (NODATA, "No data", "border:1px solid %s99;" % GREY)]
     hosts = [(c, name) for _, name, c in band_columns(s) if c]
     gap = 14
+    apart = 3 * gap // 2                 # from the last server to the divider, and from the divider to the states
     ends = ["${__from:text}", "${__to:text} UTC"]
     room = (inner_px(width) - axis - text_px("2026-10-21 09:18:15", KEY_PX)
             - text_px("2026-10-21 09:18:15 UTC", KEY_PX) - 4 * gap)
-    if sum(text_px(t, KEY_PX) + 14 for _, t in states) + gap * (len(states) - 1) > room:
+    if sum(text_px(t, KEY_PX) + 14 for _, t, _ in states) + gap * (len(states) - 1) > room:
         raise SystemExit("The key line under the role band does not fit %d columns" % width)
-    group = '<span style="display:flex;align-items:center;gap:%dpx">%s</span>'
-    boxes = "".join(group % (gap, "".join(swatch % (c, t) for c, t in items)) for items in (states, hosts) if items)
+    group = '<span style="display:flex;align-items:center;gap:%dpx%s">%s</span>'
+    boxes = group % (gap, "", "".join(swatch % (((8, 8) if line else (10, 10)) + (c, line, t))
+                                      for c, t, line in states))
+    if hosts:
+        boxes += group % (gap, ";padding-right:%dpx;border-right:1px solid %s66" % (apart, GREY),
+                          "".join('<span style="color:%s">%s</span>' % (c, name) for c, name in hosts))
     content = ('<div style="display:flex;align-items:center;height:%dpx;margin-top:-1px;font:%dpx/%dpx Inter, '
                'Helvetica, Arial, sans-serif;color:#8e8e8e;padding-left:%dpx">'
                '<span style="flex-shrink:0">%s</span>'
                '<span style="flex-grow:1;flex-basis:0;min-width:0;height:%dpx;display:flex;flex-direction:row-reverse;'
                'flex-wrap:wrap-reverse;justify-content:center;align-items:center;gap:0 %dpx;margin:0 %dpx">%s</span>'
                '<span style="flex-shrink:0">%s</span></div>'
-               % (KEY_PX, KEY_PX, KEY_PX, axis, ends[0], KEY_PX, 3 * gap, 2 * gap, boxes, ends[1]))
+               % (KEY_PX, KEY_PX, KEY_PX, axis, ends[0], KEY_PX, apart, 2 * gap, boxes, ends[1]))
     return {"id": 24, "type": "text", "title": "", "transparent": True,
             "options": {"content": content, "mode": "html"}}
 
