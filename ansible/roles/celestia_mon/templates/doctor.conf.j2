@@ -40,9 +40,6 @@ blackbox_url=http://127.0.0.1:{{ celestia_mon_ports.blackbox }}
 api_user={{ celestia_mon_api_user }}
 api_password_file={{ celestia_mon_api_password_file }}
 node_hosts={{ node_hosts | join(',') }}
-{# The data directory of role celestia_mon_prometheus (celestia_mon_prometheus_data_dir), as in the preflight. #}
-prometheus_data_dir=/var/lib/celestia-mon/prometheus
-prometheus_retention_size={{ celestia_mon_prometheus_retention_size }}
 {# Whether GovVoteMissing pages, as the rules have it (celestia_mon_gov_page). #}
 gov_page={{ 'true' if celestia_mon_gov_page | bool else 'false' }}
 {% endif %}

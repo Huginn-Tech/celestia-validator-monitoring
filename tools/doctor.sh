@@ -22,10 +22,11 @@
 # multiplexer build of it unpacks any missing embedded binaries into
 # <node home>/bin, as the node itself does at every start.
 #
-# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15,
-# 16, 18, 19 and 21 to 24 run on the monitor host and ask them there, with the API
-# password that only root can read (api_password_file). Check 24 also asks
-# celestia-mon-blackbox there (blackbox_url).
+# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 18, 19
+# and 21 to 24 run on the monitor host and ask them there, with the API password
+# that only root can read (api_password_file). Check 24 also asks
+# celestia-mon-blackbox there (blackbox_url). Numbers 15 and 16 are not used: each
+# check keeps its number, which the docs cite.
 #
 # signer and fibre_enabled tell doctor the install type: with signer=local it
 # never expects the remote signer's metrics, with fibre_enabled=false never
@@ -70,8 +71,6 @@ declare -A C=(
   [blackbox_url]="http://127.0.0.1:9919"
   [api_user]="celestia-mon"
   [api_password_file]="/etc/celestia-mon/api-password"
-  [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
-  [prometheus_retention_size]=""
   [gov_page]=""
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
@@ -138,10 +137,7 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   api_user, api_password_file  HTTP basic auth for those three (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)
-  prometheus_data_dir    default /var/lib/celestia-mon/prometheus
-  prometheus_retention_size  Prometheus's retention size, such as 8GB
-                         (default: not compared)
-  gov_page               true when GovVoteMissing pages (celestia_mon_gov_page),
+  gov_page              true when GovVoteMissing pages (celestia_mon_gov_page),
                          so check 21 counts a silence of it (default: not set,
                          not counted)
   signer_median_max      seconds (default 0.010)
@@ -263,7 +259,6 @@ url_port() { # URL -> its port, empty when it names none
   hp=${hp##*]}
   if [[ $hp == *:* ]]; then printf '%s' "${hp##*:}"; fi
 }
-gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
 
 unit_prop() { systemctl show -p "$2" --value "$1" 2>/dev/null; }
 unit_loaded() { [[ $(unit_prop "$1" LoadState) == loaded ]]; }
@@ -2238,102 +2233,6 @@ check_fibre_pipeline() {
   fi
 }
 
-size_bytes() { # Prometheus size such as 8GB or 512MiB (base 1024) -> bytes; empty when it is not one
-  awk -v s="$1" 'BEGIN {
-    if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
-    n = substr(s, 1, RLENGTH)
-    u = toupper(substr(s, RLENGTH + 1))
-    sub(/IB$/, "B", u)
-    p = index("KMGTPE", substr(u, 1, 1))
-    if (u == "B") f = 1
-    else if (length(u) == 2 && substr(u, 2, 1) == "B" && p > 0) f = 1024 ^ p
-    else exit
-    printf "%.0f\n", n * f
-  }'
-}
-
-# retention_size bounds Prometheus's blocks only: the WAL, the head chunks and the
-# space a compaction writes before it deletes the old blocks come on top. The
-# install's preflight asks for retention_size * 1.5 + 2 GiB on the data mount;
-# here what Prometheus holds now plus the free space must reach the same amount.
-check_prometheus_disk() {
-  local name="monitor disk" dir=${C[prometheus_data_dir]} rs=${C[prometheus_retention_size]} used avail="" mount="" size need text
-  if ! has_role monitor; then report SKIP 15 "$name" "not the monitor host"; return; fi
-  if [[ -z $dir || ! -d $dir ]]; then
-    report SKIP 15 "$name" "Prometheus data directory ${dir:-(not set)} not found (pass --prometheus-data-dir)"
-    return
-  fi
-  if [[ $(id -u) -ne 0 ]]; then
-    report SKIP 15 "$name" "run as root to measure $dir"
-    return
-  fi
-  # du's exit status is not used: Prometheus may delete a file while du walks the directory.
-  used=$(du -sb -- "$dir" 2>/dev/null | awk 'END { print $1 }')
-  read -r avail mount < <(df -P -B1 -- "$dir" 2>/dev/null | awk 'NR == 2 { print $4, $6 }')
-  if [[ ! $used =~ ^[0-9]+$ || ! $avail =~ ^[0-9]+$ ]]; then
-    report SKIP 15 "$name" "cannot read the size of $dir or the free space of its mount"
-    return
-  fi
-  text="Prometheus holds $(gib "$used") GiB in $dir and $mount has $(gib "$avail") GiB free"
-  size=$(size_bytes "$rs")
-  if [[ -z $size || $size == 0 ]]; then
-    report OK 15 "$name" "$text (no retention size to compare with; pass --prometheus-retention-size)"
-    return
-  fi
-  need=$(awk -v s="$size" 'BEGIN { printf "%.0f", s * 1.5 + 2147483648 }')
-  if ((used + avail >= need)); then
-    report OK 15 "$name" "$text: room for retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB"
-  else
-    report FAIL 15 "$name" "$text, $(gib "$((used + avail))") GiB in all, but Prometheus may need retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB there: the WAL, head chunks and compaction space come on top of retention_size. Fix: free space on $mount, or lower celestia_mon_prometheus_retention_size and re-run install.sh on the monitor"
-  fi
-}
-
-# Disk load on the Celestia hosts around Prometheus's last compaction, which runs
-# about every 2 hours, read from Prometheus. The same queries work in Grafana's
-# Explore; T is the time of the compaction:
-#   T        max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])
-#   latency  rate(node_disk_write_time_seconds_total{job="node"}[1m]) / rate(node_disk_writes_completed_total{job="node"}[1m])
-#   busy     rate(node_disk_io_time_seconds_total{job="node"}[1m])
-# For each, the worst disk's peak per host in the 10 minutes from 3 minutes before T
-# is set against its peak in the hour before that.
-check_compaction() {
-  local name="compaction io" t h v lat busy when
-  local -a parts=()
-  local -A lp=() lb=() bp=() bb=()
-  if ! has_role monitor; then report SKIP 16 "$name" "not the monitor host"; return; fi
-  # A monitor of its own shares no disk with celestia-appd or Fibre; DiskLow and the Servers band
-  # watch its own disk.
-  if ! node_host && ! has_role fibre; then
-    report SKIP 16 "$name" "this monitor runs no celestia-appd node or Fibre, so Prometheus's compactions share no disk with them"
-    return
-  fi
-  if ((!PROM_OK)); then report SKIP 16 "$name" "Prometheus not answering (check 11)"; return; fi
-  t=$(prom_value 'max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])')
-  t=${t%%.*}
-  if [[ ! $t =~ ^[0-9]+$ ]]; then
-    report SKIP 16 "$name" "no Prometheus compaction in the last 6 hours (the first comes about 3 hours after Prometheus starts, then one every 2 hours); run doctor again later"
-    return
-  fi
-  when=$(date -u -d "@$t" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)
-  lat='rate(node_disk_write_time_seconds_total{job="node"}[1m]) / (rate(node_disk_writes_completed_total{job="node"}[1m]) > 0)'
-  busy='rate(node_disk_io_time_seconds_total{job="node"}[1m])'
-  while read -r h v; do lp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[10m:15s] @ $((t + 420))))" host)
-  while read -r h v; do lb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[1h:15s] @ $((t - 180))))" host)
-  while read -r h v; do bp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[10m:15s] @ $((t + 420))))" host)
-  while read -r h v; do bb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[1h:15s] @ $((t - 180))))" host)
-  while read -r h; do
-    [[ -n $h ]] || continue
-    parts+=("$h $(awk -v a="${lp[$h]:-}" -v b="${lb[$h]:-}" -v c="${bp[$h]:-}" -v d="${bb[$h]:-}" '
-      function f(v, k, fmt) { return (v ~ /^[0-9.eE+-]+$/) ? sprintf(fmt, v * k) : "?" }
-      BEGIN { printf "write latency %s ms (%s ms), busy %s%% (%s%%)", f(a, 1000, "%.1f"), f(b, 1000, "%.1f"), f(c, 100, "%.0f"), f(d, 100, "%.0f") }')")
-  done < <(printf '%s\n' "${!lp[@]}" "${!bp[@]}" | sort -u)
-  if ((${#parts[@]} == 0)); then
-    report SKIP 16 "$name" "no disk data from the Celestia hosts (job node) around the compaction at $when"
-    return
-  fi
-  report INFO 16 "$name" "last Prometheus compaction about $when; peak of the worst disk per Celestia host in the 10 minutes around it (in the hour before in brackets): $(join "${parts[@]}"). A clear rise on a validator or Fibre disk means Prometheus competes with it; IOWeight cannot stop that under the none I/O scheduler (common on NVMe) unless io.cost is set, so then put Prometheus's data (${C[prometheus_data_dir]}) on another disk"
-}
-
 # Every celestia-appd node against the highest one, on the monitor: a backup node that
 # trails is not ready to take the validator role over. Role-independent: the node that
 # exports cometbft_consensus_validator_last_signed_height holds the signer now, wherever
@@ -2563,7 +2462,7 @@ check_silences() {
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
   if [[ ${C[signer]} == remote && ${C[signer_multi_node],,} != true ]]; then PAGE_ALERTS+=(ValidatorSigningTwice); fi
   if fibre_on; then PAGE_ALERTS+=(FibreNotServing); fi
-  # A monitor that runs no celestia-appd or Fibre (as in check 16) can lose every host at once,
+  # A monitor that runs no celestia-appd or Fibre can lose every host at once,
   # and its rules have MonitorCannotReach's page for that.
   if ! node_host && ! has_role fibre; then PAGE_ALERTS+=(MonitorCannotReach); fi
   if [[ ${C[gov_page],,} == true ]]; then PAGE_ALERTS+=(GovVoteMissing); fi
@@ -2963,8 +2862,6 @@ check_stack
 check_rule_metrics
 check_fibre_pipeline
 check_memory
-check_prometheus_disk
-check_compaction
 check_fibre_signer
 check_node_lag
 check_fibre_active

@@ -2196,13 +2196,14 @@ jobs:
           echo "::endgroup::"
           for want in '^SKIP +1 +node metrics +not a validator or backup node host' \
                       '^SKIP +6 +fibre service +not a Fibre host' \
-                      '^SKIP +16 +compaction io +this monitor runs no celestia-appd node or Fibre' \
                       '^SKIP +17 +fibre signer +not a Fibre host' \
                       '^SKIP +20 +signer binds +not a validator or backup node host' \
                       '^SKIP +25 +node ports +not a validator or backup node host' \
                       '^SKIP +26 +service users +no celestia-appd node or Fibre unit on this host'; do
             grep -Eq -- "$want" <<<"$out" || { echo "the monitor-only host does not say: $want"; exit 1; }
           done
+          # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
+          if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "the monitor-only host printed a line numbered 15 or 16"; exit 1; fi
 
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
@@ -2987,7 +2988,9 @@ jobs:
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-announcements 127\.0\.0\.1:9916' <<<"$out"
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-announcements [0-9]+ MiB' <<<"$out"
-          grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
+          # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
+          if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "doctor printed a line numbered 15 or 16"; exit 1; fi
+          grep -Eq '^(OK|WARN|FAIL|SKIP) +17 +fibre signer ' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-signal 127\.0\.0\.1:9918' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
