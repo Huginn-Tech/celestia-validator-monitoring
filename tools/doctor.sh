@@ -22,10 +22,11 @@
 # multiplexer build of it unpacks any missing embedded binaries into
 # <node home>/bin, as the node itself does at every start.
 #
-# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 15,
-# 16, 18, 19 and 21 to 24 run on the monitor host and ask them there, with the API
-# password that only root can read (api_password_file). Check 24 also asks
-# celestia-mon-blackbox there (blackbox_url).
+# Prometheus and Alertmanager listen on 127.0.0.1 only, so checks 11 to 13, 18, 19
+# and 21 to 24 run on the monitor host and ask them there, with the API password
+# that only root can read (api_password_file). Check 24 also asks
+# celestia-mon-blackbox there (blackbox_url). Numbers 15 and 16 are not used: each
+# check keeps its number, which the docs cite.
 #
 # signer and fibre_enabled tell doctor the install type: with signer=local it
 # never expects the remote signer's metrics, with fibre_enabled=false never
@@ -50,7 +51,6 @@ declare -A C=(
   [roles]=""
   [inventory_host]=""
   [signer]=""
-  [signer_multi_node]=""
   [fibre_enabled]=""
   [appd_unit]="celestia-appd"
   [fibre_unit]="fibre"
@@ -70,8 +70,6 @@ declare -A C=(
   [blackbox_url]="http://127.0.0.1:9919"
   [api_user]="celestia-mon"
   [api_password_file]="/etc/celestia-mon/api-password"
-  [prometheus_data_dir]="/var/lib/celestia-mon/prometheus"
-  [prometheus_retention_size]=""
   [gov_page]=""
   [signer_median_max]="0.010"
   [disk_min_free_ratio]="0.10"
@@ -97,9 +95,6 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
                          entry in fibre_public_endpoint
   signer                local or remote; with local, no remote signer metrics
                          are expected (default: not set, not compared)
-  signer_multi_node      true when tmkms signs through several nodes on purpose
-                         (celestia_mon_signer_multi_node), so check 21 does
-                         not count ValidatorSigningTwice (default: not set)
   fibre_enabled         true or false; with false, no Fibre or collector
                          metrics are expected (default: true if the Fibre
                          unit exists)
@@ -138,12 +133,9 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   api_user, api_password_file  HTTP basic auth for those three (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)
-  prometheus_data_dir    default /var/lib/celestia-mon/prometheus
-  prometheus_retention_size  Prometheus's retention size, such as 8GB
-                         (default: not compared)
   gov_page               true when GovVoteMissing pages (celestia_mon_gov_page),
-                         so check 21 counts a silence of it (default: not set,
-                         not counted)
+                         so check 23 says when the page comes (default: not
+                         set)
   signer_median_max      seconds (default 0.010)
   disk_min_free_ratio    default 0.10
   node_behind_blocks     blocks a node may trail the highest node (default 20)
@@ -263,7 +255,6 @@ url_port() { # URL -> its port, empty when it names none
   hp=${hp##*]}
   if [[ $hp == *:* ]]; then printf '%s' "${hp##*:}"; fi
 }
-gib() { awk -v b="$1" 'BEGIN { printf "%.1f", b / 1073741824 }'; }
 
 unit_prop() { systemctl show -p "$2" --value "$1" 2>/dev/null; }
 unit_loaded() { [[ $(unit_prop "$1" LoadState) == loaded ]]; }
@@ -2044,10 +2035,8 @@ metric_event() {
     cometbft_privval_signing_latency_*) echo "the first remote signature" ;;
     cometbft_consensus_validator_last_signed_height) echo "the validator's first own signature in a block; it must be bonded and in the active set" ;;
     cometbft_consensus_validator_missed_blocks) echo "the first block committed without the validator's signature since the node started" ;;
-    fibre_server_upload_shard_rejected_total) echo "the first upload the storage limiter rejects" ;;
     fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
-    fibre_server_download_shard_duration_seconds*) echo "the first download" ;;
     node_md_disks | node_md_disks_required) echo "node_exporter finds an md software RAID array in /proc/mdstat; a host without one, or behind a hardware RAID controller, has none" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
     celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;
@@ -2238,102 +2227,6 @@ check_fibre_pipeline() {
   fi
 }
 
-size_bytes() { # Prometheus size such as 8GB or 512MiB (base 1024) -> bytes; empty when it is not one
-  awk -v s="$1" 'BEGIN {
-    if (!match(s, /^[0-9]+(\.[0-9]+)?/)) exit
-    n = substr(s, 1, RLENGTH)
-    u = toupper(substr(s, RLENGTH + 1))
-    sub(/IB$/, "B", u)
-    p = index("KMGTPE", substr(u, 1, 1))
-    if (u == "B") f = 1
-    else if (length(u) == 2 && substr(u, 2, 1) == "B" && p > 0) f = 1024 ^ p
-    else exit
-    printf "%.0f\n", n * f
-  }'
-}
-
-# retention_size bounds Prometheus's blocks only: the WAL, the head chunks and the
-# space a compaction writes before it deletes the old blocks come on top. The
-# install's preflight asks for retention_size * 1.5 + 2 GiB on the data mount;
-# here what Prometheus holds now plus the free space must reach the same amount.
-check_prometheus_disk() {
-  local name="monitor disk" dir=${C[prometheus_data_dir]} rs=${C[prometheus_retention_size]} used avail="" mount="" size need text
-  if ! has_role monitor; then report SKIP 15 "$name" "not the monitor host"; return; fi
-  if [[ -z $dir || ! -d $dir ]]; then
-    report SKIP 15 "$name" "Prometheus data directory ${dir:-(not set)} not found (pass --prometheus-data-dir)"
-    return
-  fi
-  if [[ $(id -u) -ne 0 ]]; then
-    report SKIP 15 "$name" "run as root to measure $dir"
-    return
-  fi
-  # du's exit status is not used: Prometheus may delete a file while du walks the directory.
-  used=$(du -sb -- "$dir" 2>/dev/null | awk 'END { print $1 }')
-  read -r avail mount < <(df -P -B1 -- "$dir" 2>/dev/null | awk 'NR == 2 { print $4, $6 }')
-  if [[ ! $used =~ ^[0-9]+$ || ! $avail =~ ^[0-9]+$ ]]; then
-    report SKIP 15 "$name" "cannot read the size of $dir or the free space of its mount"
-    return
-  fi
-  text="Prometheus holds $(gib "$used") GiB in $dir and $mount has $(gib "$avail") GiB free"
-  size=$(size_bytes "$rs")
-  if [[ -z $size || $size == 0 ]]; then
-    report OK 15 "$name" "$text (no retention size to compare with; pass --prometheus-retention-size)"
-    return
-  fi
-  need=$(awk -v s="$size" 'BEGIN { printf "%.0f", s * 1.5 + 2147483648 }')
-  if ((used + avail >= need)); then
-    report OK 15 "$name" "$text: room for retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB"
-  else
-    report FAIL 15 "$name" "$text, $(gib "$((used + avail))") GiB in all, but Prometheus may need retention_size $rs x 1.5 + 2 GiB = $(gib "$need") GiB there: the WAL, head chunks and compaction space come on top of retention_size. Fix: free space on $mount, or lower celestia_mon_prometheus_retention_size and re-run install.sh on the monitor"
-  fi
-}
-
-# Disk load on the Celestia hosts around Prometheus's last compaction, which runs
-# about every 2 hours, read from Prometheus. The same queries work in Grafana's
-# Explore; T is the time of the compaction:
-#   T        max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])
-#   latency  rate(node_disk_write_time_seconds_total{job="node"}[1m]) / rate(node_disk_writes_completed_total{job="node"}[1m])
-#   busy     rate(node_disk_io_time_seconds_total{job="node"}[1m])
-# For each, the worst disk's peak per host in the 10 minutes from 3 minutes before T
-# is set against its peak in the hour before that.
-check_compaction() {
-  local name="compaction io" t h v lat busy when
-  local -a parts=()
-  local -A lp=() lb=() bp=() bb=()
-  if ! has_role monitor; then report SKIP 16 "$name" "not the monitor host"; return; fi
-  # A monitor of its own shares no disk with celestia-appd or Fibre; DiskLow and the Servers band
-  # watch its own disk.
-  if ! node_host && ! has_role fibre; then
-    report SKIP 16 "$name" "this monitor runs no celestia-appd node or Fibre, so Prometheus's compactions share no disk with them"
-    return
-  fi
-  if ((!PROM_OK)); then report SKIP 16 "$name" "Prometheus not answering (check 11)"; return; fi
-  t=$(prom_value 'max_over_time(timestamp(increase(prometheus_tsdb_compactions_total{job="prometheus"}[2m]) > 0)[6h:1m])')
-  t=${t%%.*}
-  if [[ ! $t =~ ^[0-9]+$ ]]; then
-    report SKIP 16 "$name" "no Prometheus compaction in the last 6 hours (the first comes about 3 hours after Prometheus starts, then one every 2 hours); run doctor again later"
-    return
-  fi
-  when=$(date -u -d "@$t" '+%Y-%m-%d %H:%M UTC' 2>/dev/null)
-  lat='rate(node_disk_write_time_seconds_total{job="node"}[1m]) / (rate(node_disk_writes_completed_total{job="node"}[1m]) > 0)'
-  busy='rate(node_disk_io_time_seconds_total{job="node"}[1m])'
-  while read -r h v; do lp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[10m:15s] @ $((t + 420))))" host)
-  while read -r h v; do lb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($lat)[1h:15s] @ $((t - 180))))" host)
-  while read -r h v; do bp[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[10m:15s] @ $((t + 420))))" host)
-  while read -r h v; do bb[$h]=$v; done < <(prom_vector "max by (host) (max_over_time(($busy)[1h:15s] @ $((t - 180))))" host)
-  while read -r h; do
-    [[ -n $h ]] || continue
-    parts+=("$h $(awk -v a="${lp[$h]:-}" -v b="${lb[$h]:-}" -v c="${bp[$h]:-}" -v d="${bb[$h]:-}" '
-      function f(v, k, fmt) { return (v ~ /^[0-9.eE+-]+$/) ? sprintf(fmt, v * k) : "?" }
-      BEGIN { printf "write latency %s ms (%s ms), busy %s%% (%s%%)", f(a, 1000, "%.1f"), f(b, 1000, "%.1f"), f(c, 100, "%.0f"), f(d, 100, "%.0f") }')")
-  done < <(printf '%s\n' "${!lp[@]}" "${!bp[@]}" | sort -u)
-  if ((${#parts[@]} == 0)); then
-    report SKIP 16 "$name" "no disk data from the Celestia hosts (job node) around the compaction at $when"
-    return
-  fi
-  report INFO 16 "$name" "last Prometheus compaction about $when; peak of the worst disk per Celestia host in the 10 minutes around it (in the hour before in brackets): $(join "${parts[@]}"). A clear rise on a validator or Fibre disk means Prometheus competes with it; IOWeight cannot stop that under the none I/O scheduler (common on NVMe) unless io.cost is set, so then put Prometheus's data (${C[prometheus_data_dir]}) on another disk"
-}
-
 # Every celestia-appd node against the highest one, on the monitor: a backup node that
 # trails is not ready to take the validator role over. Role-independent: the node that
 # exports cometbft_consensus_validator_last_signed_height holds the signer now, wherever
@@ -2432,43 +2325,13 @@ check_fibre_active() {
   fi
 }
 
-# The alerts of the rules with severity page (NodePeersLow and DiskLow also have message rules).
-# UpgradeSignalMissing exists only with upgrade signalling on, whose unit the install removes when
-# it is off. ValidatorSigningTwice exists only with a remote signer that is not set to sign through
-# several nodes (signer_multi_node), FibreNotServing's page (reason not_ready, next to its
-# messages) only with Fibre on, MonitorCannotReach's page ("Monitor cannot reach any server", next
-# to its per-host messages) only with the monitor on a host of its own, and GovVoteMissing's page
-# (next to its message) only with gov_page true; check_silences adds them there, once the roles
-# and the settings are known.
-PAGE_ALERTS=(NodeNotAdvancing NodePeersLow ValidatorNotSigning FibreDown DiskLow)
-if [[ -e /etc/systemd/system/celestia-mon-signal.service ]]; then PAGE_ALERTS+=(UpgradeSignalMissing); fi
-
-# Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
-# endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
-# name \037 operator \037 value. A small JSON reader, so values may hold any character.
-silences_active() {
-  awk '
-    function value(v) {
-      if (d == 2 && key[2] == "id") id = v
-      else if (d == 2 && key[2] == "createdBy") by = v
-      else if (d == 2 && key[2] == "endsAt") ends = v
-      else if (d == 3 && key[2] == "status" && key[3] == "state") state = v
-      else if (d == 4 && key[2] == "matchers") m[key[4]] = v
-    }
-    function opened() {
-      if (d == 2 && obj[2]) { id = ""; by = ""; ends = ""; state = ""; ms = "" }
-      if (d == 4 && obj[4] && key[2] == "matchers") { m["name"] = ""; m["value"] = ""; m["isRegex"] = "false"; m["isEqual"] = "true" }
-    }
-    function closed(op) {
-      if (d == 4 && obj[4] && key[2] == "matchers") {
-        op = (m["isEqual"] == "false") ? "!" : "="
-        op = op ((m["isRegex"] == "true") ? "~" : ((op == "!") ? "=" : ""))
-        ms = ms ((ms == "") ? "" : "\036") m["name"] "\037" op "\037" m["value"]
-      }
-      if (d == 2 && obj[2] && state == "active") print id "\034" ends "\034" by "\034" ms
-    }
-    { s = s $0 " " }
-    END {
+# The end of an awk program that reads JSON, a small reader, so values may hold any character. The
+# program's start defines value(v), called with each value that is not a key, opened(), called
+# after each { or [, and closed(), called before each } or ]; d is the depth, obj[d] whether the
+# container there is an object, and key[d] the key being read in it.
+JSON_READER='
+    BEGIN {
+      while ((getline line) > 0) s = s line " "
       n = length(s)
       for (i = 1; i <= n; i++) {
         c = substr(s, i, 1)
@@ -2493,6 +2356,58 @@ silences_active() {
         }
       }
     }'
+
+# Prometheus's GET /api/v1/rules reply (JSON) -> one line per alerting rule with severity page, in
+# the order Prometheus lists them (rule files by name, each group's rules as in its file): its name,
+# its labels and whether it is hosted, split by \034; the labels are split by \036, each one name
+# \037 value.
+# Hosted: an annotation reads $labels., so its alerts also carry labels from the rule's metrics.
+page_rules() {
+  awk '
+    function value(v) {
+      if (d == 6 && key[6] == "name") name = v
+      else if (d == 6 && key[6] == "type") type = v
+      else if (d == 7 && key[6] == "labels") {
+        if (key[7] == "severity") sev = v
+        ls = ls ((ls == "") ? "" : "\036") key[7] "\037" v
+      } else if (d == 7 && key[6] == "annotations" && index(v, "$labels.")) hosted = "true"
+    }
+    function opened() {
+      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules") { name = ""; type = ""; sev = ""; ls = ""; hosted = "false" }
+    }
+    function closed() {
+      if (d == 6 && obj[6] && key[2] == "groups" && key[4] == "rules" && type == "alerting" && sev == "page") {
+        print name "\034" ls "\034" hosted
+      }
+    }'"$JSON_READER"
+}
+# The page rules Prometheus has loaded, as page_rules prints them; check_silences reads them.
+PAGE_RULES=()
+
+# Alertmanager's GET /api/v2/silences reply (JSON) -> one line per active silence: its ID,
+# endsAt, createdBy and matchers, split by \034; the matchers are split by \036, each one
+# name \037 operator \037 value.
+silences_active() {
+  awk '
+    function value(v) {
+      if (d == 2 && key[2] == "id") id = v
+      else if (d == 2 && key[2] == "createdBy") by = v
+      else if (d == 2 && key[2] == "endsAt") ends = v
+      else if (d == 3 && key[2] == "status" && key[3] == "state") state = v
+      else if (d == 4 && key[2] == "matchers") m[key[4]] = v
+    }
+    function opened() {
+      if (d == 2 && obj[2]) { id = ""; by = ""; ends = ""; state = ""; ms = "" }
+      if (d == 4 && obj[4] && key[2] == "matchers") { m["name"] = ""; m["value"] = ""; m["isRegex"] = "false"; m["isEqual"] = "true" }
+    }
+    function closed(op) {
+      if (d == 4 && obj[4] && key[2] == "matchers") {
+        op = (m["isEqual"] == "false") ? "!" : "="
+        op = op ((m["isRegex"] == "true") ? "~" : ((op == "!") ? "=" : ""))
+        ms = ms ((ms == "") ? "" : "\036") m["name"] "\037" op "\037" m["value"]
+      }
+      if (d == 2 && obj[2] && state == "active") print id "\034" ends "\034" by "\034" ms
+    }'"$JSON_READER"
 }
 
 matcher_admits() { # operator, pattern, label value -> true when the matcher matches that value (absent label: "")
@@ -2506,38 +2421,40 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
   esac
 }
 
-# The page alerts a silence holds back. NodeNotAdvancing, ValidatorNotSigning, FibreDown,
-# ValidatorSigningTwice, UpgradeSignalMissing and MonitorCannotReach's page carry only alertname
-# and severity, so each other matcher must match an absent label: a silence of MonitorCannotReach
-# for one host holds back only that host's message. NodePeersLow, DiskLow and FibreNotServing also
-# carry host and the labels of their metrics (DiskLow's mountpoint among them), and GovVoteMissing
-# its proposal_id, whose values are not known here: each counts when the silence names alertname
-# or severity, so a host silence for planned work is listed only when it runs long.
-# FibreNotServing's reason is known (not_ready pages), so a silence of another reason does not count.
+# The page alerts a silence holds back, from the page rules Prometheus has loaded (PAGE_RULES). A
+# matcher on alertname reads the rule's name, and one on a label the rule sets (severity, and a
+# reason or check where it has one) reads that label's value. A hosted alert also carries host and
+# the labels of its metrics, whose values are not known here: it counts when the silence names
+# alertname or severity, and its matchers on those labels are not read, so a host silence for
+# planned work is listed only when it runs long. Any other page alert carries no other label, so
+# each other matcher must match an absent label: a silence for one host does not hold back a page
+# that names no host. Each alert is listed once, at its first rule held back.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
-  local -a ms=()
-  local a m n o v hit hosted named=false out=""
+  local -a ms=() kv=()
+  local -A lab=() listed=()
+  local r a l m n o v hit hosted named=false out=""
   IFS=$'\036' read -r -a ms <<<"$1"
   for m in "${ms[@]}"; do
     n=${m%%$'\037'*}
     if [[ $n == alertname || $n == severity ]]; then named=true; fi
   done
-  for a in "${PAGE_ALERTS[@]}"; do
-    hosted=false
-    if [[ $a == NodePeersLow || $a == DiskLow || $a == FibreNotServing || $a == GovVoteMissing ]]; then hosted=true; fi
-    if [[ $hosted == true && $named == false ]]; then continue; fi
+  for r in "${PAGE_RULES[@]}"; do
+    IFS=$'\034' read -r a l hosted <<<"$r"
+    if [[ -n ${listed[$a]+set} || ($hosted == true && $named == false) ]]; then continue; fi
+    lab=()
+    IFS=$'\036' read -r -a kv <<<"$l"
+    for m in "${kv[@]}"; do lab[${m%%$'\037'*}]=${m#*$'\037'}; done
     hit=true
     for m in "${ms[@]}"; do
       IFS=$'\037' read -r n o v <<<"$m"
-      case $n in
-        alertname) matcher_admits "$o" "$v" "$a" || hit=false ;;
-        severity) matcher_admits "$o" "$v" page || hit=false ;;
-        reason) if [[ $a == FibreNotServing ]]; then matcher_admits "$o" "$v" not_ready || hit=false
-                elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi ;;
-        *) [[ $hosted == true ]] || matcher_admits "$o" "$v" "" || hit=false ;;
-      esac
+      if [[ $n == alertname ]]; then matcher_admits "$o" "$v" "$a" || hit=false
+      elif [[ -n ${lab[$n]+set} ]]; then matcher_admits "$o" "$v" "${lab[$n]}" || hit=false
+      elif [[ $hosted != true ]]; then matcher_admits "$o" "$v" "" || hit=false; fi
     done
-    if [[ $hit == true ]]; then out+="${out:+, }$a"; fi
+    if [[ $hit == true ]]; then
+      listed[$a]=1
+      out+="${out:+, }$a"
+    fi
   done
   printf '%s' "$out"
 }
@@ -2555,18 +2472,20 @@ silence_text() { # matchers as silences_active prints them -> {name="value", ...
 
 # Active silences, on the monitor. A silence holds back every alert it matches until it ends,
 # and the dead-man heartbeat stays green meanwhile, so a mistyped matcher or a forgotten end
-# hides the next outage. Warns on a silence that holds back a page alert or runs for more than
-# 4 hours more, with its matchers, author and end. Reads GET /api/v2/silences; changes nothing.
+# hides the next outage. Warns on a silence that holds back a page alert (of an alert rule with
+# severity page that Prometheus has loaded, so the list follows the install's rules) or runs for
+# more than 4 hours more, with its matchers, author and end. Reads GET /api/v1/rules and
+# GET /api/v2/silences; changes nothing.
 check_silences() {
-  local name="silences" am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
+  local name="silences" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
   local -a held=() other=()
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
-  if [[ ${C[signer]} == remote && ${C[signer_multi_node],,} != true ]]; then PAGE_ALERTS+=(ValidatorSigningTwice); fi
-  if fibre_on; then PAGE_ALERTS+=(FibreNotServing); fi
-  # A monitor that runs no celestia-appd or Fibre (as in check 16) can lose every host at once,
-  # and its rules have MonitorCannotReach's page for that.
-  if ! node_host && ! has_role fibre; then PAGE_ALERTS+=(MonitorCannotReach); fi
-  if [[ ${C[gov_page],,} == true ]]; then PAGE_ALERTS+=(GovVoteMissing); fi
+  if ((!PROM_OK)); then report SKIP 21 "$name" "Prometheus not answering (check 11)"; return; fi
+  mapfile -t PAGE_RULES < <(http_get "$prom/api/v1/rules?type=alert&exclude_alerts=true" | page_rules)
+  if ((${#PAGE_RULES[@]} == 0)); then
+    report SKIP 21 "$name" "Prometheus has no page alert rules loaded (check 12)"
+    return
+  fi
   reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
   code=${reply##*$'\n'}
   reply=${reply%$'\n'*}
@@ -2963,8 +2882,6 @@ check_stack
 check_rule_metrics
 check_fibre_pipeline
 check_memory
-check_prometheus_disk
-check_compaction
 check_fibre_signer
 check_node_lag
 check_fibre_active

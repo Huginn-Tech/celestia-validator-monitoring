@@ -481,7 +481,7 @@ Only with `celestia_mon_signal` set.
 
 1. On the monitor, `journalctl -u celestia-mon-prometheus -n 100`: each "Evaluating rule failed" line names the rule and the error.
 2. Prometheus's rules page on the monitor (`http://127.0.0.1:9912/rules`, through an SSH tunnel from your machine, as user `celestia-mon` with the password in `/etc/celestia-mon/api-password`) shows the failing rule and its last error.
-3. Free space for Prometheus's data (`df -h /var/lib/celestia-mon/prometheus`), and `sudo celestia-mon-doctor` on the monitor: checks 11 and 12 show whether Prometheus answers and which rule metrics have no series, and check 15 whether the disk holds what Prometheus needs (retention size x 1.5 + 2 GiB).
+3. Free space for Prometheus's data (`df -h /var/lib/celestia-mon/prometheus`), and `sudo celestia-mon-doctor` on the monitor: checks 11 and 12 show whether Prometheus answers and which rule metrics have no series. Prometheus needs retention size x 1.5 + 2 GiB on that disk, which every `install.sh` run on the monitor checks.
 
 ## NotificationsFailing
 

@@ -2200,13 +2200,14 @@ jobs:
           echo "::endgroup::"
           for want in '^SKIP +1 +node metrics +not a validator or backup node host' \
                       '^SKIP +6 +fibre service +not a Fibre host' \
-                      '^SKIP +16 +compaction io +this monitor runs no celestia-appd node or Fibre' \
                       '^SKIP +17 +fibre signer +not a Fibre host' \
                       '^SKIP +20 +signer binds +not a validator or backup node host' \
                       '^SKIP +25 +node ports +not a validator or backup node host' \
                       '^SKIP +26 +service users +no celestia-appd node or Fibre unit on this host'; do
             grep -Eq -- "$want" <<<"$out" || { echo "the monitor-only host does not say: $want"; exit 1; }
           done
+          # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
+          if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "the monitor-only host printed a line numbered 15 or 16"; exit 1; fi
 
   # Runs doctor's monitor checks (11 and 12) against a real Prometheus at the pinned version,
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
@@ -2217,6 +2218,8 @@ jobs:
   # 5 ci_* names do not. A second scrape job points at a closed port, so check 11 must
   # report it down with its error. This Prometheus asks for no login, and the runner has no
   # /etc/celestia-mon/api-password, so doctor sends none (the install job covers the login).
+  # Check 21 takes the page alerts from the rules Prometheus has loaded: page rules that never
+  # fire and read no metric stand in for an install's, one set per doctor run, swapped by a reload.
   doctor-monitor:
     runs-on: ubuntu-24.04
     steps:
@@ -2245,6 +2248,7 @@ jobs:
             evaluation_interval: 5s
           rule_files:
             - rules.yml
+            - pages.yml
           scrape_configs:
             - job_name: prometheus
               static_configs:
@@ -2269,7 +2273,57 @@ jobs:
                     or ci_missing_gauge @ start() < +Inf or count(ci:missing:rate5m) > 0
                     or quantile_over_time(0.5, ci_missing_q[10m:1m]) > 0
           EOF
-          ./prometheus --config.file=prometheus.yml --storage.tsdb.path=data \
+          # The page rules of each doctor run below: no metric (check 12 still finds 8 names), never firing.
+          # $labels. in a summary marks an alert that carries its metric's labels too, as on an install.
+          cat > pages-1.yml <<'EOF'
+          groups:
+            - name: pages
+              rules:
+                - {alert: NodeNotAdvancing, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: NodePeersLow, expr: vector(1) == 0, labels: {severity: message}}
+                - {alert: NodePeersLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: ValidatorNotSigning, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: FibreDown, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: DiskLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: MonitorCannotReach, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: GovVoteMissing, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.proposal_id }}"}}
+          EOF
+          cat > pages-2.yml <<'EOF'
+          groups:
+            - name: pages
+              rules:
+                - {alert: NodeNotAdvancing, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: NodePeersLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: ValidatorNotSigning, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: FibreDown, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: DiskLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: ValidatorSigningTwice, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: FibreNotServing, expr: vector(1) == 0, labels: {severity: page, reason: not_ready}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: FibreNotServing, expr: vector(1) == 0, labels: {severity: message, reason: missed_uploads}}
+                - {alert: MonitorCannotReach, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: GovVoteMissing, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.proposal_id }}"}}
+          EOF
+          cat > pages-3.yml <<'EOF'
+          groups:
+            - name: pages
+              rules:
+                - {alert: NodeNotAdvancing, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: NodePeersLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: ValidatorNotSigning, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: FibreDown, expr: vector(1) == 0, labels: {severity: page}}
+                - {alert: DiskLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
+                - {alert: MonitorCannotReach, expr: vector(1) == 0, labels: {severity: page}}
+          EOF
+          # pages FILE N: Prometheus runs FILE's page rules in place of the last ones, N of them with severity page.
+          pages() {
+            cp "$1" pages.yml
+            curl -fsS -X POST http://127.0.0.1:9912/-/reload
+            curl -fsS 'http://127.0.0.1:9912/api/v1/rules?type=alert' |
+              jq -e --argjson n "$2" '[.data.groups[].rules[] | select(.labels.severity == "page")] | length == $n' >/dev/null ||
+              { echo "Prometheus did not load the $2 page rules of $1"; exit 1; }
+          }
+          cp pages-1.yml pages.yml
+          ./prometheus --config.file=prometheus.yml --storage.tsdb.path=data --web.enable-lifecycle \
             --web.listen-address=127.0.0.1:9912 >prometheus.log 2>&1 &
           touch am/-/ready
           python3 -m http.server 9913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
@@ -2282,8 +2336,8 @@ jobs:
           done
           # Check 21 reads these through doctor's JSON reader: escaped quotes and braces, a regex
           # matcher that admits the pages, a host silence that does not, an expired silence, one of
-          # GovVoteMissing for one proposal (a page with --gov-page true), and two of FibreNotServing,
-          # of whose reasons only not_ready pages (with Fibre on).
+          # GovVoteMissing for one proposal (a page where its page rule is loaded), and two of
+          # FibreNotServing, of whose reasons only not_ready pages (where that page rule is loaded).
           mkdir -p am/api/v2
           soon=$(date -u -d '+30 min' +%Y-%m-%dT%H:%M:%S.000Z)
           cat > am/api/v2/silences <<EOF
@@ -2340,9 +2394,10 @@ jobs:
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done
           if grep -q '000000000003' <<<"$out"; then echo "check 21 listed an expired silence"; exit 1; fi
-          # With a remote signer and Fibre on, ValidatorSigningTwice and FibreNotServing's not_ready page
-          # count too, and a silence of another FibreNotServing reason does not; with tmkms set to sign
-          # through several nodes, ValidatorSigningTwice is left out.
+          # With the page rules of a remote signer and Fibre on (pages-2.yml), ValidatorSigningTwice and
+          # FibreNotServing's not_ready page count too, and a silence of another FibreNotServing reason does
+          # not; with neither of them nor GovVoteMissing's page loaded (pages-3.yml), none of the three counts.
+          pages pages-2.yml 9
           out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --gov-page true \
                 --signer remote --fibre-enabled true 2>/dev/null) || true
           line=$(grep -E '^WARN +21 +silences +3 of 5 active silences ' <<<"$out" || true)
@@ -2354,12 +2409,13 @@ jobs:
                       ', {alertname="FibreNotServing", reason="missed_uploads"} by op until '; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 with a remote signer and Fibre: missing $want"; exit 1; }
           done
+          pages pages-3.yml 6
           out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor \
-                --signer remote --signer-multi-node true 2>/dev/null) || true
+                --signer remote 2>/dev/null) || true
           want='(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ValidatorNotSigning, '
           want+='FibreDown, DiskLow, MonitorCannotReach; ends in '
           line=$(grep -E '^WARN +21 +silences +1 of 5 active silences ' <<<"$out" || true)
-          grep -qF -- "$want" <<<"$line" || { echo "check 21 with signer_multi_node true counted ValidatorSigningTwice"; exit 1; }
+          grep -qF -- "$want" <<<"$line" || { echo "check 21 counted a page alert the loaded rules do not have"; exit 1; }
           grep -Eq '^SKIP +22 +dead-man ' <<<"$out" || { echo "check 22 did not skip without an alertmanager job"; exit 1; }
       - name: Show the Prometheus log
         if: failure()
@@ -2991,7 +3047,9 @@ jobs:
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-announcements 127\.0\.0\.1:9916' <<<"$out"
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-announcements [0-9]+ MiB' <<<"$out"
-          grep -Eq '^OK +15 +monitor disk +Prometheus holds .*room for retention_size 1GB x 1\.5 \+ 2 GiB = 3\.5 GiB' <<<"$out"
+          # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
+          if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "doctor printed a line numbered 15 or 16"; exit 1; fi
+          grep -Eq '^(OK|WARN|FAIL|SKIP) +17 +fibre signer ' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-signal 127\.0\.0\.1:9918' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
@@ -3012,6 +3070,18 @@ jobs:
           grep -qF "$want" <<<"$line" || { echo "check 23 does not say: $want"; exit 1; }
           # The CI dead-man URL is a closed port, and the Watchdog stops after the first failed message.
           grep -Eq '^(OK|NOT YET|WARN|FAIL) +22 +dead-man ' <<<"$out"
+          # Check 21 takes the page alerts from the rules Prometheus runs: a silence of severity=page holds
+          # back each page alert of this install (local signer, Fibre with Tensile, signalling on mainnet), in
+          # the order of the rules file.
+          amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
+          am=(--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml)
+          id=$(sudo "$amtool" "${am[@]}" silence add severity=page --duration=10m --author=ci --comment=ci)
+          out=$(sudo celestia-mon-doctor || true)
+          sudo "$amtool" "${am[@]}" silence expire "$id"
+          want='holds back NodeNotAdvancing, NodePeersLow, ValidatorNotSigning, FibreDown, FibreNotServing, DiskLow, '
+          want+='UpgradeSignalMissing, GovVoteMissing)'
+          line=$(grep -E '^WARN +21 +silences +1 of 1 active silences ' <<<"$out" || true)
+          grep -qF -- "$want" <<<"$line" || { printf '%s\n' "$out"; echo "check 21 does not say: $want"; exit 1; }
       # The defaults must leave headroom: each unit's peak memory since it started (memory.peak
       # of its cgroup, cgroup v2, kernel 5.19 or later) must stay at or below half its MemoryHigh.
       # Pages of the binaries that the install read stay charged to the installer; the
