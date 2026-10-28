@@ -32,13 +32,13 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
     }
 
 Layout (docs/panels.md): a first screen without a row header that reads like a status page, top
-to bottom: one framed strip with the validator's name and network, four facts and the Status (the
-worst alert in a few words); up to six one-word answers; the Servers band, one column per server
+to bottom: one framed strip with the validator's name and network, the Status (the worst alert in a
+few words) and four facts; up to six one-word answers; the Servers band, one column per server
 (and one for a remote signer whose host is not scraped) with what runs there now and its hardware
 now; History, one line of bars per check and, after a gap, per server (the monitor's line also
 carries the monitoring's own alerts), with each line's uptime;
 the role band, which server held each role; and the key line (the range's ends and the colours).
-Then All firing alerts (collapsed), the rows Validator, Fibre (its facts, the Upload readiness band
+Then All firing alerts (collapsed), the rows Validator, Fibre (its facts, the Upload readiness line
 and its charts) and Servers (expanded; Servers has a column of hardware charts per server) and
 Servers: disks, restarts and clocks and Network upgrade (collapsed). Panels that do not apply to
 the install are left out.
@@ -4296,7 +4296,7 @@ def network_chart(s, h, pid, width, variant):
     """Traffic through server h's network ports, in above zero and out below. The link speed is not drawn:
     on a link used at a few percent its line would flatten the traffic to the floor of the chart, and
     Grafana leaves a series it does not draw out of the tooltip too. Fibre's own shard traffic is a small
-    part of the total and is drawn in the Fibre row's Uploads and downloads."""
+    part of the total and is drawn in the Fibre row's Uploads and Downloads."""
     hue = server_hue(s, h)
     sel = "{host=%s,device!~%s}" % (q(h), q(VIRT))
     overrides, legend = mirrored(hue, ("In", "Out"))
@@ -4305,7 +4305,7 @@ def network_chart(s, h, pid, width, variant):
     desc = ("Traffic through %s's network ports in bits per second: in above zero, out below. No alert watches "
             "it. 5-minute averages; virtual interfaces, bond masters and VLANs are left out, their member ports "
             "count. The Network peak bar under the server cards shows the busiest minute of the last hour against "
-            "the link speed. Fibre's own traffic is in the Fibre row's Uploads and downloads." % h)
+            "the link speed. Fibre's own traffic is in the Fibre row's Uploads and Downloads." % h)
     return timeseries(pid, server_title(s, h, "Network in and out", "Network", width),
                       desc + more(pages=[NODE_EXPORTER_FULL]), targets, "bps", color=hue, mirror=["B"],
                       overrides=overrides), legend
