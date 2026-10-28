@@ -804,25 +804,34 @@ signer_median() { # -> the node's median signing latency in seconds from METRICS
   awk '$1 ~ /^(cometbft|celestia)_privval_signing_latency_median_seconds($|[{])/ { print $NF; exit }' <<<"$METRICS"
 }
 
-# CometBFT serves its RPC on one address, laddr in the [rpc] section of config.toml. A node
-# that serves it on its private address only (for celestia-mon-signal on another host)
-# answers nothing on 127.0.0.1, so a loopback node_rpc_url follows laddr then.
+# CometBFT serves its RPC on one address, laddr in the [rpc] section of config.toml. A
+# loopback node_rpc_url follows laddr, its port too: a node that serves its RPC on its private
+# address only (for celestia-mon-signal on another host) answers nothing on 127.0.0.1, and on a
+# host with several nodes another node can answer on the default port.
 follow_rpc_laddr() {
   local cfg=$NODE_HOME/config/config.toml laddr
   [[ -r $cfg ]] || return 0
+  is_loopback "$(url_hostport "${C[node_rpc_url]}")" || return 0
   laddr=$(toml_get "$cfg" rpc laddr)
   case $laddr in
     tcp://*) laddr=${laddr#tcp://} ;;
     *://*) return 0 ;;
   esac
+  [[ $laddr == *:* ]] || return 0
   # An empty host, 0.0.0.0 or :: is every interface, loopback included.
   case $(addr_host "$laddr") in
-    '' | 0.0.0.0 | :: | localhost | 127.* | ::1) return 0 ;;
+    '' | 0.0.0.0 | :: | localhost) laddr=127.0.0.1:${laddr##*:} ;;
   esac
-  if is_loopback "$(url_hostport "${C[node_rpc_url]}")"; then C[node_rpc_url]=http://$laddr; fi
+  C[node_rpc_url]=http://$laddr
 }
 
-STATUS=""
+home_chain() { # -> chain_id of the node home's genesis.json, empty when unreadable
+  local g=$NODE_HOME/config/genesis.json
+  [[ -r $g ]] || return 0
+  grep -o -m 1 '"chain_id" *: *"[^"]*"' "$g" | head -n 1 | sed 's/.*"\([^"]*\)"$/\1/'
+}
+
+STATUS="" STATUS_NETWORK=""
 status_value() { # key -> value of "key":"value" or "key":value in the flattened /status reply
   sed -n 's/.*"'"$1"'":"\{0,1\}\([^",}]*\).*/\1/p' <<<"$STATUS" | head -n 1
 }
@@ -830,8 +839,14 @@ status_value() { # key -> value of "key":"value" or "key":value in the flattened
 # The node's /status, read once before check 2, which needs the voting power of the
 # key the node signs with (validator_info), and check 3, which starts from its height.
 read_status() {
+  local net chain
   STATUS=$(http_get "${C[node_rpc_url]%/}/status" | tr -d ' \t\r\n')
-  [[ $(status_value latest_block_height) =~ ^[0-9]+$ ]] || STATUS=""
+  [[ $(status_value latest_block_height) =~ ^[0-9]+$ ]] || { STATUS=""; return; }
+  # A node of another chain on this host can answer there: its key and height are not this
+  # node's, so a reply for another network than the home's genesis is left out.
+  net=$(status_value network)
+  chain=$(home_chain)
+  if [[ -n $net && -n $chain && $net != "$chain" ]]; then STATUS_NETWORK=$net STATUS=""; fi
 }
 status_address() { # -> the hex address of the key the node signs with (validator_info.address), empty when absent
   sed -n 's/.*"validator_info":{"address":"\([0-9A-Fa-f]*\)".*/\1/p' <<<"$STATUS"
@@ -1133,6 +1148,10 @@ check_head() {
   # read_status fetched /status before check 2.
   h0=$(status_value latest_block_height)
   if [[ ! $h0 =~ ^[0-9]+$ ]]; then
+    if [[ -n $STATUS_NETWORK ]]; then
+      report FAIL 3 "$name" "$rpc/status answers for $STATUS_NETWORK, not for $(home_chain) (the genesis in $NODE_HOME): another node answers there, so this node's RPC is not read. Fix: set celestia_mon_node_rpc_port in this host's inventory entry to the port of [rpc] laddr in $NODE_HOME/config/config.toml and re-run install.sh, or pass --node-rpc-url"
+      return
+    fi
     report FAIL 3 "$name" "no answer from $rpc/status. Fix: check \"systemctl status ${C[appd_unit]}\" and \"journalctl -u ${C[appd_unit]} -n 100\"; the URL must match [rpc] laddr in config.toml"
     return
   fi

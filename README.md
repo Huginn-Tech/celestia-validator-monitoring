@@ -29,6 +29,6 @@ Every service runs as its own `celestia-mon-*` systemd unit and user, with lower
 - [Panels](docs/panels.md): the question each dashboard panel answers and how to read it.
 - [Security](docs/security.md): what is exposed, a tailnet policy, SSH hygiene.
 
-Status: running on a Mocha testnet validator since 17 October 2026, split across a validator host, a Fibre host that is also the monitor, and a KMS host.
+Status: running on a Mocha testnet validator since 17 October 2026, split across a validator host, a Fibre host that also runs a node of its own and the monitor, and a KMS host.
 
 Licence: MIT.

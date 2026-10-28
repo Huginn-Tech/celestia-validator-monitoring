@@ -25,13 +25,20 @@ celestia_mon_units:
   fibre: fibre
   tmkms: tmkms
 
+# The ports below that the monitor reads on other hosts (the node's metrics, Fibre's port, and
+# node_exporter and the collector in celestia_mon_ports) can be set per host. The monitor reads
+# each host's from that host's inventory entry (or its groups), else the celestia_mon_default_*
+# value here, never the value the host being installed set for itself.
+
 # celestia-appd endpoints on the validator and backup_node hosts.
-celestia_mon_node_metrics_port: 26660
+celestia_mon_default_node_metrics_port: 26660
+celestia_mon_node_metrics_port: "{{ celestia_mon_default_node_metrics_port }}"
 celestia_mon_node_rpc_port: 26657
 
 # Fibre's own port (--server-listen-address), on each Fibre host's private address: the monitor
 # asks it for Fibre's upload readiness (Fibre v10.5.0 and newer). Set it per host where it differs.
-celestia_mon_fibre_port: 7980
+celestia_mon_default_fibre_port: 7980
+celestia_mon_fibre_port: "{{ celestia_mon_default_fibre_port }}"
 
 # Ports of the services celestia-mon installs: one block that common tools do not use, so
 # celestia-mon runs next to an existing node_exporter, Prometheus, Grafana or collector.
@@ -41,7 +48,8 @@ celestia_mon_fibre_port: 7980
 # http://127.0.0.1:9915 with the default below).
 # The playbook stops if another process already listens on one of them.
 # Overriding celestia_mon_ports replaces the whole map, so list every key.
-celestia_mon_ports:
+celestia_mon_ports: "{{ celestia_mon_default_ports }}"
+celestia_mon_default_ports:
   node_exporter: 9910
   otelcol_prometheus: 9911
   prometheus: 9912
