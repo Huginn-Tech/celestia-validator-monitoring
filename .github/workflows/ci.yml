@@ -1484,7 +1484,10 @@ jobs:
 
   # On a pull request, the dashboard of every scenario of the dashboard job made by the base branch's
   # generator and by this branch's, from the same settings, and the values that differ in the job
-  # summary. It reports only: it fails when this branch cannot render or generate, not on a difference.
+  # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
+  # text changes named after it, which this branch makes on purpose: the celestia-app release in the
+  # link to Celestia's Fibre dashboard. A pull request that changes the dashboard on purpose names its
+  # text changes there, or leaves --same out to report only.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1507,7 +1510,8 @@ jobs:
               --out "build/$s/base.json" 2> "build/$s/base.err" || rm -f "build/$s/base.json"
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)"
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" \
+            --same celestia-app/blob/v10.4.0/ celestia-app/blob/v10.5.0/
       - uses: ./.github/actions/marks
         if: always()
         with:

@@ -1,6 +1,6 @@
 """Compare each scenario's dashboard from the base branch's generator with this branch's, for the job summary.
 
-  python tools/ci/dashboard_diff.py BUILD BASE
+  python tools/ci/dashboard_diff.py BUILD BASE [--same [OLD NEW]...]
 
 The dashboard-report job renders the settings of every scenario once (tools/ci/dashboard_configs.sh BUILD)
 and runs both generators on them: the base branch's into BUILD/<scenario>/base.json (left out when it
@@ -9,8 +9,13 @@ commit in the report. Panels are matched by id, those of collapsed rows too (a r
 the keys outside the panels (links, templating, annotations, ...) are the panel "dashboard". The report, in
 Markdown on stdout and in GITHUB_STEP_SUMMARY, gives per scenario "identical", or the number of values that
 differ and the text changes behind them, with a table of those values, JSON-encoded and cut to about 60
-characters around their first difference (at most 50 rows a scenario, then "and N more"). It only
-reports: the exit code is 0 unless this script itself breaks. Python 3 standard library only.
+characters around their first difference (at most 50 rows a scenario, then "and N more").
+
+Without --same it only reports: the exit code is 0 unless this script itself breaks. With --same, each
+OLD NEW pair after it a text change this branch makes on purpose, it is a check: it exits 1 unless the
+base branch's generator made every scenario's dashboard and each value that differs is a text whose base
+value, with every OLD replaced by its NEW, is this branch's. The report names those changes, marks each
+value that differs otherwise, and ends with the result. Python 3 standard library only.
 """
 import collections
 import json
@@ -145,40 +150,72 @@ def failed(build, scenario):
     return "the base branch's generator failed" + (": " + code(lines[-1][:200]) if lines else "")
 
 
+def named(a, b, changes):
+    """Whether a and b are texts and b is a with each named change (OLD, NEW) made."""
+    if not isinstance(a, str) or not isinstance(b, str):
+        return False
+    for old, new in changes:
+        a = a.replace(old, new)
+    return a == b
+
+
 def main():
-    if len(sys.argv) != 3:
+    args = sys.argv[1:]
+    if len(args) < 2 or (len(args) > 2 and (args[2] != "--same" or len(args) % 2 == 0)):
         sys.exit(__doc__)
-    build, base_name = sys.argv[1:]
+    build, base_name = args[:2]
+    same = len(args) > 2
+    changes = list(zip(args[3::2], args[4::2]))
     lines = ["## The dashboards against the base branch", "",
              "Each scenario's settings, rendered by this branch, made into a dashboard by the generator of the "
-             "base branch (%s) and by this branch's." % base_name, "",
-             "| scenario | result |", "|---|---|"]
-    details = []
+             "base branch (%s) and by this branch's." % base_name, ""]
+    if same:
+        lines += ["Each must come out the same as the base branch's, apart from the text changes this branch makes on "
+                  "purpose: %s." % (", ".join("%s → %s" % (code(old), code(new)) for old, new in changes) or "none"), ""]
+    lines += ["| scenario | result |", "|---|---|"]
+    details, failing = [], []
     for s in SCENARIOS:
         head = load(os.path.join(build, s, "head.json"))
         base_path = os.path.join(build, s, "base.json")
         if not os.path.exists(base_path):
             lines.append("| %s | %s |" % (s, failed(build, s)))
+            failing.append(s)
             continue
         rows = differences(load(base_path), head)
         if not rows:
             lines.append("| %s | identical |" % s)
             continue
-        lines.append("| %s | %s |" % (s, result(rows)))
+        other = [r for r in rows if not named(r[3], r[4], changes)]
+        if not same:
+            lines.append("| %s | %s |" % (s, result(rows)))
+        elif not other:
+            lines.append("| %s | identical apart from the named text changes: %s |" % (s, result(rows)))
+        else:
+            lines.append("| %s | **%d values differ otherwise**: %s |" % (s, len(other), result(rows)))
+            failing.append(s)
+        # With --same, the values that differ otherwise first, each row marked.
+        rows = sorted(rows, key=lambda r: named(r[3], r[4], changes)) if same else rows
         details += ["", "<details><summary>%s: %d values</summary>" % (s, len(rows)), "",
-                    "| panel | title | key | base | this branch |", "|---|---|---|---|---|"]
+                    "| panel | title | key | base | this branch |" + (" change |" if same else ""),
+                    "|---|---|---|---|---|" + ("---|" if same else "")]
         for name, title, key, a, b in rows[:ROWS]:
             ca, cb = shorten(a, b)
-            details.append("| %s | %s | %s | %s | %s |" % (name, title.replace("|", r"\|"), code(key), code(ca), code(cb)))
+            mark = (" named |" if named(a, b, changes) else " **other** |") if same else ""
+            details.append("| %s | %s | %s | %s | %s |%s"
+                           % (name, title.replace("|", r"\|"), code(key), code(ca), code(cb), mark))
         if len(rows) > ROWS:
-            details.append("| and %d more | | | | |" % (len(rows) - ROWS))
+            details.append("| and %d more | | | | |" % (len(rows) - ROWS) + (" |" if same else ""))
         details += ["", "</details>"]
+    if same:
+        lines += ["", "**Every scenario comes out the same as on the base branch, apart from the named text changes.**"
+                  if not failing else "**Not the same as on the base branch: %s.**" % ", ".join(failing)]
     text = "\n".join(lines + details) + "\n"
     print(text)
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         with open(summary, "a", encoding="utf-8") as f:
             f.write(text + "\n")
+    sys.exit(1 if same and failing else 0)
 
 
 if __name__ == "__main__":
