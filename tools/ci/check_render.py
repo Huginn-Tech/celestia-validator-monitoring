@@ -6,6 +6,8 @@
                          every rule it names
   votes MOCHA NOGOV      the vote rules on Mocha (GovVoteMissing sends its message only) and with gov off
                          (no GovVoteMissing; SignalUnreadable about x/signal only); the two rendered rules files
+  twice SPLIT MULTI      ValidatorSigningTwice pages in the split example, and is left out of it rendered with
+                         celestia_mon_signer_multi_node (tmkms signs through several nodes); the two rules files
   limits PROMETHEUS      alerts leave Prometheus without instance, and every scrape job has its limits
   targets PROMETHEUS     the mainnet example's scrape targets follow the inventory groups
   ports PROMETHEUS       a host's own ports stay that host's (the mainnet example with ports set per host)
@@ -59,6 +61,17 @@ def votes(args):
     assert len(unread) == 1 and "_gov_" not in unread[0]["expr"], unread
     assert unread[0]["annotations"]["summary"] == "The upgrade signal is not being read on mon-1", unread
     print("mocha: GovVoteMissing, message only; nogov: no GovVoteMissing, SignalUnreadable about x/signal only")
+
+
+def twice(args):
+    """ValidatorSigningTwice pages with a remote signer; with tmkms signing through several nodes there is none."""
+    def rules(path):
+        return [r for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if r.get("alert") == "ValidatorSigningTwice"]
+
+    found = rules(args[0])
+    assert [r["labels"]["severity"] for r in found] == ["page"], found
+    assert rules(args[1]) == [], rules(args[1])
+    print("split: ValidatorSigningTwice pages; with celestia_mon_signer_multi_node: none")
 
 
 def limits(args):
@@ -185,7 +198,7 @@ def routing(args):
     print("page:", count("page"), "message:", count("message"))
 
 
-CHECKS = {"holds": holds, "votes": votes, "limits": limits, "targets": targets, "ports": ports,
+CHECKS = {"holds": holds, "votes": votes, "twice": twice, "limits": limits, "targets": targets, "ports": ports,
           "receivers-text": receivers_text, "routing": routing}
 
 if __name__ == "__main__":

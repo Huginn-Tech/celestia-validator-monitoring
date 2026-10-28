@@ -368,6 +368,19 @@ jobs:
           jq -e '.signal_enabled and .gov_enabled and (.gov_page | not)' build/mocha/dashboard-config.json
           jq -e '.signal_enabled and (.gov_enabled | not) and (.gov_page | not)' build/nogov/dashboard-config.json
           python tools/ci/check_render.py votes build/mocha/rules/celestia-mon.rules.yml build/nogov/rules/celestia-mon.rules.yml
+      # The split example rendered once more with celestia_mon_signer_multi_node (tmkms signs through
+      # several nodes on purpose) into build/multi: no ValidatorSigningTwice, which pages without it.
+      # doctor's check 21 counts the page rules Prometheus has loaded, so the rules decide that alone.
+      - name: No ValidatorSigningTwice where tmkms signs through several nodes
+        id: multi-node
+        run: |
+          set -euo pipefail
+          ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
+            -e "celestia_mon_ci_tests=$PWD/build/multi/tests" -e "celestia_mon_ci_build=$PWD/build/multi" \
+            -e celestia_mon_signer_multi_node=true
+          promtool check rules --lint=none build/multi/rules/celestia-mon.rules.yml
+          jq -e '.signer_multi_node' build/multi/dashboard-config.json
+          python tools/ci/check_render.py twice monitoring/rules/tests/split/celestia-mon.rules.yml build/multi/rules/celestia-mon.rules.yml
       - name: promtool check config
         id: promtool-config
         run: |

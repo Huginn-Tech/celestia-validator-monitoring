@@ -78,3 +78,4 @@ molecule/test                    | ci.yml                                       
 lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
 dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
+rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       | No ValidatorSigningTwice where tmkms signs through several nodes
