@@ -2358,8 +2358,9 @@ JSON_READER='
     }'
 
 # Prometheus's GET /api/v1/rules reply (JSON) -> one line per alerting rule with severity page, in
-# the order Prometheus lists them (by rule file, then as in the file): its name, its labels and
-# whether it is hosted, split by \034; the labels are split by \036, each one name \037 value.
+# the order Prometheus lists them (rule files by name, each group's rules as in its file): its name,
+# its labels and whether it is hosted, split by \034; the labels are split by \036, each one name
+# \037 value.
 # Hosted: an annotation reads $labels., so its alerts also carry labels from the rule's metrics.
 page_rules() {
   awk '
