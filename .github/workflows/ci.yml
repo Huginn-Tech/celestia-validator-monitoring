@@ -1424,8 +1424,9 @@ jobs:
       # Every six-cell row (the strip, the answers and the Validator, Fibre and Network upgrade facts: the
       # stats 3 rows high, untitled, labelled at 13 px) has one value size, 22, 20 or 18 px.
       # The Servers band: one card per column (ids 30-33) on one line at y 6, all of one height and as
-      # many rows, over one lower panel per column (ids 34-37) of four bars, all 4 rows high with the
-      # names left of the bars (5 with the names above them, where no name size fits the left); the
+      # many rows (a card whose server runs fewer parts ends in blank rows), over one lower panel per
+      # column (ids 34-37) of four bars, all 4 rows high with the names left of the bars (5 with the
+      # names above them, where no name size fits the left); the
       # columns share the 24 grid columns evenly (one column: card and lower panel side by side in
       # halves, of one height); up to four columns, so no Servers now table (id 26). Under it History
       # (20, check and server lines in one panel) with its Uptime column (21) on one line, then the
