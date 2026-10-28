@@ -33,9 +33,9 @@ rules/mainnet-targets            | ci.yml                                       
 rules/own-ports                  | ci.yml                                       | A host's own ports never become another host's
 rules/slack-pagerduty-text       | ci.yml                                       | Slack and PagerDuty messages read as text
 rules/routing                    | ci.yml                                       | amtool accepts every receiver type, and routing follows the type
-announcements/run                | ci.yml                                       | celestia-mon-announcements reads, posts once and reports errors
-tensile/run                      | ci.yml                                       | celestia-mon-tensile serves Tensile's verdict as metrics
-signal/run                       | ci.yml                                       | celestia-mon-signal serves x/signal as metrics
+announcements/run                | tools/ci/announcements.sh                    | celestia-mon-announcements reads, posts once and reports errors
+tensile/run                      | tools/ci/tensile.sh                          | celestia-mon-tensile serves Tensile's verdict as metrics
+signal/run                       | tools/ci/signal.sh                           | celestia-mon-signal serves x/signal as metrics
 dashboard/render                 | tools/ci/dashboard_configs.sh                | Render the dashboard settings for the example inventories
 dashboard/generate               | ci.yml                                       | Generate the dashboards
 dashboard/panels-switches        | ci.yml                                       | Panels match the switches
