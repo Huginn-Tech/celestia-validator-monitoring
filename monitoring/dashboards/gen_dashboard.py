@@ -126,6 +126,9 @@ REFERENCE = "#CCCCDC99"
 OK, WARN, ALERT, NODATA = "#56A64B99", "#FF9830", "#F2495C", "#8E8E8E40"
 # Words use named colours; grey words (no data, not checked, standby) this fixed grey.
 GREY = "#8E8E8E"
+# The steady healthy word of the Status cell and of each answer tile, and no other word: Grafana's
+# semi-dark-green, #56A64B, the hue of the fine bars. Healthy words elsewhere keep the text colour.
+FINE = "semi-dark-green"
 # A zero-width space: the uptime columns' lane names, distinct and invisible.
 ZERO_WIDTH = chr(0x200B)
 
@@ -159,8 +162,8 @@ INTER_500 = dict(zip(" abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ01234
 VALUE_PAD = 4
 LINE_EM = 1.2                            # a line of text is 1.2 times its size high
 STACK_GAP_PX = 7                         # between label and value in a centred value_and_name stack
-# The intro strip at the top: six framed, untitled cells of one height and width (identity, Latest
-# block, Block time, Voting power, Signed and Status), each a label over a value, all in one size
+# The intro strip at the top: six framed, untitled cells of one height and width (identity, Status,
+# Latest block, Block time, Voting power and Signed), each a label over a value, all in one size
 # pair, so every label sits on one line and every value on another, and the column edges line up
 # with the answer tiles below. Every six-cell row (this strip, the answers and the facts of the
 # Validator, Fibre and Network upgrade rows) takes one value size, the first of INTRO_VALUE_SIZES at
@@ -1529,11 +1532,48 @@ def fit_strip(items, height, what, samples=None):
 
 # The first screen.
 
+# The Status cell's items no alert rule carries (synth_items), as its (i) names what sets them.
+SYNTH_PLAIN = {"Rules stopped": "no alert rule ran for 2 minutes", "Alerting down": "Alertmanager does not answer",
+               "Alerts unsent": "alerts failed to reach Alertmanager in the last 3 minutes",
+               "No heartbeat": "a notification failed in the last hour",
+               "Announcement": "a new Celestia announcement, for 30 minutes"}
+
+
+def status_list(s):
+    """The Status cell's words in this install for its (i), in status_shorts order, each once with what
+    sets it: its alerts (the names of its TITLES keys), then an item no rule carries in plain words
+    (SYNTH_PLAIN). Words set by the same alerts share one entry: "Disk critical, Disk low: DiskLow".
+    SHORT_FALLBACK is left out: variants() stops on an alert without a key."""
+    names, plain = {}, {}
+    for key, _, words, _, need in TITLES:
+        n = key.split(":")[0]
+        if s.has(need) and n != "UpgradeScheduled" and n not in names.setdefault(words, []):
+            names[words].append(n)
+    for _, sentence, words, _, _ in synth_items(s):
+        p = SYNTH_PLAIN.get(words, sentence)
+        if p not in plain.setdefault(words, []):
+            plain[words].append(p)
+    entries = []
+    for w in status_shorts(s):
+        if w == SHORT_FALLBACK:
+            continue
+        what = ", or ".join(([", ".join(names[w])] if names.get(w) else []) + plain.get(w, []))
+        for e in entries:
+            if e[1] == what:
+                e[0].append(w)
+                break
+        else:
+            entries.append(([w], what))
+    # No-break spaces keep each word on one line of the (i), and each " ·" at the end of a line.
+    nb = " "
+    return (nb + "· ").join("%s: %s" % (", ".join(w.replace(" ", nb) for w in ws), what) for ws, what in entries)
+
+
 def status_cell(s):
     """(id, label, description, query, options) of the Status cell: "All online" in green, or the worst
     item's short name in amber, red once a page fires (an announcement in the text colour); the label
-    names the part and counts the items. Each short name's sentence is in docs/panels.md and in the All
-    firing alerts row."""
+    names the part and counts the items. Its (i) lists the words of the install with what sets them
+    (status_list); each short name's sentence is in docs/panels.md and in the All firing alerts row."""
     shorts = status_shorts(s)
     desc = ("What is wrong now, or about to be: the worst alert's short name; All online in green when nothing is. "
             "Red: an urgent alert fires. Amber: a warning fires, or an alert's problem is true and is sent if it "
@@ -1541,8 +1581,10 @@ def status_cell(s):
             "silenced alerts still show.")
     if s.announcements:
         desc += " A new Celestia announcement shows for 30 minutes in the text colour."
-    desc += " Every alert in full: the collapsed row All firing alerts." + more(pages=[("Alert reference", DOCS)])
-    words = [(1, "All online", "semi-dark-green")]
+    desc += (" Every alert in full, with its rule name and how long it has been active: the row All firing alerts, "
+             "right under History.\n\nThe words your install can show, and what sets them. %s."
+             % status_list(s) + more(pages=[("Alert reference", DOCS)]))
+    words = [(1, "All online", FINE)]
     for i, w in enumerate(shorts, 1):
         words += [(10 * i, w, "text"), (10 * i + 1, w, "orange"), (10 * i + 2, w, "red")]
     return (10, "{{status}}", desc, status_expr(s),
@@ -1550,10 +1592,11 @@ def status_cell(s):
 
 
 def intro(s):
-    """The intro strip, one band at the top: the validator's name under its network, four neutral
-    facts and the Status, in six framed, untitled cells of one height and width. Each cell is a label
-    over a value, set from the left, in one size pair, so the labels share one line and the values
-    another. The generator stops when a text does not fit its cell."""
+    """The intro strip, one band at the top: the validator's name under its network, the Status and
+    four neutral facts, in six framed, untitled cells of one height and width. The Status comes second,
+    read right after whose validator this is, and far from the time picker, whose menus cover the
+    strip's right end. Each cell is a label over a value, set from the left, in one size pair, so the
+    labels share one line and the values another. The generator stops when a text does not fit its cell."""
     name = s.name or DEFAULT_NAME
     if len(name) > NAME_CHARS:
         raise SystemExit("celestia_mon_validator_name %r has %d characters; at most %d fit the dashboard's top strip"
@@ -1581,6 +1624,7 @@ def intro(s):
          "dashboard cannot be confused. The name is celestia_mon_validator_name in the inventory. No node data: no "
          "node reports its chain." % (" and Fibre" if s.fibre else ""),
          net, dict(mappings=mapping((1, name, "text")), no_value="No node data")),
+        status_cell(s),
         (2, "Latest block",
          "The newest block committed by any node of this setup. It grows by about 20 a minute, so it changes on every "
          "refresh. Compare it with an explorer or [status.celestia.org](https://status.celestia.org/) to see that the "
@@ -1613,7 +1657,6 @@ def intro(s):
          signed_share(s, "%dd" % s.days, "5m", 300),
          dict(unit="percentunit", decimals=2, no_value="No data",
               mappings=range_map(0.99995, 1, "100%") + special_map("nan", "No data"))),
-        status_cell(s),
     ]
     # The labels each cell can show, where they are not its query's legend, and the values its words
     # do not name: the widest number of each fact.
@@ -1650,7 +1693,7 @@ def validator_tile(s):
         "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
         % (MISSED_1H, num(s.R), H),
         "max(%s) * 0 + 1" % H)
-    words = [(1, "Signing", "text"), (2, "Missed blocks", "orange"),
+    words = [(1, "Signing", FINE), (2, "Missed blocks", "orange"),
              (3, "Not signing", "orange"), (13, "Not signing", "red"),
              (4, "Out of set", "orange"), (14, "Out of set", "red"),
              (5, "Nodes stalled", "orange"), (15, "Nodes stalled", "red"),
@@ -1749,7 +1792,7 @@ def fibre_tile(s):
            for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
         + (check("", 10) if s.tensile else [])
         + ["count(%s) * 0 + 1" % seen_f]))
-    words = [(1, "Serving", "text"), (3, "Two Fibres", "orange"), (5, "Not running", "orange"),
+    words = [(1, "Serving", FINE), (3, "Two Fibres", "orange"), (5, "Not running", "orange"),
              (15, "Not running", "red"), (9, "Not seen", "orange"), (19, "Not seen", "red")]
     words += [(31 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)]
     words += [(41 + NOT_READY_AT, "Not ready", "red")]
@@ -1783,7 +1826,7 @@ def outside_tile(s):
         "(%s == 0) * 0 + 2" % reach,
         "(%s == 1) * 0 + 1" % reach,
         "(max(celestia_mon_fibre_registered) == 1) * 0 + 9")
-    words = [(1, "Reachable", "text"), (2, "Unreachable", "orange"), (12, "Unreachable", "red"),
+    words = [(1, "Reachable", FINE), (2, "Unreachable", "orange"), (12, "Unreachable", "red"),
              (3, "Wrong host", "orange"), (13, "Wrong host", "red"), (4, "Not registered", "orange"),
              (14, "Not registered", "red"), (10, "Check stopped", "orange"), (0, "Not checked", GREY),
              (9, "Check pending", GREY)]
@@ -1820,7 +1863,7 @@ def upgrade_tile(s):
         unvoted if s.gov else None,
         "(max(celestia_mon_signal_tally_power) > 0) * 0 + 2",
         "max(celestia_mon_upgrade_pending) * 0 + 1")
-    words = [(1, "None pending", "text"), (2, "Signal sent", "text"), (3, "Not signalled", "orange"),
+    words = [(1, "None pending", FINE), (2, "Signal sent", "text"), (3, "Not signalled", "orange"),
              (13, "Not signalled", "red"), (4, "Upgrade set", "text"), (5, "Upgrade soon", "orange"),
              (10, "Signal stale", "orange"), (0, "Not checked", GREY)]
     if s.gov:
@@ -1903,7 +1946,7 @@ def servers_tile(s):
            '((count(up{job="node",%s} == 1) == %d) and on () %s) * 0 + 1' % (sel, len(s.servers), rules),
            'max(up{job="prometheus"}) * 0']))
     colour = {OK: "text", WARN: "orange", ALERT: "red", NODATA: GREY}
-    words = ([(1, "All up", "text")] + [(c, w, colour[f]) for c, w, f in SERVER_WORDS if c != 1]
+    words = ([(1, "All up", FINE)] + [(c, w, colour[f]) for c, w, f in SERVER_WORDS if c != 1]
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
             "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
@@ -1954,15 +1997,19 @@ def monitoring_tile(s):
             "(DeadmanFailing)%s. The history: the line of %s, the monitor's server, in History."
             % (", or Feed stopped: the Celestia announcements are not read (AnnouncementsUnreadable)"
                if s.announcements else "", s.monitor))
+    # Working in green, as every answer's healthy word; the cards' Monitoring rows keep the text colour.
+    words = [(c, w, FINE if c == 1 else colour) for c, w, colour in MONITOR_WORDS]
     return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]
                                          + (["AnnouncementsUnreadable"] if s.announcements else [])), \
-        monitoring_now(s), MONITOR_WORDS
+        monitoring_now(s), words
 
 
 def answer_tiles(s):
     """(panel, width) of the one-word answers, in the top strip's cell form: untitled, the name over the
     word from the left, one word size for the row and equal widths, so their edges, labels and words line
-    up with the cells of the strip above. Their value size is the six-cell rows' (one_value_size())."""
+    up with the cells of the strip above. Their value size is the six-cell rows' (one_value_size()). Each
+    tile's steady healthy word is green (FINE), as the Status cell's All online; informational words keep
+    the text colour, and Signing through the server's."""
     tiles = [validator_tile(s), signing_tile(s)]
     if s.fibre:
         tiles.append(fibre_tile(s))
