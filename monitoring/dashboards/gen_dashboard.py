@@ -680,9 +680,9 @@ def load_rules():
 class Setup:
     """The settings, with what the panels derive from them.
 
-    remote, multi (tmkms signs through several nodes on purpose), fibre, tensile, signal, gov (the
-    vote check, with signal), gov_page (its page), announcements and mon_only (the monitor on a host
-    of its own) are the switches. nodes are the
+    remote, multi (tmkms signs through several nodes on purpose), twice (ValidatorSigningTwice is
+    on: remote, not multi), fibre, tensile, signal, gov (the vote check, with signal), gov_page (its
+    page), announcements and mon_only (the monitor on a host of its own) are the switches. nodes are the
     celestia-appd hosts, the validator first; fibre_hosts every Fibre host; kms_hosts the KMS hosts
     whose node_exporter runs, with a remote signer; servers the nodes, then the other node_exporter
     hosts (the monitor's among them), in inventory order: the order of the status board, the table
@@ -695,6 +695,8 @@ class Setup:
         self.name = (cfg.get("name") or "").strip()
         self.remote = cfg["signer"] == "remote"
         self.multi = self.remote and bool(cfg.get("signer_multi_node"))
+        # A remote signer through one node: two signers is a fault there (ValidatorSigningTwice).
+        self.twice = self.remote and not self.multi
         self.fibre = bool(cfg["fibre_enabled"])
         self.tensile = self.fibre and bool(cfg.get("tensile_enabled"))
         self.signal = bool(cfg.get("signal_enabled"))
@@ -750,7 +752,7 @@ class Setup:
 
     def has(self, need):
         """Whether the alerts that need need exist in this install (None: always)."""
-        return {None: True, "remote": self.remote, "two_signers": self.remote and not self.multi, "fibre": self.fibre,
+        return {None: True, "remote": self.remote, "two_signers": self.twice, "fibre": self.fibre,
                 "tensile": self.tensile, "signal": self.signal, "gov": self.gov, "gov_page": self.gov_page,
                 "announcements": self.announcements,
                 "tmkms": bool(self.kms_hosts), "reached": bool(self.reached), "monitor_only": self.mon_only}[need]
@@ -1657,11 +1659,10 @@ def signing_expr(s):
     why there is none (signing_words). Two signers is ValidatorSigningTwice itself: amber while it is
     pending, red once it pages."""
     sig = signing_nodes(s)
-    twice = s.remote and not s.multi
     return chain(
-        "%s * 0 + 45" % two_signers(s, "firing") if twice else None,
+        "%s * 0 + 45" % two_signers(s, "firing") if s.twice else None,
         "%s * 0 + 31" % STALL,
-        "%s * 0 + 35" % two_signers(s) if twice else None,
+        "%s * 0 + 35" % two_signers(s) if s.twice else None,
         "(count(%s) > 1) * 0 + 30" % sig if s.remote else None,
         "max(%s and on (host) %s)" % (lookup(s.nodes), sig),
         '((min(up{job="celestia-app"}) == 0) * 0 + 32) + on () %s' % VNS10,
@@ -1674,7 +1675,7 @@ def signing_words(s):
     words = [(i + 1, h, s.color(h)[0]) for i, h in enumerate(s.nodes)]
     if s.remote:
         words.append((30, "Two nodes" if s.multi else "Switching", "text"))
-    if s.remote and not s.multi:
+    if s.twice:
         words += [(35, "Two signers", "orange"), (45, "Two signers", "red")]
     return words + [(31, "Nodes stalled", "orange"), (32, "Not visible", "orange"), (42, "Not visible", "red"),
                     (33, "Not signing", "orange"), (43, "Not signing", "red"), (34, "Out of set", GREY)]
@@ -1694,8 +1695,8 @@ def signing_tile(s):
         desc = "Which server's node signs for the validator now: its last signed height advanced in 2 minutes. "
     desc += ("Not signing: in the set, but no node signed for 2 minutes; red once ValidatorNotSigning pages. "
              "Whether a backup could take over: its card below. Every word: the panel guide.")
-    return 12, "Signing through", desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.remote and not
-                                                                        s.multi else []), [PANEL_GUIDE]), \
+    return 12, "Signing through", desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.twice else []),
+                                              [PANEL_GUIDE]), \
         signing_expr(s), signing_words(s)
 
 
@@ -2000,10 +2001,9 @@ def check_lanes(s):
     behind = 'max(ALERTS{alertname="NodeBehind",alertstate="firing"})'
     # ValidatorSigningTwice colours Validator signing and Remote signer: red once it pages, amber while
     # it was pending only.
-    twice = s.remote and not s.multi
-    twice_red = "%s * 0 + 6" % firing('alertname="ValidatorSigningTwice"') if twice else None
-    twice_amber = "%s * 0 + 7" % active('alertname="ValidatorSigningTwice"') if twice else None
-    twice_words = [(6, "Two signers", ALERT), (7, "Two signers", WARN)] if twice else []
+    twice_red = "%s * 0 + 6" % firing('alertname="ValidatorSigningTwice"') if s.twice else None
+    twice_amber = "%s * 0 + 7" % active('alertname="ValidatorSigningTwice"') if s.twice else None
+    twice_words = [(6, "Two signers", ALERT), (7, "Two signers", WARN)] if s.twice else []
     lanes = [
         # The nodes advance and none lags: NodeNotAdvancing, and NodeBehind for any node.
         ("A", "Node in sync",
@@ -2232,9 +2232,8 @@ def role_lanes(s):
         return "((%s) and on () %s) or %s * 0 - 99" % (expr, evaluated(), seen('up{job="prometheus"}'))
 
     no_data = [(-99, "No data", NODATA)]
-    twice = s.remote and not s.multi
     lanes = [("A", "Validator signs through", gated(chain(
-        "%s * 0 - 6" % firing('alertname="ValidatorSigningTwice"') if twice else None,
+        "%s * 0 - 6" % firing('alertname="ValidatorSigningTwice"') if s.twice else None,
         "(%s unless on () %s) * 0 - 4" % (firing('alertname="ValidatorNotSigning"'),
                                           firing('alertname="NodeNotAdvancing"')),
         "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "((changes(max(%s)[2m:]) == bool 0) and on () %s)"
@@ -2242,7 +2241,7 @@ def role_lanes(s):
         # Out of the set at some step of the block, as the board reads every line: never from one reading.
         "(max(%s) == 1) * 0 - 2" % in_block("max_over_time", "((max(%s) * 0 + 1) unless on () %s)"
                                             % (POWER, IN_SET_OR_NEW), sub=True),
-        "%s * 0 - 5" % active('alertname="ValidatorSigningTwice"') if twice else None,
+        "%s * 0 - 5" % active('alertname="ValidatorSigningTwice"') if s.twice else None,
         "(max(%s) == 1) * 0 - 1" % in_block("max_over_time", "((count(%s) or vector(0)) > bool 1)" % sig, sub=True)
         if s.remote else None,
         "(min(%s) == 0) * 0" % in_block("min_over_time", "(count(%s) or vector(0))" % sig, sub=True),
@@ -2250,7 +2249,7 @@ def role_lanes(s):
         "max(%s) * 0" % H)),
         [(i + 1, h, s.tint(h)) for i, h in enumerate(s.nodes)]
         + ([(-1, "Two nodes" if s.multi else "Switching", NODATA)] if s.remote else [])
-        + ([(-5, "Two signers", WARN), (-6, "Two signers", ALERT)] if twice else [])
+        + ([(-5, "Two signers", WARN), (-6, "Two signers", ALERT)] if s.twice else [])
         + [(0, "Not signing", WARN), (-4, "Not signing", ALERT), (-2, "Out of set", NODATA),
            (-3, "Nodes stalled", NODATA)] + no_data)]
     if s.fibre:
@@ -2295,7 +2294,7 @@ def role_band(s, lanes, height, axis):
     if s.fibre and s.remote:
         desc += " Fibre signs through: the node Fibre sends its signing requests to, amber when it is another."
     desc += (" Amber: nobody or two servers held the role; red: its page alert fired. Every word: the panel guide.")
-    desc += more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.remote and not s.multi else [])
+    desc += more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.twice else [])
                  + (["FibreDown"] if s.fibre else []), [PANEL_GUIDE, MAINNET_LAYOUT])
     targets = [target(ref, expr, lbl, interval="1m") for ref, lbl, expr, _ in lanes]
     defaults = {"color": {"fixedColor": "#8E8E8E26", "mode": "fixed"},
@@ -2389,7 +2388,7 @@ def servers_table(s):
 
     node_up = '(max by (host) (up{job="celestia-app"}) == 1)'
     first = "%s * 0 + 1" % sig
-    if s.remote and not s.multi:
+    if s.twice:
         # The node tmkms is leaving during a repoint is already the backup.
         fresh = newer(s)
         leaving = "((%s unless on (host) %s) and on () (count(%s) > 0) unless on () %s)" % (sig, fresh, fresh,
@@ -2619,8 +2618,7 @@ def node_part(s):
     NodePeersLow itself: red once its page fires, amber while either of its rules is pending or fires."""
     sig = signing_nodes(s)
     signing = sig
-    twice = s.remote and not s.multi
-    if twice:
+    if s.twice:
         fresh = newer(s)
         leaving = ("((%s unless on (host) %s) and on () (count(%s) > 0) unless on () %s)"
                    % (sig, fresh, fresh, two_signers(s)))
@@ -2639,7 +2637,7 @@ def node_part(s):
         "(%s unless on (host) %s) * 0 + 10" % (down, NE_UP),
         "%s * 0 + 9" % down,
         "(((%s and on () %s) * 0 + 4) + on () group_left () %s)" % (signing, two_signers(s), twice10(s))
-        if twice else None,
+        if s.twice else None,
         'max by (host) (ALERTS{%s,alertstate="firing"}) * 0 + 15' % PEERS_PAGE,
         'max by (host) (ALERTS{alertname="NodePeersLow"}) * 0 + 5',
         "%s * 0 + 1" % signing,
@@ -3027,7 +3025,6 @@ def signing_time(s, pid, hue, title, name_px=None):
 def card_desc(s, kind, rows):
     """The (i) of a card that shows rows (as card_rows gives them): a sentence for each row it has, and a
     link to every alert whose word a row can show."""
-    twice = s.remote and not s.multi
     if kind == "server":
         parts = {name for name, _, _, _ in rows}
         node, fibre, watched = bool(parts & {"Consensus node", "Node"}), "Fibre" in parts, "Monitoring" in parts
@@ -3042,7 +3039,7 @@ def card_desc(s, kind, rows):
                      "(NodeBehind); amber 'Few peers' under %d peers, red 'No peers' once NodePeersLow pages for the "
                      "node the validator signs through; amber 'Not signing' while no node signs, red once "
                      "ValidatorNotSigning pages." % (s.NB, s.PM))
-            if twice:
+            if s.twice:
                 desc += " Two signers: ValidatorSigningTwice; stop one signer."
         if fibre:
             desc += (" Fibre: Active or Standby, or a Fibre alert's words: amber 'Not running' while no Fibre runs "
@@ -3057,7 +3054,7 @@ def card_desc(s, kind, rows):
         # The links: the node's and Fibre's alerts (each in the alert reference's order), ServiceDown, then
         # the monitoring's (monitoring_tile's).
         return desc + " Every word: the panel guide." + more(
-            (["NodeBehind", "NodePeersLow", "ValidatorNotSigning"] + (["ValidatorSigningTwice"] if twice else [])
+            (["NodeBehind", "NodePeersLow", "ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.twice else [])
              if node else [])
             + (["FibreDown", "FibreBothActive", "FibreNotServing"] if fibre else [])
             + (["ServiceDown"] if node or fibre else [])
@@ -3067,13 +3064,13 @@ def card_desc(s, kind, rows):
     if s.fibre:
         desc += (", and the node Fibre's go through, amber when they differ, because then Fibre's uploads fail")
     desc += "."
-    if twice:
+    if s.twice:
         desc += " Two signers: ValidatorSigningTwice; stop one signer."
     if kind == "kms":
         desc += " Signer service: tmkms's unit on this server, as ServiceDown reads it."
     else:
         desc += " tmkms's own server is not scraped (celestia_mon_kms_scrape): only its signing is seen."
-    return desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if twice else []) + ["RemoteSignerProblem"]
+    return desc + more(["ValidatorNotSigning"] + (["ValidatorSigningTwice"] if s.twice else []) + ["RemoteSignerProblem"]
                        + (["ServiceDown"] if kind == "kms" else []), [MAINNET_LAYOUT])
 
 
