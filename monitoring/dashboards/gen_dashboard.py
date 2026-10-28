@@ -181,9 +181,10 @@ TABLE_ROOM = 1060                        # what the Servers now table may fill w
 GAUGE_MIN, GAUGE_FLOOR = 90, 60          # the gauge columns' minimum width, and the least it may drop to
 # The Servers band: per column a card (a stat, one row per part, the name left and the word right,
 # both in one size so they share a baseline) over a bar gauge of four bars. Every card of an install
-# has the same rows. Each row is a BigValue item of at most 100 px, padded 8 px on each side, and needs
-# a gap between its name and its word: three rows fit an h4 at about 28 px apart.
-CARD_H = {1: 3, 2: 4, 3: 4}
+# has the same number of rows: one for each part its server runs, then blank rows down to the deepest
+# card's. Each row is a BigValue item of at most 100 px, padded 8 px on each side, and needs a gap
+# between its name and its word: three rows fit an h4 at about 28 px apart.
+CARD_H = {1: 3, 2: 3, 3: 4}
 CARD_SIZES = (14, 13)
 CARD_PAD, CARD_GAP = 8, 16
 # A titled panel's header keeps 96 px of the panel's width for its padding, the (i) and the menu button
@@ -2588,13 +2589,13 @@ def servers_table(s):
 
 # The Servers band, under the answers: what runs where now. One column per server, in servers order,
 # and one for a remote signer whose host is not scraped. Each column is a card that names the
-# server and gives every part a row with its role now (the same rows in every card, so reading
-# across a row shows where a part runs), over a bar gauge of the server's hardware now in the
-# server's colour. Roles come from the metrics, as everywhere: a tmkms repoint or a Fibre failover
-# moves the words between cards. Words are plain text while fine, amber or red only where an alert
-# watches, grey for "Not here" (the part does not run on this server) and "No data".
+# server and gives each part it runs a row with its role now (always in one order, so a row of one
+# card sits level with the same part's row in another), over a bar gauge of the server's hardware
+# now in the server's colour. Roles come from the metrics, as everywhere: a tmkms repoint or a Fibre
+# failover moves the words between cards. Words are plain text while fine, amber or red only where
+# an alert watches, grey for "No data".
 
-NOTHING = [(-8, "No data", GREY), (-9, "Not here", GREY)]
+NOTHING = [(-8, "No data", GREY)]
 
 
 def band_columns(s):
@@ -2762,7 +2763,7 @@ def fibre_signer(s):
     return chain(
         "((%s + 100 unless on () (%s == on () max(%s and on (host) %s))) unless on () absent(%s))"
         % (recent, recent, lookup(s.nodes), sig, sig),
-        recent, via("24h"), "(count(%s) * 0 - 1)" % fibre_seen(s), "vector(-9)")
+        recent, via("24h"), "vector(-1)")
 
 
 def fibre_signer_words(s):
@@ -2785,31 +2786,37 @@ def signer_service(s, host):
 
 def card_rows(s, kind, host, short):
     """(name, query, words, text) of each row of a card; text: the query gives the label text (text_row),
-    else a code of words. Server cards: Consensus node, Fibre (Fibre on), Monitoring (when the monitor is
-    a server), "Not here" where the part does not run. The signer's card, as many rows: where the
-    validator signs, where Fibre signs (Fibre on), then the signer's own service (scraped) or its server
-    health (not monitored). short: the names that fit a quarter."""
+    else a code of words. A card has a row only for a part its server runs, always in this order. Server
+    cards: Consensus node (a node host), Fibre (a Fibre host, Fibre on; a stopped standby too), Monitoring
+    (the monitor's own server). The signer's card: where the validator signs, where Fibre signs (Fibre
+    on), then the signer's own service on a scraped KMS host. short: the names that fit a quarter."""
     if kind == "server":
-        node = (node_row(s, host) if host in s.nodes else
-                text_row("vector(-9)", [w for w in NODE_WORDS if w[0] == -9], []))
-        rows = [("Node" if short else "Consensus node", node, text_words(NODE_WORDS), True)]
-        if s.fibre:
-            rows.append(("Fibre", "%s or vector(-8)" % pick(fibre_part(s), host) if host in s.fibre_hosts
-                         else "vector(-9)", fibre_words(s), False))
-        if s.monitor in s.servers:
-            rows.append(("Monitoring", monitoring_now(s) if host == s.monitor else "vector(-9)", MONITOR_WORDS + NOTHING,
-                         False))
+        rows = []
+        if host in s.nodes:
+            rows.append(("Node" if short else "Consensus node", node_row(s, host), text_words(NODE_WORDS), True))
+        if s.fibre and host in s.fibre_hosts:
+            rows.append(("Fibre", "%s or vector(-8)" % pick(fibre_part(s), host), fibre_words(s), False))
+        if host == s.monitor:
+            rows.append(("Monitoring", monitoring_now(s), MONITOR_WORDS + NOTHING, False))
         return rows
-    rows = [("Signs through" if short else "Validator signs through", signing_expr(s), signing_words(s) + NOTHING, False)]
+    # No data keeps the row (and the rows under it) in its place.
+    rows = [("Signs through" if short else "Validator signs through", "(%s) or vector(-8)" % signing_expr(s),
+             signing_words(s) + NOTHING, False)]
     if s.fibre:
         rows.append(("Fibre via" if short else "Fibre signs through", fibre_signer(s), fibre_signer_words(s), False))
     if kind == "kms":
         rows.append(("Signer service", signer_service(s, host),
                      [(1, "Running", "text"), (3, "Signer down", "orange"), (4, "No signer", "orange"),
                       (10, "Not reporting", "orange"), (11, "Signer crash", "orange")] + NOTHING, False))
-    else:
-        rows.append(("Server health", "vector(-10)", [(-10, "Not monitored", GREY)] + NOTHING, False))
     return rows
+
+
+def blank_rows(rows, depth):
+    """rows ended in blank rows up to depth, so a card with fewer parts keeps the band's row spacing and
+    each row its line (a horizontal stat shares its height evenly among its values). Each blank row has a
+    distinct invisible name and an invisible word, as spacer_lane()."""
+    return rows + [(ZERO_WIDTH * (k + 1), "vector(-11)", [(-11, ZERO_WIDTH, "transparent")], False)
+                   for k in range(len(rows), depth)]
 
 
 def card_fits(rows, size, width):
@@ -2826,18 +2833,30 @@ PAD_PERCENT = [m for k in range(10)
                for m in range_map(round((k - 0.5) / 100, 6), round((k + 0.5) / 100 - 1e-6, 6), "\u2007%d%%" % k)]
 
 
+def bar_name_px(text, size):
+    """Width in px of a bar's name at size px, its leading spaces (LEAD_EM) included."""
+    bare = text.lstrip("".join(LEAD_EM))
+    return value_px(bare, size) + size * sum(LEAD_EM[c] for c in text[:len(text) - len(bare)])
+
+
+def name_column(names, width):
+    """The width in px of the names' column of a bar gauge width columns wide, as Grafana sizes it: the
+    name with the most characters at BAR_MEASURE_PX and BAR_NAME_GAP, at most BAR_NAME_SHARE of the panel."""
+    return min(bar_name_px(max(names, key=len), BAR_MEASURE_PX) + BAR_NAME_GAP, BAR_NAME_SHARE * inner_px(width))
+
+
 def bars_left(panels, width):
     """The largest of BAR_NAME_SIZES at which the names fit left of the bars in every panel width columns
-    wide, else None: (names, numbers, words) per panel. The names' column is Grafana's (BAR_NAME_SHARE);
+    wide, else None: (names, numbers, words) per panel. The names' column is Grafana's (name_column);
     each bar's value takes its own width and BAR_VALUE_GAP after its track. A number needs BAR_MIN_PX of
     bar beside it, a word (a state, whose bar is empty) only room."""
     inner = inner_px(width)
     for size in BAR_NAME_SIZES:
         fits = True
         for names, numbers, words in panels:
-            column = min(value_px(max(names, key=len), BAR_MEASURE_PX) + BAR_NAME_GAP, BAR_NAME_SHARE * inner)
+            column = name_column(names, width)
             room = inner - column
-            if (any(value_px(n, size) + BAR_NAME_GAP > column for n in names)
+            if (any(bar_name_px(n, size) + BAR_NAME_GAP > column for n in names)
                     or room - max(value_px(v, BAR_VALUE_PX) for v in numbers) - BAR_VALUE_GAP < BAR_MIN_PX
                     or room - max(value_px(v, BAR_VALUE_PX) for v in words) - BAR_VALUE_GAP < 0):
                 fits = False
@@ -2903,6 +2922,10 @@ def network_now(s, host):
 
 
 HARDWARE_NAMES = ["CPU", "Memory", "Disk used", "Network peak"]
+# The longest hardware name beside a signer column leads with these spaces (level_names), each its
+# width in em in Grafana's Inter: a figure space, as wide as a digit, then four-per-em spaces (ROW_INDENT's).
+FIGURE, QUARTER = "\u2007", "\u2005"
+LEAD_EM = {FIGURE: 0.648, QUARTER: 0.25}
 # The words of the Disk used and Network peak bars: DiskLow's own words (TITLES) while its live condition
 # holds (-7 paged: full or read-only; -6 read-only; -4 a Fibre store smaller than its budget needs), and
 # the cases no bar can show.
@@ -2914,30 +2937,55 @@ SIGNING_SAMPLE = "999.99 ms"
 SIGNING_WORDS = [(-5, "Bad proposals", "orange"), (-9, "None", GREY), (-8, "No data", GREY)]
 
 
-def lower_texts(s, kind):
-    """(names, numbers, words) of a column's lower panel, for bars_left."""
+def lower_texts(s, kind, names=HARDWARE_NAMES):
+    """(names, numbers, words) of a column's lower panel, for bars_left; names: the hardware bars' own."""
     if kind == "signer":
         return signing_names(s), [SIGNING_SAMPLE], [w for _, w, _ in SIGNING_WORDS]
-    return HARDWARE_NAMES, ["100%"], [w for _, w, _ in NOTHING + DISK_WORDS + LINK_WORDS]
+    return names, ["100%"], [w for _, w, _ in NOTHING + DISK_WORDS + LINK_WORDS]
 
 
-def hardware(s, pid, host, hue, title, name_px=None):
-    """Hardware now of one server: CPU, memory, its fullest watched disk and its network peak."""
+def level_names(s, kinds, width, size):
+    """The hardware bars' names, size px left of the bars in columns width wide (kinds: the band's). Beside
+    a signer column, whose names are longer, the longest hardware name (the one Grafana sizes the names'
+    column by) leads with spaces, invisible as the names are right-aligned, until it is as wide as the
+    signer's longest: both columns then take one width, and the bars of the whole band start on one x, on
+    any screen. Figure spaces first, then four-per-em spaces for the rest; only as many as keep every name
+    whole at size px."""
+    if "signer" not in kinds:
+        return HARDWARE_NAMES
+    longest = max(HARDWARE_NAMES, key=len)
+    room = (bar_name_px(max(signing_names(s), key=len), BAR_MEASURE_PX)
+            - bar_name_px(longest, BAR_MEASURE_PX)) / BAR_MEASURE_PX
+    figures = int(max(room, 0) // LEAD_EM[FIGURE])
+    lead = FIGURE * figures + QUARTER * int(round((max(room, 0) - figures * LEAD_EM[FIGURE]) / LEAD_EM[QUARTER]))
+    names = [lead + n if n == longest else n for n in HARDWARE_NAMES]
+    while lead and bars_left([lower_texts(s, kind, names) for kind in kinds], width) != size:
+        lead = lead[:-1]
+        names = [lead + n if n == longest else n for n in HARDWARE_NAMES]
+    return names
+
+
+def hardware(s, pid, host, hue, title, name_px=None, names=HARDWARE_NAMES):
+    """Hardware now of one server: CPU, memory, its fullest watched disk and its network peak; names: the
+    bars' names (level_names)."""
     sel = "host=%s" % q(host)
-    fields = list(zip(HARDWARE_NAMES, [
+    fields = list(zip(names, [
         '1 - sum(rate(node_cpu_seconds_total{%s,mode=~"idle|iowait"}[5m])) / '
         'count(node_cpu_seconds_total{%s,mode="idle"}) or vector(-8)' % (sel, sel),
         "1 - max(node_memory_MemAvailable_bytes{%s}) / max(node_memory_MemTotal_bytes{%s}) or vector(-8)" % (sel, sel),
         disk_now(s, host),
         network_now(s, host)]))
+    # Red only from DiskLow's page (disk_now's Disk critical), which only node and KMS hosts' data disks raise.
+    red = ("it reads red Disk critical once DiskLow pages (below %g%% free, or read-only)" % (s.DP * 100)
+           if host in s.nodes or host in s.kms_hosts else
+           "DiskLow only sends messages for this server, so the bar never turns red")
     desc = ("How busy %s is now: CPU over 5 minutes, memory, its fullest watched disk, and the busiest minute of the "
-            "last hour on its link. Disk used turns amber at %g%% and red at %g%%, DiskLow's levels (it sends a message "
-            "after %s), and says Disk low or Disk critical while DiskLow's read-only or budget condition holds; the "
-            "other bars have no alert and keep the server's colour. Their history: the Servers row below."
-            % (host, (1 - s.DM) * 100, (1 - s.DP) * 100, s.hold("DiskLow low space"))
+            "last hour on its link. Disk used turns amber at %g%%, DiskLow's message level (sent after %s), and says "
+            "Disk low while DiskLow's read-only or budget message holds; %s. The other bars have no alert and keep the "
+            "server's colour. Their history: the Servers rows below (Disk used in the closed one)."
+            % (host, (1 - s.DM) * 100, s.hold("DiskLow low space"), red)
             + more(["DiskLow"], [NODE_EXPORTER_FULL]))
-    disk = override("byFrameRefID", "C",
-                    thresholds=steps((hue, None), ("orange", round(1 - s.DM, 6)), ("red", round(1 - s.DP, 6))),
+    disk = override("byFrameRefID", "C", thresholds=steps((hue, None), ("orange", round(1 - s.DM, 6))),
                     mappings=mapping(*NOTHING, *DISK_WORDS) + special_map("nan", "No data", GREY) + PAD_PERCENT)
     link = override("byFrameRefID", "D", mappings=mapping(*NOTHING, *LINK_WORDS) + special_map("nan", "No data", GREY)
                     + PAD_PERCENT)
@@ -2981,31 +3029,36 @@ def signing_time(s, pid, hue, title, name_px=None):
 
 
 def card_desc(s, kind, rows):
-    """The (i) of a card that shows rows (as card_rows gives them)."""
+    """The (i) of a card that shows rows (as card_rows gives them): a sentence for each row it has."""
     if kind == "server":
-        desc = ("What runs on this server now, read from the metrics, so it follows a tmkms repoint or a Fibre "
-                "failover. Consensus node: Signing or Backup, with its peers; amber 'Node behind' past %g blocks "
-                "(NodeBehind); amber 'Few peers' under %d peers, red 'No peers' once NodePeersLow pages for the node "
-                "the validator signs through." % (s.NB, s.PM))
-        if s.remote and not s.multi:
-            desc += " Two signers: ValidatorSigningTwice; stop one signer."
-        if s.fibre:
+        parts = {name for name, _, _, _ in rows}
+        node, fibre, watched = bool(parts & {"Consensus node", "Node"}), "Fibre" in parts, "Monitoring" in parts
+        if not parts:
+            # A Fibre host while Fibre is off, or a KMS host with a local key: still a server, scraped.
+            return ("Nothing this dashboard reads runs on this server, so its card has no row; its hardware is below, "
+                    "its line in History and its charts in the Servers rows." + more(pages=[PANEL_GUIDE]))
+        desc = "What runs on this server now, one row for each part it runs, read from the metrics"
+        desc += ", so it follows a tmkms repoint or a Fibre failover." if node or fibre else "."
+        if node:
+            desc += (" Consensus node: Signing or Backup, with its peers; amber 'Node behind' past %g blocks "
+                     "(NodeBehind); amber 'Few peers' under %d peers, red 'No peers' once NodePeersLow pages for the "
+                     "node the validator signs through." % (s.NB, s.PM))
+            if s.remote and not s.multi:
+                desc += " Two signers: ValidatorSigningTwice; stop one signer."
+        if fibre:
             desc += " Fibre: Active or Standby, or a Fibre alert's words."
-        watched = any(name == "Monitoring" for name, _, _, _ in rows)
         if watched:
             desc += (" Monitoring, on %s, the monitor: Working while the alert rules run and alerts go out, else "
                      "what failed." % s.monitor)
-        return desc + " Not here: the part does not run on this server. Every word: the panel guide." + more(
-            ["NodeBehind", "NodePeersLow", "ServiceDown"] + (["FibreNotServing"] if s.fibre else [])
-            + (["MonitoringBroken"] if watched else []), [PANEL_GUIDE])
-    shown = len(rows)
+        return desc + " Every word: the panel guide." + more(
+            (["NodeBehind", "NodePeersLow"] if node else []) + (["ServiceDown"] if node or fibre else [])
+            + (["FibreNotServing"] if fibre else []) + (["MonitoringBroken"] if watched else []), [PANEL_GUIDE])
     desc = ("Where the remote signer signs now: the node the validator's signatures go through")
-    if s.fibre and shown > 1:
+    if s.fibre:
         desc += (", and the node Fibre's go through, amber when they differ, because then Fibre's uploads fail")
     desc += "."
     if kind == "kms":
-        if shown == (3 if s.fibre else 2):
-            desc += " Signer service: tmkms's unit on this server, as ServiceDown reads it."
+        desc += " Signer service: tmkms's unit on this server, as ServiceDown reads it."
     else:
         desc += " tmkms's own server is not scraped (celestia_mon_kms_scrape): only its signing is seen."
     return desc + more(["ValidatorNotSigning", "RemoteSignerProblem"] + (["ServiceDown"] if kind == "kms" else []),
@@ -3050,9 +3103,6 @@ def servers_band(s):
     # The full names where every card fits them, else the short ones.
     for short in (False, True):
         rows = [card_rows(s, kind, host, short) for kind, host, _ in cols]
-        # The signer's card shows its first rows, as many as a server's card has.
-        count = len(next(r for (kind, _, _), r in zip(cols, rows) if kind == "server"))
-        rows = [r[:count] for r in rows]
         size = next((z for z in CARD_SIZES if all(card_fits(r, z, w) for r in rows)), None)
         if size:
             break
@@ -3066,9 +3116,11 @@ def servers_band(s):
                            for names, _, _ in lowers for n in names):
         raise SystemExit("The Servers band: a bar's name does not fit %d columns" % w)
     lower_rows = LOWER_ROWS if name_px else LOWER_ROWS + 1
-    if len({len(r) for r in rows}) != 1:
-        raise SystemExit("The Servers band: the cards must have the same rows")
-    height = CARD_H[len(rows[0])]
+    bar_names = level_names(s, [kind for kind, _, _ in cols], w, name_px) if name_px else HARDWARE_NAMES
+    # Every card as deep as the deepest: shorter ones end in blank rows, so each card keeps one height and
+    # one row spacing.
+    depth = max(len(r) for r in rows)
+    height = CARD_H[depth]
     cards, lower = [], []
     for i, ((kind, name, hue), r) in enumerate(zip(cols, rows)):
         hue = hue or NETWORK
@@ -3078,13 +3130,15 @@ def servers_band(s):
                           if text_px(t, TITLE_PX) <= inner_px(w) - TITLE_CHROME), name)
         if text_px(title, TITLE_PX) > inner_px(w) - TITLE_CHROME:
             raise SystemExit("The Servers band: the title %r does not fit %d columns; shorten the host name" % (title, w))
-        cards.append((card(s, 30 + i, title, card_desc(s, kind, r), r, size), w))
+        cards.append((card(s, 30 + i, title, card_desc(s, kind, r), blank_rows(r, depth), size), w))
         # One server: its hardware beside its card, titled, so both panels' content starts on one line.
         under = "Hardware now" if n == 1 else ""
         if kind == "signer":
             lower.append((signing_time(s, 34 + i, hue, under, name_px), w))
         else:
-            lower.append((hardware(s, 34 + i, name, hue, under, name_px), w))
+            lower.append((hardware(s, 34 + i, name, hue, under, name_px, bar_names), w))
+    if {len(p["targets"]) for p, _ in cards} != {depth}:
+        raise SystemExit("The Servers band: every card must have %d rows, blank ones included" % depth)
     if n == 1:
         h = max(height, lower_rows + 1)
         return [(h, cards + lower)]
