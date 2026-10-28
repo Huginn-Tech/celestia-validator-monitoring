@@ -3172,8 +3172,8 @@ def validator_row(s):
     else:
         third = cell(
             118, "Peers",
-            "Peers of the node the validator signs through; tens of peers is good. A node with few peers receives "
-            "blocks and votes late, which shows as missed blocks; no alert watches the count. No node signs: no node "
+            "Peers of the node the validator signs through; 1 or more is enough. A node with none receives no "
+            "blocks or votes, which shows as missed blocks; no alert watches the count. No node signs: no node "
             "has signed in the last 2 minutes.",
             one('max(max by (host) (cometbft_p2p_peers{job="celestia-app"}) and on (host) %s)' % sig_now),
             no_value="No node signs")
