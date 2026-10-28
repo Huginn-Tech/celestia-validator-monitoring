@@ -192,3 +192,20 @@ want='{alertname=~"FibreDown|NodePeersLow", host="val-1"} by op until '
 grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the host silence: $want"; exit 1; }
 want='(ID 00000000-0000-0000-0000-000000000007: holds back NodePeersLow). '
 grep -qF -- "$want" <<<"$line" || { echo "check 21 counted a host silence for a page alert that names no host"; exit 1; }
+# With no Prometheus to read the page rules from, check 21 still warns on a silence that runs long.
+cat > am/api/v2/silences <<EOF
+[{"id":"00000000-0000-0000-0000-000000000008","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"ci","createdBy":"op","endsAt":"2099-01-01T00:00:00.000Z",
+  "matchers":[{"isEqual":true,"isRegex":false,"name":"severity","value":"page"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+ {"id":"00000000-0000-0000-0000-000000000009","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"planned","createdBy":"op","endsAt":"$soon",
+  "matchers":[{"isEqual":true,"isRegex":false,"name":"host","value":"val-1"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+EOF
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --prometheus-url http://127.0.0.1:9 2>/dev/null) || true
+grep -Eq '^FAIL +11 +monitor stack +Prometheus is not ready ' <<<"$out" || { echo "check 11 did not fail without Prometheus"; exit 1; }
+line=$(grep -E '^WARN +21 +silences +1 of 2 active silences end more than 4 hours from now: ' <<<"$out" || true)
+for want in '{severity="page"} by op until 2099-01-01T00:00:00.000Z (ID 00000000-0000-0000-0000-000000000008: ends in ' \
+            ' hours); the others: {host="val-1"} by op until ' \
+            '; which page alerts they hold back is not known: Prometheus not answering (check 11). '; do
+  grep -qF -- "$want" <<<"$line" || { echo "check 21 without Prometheus: missing $want"; exit 1; }
+done

@@ -2484,17 +2484,19 @@ silence_text() { # matchers as silences_active prints them -> {name="value", ...
 # and the dead-man heartbeat stays green meanwhile, so a mistyped matcher or a forgotten end
 # hides the next outage. Warns on a silence that holds back a page alert (of an alert rule with
 # severity page that Prometheus has loaded, so the list follows the install's rules) or runs for
-# more than 4 hours more, with its matchers, author and end. Reads GET /api/v1/rules and
-# GET /api/v2/silences; changes nothing.
+# more than 4 hours more, with its matchers, author and end. Without the page rules (Prometheus
+# not answering) it still lists the silences and warns on those that run long. Reads
+# GET /api/v1/rules and GET /api/v2/silences; changes nothing.
 check_silences() {
-  local name="silences" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool
+  local name="silences" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} reply code now id ends by ms end why t amtool unread=""
   local -a held=() other=()
   if ! has_role monitor; then report SKIP 21 "$name" "not the monitor host"; return; fi
-  if ((!PROM_OK)); then report SKIP 21 "$name" "Prometheus not answering (check 11)"; return; fi
-  mapfile -t PAGE_RULES < <(http_get "$prom/api/v1/rules?type=alert&exclude_alerts=true" | page_rules)
-  if ((${#PAGE_RULES[@]} == 0)); then
-    report SKIP 21 "$name" "Prometheus has no page alert rules loaded (check 12)"
-    return
+  PAGE_RULES=()
+  if ((!PROM_OK)); then
+    unread="Prometheus not answering (check 11)"
+  else
+    mapfile -t PAGE_RULES < <(http_get "$prom/api/v1/rules?type=alert&exclude_alerts=true" | page_rules)
+    if ((${#PAGE_RULES[@]} == 0)); then unread="Prometheus has no page alert rules loaded (check 12)"; fi
   fi
   reply=$(mon_curl "$am/api/v2/silences" -sS -g --max-time 5 -w '\n%{http_code}' 2>/dev/null)
   code=${reply##*$'\n'}
@@ -2521,9 +2523,16 @@ check_silences() {
   done < <(silences_active <<<"$reply")
   if ((${#held[@]} > 0)); then
     amtool=$(compgen -G '/opt/celestia-mon/alertmanager-*/amtool' | head -n 1)
-    t="${#held[@]} of $((${#held[@]} + ${#other[@]})) active silences hold back a page alert or end more than 4 hours from now: $(join "${held[@]}")"
+    if [[ -n $unread ]]; then
+      t="${#held[@]} of $((${#held[@]} + ${#other[@]})) active silences end more than 4 hours from now: $(join "${held[@]}")"
+    else
+      t="${#held[@]} of $((${#held[@]} + ${#other[@]})) active silences hold back a page alert or end more than 4 hours from now: $(join "${held[@]}")"
+    fi
     if ((${#other[@]} > 0)); then t+="; the others: $(join "${other[@]}")"; fi
+    if [[ -n $unread ]]; then t+="; which page alerts they hold back is not known: $unread"; fi
     report WARN 21 "$name" "$t. While a silence holds an alert back, nothing is sent for it, and the dead-man heartbeat stays green. Fix: end each one that is not for planned work now, as root: ${amtool:-<amtool>} --alertmanager.url=$am --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence expire <ID>; for planned work, silence for as long as the work takes (docs/alerts.md, Before planned restarts and upgrades)"
+  elif ((${#other[@]} > 0)) && [[ -n $unread ]]; then
+    report SKIP 21 "$name" "${#other[@]} active silences, none ending more than 4 hours from now; which page alerts they hold back is not known: $unread: $(join "${other[@]}")"
   elif ((${#other[@]} > 0)); then
     report OK 21 "$name" "${#other[@]} active silences, none on a page alert or ending more than 4 hours from now: $(join "${other[@]}")"
   else
