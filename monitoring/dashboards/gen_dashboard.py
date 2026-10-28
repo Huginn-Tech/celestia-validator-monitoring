@@ -2960,11 +2960,12 @@ def level_names(s, kinds, width, size):
             - bar_name_px(longest, BAR_MEASURE_PX)) / BAR_MEASURE_PX
     figures = int(max(room, 0) // LEAD_EM[FIGURE])
     lead = FIGURE * figures + QUARTER * int(round((max(room, 0) - figures * LEAD_EM[FIGURE]) / LEAD_EM[QUARTER]))
-    names = [lead + n if n == longest else n for n in HARDWARE_NAMES]
-    while lead and bars_left([lower_texts(s, kind, names) for kind in kinds], width) != size:
+
+    def led(spaces):
+        return [spaces + n if n == longest else n for n in HARDWARE_NAMES]
+    while lead and bars_left([lower_texts(s, kind, led(lead)) for kind in kinds], width) != size:
         lead = lead[:-1]
-        names = [lead + n if n == longest else n for n in HARDWARE_NAMES]
-    return names
+    return led(lead)
 
 
 def hardware(s, pid, host, hue, title, name_px=None, names=HARDWARE_NAMES):
