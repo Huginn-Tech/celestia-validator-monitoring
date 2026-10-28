@@ -118,6 +118,24 @@ inhibit_rules:
       - 'alertname="ValidatorNotSigning"'
     target_matchers:
       - 'alertname="SignaturesMissed"'
+  # The node the validator signs through has no peers: it receives no blocks or votes, so the
+  # signatures stop, and where no other node advances (one node, or the nodes it peers with
+  # stopped), no node does. Its page explains ValidatorNotSigning, SignaturesMissed and
+  # NodeNotAdvancing, which name no host.
+  - source_matchers:
+      - 'alertname="NodePeersLow"'
+      - 'severity="page"'
+    target_matchers:
+      - 'alertname=~"ValidatorNotSigning|SignaturesMissed|NodeNotAdvancing"'
+  # A node without peers also lags, and has fewer peers than the message's limit: the page covers
+  # the same host's NodeBehind and NodePeersLow message.
+  - source_matchers:
+      - 'alertname="NodePeersLow"'
+      - 'severity="page"'
+    target_matchers:
+      - 'alertname=~"NodeBehind|NodePeersLow"'
+      - 'severity="message"'
+    equal: [host]
   # A validator out of the active set or a signer that does not answer also fails Fibre's checks:
   # the page for the signatures covers Fibre not ready.
   - source_matchers:

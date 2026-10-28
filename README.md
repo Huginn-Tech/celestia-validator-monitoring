@@ -5,7 +5,7 @@ Ready-made monitoring for Celestia validators running Fibre.
 It watches a consensus validator, its Fibre server and its remote signer (tmkms), on one host or split across validator, KMS, Fibre and monitor hosts, with optional backup nodes and a standby Fibre; when tmkms moves to a backup node or a standby Fibre takes over, the alerts and the dashboard follow. It ships:
 
 - one Grafana dashboard that reads like a status page: what is wrong now in the words of your alerts; one-word answers (is the validator signing and through which node, is a backup node ready, is Fibre serving and reachable from outside, is a network upgrade coming); a day of uptime bars per check and per server, read from the alert states; which server held each role; each server's state; and below them the charts behind every alert, with its threshold drawn;
-- twenty-one alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
+- twenty-two alerts tied to the failures validators actually hit, routed to PagerDuty, Telegram, Discord, Slack or a webhook, plus a heartbeat to a dead-man service that also stops when an alert could not be delivered;
 - optionally, Celestia's announcements from its Discord (upgrades, incidents) through the same receivers, PagerDuty included;
 - optionally, network upgrades read from the chain (x/signal): a page while validators signal the next app version and yours has not, and a message when the upgrade is scheduled and when it is a day away;
 - `celestia-mon-doctor`, a read-only check of each host's setup.
@@ -29,6 +29,6 @@ Every service runs as its own `celestia-mon-*` systemd unit and user, with lower
 - [Panels](docs/panels.md): the question each dashboard panel answers and how to read it.
 - [Security](docs/security.md): what is exposed, a tailnet policy, SSH hygiene.
 
-Status: running on a Mocha testnet validator since 17 October 2026, split across a validator host, a Fibre host that is also the monitor, and a KMS host.
+Status: running on a Mocha testnet validator since 17 October 2026, split across a validator host, a Fibre host that also runs a node of its own and the monitor, and a KMS host.
 
 Licence: MIT.

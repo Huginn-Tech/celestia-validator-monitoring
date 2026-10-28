@@ -253,6 +253,8 @@ NOTIFY_DROPPED = 'prometheus_notifications_dropped_total{job="prometheus"}'
 NOTIFY_SENT = 'prometheus_notifications_sent_total{job="prometheus"}'
 AM_DISCOVERED = 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}'
 NNA = 'max(ALERTS{alertname="NodeNotAdvancing"})'
+# NodePeersLow's page: the node the validator signs through has no peers.
+PEERS_PAGE = 'alertname="NodePeersLow",severity="page"'
 # 10 while the page alert fires, else 0: added to a code, it turns the amber word red.
 VNS10 = '(max(ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}) * 10 or vector(0))'
 NNA10 = '(max(ALERTS{alertname="NodeNotAdvancing",alertstate="firing"}) * 10 or vector(0))'
@@ -301,6 +303,8 @@ TITLES = [
     ("ValidatorSigningTwice:.*", "Validator signs through two nodes", "Two signers", P_SIGNING, "two_signers"),
     ("SignaturesMissed:.*", "Validator missed blocks", "Missed blocks", P_VAL, None),
     ("NodeBehind:.*:([^:]*)", "Node behind on $1", "Node behind", P_SERVERS, None),
+    ("NodePeersLow:page::::([^:]*)", "Node without peers on $1", "No peers", P_SERVERS, None),
+    ("NodePeersLow:message::::([^:]*)", "Node with few peers on $1", "Few peers", P_SERVERS, None),
     ("RemoteSignerProblem:message::::.*", "Remote signer slow", "Signer slow", P_SIGNER, "remote"),
     ("RemoteSignerProblem:message::[^:]+::.*", "Remote signer fails proposals", "Bad proposals", P_SIGNER, "remote"),
     ("FibreDown:page::::", "No Fibre server running", "Not running", P_FIBRE, "fibre"),
@@ -365,10 +369,15 @@ NO_SURFACE = {
                         "and time to go, from the same signalling metrics the rule reads",
 }
 # Worst first between alerts of one level, so the order stays the same between refreshes.
-PRIORITY = {"ValidatorSigningTwice": 0.095, "NodeNotAdvancing": 0.09, "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
+PRIORITY = {"ValidatorSigningTwice": 0.095, "NodePeersLow": 0.092, "NodeNotAdvancing": 0.09,
+            "ValidatorNotSigning": 0.08, "FibreDown": 0.07,
             "DiskLow": 0.06, "MonitorCannotReach": 0.055, "UpgradeSignalMissing": 0.05, "ServiceDown": 0.04,
             "SignaturesMissed": 0.035, "RemoteSignerProblem": 0.03, "FibreNotServing": 0.025, "NodeBehind": 0.02,
             "FibreBothActive": 0.015, "UpgradeSoon": 0.012}
+# A message alert's rank where it differs from its page's. NodePeersLow's message: few peers usually follow
+# a node it peers with that stopped, so it ranks below that ServiceDown and below missed blocks, and above
+# the lag the few peers cause (NodeBehind).
+MESSAGE_PRIORITY = {"NodePeersLow": 0.022}
 
 # The Role column: a server's parts add up to one code. (code, words, short words).
 NODE_PARTS = [(1, "Signing node", "Signing"), (2, "Backup node", "Backup"), (3, "Node, not signing", "Not signing")]
@@ -747,6 +756,8 @@ class Setup:
         self.N = t["not_signing_blocks"]
         self.R = t.get("signatures_missed_ratio", 0.05)
         self.NB = t.get("node_behind_blocks", 20)
+        self.PM = t.get("peers_message_below", 2)
+        self.PP = t.get("peers_page_below", 1)
         self.S = t["signer_median_seconds"]
         self.DP = t["disk_page_free_ratio"]
         self.DM = t["disk_message_free_ratio"]
@@ -1294,8 +1305,13 @@ def alert_items(s):
     fires (red), 2.5 a page is pending, 2 to 2.95 a message or monitoring trouble (amber); plus a
     priority between alerts of one level. Alertmanager's inhibitions are mirrored, and follow-on alerts
     are grouped into their cause. A scheduled upgrade is no item: the Network upgrade tile shows it."""
+    # The node the validator signs through without peers (NodePeersLow's page): the signatures that stop
+    # or go missing, no node advancing where no other node does, and that host's lag and its message
+    # about few peers, are its follow-on alerts.
+    peers = "ALERTS{%s}" % PEERS_PAGE
     drop = " or ".join("(%s and on () %s)" % (label("vector(1)", "alertname", a), cond) for a, cond in [
-        ("SignaturesMissed", 'max(ALERTS{alertname=~"NodeNotAdvancing|ValidatorNotSigning"})'),
+        ("NodeNotAdvancing", "max(%s)" % peers),
+        ("SignaturesMissed", 'max(ALERTS{alertname=~"NodeNotAdvancing|ValidatorNotSigning"} or %s)' % peers),
         ("RemoteSignerProblem", NNA),
         ("NodeBehind", NNA),
         ("FibreNotServing", 'max(ALERTS{alertname=~"NodeNotAdvancing|FibreDown"})')])
@@ -1308,13 +1324,15 @@ def alert_items(s):
                   'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
                   'max(ALERTS{alertname="ValidatorNotSigning"}))'
                   % label('max by (host) (ALERTS{alertname="ServiceDown",unit="fibre"})', "alertname", "FibreNotServing"))
-    pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) ((%s and on () %s) or %s) %s"
+    peers_held = "unless on (alertname, host) (%s)" % " or ".join(
+        label("max by (host) (%s)" % peers, "alertname", a) for a in ("NodeBehind", "NodePeersLow"))
+    pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) ((%s and on () (%s or max(%s))) or %s) %s"
              % (by_alert('ALERTS{alertstate="firing",severity="page"}'),
                 by_alert('ALERTS{alertstate="pending",severity="page"}'),
-                label("vector(1)", "alertname", "ValidatorNotSigning"), NNA, drop, fibre_held))
-    messages = ("%s unless on (alertname) (%s) %s"
+                label("vector(1)", "alertname", "ValidatorNotSigning"), NNA, peers, drop, fibre_held))
+    messages = ("%s unless on (alertname) (%s) %s %s"
                 % (message('severity="message",alertname!~"UpgradeScheduled|ServiceDown|DiskLow"', restarting(s)), drop,
-                   fibre_held))
+                   fibre_held, peers_held))
     # A host whose node_exporter does not answer shows once; a stopped celestia-appd not also as lost metrics.
     reporting = message('alertname="ServiceDown",unit="node_exporter"')
     service = ("%s or ((%s unless on (host) %s) unless on (host, unit) %s)"
@@ -1323,10 +1341,16 @@ def alert_items(s):
     disk = ('%s unless on (host) ALERTS{alertname="DiskLow",severity="page"}'
             % message('alertname="DiskLow",severity="message"'))
     items = [pages, messages, service, disk]
-    # Every alert of the rules has a priority (0 when none is set), so group_left keeps every item.
-    # "group_left ()" names no labels to copy; a bare "group_left (" would read the operand as that list.
-    prio = "(%s)" % " or ".join(label("vector(%s)" % num(PRIORITY.get(a, 0)), "alertname", a) for a in s.alert_names)
-    alerts = "(%s) + on (alertname) group_left () %s" % (" or ".join("(%s)" % i for i in items), prio)
+    # Every alert of the rules has a priority as a page and as a message (0 when none is set; a message's
+    # from MESSAGE_PRIORITY where it has one), and every item is a page or a message, so group_left keeps
+    # every item. "group_left ()" names no labels to copy; a bare "group_left (" would read the operand as
+    # that list.
+    prio = "(%s)" % " or ".join(
+        label(label("vector(%s)" % num(MESSAGE_PRIORITY.get(a, PRIORITY.get(a, 0)) if sev == "message"
+                                       else PRIORITY.get(a, 0)), "alertname", a), "severity", sev)
+        for a in s.alert_names for sev in ("page", "message"))
+    alerts = ("(%s) + on (alertname, severity) group_left () %s"
+              % (" or ".join("(%s)" % i for i in items), prio))
     return "(max by (title, short, part) (%s) or %s)" % (titled(s, alerts, short=True), synth(s))
 
 
@@ -1387,9 +1411,9 @@ def status_shorts(s):
 def status_expr(s):
     """The Status cell: one series with label status whose value is a code for the worst item's short
     name and colour (status_shorts); with no item, "All online" (code 1). The worst item has the highest
-    level, then the highest PRIORITY. The label names the worst item's part when it has one (label part,
-    from TITLES) and counts the items when there are several: "Status", "Status · Fibre",
-    "Status · 3 alerts", "Fibre · 3 alerts" (both do not fit one line of the cell)."""
+    level, then the highest priority (PRIORITY, MESSAGE_PRIORITY). The label names the worst item's part
+    when it has one (label part, from TITLES) and counts the items when there are several: "Status",
+    "Status · Fibre", "Status · 3 alerts", "Fibre · 3 alerts" (both do not fit one line of the cell)."""
     t = alert_items(s)
     lookup = "(%s)" % " or ".join(label("vector(%d)" % (10 * i), "short", w) for i, w in enumerate(status_shorts(s), 1))
     # 0 text (level under 2), 1 amber, 2 red, plus ten times the short name's place in the lookup.
@@ -1790,9 +1814,11 @@ def service_down(s):
 
 
 # The words of a server's line and of the Servers tile beyond ServiceDown's (codes 30 and up). Not
-# reached: MonitorCannotReach, amber for one server, red once no server answers and it pages.
+# reached: MonitorCannotReach, amber for one server, red once no server answers and it pages. No peers
+# and Few peers: NodePeersLow's page and message.
 SERVER_WORDS = [(1, "OK", OK), (2, "Warning", WARN), (3, "Disk critical", ALERT), (4, "Not reached", WARN),
-                (5, "Not reached", ALERT), (6, "Disk low", WARN), (7, "Node behind", WARN), (0, "No data", NODATA)]
+                (5, "Not reached", ALERT), (6, "Disk low", WARN), (7, "Node behind", WARN), (8, "No peers", ALERT),
+                (9, "Few peers", WARN), (0, "No data", NODATA)]
 DISK_PAGE = 'alertname="DiskLow",severity="page"'
 UNREACHED_PAGE = 'alertname="MonitorCannotReach",severity="page"'
 
@@ -1817,7 +1843,9 @@ def servers_tile(s):
     expr = chain(*(
         ["%s * 0 + 3" % alert(DISK_PAGE)] + unreached
         + ["%s * 0 + %d" % (alert(m), 30 + i) for i, (m, _) in enumerate(down)]
-        + ["%s * 0 + 6" % alert('alertname="DiskLow"'),
+        + ["%s * 0 + 8" % alert(PEERS_PAGE),
+           "%s * 0 + 6" % alert('alertname="DiskLow"'),
+           "%s * 0 + 9" % alert('alertname="NodePeersLow"'),
            "%s * 0 + 7" % alert('alertname="NodeBehind"'),
            "%s * 0 + 2" % alert('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
            '((count(up{job="node",%s} == 1) == %d) and on () %s) * 0 + 1' % (sel, len(s.servers), rules),
@@ -1827,11 +1855,12 @@ def servers_tile(s):
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
             "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
-            "Status cell's words, such as Disk critical (DiskLow pages)%s; Warning: another warning names a server. "
-            "Which server: its card below and its line in History. Every word: the panel guide."
-            % ((" or Not reached (MonitorCannotReach: the monitor reaches none of a server's metrics%s)"
-                % (", red once it reaches no server" if s.mon_only else "")) if s.reached else ""))
-    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind"]
+            "Status cell's words, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
+            "validator signs through has none), Few peers (a node has fewer than %d peers)%s; Warning: another warning "
+            "names a server. Which server: its card below and its line in History. Every word: the panel guide."
+            % (s.PM, (" or Not reached (MonitorCannotReach: the monitor reaches none of a server's metrics%s)"
+                      % (", red once it reaches no server" if s.mon_only else "")) if s.reached else ""))
+    return 17, "Servers", desc + more(["ServiceDown", "DiskLow", "NodeBehind", "NodePeersLow"]
                                       + (["MonitorCannotReach"] if s.reached else []), [PANEL_GUIDE]), expr, words
 
 
@@ -2032,8 +2061,9 @@ def server_lanes(s):
     excluded from the generic warning colour lines Remote signer, Fibre serving and Fibre from outside
     instead, and the monitoring's own alerts and heartbeat the monitor's line in the Monitoring row's
     words; the upgrade alerts colour no line (the Network upgrade tile shows them). NodeBehind colours its
-    server's line and Node in sync. Not reached: MonitorCannotReach on each server the monitor reaches
-    over the network."""
+    server's line and Node in sync, NodePeersLow its server's line. Not reached: MonitorCannotReach on
+    each server the monitor reaches over the network. Uptime leaves out the minutes in which a page that
+    names the server fired (DiskLow, NodePeersLow) or one of its metrics endpoints did not answer."""
     others = SERVER_OTHERS
     services = service_down(s)
     words = SERVER_WORDS + [(30 + i, w, WARN) for i, (_, w) in enumerate(services)]
@@ -2056,7 +2086,7 @@ def server_lanes(s):
     for i, h in enumerate(s.servers):
         sel = "host=%s" % q(h)
         up = 'up{%s,job=~"node|celestia-app|otelcol"}' % sel
-        page = 'max(ALERTS{%s,%s,alertstate="firing"})' % (DISK_PAGE, sel)
+        page = 'max(ALERTS{alertname=~"DiskLow|NodePeersLow",severity="page",%s,alertstate="firing"})' % sel
         unreached = ((["%s * 0 + 5" % firing(UNREACHED_PAGE)] if s.mon_only else [])
                      + ["%s * 0 + 4" % firing('%s,alertname="MonitorCannotReach"' % sel)]) if h in s.reached else []
         mine = h == s.monitor
@@ -2064,7 +2094,9 @@ def server_lanes(s):
             "S%d" % (i + 1), h,
             chain(*(["%s * 0 + 3" % firing("%s,%s" % (sel, DISK_PAGE))] + unreached
                     + ["%s * 0 + %d" % (firing("%s,%s" % (sel, m)), 30 + j) for j, (m, _) in enumerate(services)]
-                    + ["%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
+                    + ["%s * 0 + 8" % firing("%s,%s" % (sel, PEERS_PAGE)),
+                       "%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
+                       "%s * 0 + 9" % firing('%s,alertname="NodePeersLow"' % sel),
                        "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel)]
                     + (own if mine else [])
                     + ["%s * 0 + 2" % firing('%s,severity="message",alertname!~"%s"' % (sel, others)),
@@ -2332,7 +2364,11 @@ def servers_table(s):
         "(max by (host) (changes(%s[2m])) == 0) * 0 - 2" % H,
         '(max by (host) (cometbft_blocksync_syncing{job="celestia-app"}) == 1) * 0 - 3',
         "(scalar(max(%s)) - max by (host) (%s))" % (H, H)), na)
-    peers = 'max by (host) (cometbft_p2p_peers{job="celestia-app"}) or on (host) (%s * 0 - 8) %s' % (lookup(s.nodes), na)
+    # NodePeersLow's words: red once its page fires, amber while either rule is pending or fires.
+    peers = "%s or on (host) (%s * 0 - 8) %s" % (chain(
+        "max by (host) (ALERTS{%s,alertstate=\"firing\"}) * 0 - 11" % PEERS_PAGE,
+        'max by (host) (ALERTS{alertname="NodePeersLow"}) * 0 - 12',
+        'max by (host) (cometbft_p2p_peers{job="celestia-app"})'), lookup(s.nodes), na)
     median = 'max by (host) (cometbft_privval_signing_latency_median_seconds{job="celestia-app"})'
     signer = "%s %s" % (chain(
         '(max by (host) (increase(cometbft_privval_signing_failures_total{job="celestia-app",message_type="proposal",'
@@ -2376,8 +2412,8 @@ def servers_table(s):
          dict(unit="suffix: behind", thresholds=steps(("text", None), ("orange", s.NB + 1)),
               mappings=range_map(0, behind, "in sync", "text") + mapping(
                   (-1, "No node data", "orange"), (-2, "stalled", "orange"), (-3, "syncing", "text"), *shared))),
-        ("C", "Peers", peers, ["999"] + [w for _, w, _ in shared],
-         dict(custom__align="right", mappings=mapping(*shared))),
+        ("C", "Peers", peers, ["999", "No peers", "Few peers"] + [w for _, w, _ in shared],
+         dict(custom__align="right", mappings=mapping((-11, "No peers", "red"), (-12, "Few peers", "orange"), *shared))),
     ]
     if s.remote:
         columns.append(
@@ -2465,14 +2501,15 @@ def servers_table(s):
 
     desc = ("One row per server, in inventory order; every server you configured has a row even when nothing is read "
             "from it. Role: what the server does now, read from the metrics. Node: blocks behind the highest node "
-            "('in sync' within %g). Peers: connected peers. %sCPU, Memory, Disk used and Network peak: share in use, "
-            "in grey. Restarts: systemd restarts of %s in 24 hours. An amber or red word is the alert's own, as in the "
-            "Status cell; 'no data': the server should report this and does not; '–': does not apply. Every word: "
-            "the panel guide."
-            % (behind, "Signing time: the median on the node that signs, amber from %s ms. " % s.ms() if s.remote else "",
-               ", ".join(u[:-len(".service")] for u in units)))
-    desc += more(["NodeBehind", "RemoteSignerProblem", "DiskLow", "ServiceDown"] if s.remote else
-                 ["NodeBehind", "DiskLow", "ServiceDown"], [PANEL_GUIDE, NODE_EXPORTER_FULL])
+            "('in sync' within %g). Peers: connected peers; amber Few peers while a node has fewer than %d "
+            "(NodePeersLow), red No peers once it pages for the node the validator signs through. %sCPU, Memory, Disk "
+            "used and Network peak: share in use, in grey. Restarts: systemd restarts of %s in 24 hours. An amber or "
+            "red word is the alert's own, as in the Status cell; 'no data': the server should report this and does "
+            "not; '–': does not apply. Every word: the panel guide."
+            % (behind, s.PM, "Signing time: the median on the node that signs, amber from %s ms. " % s.ms()
+               if s.remote else "", ", ".join(u[:-len(".service")] for u in units)))
+    desc += more(["NodeBehind", "NodePeersLow", "RemoteSignerProblem", "DiskLow", "ServiceDown"] if s.remote else
+                 ["NodeBehind", "NodePeersLow", "DiskLow", "ServiceDown"], [PANEL_GUIDE, NODE_EXPORTER_FULL])
     defaults = {"color": {"mode": "thresholds"}, "decimals": 0, "noValue": "No data", "unit": "none",
                 "thresholds": steps(("text", None)),
                 "custom": {"align": "auto", "cellOptions": {"type": "color-text"}, "filterable": False,
@@ -2521,7 +2558,8 @@ def pick(expr, host):
 def node_part(s):
     """What each consensus node does now, one series per host, as a code of NODE_WORDS. The node a
     repoint leaves is a backup at once, as the signer card says Switching meanwhile. Two signers is
-    ValidatorSigningTwice itself, amber while pending, red once it pages."""
+    ValidatorSigningTwice itself, amber while pending, red once it pages. No peers and Few peers are
+    NodePeersLow itself: red once its page fires, amber while either of its rules is pending or fires."""
     sig = signing_nodes(s)
     signing = sig
     twice = s.remote and not s.multi
@@ -2545,6 +2583,8 @@ def node_part(s):
         "%s * 0 + 9" % down,
         "(((%s and on () %s) * 0 + 4) + on () group_left () %s)" % (signing, two_signers(s), twice10(s))
         if twice else None,
+        'max by (host) (ALERTS{%s,alertstate="firing"}) * 0 + 15' % PEERS_PAGE,
+        'max by (host) (ALERTS{alertname="NodePeersLow"}) * 0 + 5',
         "%s * 0 + 1" % signing,
         "(%s and on (host) %s) * 0 + 8" % (up, stalled),
         "(%s and on (host) %s and on () count(%s)) * 0 + 3" % (up, behind, sig),
@@ -2563,6 +2603,7 @@ NODE_WORDS = [(1, "Signing", "Signing · {peers} peers", "text"),
               (3, "Node behind", "Node behind · {lag} blocks", "orange"),
               (13, "Node behind", "Node behind · {lag} blocks", "orange"),
               (4, "Two signers", None, "orange"), (14, "Two signers", None, "red"),
+              (5, "Few peers", "Few peers · {peers}", "orange"), (15, "No peers", None, "red"),
               (6, "Not signing", None, "orange"), (16, "Not signing", None, "red"),
               (7, "Syncing", "Syncing, {lag} behind", "text"), (8, "Stalled", None, "orange"),
               (9, "No node data", None, "orange"), (10, "Not reporting", None, "orange"),
@@ -2884,7 +2925,8 @@ def card_desc(s, kind, rows):
     if kind == "server":
         desc = ("What runs on this server now, read from the metrics, so it follows a tmkms repoint or a Fibre "
                 "failover. Consensus node: Signing or Backup, with its peers; amber 'Node behind' past %g blocks "
-                "(NodeBehind)." % s.NB)
+                "(NodeBehind); amber 'Few peers' under %d peers, red 'No peers' once NodePeersLow pages for the node "
+                "the validator signs through." % (s.NB, s.PM))
         if s.remote and not s.multi:
             desc += " Two signers: ValidatorSigningTwice; stop one signer."
         if s.fibre:
@@ -2894,7 +2936,7 @@ def card_desc(s, kind, rows):
             desc += (" Monitoring, on %s, the monitor: Working while the alert rules run and alerts go out, else "
                      "what failed." % s.monitor)
         return desc + " Not here: the part does not run on this server. Every word: the panel guide." + more(
-            ["NodeBehind", "ServiceDown"] + (["FibreNotServing"] if s.fibre else [])
+            ["NodeBehind", "NodePeersLow", "ServiceDown"] + (["FibreNotServing"] if s.fibre else [])
             + (["MonitoringBroken"] if watched else []), [PANEL_GUIDE])
     shown = len(rows)
     desc = ("Where the remote signer signs now: the node the validator's signatures go through")
@@ -3172,9 +3214,12 @@ def validator_row(s):
     else:
         third = cell(
             118, "Peers",
-            "Peers of the node the validator signs through; tens of peers is good. A node with few peers receives "
-            "blocks and votes late, which shows as missed blocks; no alert watches the count. No node signs: no node "
-            "has signed in the last 2 minutes.",
+            "Peers of the node the validator signs through; 1 or more keeps it signing. With fewer than %d for %s "
+            "NodePeersLow sends a warning, and with %s for %s an urgent alert: a node without peers receives no "
+            "blocks or votes, and the validator misses every block. No node signs: no node has signed in the last "
+            "2 minutes."
+            % (s.PM, s.hold("NodePeersLow message"), "none" if s.PP == 1 else "fewer than %d" % s.PP,
+               s.hold("NodePeersLow page")) + more(["NodePeersLow"]),
             one('max(max by (host) (cometbft_p2p_peers{job="celestia-app"}) and on (host) %s)' % sig_now),
             no_value="No node signs")
     cells = [

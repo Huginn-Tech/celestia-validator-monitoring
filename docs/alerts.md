@@ -1,6 +1,6 @@
 # Alerts
 
-celestia-validator-monitoring has twenty-one alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
+celestia-validator-monitoring has twenty-two alerts and a heartbeat, and can pass Celestia's announcements on as alerts. Each carries a severity:
 
 - **page**: someone should look now;
 - **message**: look during working hours;
@@ -10,13 +10,14 @@ The dashboard calls a page alert **Urgent** (red) and a message alert **Warning*
 
 Governance proposals and the validator's votes are not watched: follow them with a tool that alerts on proposals, or through Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon) and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon) and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about; NodePeersLow's page reads from the metrics which node signs.
 
 | Alert | Severity | Catches |
 |---|---|---|
 | [ServiceDown](#servicedown) | message | celestia-appd, tmkms or a collector down or not loaded, or a Celestia service crash looping |
 | [NodeNotAdvancing](#nodenotadvancing) | page | No node committed a new block for 3 minutes, or no node reports a height: nodes stuck, out of sync or without peers, celestia-appd down, or the chain halted |
 | [NodeBehind](#nodebehind) | message | One node lags the others: a backup node that could not take over signing |
+| [NodePeersLow](#nodepeerslow) | message; page for the node the validator signs through | A node with fewer than 2 peers for 5 minutes; the node the validator signs through with none for 1 minute: it receives no blocks or votes, and the validator misses every block |
 | [ValidatorNotSigning](#validatornotsigning) | page | The chain moves but the validator's key signs on no node |
 | [SignaturesMissed](#signaturesmissed) | message | The validator signs, but misses more than 5% of the blocks of the last hour |
 | [ValidatorSigningTwice](#validatorsigningtwice) | page | Two nodes keep getting the validator's signatures from a remote signer, for about 3 minutes: a double sign can follow (remote signer only) |
@@ -63,7 +64,7 @@ celestia_mon_receivers:
     webhook_url: "<Discord webhook URL>"
 ```
 
-**One cause, one notification.** While NodeNotAdvancing fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back on every host. While ValidatorNotSigning fires, SignaturesMissed and FibreNotServing `not_ready` are held back: a validator out of the active set or a signer that does not answer also fails Fibre's own checks. While FibreDown fires, FibreNotServing is held back. While a host's Fibre unit crash loops, that host's FibreNotServing is held back; while its collector (celestia-mon-otelcol) is down, every reason but `not_ready`, which the monitor asks Fibre directly. While the monitor reaches none of a host's metrics endpoints, [MonitorCannotReach](#monitorcannotreach) names that host once instead of a ServiceDown for each endpoint; where the monitor has a host of its own and reaches no host at all, it pages once, and NodeNotAdvancing and FibreDown's unit check, which read the hosts' metrics, wait for a host that answers.
+**One cause, one notification.** While NodeNotAdvancing fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back on every host. While NodePeersLow pages, NodeNotAdvancing, ValidatorNotSigning and SignaturesMissed are held back, and so are that host's NodeBehind and NodePeersLow message: a node without peers stops signing and falls behind, and where no other node advances, no node does. While ValidatorNotSigning fires, SignaturesMissed and FibreNotServing `not_ready` are held back: a validator out of the active set or a signer that does not answer also fails Fibre's own checks. While FibreDown fires, FibreNotServing is held back. While a host's Fibre unit crash loops, that host's FibreNotServing is held back; while its collector (celestia-mon-otelcol) is down, every reason but `not_ready`, which the monitor asks Fibre directly. While the monitor reaches none of a host's metrics endpoints, [MonitorCannotReach](#monitorcannotreach) names that host once instead of a ServiceDown for each endpoint; where the monitor has a host of its own and reaches no host at all, it pages once, and NodeNotAdvancing and FibreDown's unit check, which read the hosts' metrics, wait for a host that answers.
 
 **Thresholds** below are the defaults. Change them in `celestia_mon_thresholds` in your inventory (list every key) and run `install.sh` on the monitor again; the dashboard's threshold lines follow. The durations named with each alert are fixed in the rules.
 
@@ -72,6 +73,8 @@ celestia_mon_receivers:
 | `not_signing_blocks` | 10 | ValidatorNotSigning |
 | `signatures_missed_ratio` | 0.05 | SignaturesMissed |
 | `node_behind_blocks` | 20 | NodeBehind |
+| `peers_message_below` | 2 | NodePeersLow (message) |
+| `peers_page_below` | 1 | NodePeersLow (page); the dashboard names the page "No peers", which holds only at 1 |
 | `signer_median_seconds` | 0.010 | RemoteSignerProblem |
 | `disk_page_free_ratio` | 0.05 | DiskLow (page) |
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
@@ -134,7 +137,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **What it means.** No node of this install, the validator node and the backup nodes, has committed a new block for 3 minutes: the highest height of all nodes did not change in 2 minutes, and that held for 1 more. It also fires when Prometheus has read no node's height for that long, so with one node a celestia-appd that is down pages here (after about 3 minutes). Where the monitor has a host of its own, that case needs a Celestia host that still answers: when the monitor reaches none, [MonitorCannotReach](#monitorcannotreach) pages instead, at the same time. The nodes are stuck (often at an upgrade height), have lost sync or their peers, or the whole network has halted. While one node advances, the alert stays quiet: a node that stops alone is [NodeBehind](#nodebehind). The alert shows that nothing advances; it cannot tell whether a node that advances is at the network's head. Compare the height with an explorer or [status.celestia.org](https://status.celestia.org/) for that. It names no host.
 
-**Severity.** page. While it fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back.
+**Severity.** page. While it fires, ValidatorNotSigning, SignaturesMissed, RemoteSignerProblem, FibreNotServing and NodeBehind are held back. It is held back while NodePeersLow pages: when the node the validator signs through has no peers and no other node advances (one node, or the nodes it peers with stopped), that page names the cause.
 
 **Check first.**
 
@@ -146,7 +149,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **What it means.** One node lags the others of this install: for 10 minutes it has been more than 20 blocks (`node_behind_blocks`) behind the highest node, or it has not advanced while another node did. This is how a backup node that could not take over signing is caught: after a tmkms repoint, a node that lags signs late or not at all. With one node it cannot fire. The alert names the host of the node that lags. A Fibre that reads that node (its `app_grpc_address`, as on `fibre-1` in the [mainnet layout](quickstart.md#mainnet-layout)) lags with it: once the node's newest block is older than Fibre's `max_block_age` (2 minutes), Fibre's health check reports `chain_stalled`, and [FibreNotServing](#fibrenotserving) (`not_ready`) follows.
 
-**Severity.** message. While NodeNotAdvancing fires, it is held back.
+**Severity.** message. It is held back while NodeNotAdvancing fires, and while NodePeersLow pages for its host.
 
 **Check first.**
 
@@ -156,11 +159,25 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
 
+## NodePeersLow
+
+**What it means.** A node of this install has too few peers (`cometbft_p2p_peers`, the peers its P2P layer is connected to now). The message: for 5 minutes a node, the validator node or a backup node, has had fewer than 2 peers (`peers_message_below`). Nodes it peers with are down or cannot reach it; while a peer is left the node still follows the chain. The page: for 1 minute the node the validator signs through has had no peers (`peers_page_below` is 1). It receives no blocks or votes, so the validator misses every block until a peer connects. Which node signs is read from the metrics as the dashboard reads it, over 15 minutes instead of 2: with a remote signer, a node that got votes or proposals signed by tmkms in that time; with a local key, a node whose last signed height changed in that time. A node cut off from the network stops signing within a round, so once the page fires it holds until the node has a peer again. There is no page while another node with peers signs (in the last 2 minutes): the validator signs through that node, after a tmkms repoint or with `celestia_mon_signer_multi_node`. A backup node without peers gets the message only: it cannot take over signing until it has peers and has caught up. The alert names the host of the node.
+
+**Severity.** message; page for the node the validator signs through. While the page fires, NodeNotAdvancing, ValidatorNotSigning and SignaturesMissed are held back, and so are the same host's NodeBehind and NodePeersLow message: with one node, or when the nodes it peers with stopped, no node advances either.
+
+**Check first.**
+
+1. The nodes it peers with: whether they run and are in sync (their server cards on the dashboard, or `systemctl status celestia-appd` on their hosts), and whether this host reaches them on their P2P port (26656 by default). On the node's host, `curl -s http://127.0.0.1:26657/net_info` (or the address in `[rpc] laddr` of the node's `config.toml`) lists the peers it has now (`n_peers`, and each peer's `moniker` and `remote_ip`).
+2. This host's network: a firewall rule or route changed, or the link between the hosts is down. `journalctl -u celestia-appd -n 200` shows the node's dial errors and the peers it dropped.
+3. `persistent_peers` in the `[p2p]` section of the node's `config.toml`: each entry is `<node ID>@<address>:<port>`, and `celestia-appd comet show-node-id` on a peer's host prints its node ID. celestia-appd reads the list at start, so restart it after a change.
+
+**Links.** [Celestia validator metrics and alerts](https://docs.celestia.org/operate/consensus-validators/metrics/).
+
 ## ValidatorNotSigning
 
 **What it means.** The chain moves, but the validator's own key has not signed for more than 10 blocks, for 2 minutes, on any node of this install. Only the node the signer is connected to reports the last signed height, so the alert compares the highest height of all nodes with the highest last signed height, and it follows the signer from the validator node to a backup node. Causes: the remote signer or its link is down, the node the signer uses is down (its metrics go with it), the node runs with the wrong key, the validator is jailed or out of the active set, or the KMS is not compatible after an upgrade. It also fires when the node has not signed once since it started. When the validator node's host goes down and tmkms is pointed at a backup node, the alert resolves once that node signs. It names no host; with backup nodes, its description names each node Prometheus cannot reach, which may still be signing unseen. Signatures that go missing now and then, while others arrive, are [SignaturesMissed](#signaturesmissed).
 
-**Severity.** page. While NodeNotAdvancing fires, it is held back. While it fires, SignaturesMissed and FibreNotServing `not_ready` are held back.
+**Severity.** page. While NodeNotAdvancing fires or NodePeersLow pages, it is held back. While it fires, SignaturesMissed and FibreNotServing `not_ready` are held back.
 
 **Check first.** Never load the validator key on another machine because of this page alone: a node that Prometheus cannot reach may still be signing, and two signers of one key double-sign. When the description names a node Prometheus cannot reach, check on an explorer whether the validator misses blocks before you act.
 
@@ -172,7 +189,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **What it means.** The validator signs, but not every block: for 10 minutes, more than 5% (`signatures_missed_ratio`) of the blocks a node committed in the last hour carry no signature from the validator. Signatures that time out now and then, from load on the KMS host or loss on the link to it, show here, while ValidatorNotSigning stays quiet because the next signature arrives within 10 blocks. Each node that knows the validator's key counts the blocks committed without its signature, reading them from the chain's commits; the alert takes the highest share of any node, so it follows the signer after a repoint and names no host. The count starts at the first miss and starts over when the node restarts; the alert adds up its rise minute by minute and reads a drop as a restart, so the misses on both sides of a restart count and the drop adds none. The dashboard's Missed blocks reads the same expression. The share says how often signatures are missed, not how close the validator is to being jailed.
 
-**Severity.** message. When the signatures stop altogether, ValidatorNotSigning pages and this alert is held back; it is held back while NodeNotAdvancing fires too.
+**Severity.** message. When the signatures stop altogether, ValidatorNotSigning pages and this alert is held back; it is held back while NodeNotAdvancing fires or NodePeersLow pages too.
 
 **Check first.**
 

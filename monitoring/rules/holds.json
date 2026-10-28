@@ -3,6 +3,8 @@
   "holds": {
     "NodeNotAdvancing": {"alert": "NodeNotAdvancing", "for": "1m"},
     "NodeBehind": {"alert": "NodeBehind", "for": "10m"},
+    "NodePeersLow message": {"alert": "NodePeersLow", "labels": {"severity": "message"}, "for": "5m"},
+    "NodePeersLow page": {"alert": "NodePeersLow", "labels": {"severity": "page"}, "for": "1m"},
     "ValidatorNotSigning": {"alert": "ValidatorNotSigning", "for": "2m"},
     "SignaturesMissed": {"alert": "SignaturesMissed", "for": "10m"},
     "RemoteSignerProblem slow": {"alert": "RemoteSignerProblem", "expr": "cometbft_privval_signing_latency_median_seconds", "for": "15m"},

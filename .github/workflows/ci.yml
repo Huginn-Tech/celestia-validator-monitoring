@@ -473,6 +473,32 @@ jobs:
           ], fh["relabel_configs"]
           print({j: hosts(j) for j in ("celestia-app", "node", "otelcol", "announcements", "signal", "fibre_health")})
           EOF
+      # A port set on one host is that host's only: here the monitor sets its own node metrics and
+      # Fibre ports, and fibre-1 another node metrics port; val-1, which sets none, keeps the defaults.
+      # This renders a copy of the mainnet example, and puts the mainnet build back afterwards.
+      - name: A host's own ports never become another host's
+        run: |
+          set -euo pipefail
+          inv="$RUNNER_TEMP/ports-inventory"
+          cp -r ansible/inventory/example-mainnet "$inv"
+          printf '%s\n' 'celestia_mon_node_metrics_port: 13060' 'celestia_mon_fibre_port: 7990' >"$inv/host_vars/mon-1/ports.yml"
+          printf '%s\n' 'celestia_mon_node_metrics_port: 26670' >"$inv/host_vars/fibre-1.yml"
+          cp -r build/mainnet "$RUNNER_TEMP/mainnet-build"
+          cp monitoring/rules/tests/mainnet/celestia-mon.rules.yml "$RUNNER_TEMP/mainnet-rules.yml"
+          ansible-playbook -i "$inv" tools/ci/render.yml -e celestia_mon_ci_scenario=mainnet
+          python - build/mainnet/prometheus.yml <<'EOF'
+          import sys
+          import yaml
+          jobs = {j["job_name"]: j for j in yaml.safe_load(open(sys.argv[1]))["scrape_configs"]}
+          def targets(job):
+              return sorted((c["labels"]["host"], c["targets"][0]) for c in jobs[job]["static_configs"])
+          assert targets("celestia-app") == [("fibre-1", "10.20.0.2:26670"), ("val-1", "10.20.0.1:26660")], targets("celestia-app")
+          assert targets("fibre_health") == [("fibre-1", "10.20.0.2:7980"), ("val-1", "10.20.0.1:7980")], targets("fibre_health")
+          print(targets("celestia-app"), targets("fibre_health"))
+          EOF
+          rm -rf build/mainnet
+          cp -r "$RUNNER_TEMP/mainnet-build" build/mainnet
+          cp "$RUNNER_TEMP/mainnet-rules.yml" monitoring/rules/tests/mainnet/celestia-mon.rules.yml
       # Slack and PagerDuty get celestia-mon's text too, never Alertmanager's list of labels or its
       # links: Slack's title, text and fallback, with &, < and > escaped (Slack reads them as markup),
       # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
@@ -539,10 +565,10 @@ jobs:
       # celestia_mon_receivers is one list; routing follows the type. This renders the split
       # example again with every receiver type (it overwrites build/split, so it runs last), checks
       # it with amtool, checks the routing (page -> PagerDuty and every other receiver, message ->
-      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, Watchdog ->
-      # deadman, UpgradeScheduled and UpgradeSoon -> message on a route of their own that sends each
-      # once, UpgradeSignalMissing -> page), and checks that the receiver check refuses a
-      # PagerDuty-only list and the old page/message lists.
+      # every receiver but PagerDuty, DeadmanFailing and SignaturesMissed -> message, NodePeersLow by
+      # its severity, Watchdog -> deadman, UpgradeScheduled and UpgradeSoon -> message on a route of
+      # their own that sends each once, UpgradeSignalMissing -> page), the inhibitions of one cause,
+      # and checks that the receiver check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         run: |
           set -euo pipefail
@@ -572,6 +598,8 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=NotificationsFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=DeadmanFailing severity=message host=mon-1
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignaturesMissed severity=message
+          amtool config routes test --config.file="$am" --verify.receivers=page alertname=NodePeersLow severity=page host=val-1
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=NodePeersLow severity=message host=val-1
           amtool config routes test --config.file="$am" --verify.receivers=deadman alertname=Watchdog severity=heartbeat
           amtool config routes test --config.file="$am" --verify.receivers=announcement-page \
             alertname=CelestiaAnnouncement severity=page host=mon-1 source=ci announcement=1
@@ -600,6 +628,13 @@ jobs:
                   "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
           assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
                   "target_matchers": ['alertname="FibreNotServing"', 'reason!="not_ready"'], "equal": ["host"]} in inhibit, inhibit
+          # The signing node without peers pages once: not also as the signatures that stop or the nodes that
+          # stop advancing (no host), nor as that host's lag and its message about few peers.
+          peers = ['alertname="NodePeersLow"', 'severity="page"']
+          assert {"source_matchers": peers,
+                  "target_matchers": ['alertname=~"ValidatorNotSigning|SignaturesMissed|NodeNotAdvancing"']} in inhibit, inhibit
+          assert {"source_matchers": peers, "target_matchers": ['alertname=~"NodeBehind|NodePeersLow"', 'severity="message"'],
+                  "equal": ["host"]} in inhibit, inhibit
           receivers = {r["name"]: r for r in config["receivers"]}
           def count(name):
               return {k: len(v) for k, v in receivers[name].items() if k.endswith("_configs")}
@@ -1617,6 +1652,26 @@ jobs:
           printf '%s\n' 'priv_validator_laddr = ""' '[rpc]' 'laddr = "tcp://10.255.0.2:26657"' >"$home/config/config.toml"
           run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
           grep -Eq '^FAIL +2 +remote signer +backup node: .*/config/priv_validator_key\.json, which has voting power 10' <<<"$out"
+          # A host with another chain's node on 127.0.0.1:26657 (its key with voting power 10): this
+          # node's RPC is on loopback at another port, which doctor follows, and finds voting power 0.
+          sed -i 's/"voting_power": "0"/"voting_power": "10"/' "$RUNNER_TEMP/rpc/status"
+          mkdir -p "$RUNNER_TEMP/rpc-port"
+          sed 's/"voting_power": "10"/"voting_power": "0"/' "$RUNNER_TEMP/rpc/status" >"$RUNNER_TEMP/rpc-port/status"
+          python3 -m http.server 26757 --bind 127.0.0.1 --directory "$RUNNER_TEMP/rpc-port" >/dev/null 2>&1 &
+          curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:26757/status
+          printf '%s\n' 'priv_validator_laddr = ""' '[rpc]' 'laddr = "tcp://127.0.0.1:26757"' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^INFO +2 +remote signer +backup node: .* is not in the validator set \(voting power 0\)' <<<"$out"
+          # Where that other chain's node answers instead (laddr on the default port), its reply names
+          # another network than this home's genesis: doctor leaves its key and height out.
+          sed -i 's/"result": {/"result": {"node_info": {"network": "ci-other"}, /' "$RUNNER_TEMP/rpc/status"
+          printf '%s\n' '{"genesis_time": "2026-01-01T00:00:00Z", "chain_id": "ci-chain", "initial_height": "1"}' \
+            >"$home/config/genesis.json"
+          printf '%s\n' 'priv_validator_laddr = ""' '[rpc]' 'laddr = "tcp://127.0.0.1:26657"' >"$home/config/config.toml"
+          run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --node-home "$home" --data-mounts / --head-wait 2
+          grep -Eq '^INFO +2 +remote signer +backup node: .*its voting power is unknown until the node RPC answers' <<<"$out"
+          grep -Eq '^FAIL +3 +node progress +http://127\.0\.0\.1:26657/status answers for ci-other, not for ci-chain' <<<"$out"
+          rm "$home/config/genesis.json"
 
           # An mTLS standby Fibre on a host whose node serves its privval gRPC in plaintext on loopback.
           exec_mtls='ExecStart=/bin/true --signer-grpc-address 127.0.0.1:26669 --signer-grpc-ca-file /ci/ca.crt'
@@ -1903,8 +1958,8 @@ jobs:
           grep -qF ' ci_missing_total (CiMissing)' <<<"$line" || { echo "check 12 names the wrong rule for ci_missing_total"; exit 1; }
           line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
           for want in '{severity=~"page|message"} by ci "quoted" {x} until 2099-01-01T00:00:00.000Z' \
-                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, ValidatorNotSigning, ' \
-                      'FibreDown, DiskLow, MonitorCannotReach; ends in ' \
+                      '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvancing, NodePeersLow, ' \
+                      'ValidatorNotSigning, FibreDown, DiskLow, MonitorCannotReach; ends in ' \
                       ' hours); the others: {host="val-1"} by op'; do
             grep -qF -- "$want" <<<"$line" || { echo "check 21 did not report the page silence: $want"; exit 1; }
           done

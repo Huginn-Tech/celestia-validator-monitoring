@@ -82,7 +82,7 @@ scrape_configs:
     static_configs:
 {% for h in celestia_mon_appd_hosts %}
       - targets:
-          - "{{ target(h, hostvars[h].celestia_mon_node_metrics_port | default(celestia_mon_node_metrics_port)) }}"
+          - "{{ target(h, hostvars[h].celestia_mon_node_metrics_port | default(celestia_mon_default_node_metrics_port)) }}"
         labels:
           host: {{ h | to_json }}
           role: {{ 'validator' if h in validators else 'backup_node' }}
@@ -103,7 +103,7 @@ scrape_configs:
 {% for h in (celestia_mon_appd_hosts + groups.get('fibre', []) + groups.get('kms', []) + groups.get('monitor', [])) | unique %}
 {%   if h in celestia_mon_appd_hosts or h in groups.get('fibre', []) or h in groups.get('monitor', []) or (hostvars[h].celestia_mon_kms_scrape | default(false) | bool) %}
       - targets:
-          - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_ports)).node_exporter) }}"
+          - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_default_ports)).node_exporter) }}"
         labels:
           host: {{ h | to_json }}
           role: {{ node_role(h) }}
@@ -119,7 +119,7 @@ scrape_configs:
     static_configs:
 {% for h in fibres %}
       - targets:
-          - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_ports)).otelcol_prometheus) }}"
+          - "{{ target(h, (hostvars[h].celestia_mon_ports | default(celestia_mon_default_ports)).otelcol_prometheus) }}"
         labels:
           host: {{ h | to_json }}
           role: fibre
@@ -141,7 +141,7 @@ scrape_configs:
     static_configs:
 {% for h in fibres %}
       - targets:
-          - "{{ target(h, hostvars[h].celestia_mon_fibre_port | default(celestia_mon_fibre_port)) }}"
+          - "{{ target(h, hostvars[h].celestia_mon_fibre_port | default(celestia_mon_default_fibre_port)) }}"
         labels:
           host: {{ h | to_json }}
           role: fibre

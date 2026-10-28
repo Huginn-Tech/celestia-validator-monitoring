@@ -2,9 +2,9 @@
 # Change the template or the inventory, not the rendered file. See docs/alerts.md.
 {#
   Roles can move between hosts: tmkms can be pointed at a backup node, and a standby Fibre can
-  be started on another host. The page alerts (NodeNotAdvancing, ValidatorNotSigning, FibreDown,
-  DiskLow) therefore read which node signs and which Fibre runs from the metrics, never from the
-  inventory, and ServiceDown is a message. The page of upgrade signalling, UpgradeSignalMissing,
+  be started on another host. The page alerts (NodeNotAdvancing, ValidatorNotSigning, NodePeersLow,
+  FibreDown, DiskLow) therefore read which node signs and which Fibre runs from the metrics, never
+  from the inventory, and ServiceDown is a message. The page of upgrade signalling, UpgradeSignalMissing,
   reads the chain through celestia-mon-signal and names no host either.
 #}
 {% set appd = celestia_mon_units.appd ~ '.service' %}
@@ -16,6 +16,10 @@
 {% set fibre_on = celestia_mon_fibre_enabled | bool %}
 {% set th = celestia_mon_thresholds %}
 {% set behind = th.node_behind_blocks | default(20) %}
+{% set peers_message = th.peers_message_below | default(2) %}
+{% set peers_page = th.peers_page_below | default(1) %}
+{# NodePeersLow's words for a peer count below n: "no peers" below 1. #}
+{% macro fewer(n) %}{{ 'no peers' if n | int == 1 else 'fewer than ' ~ n ~ ' peers' }}{% endmacro %}
 {# celestia-appd hosts: the validator and the backup nodes. #}
 {% set nodes = celestia_mon_appd_hosts %}
 {% set fibres = groups.get('fibre', []) if fibre_on else [] %}
@@ -243,6 +247,51 @@ groups:
           summary: "{% raw %}Node on {{ $labels.host }} is behind{% endraw %}"
           description: "For 10 minutes the node has been more than {{ behind }} blocks behind the highest node of this install, or has not advanced while another node did. A node that lags cannot take over signing."
           runbook: "{{ docs }}#nodebehind"
+
+      # NodePeersLow: a node of this install has too few peers (cometbft_p2p_peers). A message when any
+      # node, the validator node or a backup node, has had {{ fewer(peers_message) }} for 5 minutes: nodes
+      # it peers with dropped, and it follows the chain only while a peer is left.
+      # A page when the node the validator signs through has had {{ fewer(peers_page) }} for 1 minute:
+      # it receives no blocks or votes, and the validator misses every block. That node is the
+      # dashboard's signing_nodes() over 15 minutes: with a remote signer, the nodes whose privval
+      # client signed a vote or a proposal; with a local key, the nodes whose last signed height
+      # changed. A node cut off from the network stops signing within a round, so the page also holds
+      # for a host whose page already fires while it still has too few peers: otherwise it would
+      # resolve 15 minutes after the last signature, while the node is still cut off. No page while
+      # another node with enough peers signs (signing_nodes() over 2 minutes): the validator signs
+      # through that node, after a tmkms repoint or with tmkms signing through several nodes.
+      - alert: NodePeersLow
+        expr: cometbft_p2p_peers{job="celestia-app"} < {{ peers_message }}
+        for: 5m
+        labels:
+          severity: message
+        annotations:
+          summary: "{% raw %}Node on {{ $labels.host }} has {% endraw %}{{ fewer(peers_message) }}"
+          description: "For 5 minutes the node has had {{ fewer(peers_message) }} ({% raw %}{{ $value | printf `%.0f` }}{% endraw %} now): nodes it peers with are down or cannot reach it. While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind. Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml."
+          runbook: "{{ docs }}#nodepeerslow"
+      - alert: NodePeersLow
+        expr: >-
+          cometbft_p2p_peers{job="celestia-app"} < {{ peers_page }}
+          and on (host) (
+{% if remote %}
+            sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type=~"prevote|precommit|proposal"}[15m])) > 0
+{% else %}
+            max by (host) (changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[15m])) > 0
+{% endif %}
+            or max by (host) (ALERTS{alertname="NodePeersLow",severity="page",alertstate="firing"})
+          )
+{% if remote %}
+          unless on () count(sum by (host) (increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type=~"prevote|precommit|proposal"}[2m])) > 0 unless on (host) cometbft_p2p_peers{job="celestia-app"} < {{ peers_page }})
+{% else %}
+          unless on () count(max by (host) (changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[2m])) > 0 unless on (host) cometbft_p2p_peers{job="celestia-app"} < {{ peers_page }})
+{% endif %}
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: "{% raw %}Node on {{ $labels.host }} has {% endraw %}{{ fewer(peers_page) }}"
+          description: "For 1 minute the node the validator signs through has had {{ fewer(peers_page) }}: it receives no blocks or votes, and the validator misses every block until a peer connects. Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml."
+          runbook: "{{ docs }}#nodepeerslow"
 
       # ValidatorNotSigning: the chain moves but no node of this install sees the validator's key
       # sign, whichever node the signer is connected to. Only nodes that know the validator's key

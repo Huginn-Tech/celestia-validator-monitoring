@@ -106,7 +106,7 @@ Optional settings, with their defaults, are in `ansible/roles/celestia_mon/defau
 | Variable | Default | Meaning |
 |---|---|---|
 | `celestia_mon_units` | `celestia-appd`, `fibre`, `tmkms` | systemd unit names of the Celestia services. |
-| `celestia_mon_node_metrics_port`, `celestia_mon_node_rpc_port` | 26660, 26657 | celestia-appd's metrics and RPC ports. |
+| `celestia_mon_node_metrics_port`, `celestia_mon_node_rpc_port` | 26660, 26657 | celestia-appd's metrics and RPC ports. Set them in the entry of a host whose node uses other ports; the other hosts keep theirs. `doctor` reads the RPC where `[rpc] laddr` in the node's `config.toml` points. |
 | `celestia_mon_fibre_port` | 7980 | Fibre's own port, where the monitor asks each Fibre host for its [upload readiness](#upload-readiness). Set it for a Fibre host whose Fibre listens on another port. |
 | `celestia_mon_ports` | 9910 to 9919 | celestia-validator-monitoring's ports (table in step 1). |
 | `celestia_mon_thresholds` | see [alerts.md](alerts.md) | Alert thresholds. |
@@ -316,7 +316,7 @@ The exit code is 1 when a check failed.
 | 18 | monitor | Node lag: every celestia-appd node's height against the highest one, and which node signs. Warns when a node is more than `node_behind_blocks` (20) behind, or reports no height: a backup node that lags cannot take over signing. |
 | 19 | monitor | Fibre active, with Fibre on: which Fibre host runs Fibre, read from systemd. `FAIL` when none does (FibreDown pages after 10 minutes), `WARN` when two or more do (two Fibre instances must never be live at once). |
 | 20 | validator, backup_node | Signer binds: where `priv_validator_laddr` (only the KMS host may connect) and `priv_validator_grpc_laddr` (only the Fibre hosts, with mTLS) listen, from `config.toml` and the listening sockets, and which ufw rules let others in; doctor never connects to them. On every interface or a public address it fails when no firewall is active or the host has a Tailscale interface (ufw does not filter `tailscale0`), and warns otherwise; it warns on a Tailscale address (100.64.0.0/10), on a private address with no firewall active, and when a ufw rule lets anyone, or every host of a private range, reach the port. `priv_validator_laddr` on a public address fails: celestia-appd does not authenticate the signer that connects to it. The privval gRPC warns without mTLS, on loopback too, and fails beyond loopback with `priv_validator_grpc_allow_insecure = true`, or with only some of its three TLS files. The fix names the setting and the ufw command ([security.md](security.md#ports-on-the-validator-who-connects-to-what)). On a backup node it notes an empty `priv_validator_grpc_laddr`: after a tmkms repoint, no Fibre can sign through that node until it is set. |
-| 21 | monitor | Silences: warns on each active silence in Alertmanager that holds back a page alert (NodeNotAdvancing, ValidatorNotSigning, FibreDown, DiskLow, UpgradeSignalMissing with upgrade signalling on, and MonitorCannotReach with the monitor on a host of its own) or ends more than 4 hours from now, with its matchers, author, end and ID: while it holds an alert back, nothing is sent and the dead-man heartbeat stays green. A host silence counts for its length only. |
+| 21 | monitor | Silences: warns on each active silence in Alertmanager that holds back a page alert (NodeNotAdvancing, NodePeersLow, ValidatorNotSigning, FibreDown, DiskLow, UpgradeSignalMissing with upgrade signalling on, and MonitorCannotReach with the monitor on a host of its own) or ends more than 4 hours from now, with its matchers, author, end and ID: while it holds an alert back, nothing is sent and the dead-man heartbeat stays green. A host silence counts for its length only. |
 | 22 | monitor | Dead-man heartbeat: Alertmanager sent the Watchdog to the dead-man service in the last 10 minutes, and none of those sends failed (`FAIL`). `WARN` when none went out (the Watchdog stops for an hour after a failed page or message notification); `NOT YET` in the first 10 minutes after Prometheus or Alertmanager starts. |
 | 23 | monitor | Upgrade signalling, with `celestia_mon_signal` set (`SKIP` without): celestia-mon-signal is up and has read an RPC (`/abci_info`, x/signal and the validator's entry, which needs an operator address that decodes) in the last 15 minutes. Prints the last reading: the RPC, the app version, the share of the voting power that signalled the next version against the 5/6 needed, your validator's signal, and a scheduled upgrade. `WARN` while validators signal the next version and yours has not, and while the reading comes from another RPC than the first one listed; `FAIL` when the service is down or has read no RPC for 15 minutes, with the reasons of its failed reads. |
 | 24 | monitor | [Upload readiness](#upload-readiness), with Fibre on: asks each Fibre host's port, through celestia-mon-blackbox, whether Fibre is ready now. `OK` when every Fibre that runs is Ready; a stopped standby does not answer, as expected. `FAIL` when one is Not ready: Fibre reports that at least one of its own checks fails, so uploads to it may fail, and the fix names the `journalctl` line that says which check. `WARN` when one is Not reported (Fibre older than v10.5.0) or when the monitor cannot reach the port of an active Fibre, so its readiness is not checked. |
@@ -494,13 +494,14 @@ In the [mainnet layout](#mainnet-layout) the monitor `mon-1` runs no node, so it
 
 To read the backup node on `fibre-1` first, through WireGuard, three changes are yours: set `laddr = "tcp://10.20.0.2:26657"` (its WireGuard address) in the `[rpc]` section of its `config.toml` and restart it at a moment you choose; let the monitor in on `fibre-1`, `sudo ufw allow from 10.20.0.3 to any port 26657 proto tcp` (`mon-1`'s WireGuard address); and put `http://10.20.0.2:26657` first in `rpc`, the public RPCs after it. That opens the node's RPC to the monitor, which the [WireGuard-only link](security.md#wireguard-only-link) otherwise leaves closed.
 
-In the [Mocha layout](#mocha-layout) the monitor runs no node, and a node's RPC listens on its loopback by default (`laddr` in the `[rpc]` section of `config.toml`). Point `rpc` at a node RPC the monitor can reach, or at the public RPCs from Celestia's [Mocha page](https://docs.celestia.org/operate/networks/mocha-testnet/):
+In the [Mocha layout](#mocha-layout) the monitor shares the Fibre host, which runs a node of its own: list that node's RPC on its loopback first (`laddr` in the `[rpc]` section of its `config.toml`), then public RPCs from Celestia's [Mocha page](https://docs.celestia.org/operate/networks/mocha-testnet/):
 
 ```yaml
     fibre-1:
       celestia_mon_signal:
         chain_id: mocha-5
         rpc:
+          - http://127.0.0.1:26657
           - https://rpc-mocha.pops.one
           - https://public-endpoint.celestia-mocha.quiknode.pro
         validator: celestiavaloper1...
@@ -510,18 +511,19 @@ A public RPC is someone else's node: the reads are public and need no key, but t
 
 ## Mocha layout
 
-The layout celestia-validator-monitoring is developed and tested on, on the Mocha testnet (celestia-app and Fibre v10.4.0-mocha, tmkms v0.15 with a soft-signing key): three hosts, one Fibre host and no backup node.
+The layout celestia-validator-monitoring is developed and tested on, on the Mocha testnet (celestia-app and Fibre v10.5.0, tmkms v0.15 with a soft-signing key): three hosts. As in the [mainnet layout](#mainnet-layout), the Fibre host runs a node of its own, without a key, which its Fibre reads; here it also runs the monitor.
 
 | Host | Groups | Runs |
 |---|---|---|
 | validator | `validator` | celestia-appd, signing through tmkms over WireGuard. |
 | KMS | `kms` | tmkms only; nothing is installed there. |
-| Fibre | `fibre`, `monitor` | Fibre; Prometheus, Alertmanager and Grafana. |
+| Fibre | `fibre`, `backup_node`, `monitor` | Fibre, which reads the node beside it; that node, a celestia-appd without a key; Prometheus, Alertmanager and Grafana. |
 
-Start from `example-split`: remove `mon-1`, put `fibre-1` in the `monitor` group with the vault file in `host_vars/fibre-1/`, and remove `celestia_mon_kms_scrape` from `kms-1`.
+Start from `example-split`: remove `mon-1`, put `fibre-1` in the `monitor` group with the vault file in `host_vars/fibre-1/` and in the `backup_node` group, and remove `celestia_mon_kms_scrape` from `kms-1`. When another service on the Fibre host holds port 26660, give its node another metrics port and set `celestia_mon_node_metrics_port` to it in `fibre-1`'s entry.
 
-Three steps are the operator's on such a setup after the install (celestia-validator-monitoring changes none of them):
+Four steps are the operator's on such a setup after the install (celestia-validator-monitoring changes none of them):
 
 1. Point Fibre at the collector on the Fibre host, `--otel-endpoint http://127.0.0.1:9915`, and restart Fibre at a moment you choose (step 6). Until then `doctor` check 7 fails.
 2. If Fibre sent its metrics to a collector of your own before, for example one on the validator host that Fibre reached over WireGuard on port 4319, remove that collector and its firewall rule once step 1 is done.
-3. Bind celestia-appd's metrics to the validator's private address: a `prometheus_listen_addr` on `0.0.0.0:26660` listens on every interface (step 2). `doctor` check 1 reports it until it is changed: it fails while the host has a Tailscale interface or no firewall is active, and warns otherwise.
+3. Turn on both nodes' metrics, each on its host's private address: a `prometheus_listen_addr` on `0.0.0.0:26660` listens on every interface (step 2). `doctor` check 1 reports it until it is changed: it fails while the host has a Tailscale interface or no firewall is active, and warns otherwise.
+4. Point Fibre at the node on its own host, `--app-grpc-address 127.0.0.1:9090` (or `app_grpc_address` in its `server_config.toml`) with `[grpc] address = "127.0.0.1:9090"` in that node's `app.toml`. Fibre still signs through the validator's node, and that node stays a [backup node](#mainnet-layout) (`priv_validator_laddr` empty).

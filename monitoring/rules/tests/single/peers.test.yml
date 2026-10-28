@@ -1,0 +1,147 @@
+# NodePeersLow on the example-single inventory (validator node-1, local key). The message reads the
+# node's peer count; the page reads it while the node signs, from its last signed height. The chain
+# makes 10 blocks per minute; samples are one minute apart.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # node-1 keeps 1 peer from 5m and gets a second at 15m. The message fires after 5 minutes; one
+  # peer is enough to sign, so there is no page.
+  - name: The node keeps 1 peer; the message fires after 5m, no page, 2 peers resolve it
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_p2p_peers{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '3x4 1x9 2x10'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x25'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: NodePeersLow
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: NodePeersLow
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: message
+            exp_annotations:
+              summary: "Node on node-1 has fewer than 2 peers"
+              description: >-
+                For 5 minutes the node has had fewer than 2 peers (1 now): nodes it peers with are down or cannot reach it.
+                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
+                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+      - eval_time: 15m
+        alertname: NodePeersLow
+        exp_alerts: []
+
+  # node-1 loses its last peer at 10m: its height and last signed height stop there. The page fires
+  # a minute later and holds on its own ALERTS series once the 15-minute window shows no new
+  # signature (from 24m); the message follows at 15m. Both resolve when node-1 has peers again at 45m.
+  - name: The signing node has no peers; the page fires after 1m and holds until peers return
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_p2p_peers{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '3x9 0x34 3x9'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1000+10x10 1100x33 1110+10x9'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x10 1099x33 1109+10x9'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: NodePeersLow
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: NodePeersLow
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: page
+            exp_annotations:
+              summary: "Node on node-1 has no peers"
+              description: >-
+                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
+                and the validator misses every block until a peer connects.
+                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+      - eval_time: 41m
+        alertname: NodePeersLow
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: page
+            exp_annotations:
+              summary: "Node on node-1 has no peers"
+              description: >-
+                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
+                and the validator misses every block until a peer connects.
+                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: message
+            exp_annotations:
+              summary: "Node on node-1 has fewer than 2 peers"
+              description: >-
+                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
+                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
+                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+      - eval_time: 45m
+        alertname: NodePeersLow
+        exp_alerts: []
+
+  # The validator is out of the active set, so its last signed height stays put. node-1 loses its
+  # peers at 20m, with no signature in the 15 minutes before: only the message fires.
+  - name: The node has no peers while the validator does not sign; only the message fires
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_p2p_peers{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '3x19 0x20'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999x40'
+    alert_rule_test:
+      - eval_time: 24m
+        alertname: NodePeersLow
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: NodePeersLow
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: message
+            exp_annotations:
+              summary: "Node on node-1 has fewer than 2 peers"
+              description: >-
+                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
+                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
+                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
