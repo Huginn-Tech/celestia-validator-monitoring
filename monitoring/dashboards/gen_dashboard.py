@@ -643,11 +643,6 @@ def check_fit(what, texts, size, width):
                                                                                       inner_px(width)))
 
 
-def strip_widths(n):
-    """Grid widths of n panels side by side in one strip of 24 columns: the first one is widest."""
-    return {1: [24], 2: [12, 12], 3: [8, 8, 8], 4: [6, 6, 6, 6], 5: [8, 4, 4, 4, 4], 6: [4] * 6}[n]
-
-
 def seconds(text):
     """Seconds in a duration such as 10m, 1h30m or 90s."""
     parts = re.findall(r"(\d+)([hms])", text)
@@ -3396,7 +3391,7 @@ def validator_row(s):
              one("(%s) and on () %s" % (count_24h("%s and on (proposer_address) %s" % (mpp, own), "max"), seen_24h)),
              no_value="No data"),
     ]
-    strip = fit_cells(list(zip(cells, strip_widths(len(cells)))), "Validator cells")
+    strip = fit_cells(list(zip(cells, INTRO_WIDTHS)), "Validator cells")
 
     # Missed blocks: the share SignaturesMissed reads, the last hour's, at every point, in the colour of
     # the node the validator signs through, and the whole network's the same way, dashed. A miss
@@ -4100,12 +4095,10 @@ VALUE_AXIS_PX = 76                       # every chart's value axis width, so pl
 # Measured in a column chart at 1440 px with the menu docked (a 1110 px grid; a w8 chart is 365 px wide): a
 # title has the panel width less 98 px (padding, the (i) icon and the menu), so inner_px(width) - TITLE_ROOM,
 # its letters at 14 px about 0.49 em; a legend line has the panel width less 26 px, so inner_px(width) - 6, and
-# each entry takes its text (12 px, about as text_px() says, 3% added) and 32 px of swatch and gaps.
-TITLE_PX, TITLE_ROOM, TITLE_EM = 14, 80, 0.49
-LEGEND_PX, LEGEND_ITEM, LEGEND_ROOM = 12, 32, 6
-# The width of every chart's value axis, so the plots of a column start at one x down the page
-# whatever their labels ("100%", "96 GiB", "-300 Mb/s").
-SERVER_AXIS_PX = VALUE_AXIS_PX
+# each entry takes its text (12 px, about as text_px() says, 3% added) and 32 px of swatch and gaps. The
+# sizes are TITLE_PX and LEGEND_PX.
+TITLE_ROOM, TITLE_EM = 80, 0.49
+LEGEND_ITEM, LEGEND_ROOM = 32, 6
 # The parts of a whole in shades of the server's colour, the same for a part on every server: the full colour,
 # then darker ones (darker() factors), opaque, so each legend swatch differs; all at one fill opacity. The
 # darkest, Other, is often the largest layer: at 0.45 its swatch keeps about 1.7:1 (blue) to 2:1 (light purple)
@@ -4491,12 +4484,7 @@ def servers_row(s):
                 run = []
                 out.append(run)
             run.append((height, made[0], width))
-        placed = []
-        for line in out:
-            for _, p, _ in line:
-                p["fieldConfig"]["defaults"]["custom"]["axisWidth"] = SERVER_AXIS_PX
-            placed.append((max(height for height, _, _ in line), [(p, w) for _, p, w in line]))
-        return placed
+        return [(max(height for height, _, _ in line), [(p, w) for _, p, w in line]) for line in out]
 
     return lines(SERVER_OPEN), lines(SERVER_CLOSED)
 
