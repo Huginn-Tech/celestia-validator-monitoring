@@ -175,8 +175,7 @@ NAME_CHARS = 17                          # the validator's name: 13 characters a
 DEFAULT_NAME = "Validator"               # the name when celestia_mon_validator_name is empty
 INTRO_NUMBER = "99.999.999"              # the widest number a cell shows (a block height)
 KEY_ROWS, KEY_PX = 1, 12                 # the colour key and the range ends: one 12 px line in an untitled h1
-# Facts inside the rows: an untitled h2 with the label over the value, never larger than the answers.
-FACT_ROWS, FACT_LABEL_PX, FACT_PX, FACT_SMALL_PX = 2, 12, 18, 16
+FACT_PX = 18                             # a stat's value size where it sets none, never larger than the answers
 # The table's 14 px text. Its columns are sized by short words ("no data", "Peers"), which run up to
 # 0.56 em, so it keeps 0.55 em.
 TABLE_CHAR = 0.55 * 14
@@ -289,10 +288,8 @@ STARTED = '(count_over_time(up{job="prometheus"}%s) >= 3)' % W
 LIVE = '(time() - max(timestamp(up{job="prometheus"})) < 60)'
 BOARD_PANELS = {20, 21, 25, 216}
 
-# How long after a check stopped the alert that reports it fires, on top of its hold time: the
-# 15 minutes in TensileUnreadable's and SignalUnreadable's expressions. FibreNotServing
-# (uploads_failing) reads a 5-minute window before its hold.
-TENSILE_STALE, SIGNAL_STALE, UPLOAD_WINDOW = 900, 900, 300
+# FibreNotServing (uploads_failing) reads a 5-minute window before its hold.
+UPLOAD_WINDOW = 300
 
 # Plain sentences for the alerts, for the alert list and the red regions on the charts; a notification
 # carries the rule's own summary instead, and the two share the alert name and the host. Each entry also
@@ -602,21 +599,6 @@ def timeseries(pid, title, desc, targets, unit, threshold=None, scheme=False, so
     return panel(pid, "timeseries", title, desc, targets, defaults, overrides, options)
 
 
-def bargauge(pid, label, desc, targets, unit, thresholds, decimals=0, no_value=None):
-    """One horizontal bar of a share, from 0 to 1, with its value as text, in the row facts' form:
-    untitled, the label (FACT_LABEL_PX) above the bar and the value (FACT_PX)."""
-    defaults = {"color": {"mode": "thresholds"}, "decimals": decimals, "displayName": label, "max": 1, "min": 0,
-                "thresholds": thresholds, "unit": unit}
-    if no_value is not None:
-        defaults["noValue"] = no_value
-    options = {"displayMode": "basic", "maxVizHeight": 20, "minVizHeight": 16, "namePlacement": "top",
-               "orientation": "horizontal",
-               "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
-               "showUnfilled": True, "sizing": "manual",
-               "text": {"titleSize": FACT_LABEL_PX, "valueSize": FACT_PX}, "valueMode": "text"}
-    return panel(pid, "bargauge", "", desc, targets, defaults, (), options)
-
-
 def grid_px(height):
     """Pixel height of a panel height grid rows tall."""
     return 38 * height - 8
@@ -664,20 +646,6 @@ def check_fit(what, texts, size, width):
 def strip_widths(n):
     """Grid widths of n panels side by side in one strip of 24 columns: the first one is widest."""
     return {1: [24], 2: [12, 12], 3: [8, 8, 8], 4: [6, 6, 6, 6], 5: [8, 4, 4, 4, 4], 6: [4] * 6}[n]
-
-
-def flow(panels):
-    """Chart lines: three charts at width 8 and height 8; a line of two at width 12, or one at 24, at
-    height 7. One chart left over after lines of three makes the last four two lines of two."""
-    n = len(panels)
-    sizes = [3] * (n // 3) + ([n % 3] if n % 3 else [])
-    if n % 3 == 1 and n >= 4:
-        sizes = [3] * ((n - 4) // 3) + [2, 2]
-    lines, i = [], 0
-    for k in sizes:
-        lines.append((8 if k == 3 else 7, [(p, 24 // k) for p in panels[i:i + k]]))
-        i += k
-    return lines
 
 
 def seconds(text):
@@ -1509,30 +1477,6 @@ def one_value_size(panels):
     for p in cells:
         p["options"]["text"]["valueSize"] = fits[0]
     return fits[0]
-
-
-def fit_strip(items, height, what, samples=None):
-    """Pins one value size on a strip of row facts, (panel, width) items height grid rows tall: FACT_PX
-    when every value fits its panel, else FACT_SMALL_PX; stops when a value does not fit even then,
-    when a label (FACT_LABEL_PX) does not fit, or when label over value is taller than the panel.
-    samples: {panel id: [texts]} a panel shows that its mappings do not name, such as "a few
-    seconds ago" of a time-ago value."""
-    samples = samples or {}
-    for p, w in items:
-        check_fit(what, [p["fieldConfig"]["defaults"]["displayName"]], FACT_LABEL_PX, w)
-    texts = [(t, w) for p, w in items for t in panel_texts(p) + samples.get(p["id"], [])]
-    size = FACT_PX
-    if any(text_px(t, size) > inner_px(w) for t, w in texts):
-        size = FACT_SMALL_PX
-        for t, w in texts:
-            check_fit(what, [t], size, w)
-    content = grid_px(height) - CHROME_UNTITLED
-    if stack_px(FACT_LABEL_PX, size, True) > content:
-        raise SystemExit("%s: a label over a value needs %d px; an untitled h%d panel has %d"
-                         % (what, stack_px(FACT_LABEL_PX, size, True), height, content))
-    for p, _ in items:
-        p["options"]["text"]["valueSize"] = size
-    return items
 
 
 # The first screen.
@@ -3251,17 +3195,6 @@ def first_screen(s):
 
 
 # The rows below the first screen.
-
-def fact(pid, label, desc, targets, **kw):
-    """A neutral fact inside a row, in a framed, untitled panel: the label (FACT_LABEL_PX) centred over
-    the value (FACT_PX, or the strip's size) in the text colour. The label is the field's display name,
-    so the panel's title bar stays empty and its (i) shows on hover."""
-    kw.setdefault("color_mode", "none")
-    p = stat(pid, "", desc, targets, size=FACT_PX, text_mode="value_and_name", wide=False,
-             title_size=FACT_LABEL_PX, **kw)
-    p["fieldConfig"]["defaults"]["displayName"] = label
-    return p
-
 
 def one(expr):
     """A panel's only query, instant."""
