@@ -70,6 +70,7 @@ scrape_configs:
       - target_label: __address__
         replacement: "127.0.0.1:9919"
 EOF
+# shellcheck disable=SC2119 # no extra Prometheus flags here
 start_prometheus
 for _ in $(seq 60); do
   if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up==1)' | grep -q '"value":[[0-9.]*,"6"]'; then break; fi
