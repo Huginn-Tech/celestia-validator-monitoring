@@ -71,6 +71,7 @@ sparklines that count per time block; tools/ci/check_queries.py replaces them be
 query to Prometheus.
 """
 import argparse
+import functools
 import json
 import math
 import os
@@ -669,13 +670,19 @@ def retention_days(text):
     return max(1, int(sum(int(n) * units[u] for n, u in parts) // 86400))
 
 
+@functools.lru_cache(maxsize=None)
+def rules_text():
+    """The text of the rules template, read once."""
+    with open(RULES_TEMPLATE, encoding="utf-8") as f:
+        return f.read()
+
+
 def load_rules():
     """(holds, alert names): the hold times in monitoring/rules/holds.json by name, and the name of
     every alert in the rules template."""
     with open(HOLDS_FILE, encoding="utf-8") as f:
         holds = json.load(f)["holds"]
-    with open(RULES_TEMPLATE, encoding="utf-8") as f:
-        names = sorted(set(re.findall(r"^\s*- alert: (\w+)", f.read(), re.M)))
+    names = sorted(set(re.findall(r"^\s*- alert: (\w+)", rules_text(), re.M)))
     return holds, names
 
 
@@ -1080,8 +1087,7 @@ def rule_variants():
     ServiceDown's crash loop and not-loaded rules carry no reason label: by_alert() reads it from the
     job and state their expressions leave, and so does this. A rule whose expression keeps its metric's
     reason label (RemoteSignerProblem's proposal failures) has SOME reason."""
-    with open(RULES_TEMPLATE, encoding="utf-8") as f:
-        text = f.read()
+    text = rules_text()
     units = re.findall(r"\('(\w+)', ", re.search(r"\{% set units = (.*?)%\}", text, re.S).group(1))
     rules = []
     for block in re.split(r"^\s*- alert: ", text, flags=re.M)[1:]:
@@ -3561,8 +3567,7 @@ def rule_number(alert, reason, pattern):
     """The number that pattern (a regex with one group) finds in the expression of the alert rule with
     this name and reason label (None: any) in the rules template. Stops unless there is exactly one, so a
     chart that draws a rule's level cannot drift from the rule."""
-    with open(RULES_TEMPLATE, encoding="utf-8") as f:
-        rules = re.split(r"^\s*- alert: ", f.read(), flags=re.M)[1:]
+    rules = re.split(r"^\s*- alert: ", rules_text(), flags=re.M)[1:]
     found = [m.group(1) for r in rules
              if r.startswith(alert + "\n") and (reason is None or re.search(r"^\s*reason: %s\s*$" % reason, r, re.M))
              for m in re.finditer(pattern, r.split("labels:")[0], re.M)]
