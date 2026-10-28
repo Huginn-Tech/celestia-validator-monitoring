@@ -1,0 +1,5 @@
+celestia_mon_receivers:
+  page:
+    - {type: pagerduty, routing_key: ci-only}
+  message:
+    - {type: webhook, url: "https://webhook.example.invalid/hook"}

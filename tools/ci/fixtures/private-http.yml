@@ -1,0 +1,4 @@
+celestia_mon_receivers:
+  - {type: webhook, url: "http://10.20.0.9:8080/hook"}
+  - {type: slack, api_url: "http://[fd00::9]/one"}
+  - {type: discord, webhook_url: "http://localhost:8081/api/webhooks/0/ci-only"}

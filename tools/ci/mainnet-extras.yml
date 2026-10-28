@@ -1,0 +1,9 @@
+# The mainnet example's optional parts in CI (ansible-playbook -e @tools/ci/mainnet-extras.yml): one
+# announcement channel, the outside check of its Fibre endpoint, upgrade signalling and a validator
+# name, so the rules, scrape jobs and dashboard panels of each are rendered and checked. Only the
+# dashboard settings read the name.
+celestia_mon_announcements:
+  - {channel_id: "111111111111111111", severity: page}
+celestia_mon_tensile: {api: "https://tensile.example.org/api/v1", validator: celestiavalcons1ci}
+celestia_mon_signal: {chain_id: celestia, rpc: ["http://127.0.0.1:26657"], validator: celestiavaloper1ci}
+celestia_mon_validator_name: CI validator

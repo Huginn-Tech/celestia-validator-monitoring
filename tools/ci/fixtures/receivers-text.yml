@@ -1,0 +1,3 @@
+celestia_mon_receivers:
+  - {type: pagerduty, routing_key: ci-only}
+  - {type: slack, api_url: "https://slack.example.invalid/one"}

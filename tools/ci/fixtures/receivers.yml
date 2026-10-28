@@ -1,0 +1,7 @@
+celestia_mon_receivers:
+  - {type: pagerduty, routing_key: ci-only}
+  - {type: telegram, bot_token: "000000000:ci-only", chat_id: -1000000000000}
+  - {type: discord, webhook_url: "https://discord.example.invalid/api/webhooks/0/ci-only"}
+  - {type: slack, api_url: "https://slack.example.invalid/one"}
+  - {type: slack, api_url: "https://slack.example.invalid/two", channel: "#validator"}
+  - {type: webhook, url: "https://webhook.example.invalid/hook"}
