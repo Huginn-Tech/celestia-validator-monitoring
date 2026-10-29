@@ -37,6 +37,4 @@ celestia-validator-monitoring never changes, restarts or upgrades celestia-appd,
 - [Panels](docs/panels.md): the question each dashboard panel answers and how to read it.
 - [Security](docs/security.md): what is exposed, a tailnet policy, who connects to the validator's ports, SSH hygiene, where to run the monitor, a WireGuard-only link.
 
-Status: running on a Mocha testnet validator since 17 October 2026, split across a validator host, a Fibre host that also runs a node of its own and the monitor, and a KMS host.
-
 Licence: MIT.
