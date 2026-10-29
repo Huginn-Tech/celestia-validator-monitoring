@@ -30,7 +30,8 @@
       - "'REPLACE_ME' not in celestia_mon_discord_bot_token | string"
     fail_msg: >-
       celestia_mon_announcements is set, so celestia_mon_discord_bot_token must be the token of a bot on your Discord server
-      (Developer Portal > your application > Bot > Reset Token), in the monitor host's vault.
+      (Developer Portal > your application > Bot > Reset Token), in the monitor's secrets (sudo ./install.sh --edit-secrets)
+      or its vault.
     quiet: true
   no_log: true
   when: celestia_mon_announcements | length > 0

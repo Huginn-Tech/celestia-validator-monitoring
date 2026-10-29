@@ -16,9 +16,10 @@
       - "'REPLACE_ME' not in celestia_mon_deadman_webhook_url | string"
       - celestia_mon_deadman_webhook_url | string is not search(celestia_mon_alertmanager_deadman_placeholder)
     fail_msg: >-
-      Set celestia_mon_deadman_webhook_url in the monitor host's vault to the ping URL of your dead-man check
-      (an https URL, such as a healthchecks.io check that alerts you when the pings stop). It is empty, misspelled,
-      not https, or still the example placeholder. Without it nothing tells you when this monitor host is down.
+      Set celestia_mon_deadman_webhook_url in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault to the
+      ping URL of your dead-man check (an https URL, such as a healthchecks.io check that alerts you when the pings stop).
+      It is empty, misspelled, not https, or still the example placeholder. Without it nothing tells you when this monitor
+      host is down.
     quiet: true
   vars:
     celestia_mon_alertmanager_deadman_pattern: '^(https://[^/\s]+|http://(127\.[0-9.]+|localhost|\[::1\])(:[0-9]+)?(/|$))'

@@ -5,19 +5,23 @@
 #   - the settings files that hold secrets: Alertmanager's config (receiver tokens, the dead-man
 #     URL), Grafana's admin password and datasource, the API passwords, the Discord bot token and
 #     celestia-mon-signal's settings (an RPC URL may carry a provider's key); a reinstall writes
-#     them again from the inventory (new API passwords),
+#     them again from the inventory and the monitor's secrets (new API passwords),
 #   - the ufw rules the install recorded in /var/lib/celestia-mon/firewall-added.json, each one
 #     only while `ufw show added` lists it with the recorded source, port, protocol and the
 #     comment celestia-mon. A rule that was there before the install is never recorded.
-# It keeps Prometheus's and Grafana's data (/var/lib/celestia-mon), the other settings
-# (/etc/celestia-mon) and the celestia-mon-* system users and groups, so a reinstall picks up
-# where it left off. With celestia_mon_uninstall_purge=true (install.sh --uninstall --purge)
-# it removes those too. It stops before removing a unit file while another service's unit file
-# changed on disk and systemd has not loaded it: the systemd reload after the removal would load it.
+# It keeps Prometheus's and Grafana's data and the record of the install the host belongs to
+# (/var/lib/celestia-mon), the other settings (/etc/celestia-mon: the monitor's secrets of
+# install.sh --edit-secrets and a generated Grafana admin password among them) and the
+# celestia-mon-* system users and groups, so a reinstall picks up where it left off (Grafana's
+# database keeps the admin password it was made with). With celestia_mon_uninstall_purge=true
+# (install.sh --uninstall --purge) it removes those too. It stops before removing a unit file
+# while another service's unit file changed on disk and systemd has not loaded it: the systemd
+# reload after the removal would load it.
 # celestia-appd, Fibre, tmkms and every other service, user, file and firewall rule stay
 # as they are. A second run changes nothing. install.sh --uninstall runs it on the host
 # itself for that host only, first as a dry run. It reads no inventory settings, so
-# install.sh needs neither the inventory nor the vault password for it. By hand, from ansible/:
+# install.sh needs neither the inventory, the vault password nor --host for it (the host's
+# name comes from the doctor settings the install wrote). By hand, from ansible/:
 #   ansible-playbook -i <inventory> uninstall.yml --limit <host> --check [-e celestia_mon_uninstall_purge=true]
 - name: Remove celestia-mon
   hosts: all
@@ -201,7 +205,7 @@
         celestia_mon_reload_check_units: >-
           {{ (['celestia-appd', 'fibre', 'tmkms']
               + (celestia_mon_uninstall_doctor_conf.content | default('') | b64decode
-                 | regex_findall('^(?:appd|fibre)_unit=([A-Za-z0-9@._-]+)$', multiline=true)))
+                 | regex_findall('^(?:appd|fibre|tmkms)_unit=([A-Za-z0-9@._-]+)$', multiline=true)))
              | map('regex_replace', '$', '.service') | unique | list
              if celestia_mon_uninstall_unit_files.files | length > 0 else [] }}
 
