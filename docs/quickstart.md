@@ -41,7 +41,7 @@ sha256sum -c SHA256SUMS   # must print: celestia-validator-monitoring-<tag>.tar.
 tar -xzf "celestia-validator-monitoring-$tag.tar.gz" && cd "celestia-validator-monitoring-$tag"
 ```
 
-The KMS box needs nothing, unless you want its disks watched ([layouts.md](layouts.md#kms)). To install a commit you reviewed in a clone of the repository, pack it yourself: [reference.md](reference.md#install-from-a-copy-you-pack-yourself).
+The KMS box needs nothing, unless you want its disks watched ([layouts.md](layouts.md#kms)). While the Releases page lists no release yet, or to install a commit you reviewed in a clone of the repository, pack a copy yourself: [reference.md](reference.md#install-from-a-copy-you-pack-yourself).
 
 ## 3. Describe your boxes
 
