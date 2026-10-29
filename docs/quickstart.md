@@ -117,7 +117,7 @@ prometheus = true
 prometheus_listen_addr = "<this box's private address>:26660"
 ```
 
-Then restart celestia-appd. The default `prometheus_listen_addr = ":26660"` listens on every address, so set the private address. The `namespace` can stay `cometbft` (the default) or be `celestia`. A remote signer needs nothing extra: with `priv_validator_laddr` set and `prometheus = true`, the node exports the signer metrics.
+Then restart celestia-appd. The default `prometheus_listen_addr = ":26660"` listens on every address, so set the private address (`127.0.0.1` on one box whose `celestia_mon_private_ip` is `127.0.0.1`). The `namespace` can stay `cometbft` (the default) or be `celestia`. A remote signer needs nothing extra: with `priv_validator_laddr` set and `prometheus = true`, the node exports the signer metrics.
 
 **Fibre's metrics,** on each Fibre box. Fibre pushes its metrics over OTLP to the collector the install put on its box, at `127.0.0.1:9915`. Add `--otel-endpoint http://127.0.0.1:9915` to `ExecStart` in Fibre's unit (`sudo systemctl edit --full <fibre unit>`), or set `FIBRE_OTEL_ENDPOINT=http://127.0.0.1:9915` where the unit already sets that variable; use the base URL, without `/v1/metrics`. Then `sudo systemctl daemon-reload && sudo systemctl restart <fibre unit>`. On a standby Fibre box, run only `sudo systemctl daemon-reload` and leave the unit stopped: it uses the new endpoint when it next starts. The plan's `Fibre:` line names the exact change for each box.
 

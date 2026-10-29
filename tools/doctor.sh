@@ -801,20 +801,28 @@ home_ok() {
 METRICS=""
 check_metrics() {
   local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
-  local port open="" only del="" seen=false reach=false
+  local port open="" only del="" seen=false reach=false bind_is="this host's private address"
   local -a bad=() tnet=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
   # The address the monitor scrapes, which is where the metrics belong: this host's
-  # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660").
+  # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660"). The install
+  # writes it from celestia_mon_private_ip, which is 127.0.0.1 on a one-box install, where the
+  # monitor scrapes loopback; run by hand, the default URL's loopback stands for the private address.
   bind=$(url_hostport "$url")
-  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then bind="<private address>:$(url_port "$url")"; fi
+  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then
+    if [[ -n ${C[inventory_host]} ]]; then
+      bind_is="the loopback address the monitor on this host scrapes"
+    else
+      bind="<private address>:$(url_port "$url")"
+    fi
+  fi
   cfg=$NODE_HOME/config/config.toml
   if [[ -r $cfg ]]; then
     prom=$(toml_get "$cfg" instrumentation prometheus)
     laddr=$(toml_get "$cfg" instrumentation prometheus_listen_addr)
     ns=$(toml_get "$cfg" instrumentation namespace)
     if [[ $prom != true ]]; then
-      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" and prometheus_listen_addr = \"$bind\" (this host's private address, never 0.0.0.0 or an empty host) under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
+      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" and prometheus_listen_addr = \"$bind\" ($bind_is, never 0.0.0.0 or an empty host) under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
       return
     fi
   else
