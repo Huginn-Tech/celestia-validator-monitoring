@@ -205,7 +205,7 @@ A box belongs to one install: one inventory, one monitor. The install writes the
 val-1 belongs to the install monitored from 10.0.0.3 (recorded in /var/lib/celestia-mon/install-id), and the monitor of this inventory is mon-2 at 10.9.0.3: one host can be in one celestia-mon install. ...
 ```
 
-Two installs on one box would share the same `celestia-mon-*` units and ports, and the second would take over the first one's node_exporter. To watch a testnet and a mainnet validator, use separate boxes and two inventories. When the monitor really moved, delete the record (`sudo rm /var/lib/celestia-mon/install-id`) and run again. The first run of a release that has the record only writes it (`install record` in the plan). `--uninstall` keeps it, `--purge` deletes it.
+Two installs on one box would share the same `celestia-mon-*` units and ports, and the second would take over the first one's node_exporter. To watch a testnet and a mainnet validator, use separate boxes and two inventories. The record names the monitor by its address alone, so it cannot tell apart two installs whose monitors share one, such as two one-box installs at `127.0.0.1` on the same box. When the monitor really moved, delete the record (`sudo rm /var/lib/celestia-mon/install-id`) and run again. The first run of a release that has the record only writes it (`install record` in the plan). `--uninstall` keeps it, `--purge` deletes it.
 
 ### How install.sh runs Ansible
 

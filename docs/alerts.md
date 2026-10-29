@@ -333,7 +333,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 
 ## DiskLow
 
-**What it means.** A disk you listed in `celestia_mon_data_mounts` or `celestia_mon_fibre_mount` is filling up or turned read-only. A node whose data disk turns read-only stops working, and the validator can be jailed for downtime; a backup node whose disk fills cannot take over signing.
+**What it means.** A disk you listed in `celestia_mon_data_mounts` (`/` on a box that sets none) or `celestia_mon_fibre_mount` is filling up or turned read-only. A node whose data disk turns read-only stops working, and the validator can be jailed for downtime; a backup node whose disk fills cannot take over signing.
 
 **Severity.** page or message, by disk and condition:
 
