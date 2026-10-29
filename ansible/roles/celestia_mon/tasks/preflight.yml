@@ -65,8 +65,10 @@
   vars:
     celestia_mon_preflight_monitor_ip: "{{ hostvars[celestia_mon_monitor_host].celestia_mon_private_ip | string | lower }}"
     celestia_mon_preflight_recorded: >-
-      {{ (celestia_mon_preflight_record.content | b64decode | regex_findall('^monitor=([^ ]+) *$', multiline=true) | first
-          | default('') | lower) if celestia_mon_preflight_record.content is defined else '' }}
+      {{ (celestia_mon_preflight_record.content | b64decode | regex_findall(celestia_mon_preflight_record_pattern, multiline=true)
+          | first | default('') | lower) if celestia_mon_preflight_record.content is defined else '' }}
+    # The address alone: the file ends with a newline, which [^ ] would take too.
+    celestia_mon_preflight_record_pattern: '^monitor=([^\s]+)'
 
 # Grafana listens on 127.0.0.1 unless the operator names a private address of the monitor
 # host. There is no fallback: a wildcard such as 0.0.0.0, or an address this machine does
