@@ -81,15 +81,15 @@ import re
 
 UID = "celestia-mon-validator"
 TITLE = "Celestia validator"
-DOCS = "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md"
-QUICKSTART = "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/quickstart.md"
+DOCS = "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md"
+QUICKSTART = "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/quickstart.md"
 # Pages the descriptions link to, as (text, url). Panels carry no links of their own: one (i) per title.
 NODE_EXPORTER_FULL = ("Node Exporter Full", "https://grafana.com/grafana/dashboards/1860-node-exporter-full/")
 FIBRE_DASHBOARD = ("Fibre dashboard (celestia-app)",
                    "https://github.com/celestiaorg/celestia-app/blob/v10.5.0/observability/docker/grafana/dashboards/fibre.json")
 TENSILE = ("Tensile", "https://tensile.huginn.tech")
 MAINNET_LAYOUT = ("mainnet layout", QUICKSTART + "#mainnet-layout")
-PANEL_GUIDE = ("Panel guide", "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/panels.md")
+PANEL_GUIDE = ("Panel guide", "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/panels.md")
 
 # The alert rules template and the hold times of its rules that the descriptions print.
 RULES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "rules")

@@ -35,7 +35,7 @@ On each box you install on, as your own user, download a release from the reposi
 
 ```sh
 tag=vX.Y.Z   # the release you install
-url=https://github.com/s0urledd/celestia-validator-monitoring/releases/download/$tag
+url=https://github.com/Huginn-Tech/celestia-validator-monitoring/releases/download/$tag
 curl -fsSLO "$url/celestia-validator-monitoring-$tag.tar.gz" && curl -fsSLO "$url/SHA256SUMS"
 sha256sum -c SHA256SUMS   # must print: celestia-validator-monitoring-<tag>.tar.gz: OK
 tar -xzf "celestia-validator-monitoring-$tag.tar.gz" && cd "celestia-validator-monitoring-$tag"

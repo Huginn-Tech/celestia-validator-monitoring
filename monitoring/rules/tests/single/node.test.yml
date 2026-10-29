@@ -47,7 +47,7 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -80,7 +80,7 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: NodeNotAdvancing
         exp_alerts:
@@ -91,7 +91,7 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
 
   # Prometheus has just started: at 0m the 2-minute window holds the height's first sample only.
   # One sample shows no change, which must not count as a stall: not even a pending alert.
@@ -133,7 +133,7 @@ tests:
             exp_annotations:
               summary: "The validator is not signing"
               description: "The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
 
   # The gap is 11 blocks for exactly one minute (6m), then the validator signs again.
   - name: One short gap above 10 blocks that closes within 2 minutes stays quiet

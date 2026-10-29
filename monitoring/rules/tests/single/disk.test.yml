@@ -37,7 +37,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on node-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
               instance: 10.10.0.11:9910
@@ -50,7 +50,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on node-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Node data disk turns read-only; a page at once
     interval: 1m
@@ -83,7 +83,7 @@ tests:
             exp_annotations:
               summary: "/var/lib/celestia on node-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre off renders no Fibre store rules
     interval: 1m

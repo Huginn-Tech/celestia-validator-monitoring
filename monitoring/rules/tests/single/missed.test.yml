@@ -50,7 +50,7 @@ tests:
               description: >-
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 30m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -95,7 +95,7 @@ tests:
               description: >-
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
 
   # The count stands at 500 from misses long ago, and none falls in this hour. The node restarts at
   # 30m (the series goes stale) and counts its next miss at 40m: 1. The drop from 500 is a reset, not

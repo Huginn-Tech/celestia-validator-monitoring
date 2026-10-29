@@ -40,7 +40,7 @@ tests:
                 endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
                 from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
                 the last check.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
       - eval_time: 15m
         alertname: TensileUnreadable
         exp_alerts: []
@@ -76,7 +76,7 @@ tests:
                 endpoint, or the service is down, so an endpoint unreachable from outside would not page, and blobs
                 Fibre misses or rows it does not serve would not be reported. Run
                 journalctl -u celestia-mon-tensile on the monitor: it names the cause.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
 
   - name: After a failover to val-1 the chain still points to fibre-1; FibreDown for the address and the reachability
     interval: 1m
@@ -106,7 +106,7 @@ tests:
                 endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
                 from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
                 the last check.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
           - exp_labels:
               severity: page
               check: registration
@@ -119,7 +119,7 @@ tests:
                 while the chain registers another endpoint, so clients dial a host where this Fibre does not run
                 (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
                 val.example.org:7980 --from <validator account key>.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
 
   - name: No Fibre host registered on chain; FibreDown after 10 minutes
     interval: 1m
@@ -145,7 +145,7 @@ tests:
                 For 10 minutes the chain has had no Fibre host for the validator in x/valaddr, so no client
                 finds it. Register the active Fibre host: celestia-appd tx valaddr set-host <host:port> --from
                 <validator account key>.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
 
   # A blob assigned to the validator settles at 20m (1200 s), ten minutes after Fibre's last accepted
   # upload (600 s), and no upload follows. Tensile's side is read a minute late, so the condition
@@ -188,7 +188,7 @@ tests:
                 the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
                 validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
                 first that the chain registers this host and that its port answers from outside.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # The network sends no blob for five hours after the last one, which Fibre accepted: nothing is missed.
   - name: Quiet network for hours with the outside check; no FibreNotServing
@@ -321,7 +321,7 @@ tests:
                 endpoint, or the service is down, so an endpoint unreachable from outside would not page, and blobs
                 Fibre misses or rows it does not serve would not be reported. Run journalctl -u
                 celestia-mon-tensile on the monitor: it names the cause.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
     promql_expr_test:
       - expr: count_over_time(ALERTS{alertname="FibreNotServing"}[60m])
         eval_time: 60m
@@ -365,7 +365,7 @@ tests:
                 the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
                 validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
                 first that the chain registers this host and that its port answers from outside.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 45m
         alertname: TensileUnreadable
         exp_alerts: []
@@ -383,7 +383,7 @@ tests:
                 endpoint, or the service is down, so an endpoint unreachable from outside would not page, and blobs
                 Fibre misses or rows it does not serve would not be reported. Run journalctl -u
                 celestia-mon-tensile on the monitor: it names the cause.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
       - eval_time: 46m
         alertname: FibreNotServing
         exp_alerts:
@@ -399,7 +399,7 @@ tests:
                 the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
                 validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
                 first that the chain registers this host and that its port answers from outside.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Fibre restarts at 30m and accepts nothing since: its last-success gauge, kept in Fibre's memory,
   # is gone, and the time counts from the new start (1800 s). A blob settles at 40m (2400 s).
@@ -441,7 +441,7 @@ tests:
                 the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
                 validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
                 first that the chain registers this host and that its port answers from outside.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Fibre restarts at 30m (start time 1800 s); a blob settled at 29m50s (1790 s), while it was down,
   # and the collector keeps serving the old process's last accepted upload (600 s) until 35m. The
@@ -545,7 +545,7 @@ tests:
                 Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
                 reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
                 (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 180m
         alertname: FibreNotServing
         exp_alerts:
@@ -560,7 +560,7 @@ tests:
                 Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
                 reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
                 (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 181m
         alertname: FibreNotServing
         exp_alerts: []
@@ -597,7 +597,7 @@ tests:
                 Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
                 reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
                 (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Failed reads of a day ago leave Tensile's 24 hours one by one: the count falls, nothing is new.
   - name: Old failed reads leave Tensile's 24 hours; no not_served

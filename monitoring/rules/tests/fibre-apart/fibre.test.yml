@@ -48,7 +48,7 @@ tests:
                 For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing.
                 Check the signer first: Fibre signs through the node at its signer_grpc_address,
                 so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreDown
         exp_alerts: []

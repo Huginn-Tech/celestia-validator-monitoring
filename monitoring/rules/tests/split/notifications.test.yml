@@ -32,7 +32,7 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot deliver discord notifications"
               description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
       # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
       # the 0 at 9m is the one at 23m.
       - eval_time: 23m
@@ -45,7 +45,7 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot deliver discord notifications"
               description: "A discord notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
       - eval_time: 24m
         alertname: NotificationsFailing
         exp_alerts: []
@@ -62,7 +62,7 @@ tests:
               description: >-
                 Fires while monitoring runs and no page or message notification failed in the last hour.
                 Only the dead-man service receives it, and it alerts when the heartbeats stop.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
   - name: PagerDuty and Telegram fail; one message per integration, whatever the receivers and failure reasons
     interval: 1m
@@ -87,7 +87,7 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot deliver pagerduty notifications"
               description: "A pagerduty notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
           - exp_labels:
               host: mon-1
               integration: telegram
@@ -95,7 +95,7 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot deliver telegram notifications"
               description: "A telegram notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
 
   - name: A webhook receiver fails; a message for it, though the dead-man webhook also fails
     interval: 1m
@@ -117,7 +117,7 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot deliver webhook notifications"
               description: "A webhook notification failed in the last 15 minutes. Alerts reach you through your other receivers only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
 
   - name: Failed heartbeats (the dead-man receiver) raise no NotificationsFailing
     interval: 1m

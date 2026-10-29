@@ -30,7 +30,7 @@ tests:
               description: >-
                 For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   - name: A Fibre restart shorter than 10 minutes does not page
     interval: 1m
@@ -69,7 +69,7 @@ tests:
               description: >-
                 For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   # val-1 still answers, so the monitor reaches the hosts: fibre-1 is down, and Fibre with it.
   - name: Fibre host stops answering; a page after 10 minutes
@@ -101,7 +101,7 @@ tests:
               description: >-
                 For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   - name: node_exporter down on a host without Fibre does not page as FibreDown
     interval: 1m

@@ -37,7 +37,7 @@ tests:
                 tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h55m
         alertname: GovVoteMissing
         exp_alerts:
@@ -52,7 +52,7 @@ tests:
                 tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # A week's vote with 25 hours left at 0: the message from the start, held 10 minutes; with less
   # than a day left from 1h on, still the message alone.
@@ -85,4 +85,4 @@ tests:
                 account key>. A vote sent through an authz grant from the validator account counts; a vote from
                 any other account does not. This alert resolves when the vote is on chain or the voting period has
                 ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing

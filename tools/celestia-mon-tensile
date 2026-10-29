@@ -37,7 +37,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-USER_AGENT = "celestia-mon-tensile (https://github.com/s0urledd/celestia-validator-monitoring)"
+USER_AGENT = "celestia-mon-tensile (https://github.com/Huginn-Tech/celestia-validator-monitoring)"
 # The largest answer read, in bytes: a validator's status takes a few KiB, and a larger one is
 # refused rather than read into memory.
 MAX_BODY = 1 << 20

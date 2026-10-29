@@ -92,7 +92,7 @@ tests:
             exp_annotations:
               summary: "celestia-appd.service is not active on fibre-1"
               description: "systemd has not reported the unit as active for 2 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
               instance: 10.20.0.2:26660
@@ -103,7 +103,7 @@ tests:
             exp_annotations:
               summary: "celestia-app metrics are unreachable on fibre-1"
               description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Fibre crash loop on fibre-1 sends a message
     interval: 1m
@@ -138,7 +138,7 @@ tests:
             exp_annotations:
               summary: "fibre.service is crash looping on fibre-1"
               description: "systemd restarted the unit more than 2 times in 30 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Wrong appd unit name for the backup node; node_exporter is up but has no such unit
     interval: 1m
@@ -161,7 +161,7 @@ tests:
             exp_annotations:
               summary: "celestia-appd.service is not loaded on fibre-1"
               description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: The standby's collector down on val-1; a message after 3m
     interval: 1m
@@ -195,4 +195,4 @@ tests:
             exp_annotations:
               summary: "otelcol is unreachable on val-1"
               description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

@@ -42,7 +42,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: ServiceDown
         exp_alerts: []
@@ -87,7 +87,7 @@ tests:
                 (val-1, fibre-1, kms-1): the link between the monitor and the hosts is down, or every host is.
                 No alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
                 validator still signs: an explorer shows its recent blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: NodeNotAdvancing
         exp_alerts: []

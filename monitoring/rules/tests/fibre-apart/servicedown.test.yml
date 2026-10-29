@@ -74,7 +74,7 @@ tests:
             exp_annotations:
               summary: "celestia.service is not active on node-1"
               description: "systemd has not reported the unit as active for 2 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
               instance: 10.30.0.3:26660
@@ -85,7 +85,7 @@ tests:
             exp_annotations:
               summary: "celestia-app metrics are unreachable on node-1"
               description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Crash loop of node-1's celestia.service sends a message
     interval: 1m
@@ -117,7 +117,7 @@ tests:
             exp_annotations:
               summary: "celestia.service is crash looping on node-1"
               description: "systemd restarted the unit more than 2 times in 30 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # node_exporter on node-1 answers but lists only a unit of the default name: the not-loaded rule
   # looks for node-1's own, celestia.service.
@@ -145,4 +145,4 @@ tests:
             exp_annotations:
               summary: "celestia.service is not loaded on node-1"
               description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

@@ -88,7 +88,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: FibreNotServing
         exp_alerts:
@@ -105,7 +105,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 8m
         alertname: ServiceDown
         exp_alerts: []
@@ -125,7 +125,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
               reason: not_ready
@@ -139,7 +139,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 15m
         alertname: NodeNotAdvancing
         exp_alerts: []
@@ -217,7 +217,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 14m
         alertname: FibreDown
         exp_alerts: []
@@ -231,7 +231,7 @@ tests:
               description: >-
                 For 10 minutes no Fibre host (fibre-1, val-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
       - eval_time: 15m
         alertname: MonitorCannotReach
         exp_alerts:
@@ -245,7 +245,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 15m
         alertname: ServiceDown
         exp_alerts: []

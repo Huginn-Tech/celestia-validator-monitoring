@@ -94,4 +94,4 @@ tests:
                 the chain slashes such a double sign and tombstones the validator. Stop the signer that should not
                 sign now, for example a second tmkms with the same key on a standby KMS host. If one tmkms signs
                 through several nodes on purpose, set celestia_mon_signer_multi_node: true.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatorsigningtwice
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatorsigningtwice

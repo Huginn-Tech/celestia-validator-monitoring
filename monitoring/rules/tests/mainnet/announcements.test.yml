@@ -43,7 +43,7 @@ tests:
                 celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
                 announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
                 names the cause and the fix.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
 
   # The service is down: its target fails for 10 minutes.
   - interval: 1m
@@ -67,4 +67,4 @@ tests:
                 celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
                 announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
                 names the cause and the fix.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable

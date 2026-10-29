@@ -31,7 +31,7 @@ tests:
             exp_annotations:
               summary: "Remote signer on val-1 is slower than 10 ms"
               description: "The median of the last 50 signatures has been above 10 ms for 15 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"
 
   - name: Median signing latency at exactly 10 ms stays quiet
     interval: 1m
@@ -81,4 +81,4 @@ tests:
             exp_annotations:
               summary: "Remote signer on val-1 fails to sign proposals"
               description: "Proposal signing failed with reason remote_error in the last 6 hours; votes may still succeed."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"
