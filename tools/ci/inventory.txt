@@ -54,8 +54,6 @@ doctor-signer/run                | tools/ci/doctor/signer.sh                    
 doctor-ports/run                 | tools/ci/doctor/ports.sh                     | doctor on the validator's ports
 doctor-monitor/run               | tools/ci/doctor/monitor.sh                   | doctor checks 11 and 12 against Prometheus on loopback
 doctor-readiness/run             | tools/ci/doctor/readiness.sh                 | The readiness probe and doctor check 24
-doctor-chain/run                 | tools/ci/doctor/chain.sh                     | doctor on the node Fibre reads
-doctor-survey/run                | tools/ci/doctor/survey.sh                    | doctor --survey on each kind of host
 install/refuses-unsafe           | ci.yml                                       | The install refuses unsafe settings
 install/dry-run                  | ci.yml                                       | The dry run changes nothing and lists the ufw rules
 install/edit-vault               | ci.yml                                       | --edit-vault creates and edits an encrypted vault.yml
@@ -76,15 +74,17 @@ install/uninstall                | ci.yml                                       
 install/uninstall-again          | ci.yml                                       | A second uninstall changes nothing
 install/purge                    | ci.yml                                       | Uninstall --purge leaves nothing behind
 install/purge-again              | ci.yml                                       | A second purge changes nothing
-install/survey                   | ci.yml                                       | --survey runs doctor's survey and prepares nothing
-install/grafana-password         | ci.yml                                       | The generated Grafana admin password opens Grafana
-install/one-install              | ci.yml                                       | A host belongs to one install
-install/secrets                  | ci.yml                                       | The monitor's secrets come from --edit-secrets
 molecule/test                    | ci.yml                                       | molecule test
 lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
 dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
 rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       | No ValidatorSigningTwice where tmkms signs through several nodes
+install/survey                   | ci.yml                                       | --survey runs doctor's survey and prepares nothing
+install/grafana-password         | ci.yml                                       | The generated Grafana admin password opens Grafana
+install/one-install              | ci.yml                                       | A host belongs to one install
+install/secrets                  | ci.yml                                       | The monitor's secrets come from --edit-secrets
+doctor-chain/run                 | tools/ci/doctor/chain.sh                     | doctor on the node Fibre reads
+doctor-survey/run                | tools/ci/doctor/survey.sh                    | doctor --survey on each kind of host
 rules/own-units                  | ci.yml, tools/ci/units.yml, tests/units      | Each host's own unit names
 rules/same-units                 | ci.yml                                       | The same unit names on every host render as one name
 dashboard/own-units              | ci.yml                                       | Each host's own unit names reach the dashboard
