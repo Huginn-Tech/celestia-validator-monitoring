@@ -46,6 +46,27 @@
     - name: Gather facts on the hosts celestia-mon manages
       ansible.builtin.setup:
 
+    # One host, one install: the monitor this host is installed for, which the preflight of
+    # every later run compares with the inventory's. --uninstall keeps it, --purge deletes it.
+    - name: Create the directory of the install record
+      ansible.builtin.file:
+        path: /var/lib/celestia-mon
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Record the install this host belongs to
+      ansible.builtin.copy:
+        dest: /var/lib/celestia-mon/install-id
+        content: |
+          # The celestia-mon install this host belongs to, by the private address of its monitor host.
+          # install.sh stops on an inventory with another monitor. Delete this file only when the monitor moved.
+          monitor={{ hostvars[celestia_mon_monitor_host].celestia_mon_private_ip | string | lower }}
+        owner: root
+        group: root
+        mode: "0644"
+
     - name: Install node_exporter
       ansible.builtin.include_role:
         name: celestia_mon_node_exporter

@@ -15,15 +15,24 @@ celestia_mon_signer_multi_node: false
 # names stop the dashboard build. Empty: the dashboard reads "Validator" under the network's name.
 celestia_mon_validator_name: ""
 
-# Install and render everything Fibre-related. Keep false on networks where
-# Fibre is not active (mainnet runs app v9 as of 2026-10).
+# Install and render everything Fibre-related: true when the validator runs a Fibre server
+# (the hosts of the fibre group), false when it runs none.
 celestia_mon_fibre_enabled: false
 
-# systemd service names, without the .service suffix.
+# systemd service names, without the .service suffix. A host whose unit has another name (a
+# cosmovisor unit, celestia.service) sets its own in its inventory entry or host_vars. Setting it
+# replaces the whole map, so list every key. The install stops when a name of this host's
+# services is not a unit systemd has loaded here, and prints the map to set.
 celestia_mon_units:
   appd: celestia-appd
   fibre: fibre
   tmkms: tmkms
+
+# The disks whose free space DiskLow and the dashboard watch on this host: a list of mount
+# points (the node's data, tmkms's state, and on the monitor the disk of Prometheus's data), each
+# as findmnt -T <path> names the mount point that holds that path. The install stops on a path
+# that is not a mount point. Set it per host; unset, the root filesystem.
+celestia_mon_data_mounts: [/]
 
 # The ports below that the monitor reads on other hosts (the node's metrics, Fibre's port, and
 # node_exporter and the collector in celestia_mon_ports) can be set per host. The monitor reads
@@ -98,16 +107,16 @@ celestia_mon_thresholds:
 #   {type: webhook, url: ...}
 # Page alerts go to every receiver; message alerts go to every receiver except PagerDuty, so
 # at least one receiver must be of another type. Each URL is https (http only to this host or an
-# address of the private network, such as a relay there). Keep the list (it holds secrets) in
-# ansible-vault on the monitor host. The separate page and message lists of earlier
-# versions are refused.
+# address of the private network, such as a relay there). Keep the list (it holds secrets) in the
+# monitor's secrets (sudo ./install.sh --edit-secrets) or its vault. The separate page and message
+# lists of earlier versions are refused.
 celestia_mon_receivers: []
 
 # Celestia's announcements as alerts (docs/alerts.md#celestiaannouncement), on the monitor host.
 # Each entry is a Discord channel on your own server that follows Celestia's announcement
 # channels ("Follow" in Celestia's Discord), and the severity its messages get: page (PagerDuty
 # and every chat channel) or message (chat channels only). A bot on your server reads them;
-# its token is celestia_mon_discord_bot_token, in the monitor's vault. Empty: off.
+# its token is celestia_mon_discord_bot_token, in the monitor's secrets or vault. Empty: off.
 #   celestia_mon_announcements:
 #     - {channel_id: "1234567890123456789", severity: page}
 celestia_mon_announcements: []
@@ -141,8 +150,8 @@ celestia_mon_signal: {}
 # Heartbeat URL of an external dead-man service (required on the monitor host). The Watchdog
 # alert pings it every 1-2 minutes; the service alerts you when the pings stop. It must be an
 # https URL (http only to this host itself, such as a local relay); an empty value or the
-# example placeholder stops the install. Keep it in ansible-vault: anyone with it can keep
-# the heartbeat green.
+# example placeholder stops the install. Keep it in the monitor's secrets or vault: anyone with it
+# can keep the heartbeat green.
 celestia_mon_deadman_webhook_url: ""
 
 # How long and how much data Prometheus keeps on the monitor host. Prometheus drops
@@ -190,7 +199,8 @@ celestia_mon_memory:
 #   celestia_mon_private_ip             required on every host celestia-mon touches; an address
 #                                       of that host itself (the playbook checks)
 #   celestia_mon_data_mounts            list of mount points to watch (node data, tmkms state, and
-#                                       on the monitor the disk of Prometheus's data)
+#                                       on the monitor the disk of Prometheus's data); default [/]
+#   celestia_mon_units                  this host's own unit names, the whole map (see above)
 #   celestia_mon_fibre_mount            Fibre store mount point (fibre hosts, active or standby)
 #   celestia_mon_fibre_public_endpoint  host:port that valaddr set-host registers while this host's
 #                                       Fibre is the active one (fibre hosts)

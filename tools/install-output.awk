@@ -130,8 +130,8 @@ pending != "" {
     if ($0 ~ /celestia-mon-doctor/) { if (!("celestia-mon-doctor" in seen)) open_part("celestia-mon-doctor") }
     else if (role in label) open_part(label[role])
   }
-  # The record of the install this host belongs to (site.yml), a task of no role.
-  else if ($0 ~ /^TASK \[Record the install this host belongs to\]/) open_part("install record")
+  # The record of the install this host belongs to (site.yml): tasks of no role.
+  else if ($0 ~ /^TASK \[(Create the directory of the install record|Record the install this host belongs to)\]/) open_part("install record")
   next
 }
 

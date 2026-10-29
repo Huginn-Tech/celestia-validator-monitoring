@@ -9,5 +9,12 @@ RUN apt-get update \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Stand-ins for the Celestia services of the test inventory (default unit names): loaded
+# units, never started, so the install's check that systemd has loaded each one passes.
+RUN printf '[Unit]\nDescription=celestia-appd stand-in for the molecule test\n\n[Service]\nExecStart=/usr/local/bin/celestia-appd start\n' \
+       >/etc/systemd/system/celestia-appd.service \
+    && printf '[Unit]\nDescription=Fibre stand-in for the molecule test\n\n[Service]\nExecStart=/usr/local/bin/fibre start\n' \
+       >/etc/systemd/system/fibre.service
+
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]
