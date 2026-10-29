@@ -38,7 +38,28 @@ echo "::endgroup::"
 grep -Eq '^WARN +27 +fibre app node +standby: Fibre.s default ' <<<"$out"
 says 27 'once it starts, Fibre cannot read the chain'
 says 27 'and leave the unit stopped: it uses the new value when it next starts'
+
+# What a Fibre whose node does not answer does: it exits, and systemd waits to restart it. The unit
+# is then activating, which is no standby, also where another Fibre host is.
+echo "::group::a Fibre that exits and waits for its restart, with two Fibre hosts"
+printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" 'ExecStart=/bin/false' 'Restart=always' 'RestartSec=600' \
+  | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
+sudo systemctl daemon-reload
 sudo systemctl start ci-fibre
+for _ in $(seq 50); do
+  if [ "$(systemctl show -P SubState ci-fibre)" = auto-restart ]; then break; fi
+  sleep 0.2
+done
+test "$(systemctl show -P ActiveState ci-fibre)" = activating
+run sudo bash tools/doctor.sh "${args[@]}" "${inv[@]}" --roles fibre --fibre-hosts fibre-1,val-1
+echo "::endgroup::"
+grep -Eq '^FAIL +27 +fibre app node +Fibre.s default ' <<<"$out"
+says 27 'nothing listens on port 9090 here: now, Fibre cannot read the chain'
+says 27 'then restart Fibre at a moment you choose'
+printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" 'ExecStart=/bin/sleep infinity' \
+  | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl restart ci-fibre
 
 echo "::group::a node of the inventory on another host, and an address that is none"
 printf '%s\n' 'app_grpc_address = "10.255.4.5:9090"' 'signer_grpc_address = "10.255.4.8:26669"' "$tls" >"$cfg"

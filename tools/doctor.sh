@@ -1764,15 +1764,18 @@ node_app_grpc() { # readable app.toml, host Fibre dials, its port -> 0 when the 
 # on a host with one, it must be where that node's app gRPC listens ([grpc] address in app.toml,
 # localhost:9090 when unset, the default of celestia-app's cosmos-sdk fork). A node on another host
 # is named from node_addresses: an address that is no node of the inventory warns, as nothing then
-# watches the node this Fibre depends on. As in check 17, a problem fails for an active Fibre and
-# warns for a standby. doctor reads the configs and the listening sockets and never connects to
-# the port.
+# watches the node this Fibre depends on. A problem fails for an active Fibre and warns for a
+# standby, which is a unit check 6 counts as one: inactive or failed, with two or more Fibre hosts.
+# A unit systemd is restarting (activating) is an active Fibre that exits, as one whose node does
+# not answer does. doctor reads the configs and the listening sockets and never connects to the
+# port.
 check_fibre_app() {
-  local name="fibre app node" unit=${C[fibre_unit]} argv home cfg addr src h port app l nodes
+  local name="fibre app node" unit=${C[fibre_unit]} argv home cfg addr src h port app l nodes state
   local apply="then restart Fibre at a moment you choose" when="now" standby="" sev=FAIL via="" rc=0 fix reload why
   if fibre_skip 27 "$name"; then return; fi
   if ! unit_loaded "$unit"; then report SKIP 27 "$name" "$unit.service not found (check 6)"; return; fi
-  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then
+  state=$(unit_prop "$unit" ActiveState)
+  if fibre_standby_layout && [[ $state == inactive || $state == failed ]]; then
     apply="and leave the unit stopped: it uses the new value when it next starts"
     when="once it starts"
     standby="standby: "
@@ -3243,7 +3246,9 @@ survey() {
     groups+=(fibre)
     fstate=$(survey_state "$fibre")
     fapply="then restart Fibre at a moment you choose"
-    if [[ $fstate != active ]]; then fapply="and leave the unit stopped: it uses the new value when it next starts"; fi
+    # A stopped or failed unit stays stopped (a standby, as check 6 counts one); one that systemd is
+    # restarting is a Fibre that exits.
+    if [[ $fstate == inactive || $fstate == failed ]]; then fapply="and leave the unit stopped: it uses the new value when it next starts"; fi
     fargv=$(unit_argv "$fibre")
     fhome=$(fibre_home "$fibre" "$fargv")
     fcfg=$fhome/config/server_config.toml
