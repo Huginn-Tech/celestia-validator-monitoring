@@ -1,0 +1,5 @@
+---
+# Shared settings, free of secrets. The secrets are in host_vars/mon-1/vault.yml.
+celestia_mon_signer: remote
+# Fibre is part of this layout. Keep it false while Fibre is not active on the network.
+celestia_mon_fibre_enabled: true
