@@ -498,7 +498,8 @@ fi
 if [[ $mode == edit-vault ]]; then
   [[ $(basename -- "$vault_target") =~ ^vault\.ya?ml$ ]] ||
     die "--edit-vault edits an inventory's vault.yml (host_vars/<monitor>/vault.yml): $vault_target"
-  [[ -d $(dirname -- "$vault_target") ]] || die "no such directory: $(dirname -- "$vault_target")"
+  [[ -d $(dirname -- "$vault_target") ]] ||
+    die "no such directory: $(dirname -- "$vault_target"). Create it as your own user (mkdir -p $(dirname -- "$vault_target")), then run again"
   # ansible-vault would write through a link to whatever file it names, as root.
   [[ ! -L $vault_target ]] || die "$vault_target is a symbolic link: name the vault file itself"
   [[ -t 0 ]] || die "--edit-vault needs a terminal"
