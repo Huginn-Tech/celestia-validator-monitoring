@@ -3699,6 +3699,7 @@ def fibre_row(s):
     is the Upload time fact."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
+    rejected = "fibre_server_upload_shard_rejected_total"
     fibre_is = s.is_unit("fibre")
     failing = s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
 
@@ -3778,9 +3779,9 @@ def fibre_row(s):
             cell(
                 203, "Upload success, 24 h",
                 "Share of upload requests Fibre accepted in the last 24 hours; near 100%% is good. Failures "
-                "include clients' invalid payment promises and uploads refused while the storage budget is "
-                "full, so a few are not this setup's fault. Every upload failing for %s is FibreNotServing "
-                "(uploads failing). No uploads: none in 24 hours." % failing
+                "include clients' invalid payment promises, which are not this setup's fault, and uploads "
+                "refused while the storage budget is full. No upload accepted for %s while signatures fail or "
+                "the budget is full is FibreNotServing (uploads failing). No uploads: none in 24 hours." % failing
                 + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
                 one(chain("(sum(rate(%s[24h])) or on () vector(0)) / (sum(rate(%s[24h])) > 0)" % (ok, count),
                           "(count(fibre_server_upload_shard_budget_bytes) * 0 - 1)")),
@@ -3844,19 +3845,24 @@ def fibre_row(s):
             "m", threshold=(level / 60.0, "orange"), soft_max=level / 60.0 * 1.2, step=True, fill=30)
         first_chart["fieldConfig"]["defaults"]["noValue"] = "Not checked"
     else:
-        # The uploads_failing rule: failed uploads and none accepted in its window, on the active Fibre.
-        # The share failing is 100% (full) exactly then.
+        # The uploads_failing rule: uploads that passed their checks failing here (a failed signature, or
+        # a refusal for a full budget) and none accepted in its window, on the active Fibre. Each accepted
+        # upload is a signature that worked, so the share failing is 100% (full) exactly then.
         window = "%ds" % UPLOAD_WINDOW
         full = 1
-        share = ('(sum by (host) (increase(%s{success="false"}[%s])) / (sum by (host) (increase(%s[%s])) > 0)) '
-                 "> 0 and on (host) %s" % (count, window, count, window, active))
+        sign = "fibre_server_sign_duration_seconds_count"
+        here = 'increase(%s{success="false"}[%s]) or increase(%s[%s])' % (sign, window, rejected, window)
+        tried = "increase(%s[%s]) or increase(%s[%s])" % (sign, window, rejected, window)
+        share = "(sum by (host) (%s) / (sum by (host) (%s) > 0)) > 0 and on (host) %s" % (here, tried, active)
         first_legend = "{{host}} share failing (alert at %g%%)" % (full * 100)
         first_chart = timeseries(
             210, "Uploads failing",
-            "Share of upload requests that failed, over %s windows; an empty chart is good. FibreNotServing "
-            "(uploads failing) sends a message once the share has stayed at the dashed %g%% line, no upload "
-            "accepted, for %s. Clients' invalid payment promises make small rises; a quiet network leaves the "
-            "chart empty. Blobs that never reached Fibre show only with the outside check (celestia_mon_tensile)."
+            "Share of the uploads that passed their checks and then failed here, over %s windows: not signed, "
+            "or refused while the storage budget was full; an empty chart is good. FibreNotServing (uploads "
+            "failing) sends a message once the share has stayed at the dashed %g%% line, no upload accepted, "
+            "for %s. Uploads a client gets wrong, such as an invalid payment promise, fail at their checks and "
+            "are left out, so a quiet network leaves the chart empty, as does one such client sending again. "
+            "Blobs that never reached Fibre show only with the outside check (celestia_mon_tensile)."
             % (minutes_text(UPLOAD_WINDOW).replace(" minutes", "-minute"), full * 100,
                s.hold("FibreNotServing uploads_failing"))
             + red_band % "lines" + more(["FibreNotServing", "FibreDown"], [TENSILE]),
@@ -3904,11 +3910,11 @@ def fibre_row(s):
     # whole block; a block without requests draws nothing ('> 0'), so a quiet network leaves a chart
     # empty. Refused uploads also end with success "false" (celestia-app fibre/server_upload.go returns
     # the budget error through the deferred uploadShardDone), so they are taken out of the failed ones
-    # and drawn as their own outlined bars, in the text colour: no rule fires on a refusal. Refused
-    # uploads also count as failed ones, so once Fibre accepts none the Fibre tile reads Uploads failing.
+    # and drawn as their own outlined bars, in the text colour: no rule fires on a refusal next to
+    # accepted uploads. The uploads_failing rule counts refusals with failed signatures, so once Fibre
+    # accepts none the Fibre tile reads Uploads failing.
     # Accepted uploads and served downloads take the server's colour; failed uploads are light grey, and
     # downloads Fibre did not hold or that failed are grey outlines, since most are routine.
-    rejected = "fibre_server_upload_shard_rejected_total"
     downloads = "fibre_server_download_shard_duration_seconds_count"
     served = "served"
 
@@ -3924,8 +3930,8 @@ def fibre_row(s):
         211, "Uploads",
         "Upload requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in the server's "
         "colour are good. Grey: failed, as when a client's payment promise is invalid. Outlined: refused while "
-        "the storage budget was full. Failed uploads and none accepted for %s is FibreNotServing (uploads failing)."
-        % failing + red_band % "bars" + more(["FibreNotServing", "FibreDown"]),
+        "the storage budget was full. No upload accepted for %s while signatures fail or the budget is full is "
+        "FibreNotServing (uploads failing)." % failing + red_band % "bars" + more(["FibreNotServing", "FibreDown"]),
         [("round(sum by (host) (increase(%s[$__interval]))) > 0" % ok, "{{host}} accepted"),
          ('round(clamp_min(sum(increase(%s{success="false"}[$__interval])) - (sum(increase(%s[$__interval])) '
           "or on () vector(0)), 0)) > 0" % (count, rejected), "Failed"),

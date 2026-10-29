@@ -133,11 +133,12 @@ files:
         'Float64Histogram\("fibre\.server\.download_shard\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
       fibre_server_prune_duration_seconds:
         'Float64Histogram\("fibre\.server\.prune\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
-    # The attributes otelcol sums away (upload_size, shard_size) or keeps (success), and the
-    # instrument FibreNotServing's comment names.
+      fibre_server_sign_duration_seconds:
+        'Float64Histogram\("fibre\.server\.sign\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+    # The attributes otelcol sums away (upload_size, shard_size) or keeps (success).
     find: ['attribute\.Bool\("success", err == nil\)', 'attribute\.Int64\("upload_size", uploadSize\)',
            'attribute\.Int64\("shard_size", shardSize\)', 'pruneDuration\.Record\([^\n]*attribute\.Bool\("success"',
-           '"fibre\.server\.sign\.duration"']
+           'signDuration\.Record\([^\n]*attribute\.Bool\("success", success\)']
   - repo: app
     file: fibre/cmd/metrics.go  # Go runtime metrics: go_memory_used_bytes, the dashboard's Fibre memory
     find: ['runtime\.Start\(']
