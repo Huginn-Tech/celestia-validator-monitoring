@@ -1,0 +1,148 @@
+# ServiceDown on the example-fibre-apart inventory, where the hosts name celestia-appd's unit
+# differently: celestia-appd.service on val-1, celestia.service on node-1 (its own
+# celestia_mon_units). Each host is watched under its own name: the rules match either name where
+# they read every node, and the not-loaded rule looks for each host's own.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Each node lists its own unit; no ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1x30'
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1x30'
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x30'
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="celestia-appd.service"}
+        values: '0x30'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service"}
+        values: '0x30'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: ServiceDown
+        exp_alerts: []
+
+  - name: node-1's celestia.service stops; a message about the unit after 2m and the metrics endpoint after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1x4 0x10'
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service",state="active",type="simple"}
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.30.0.3:9910
+              host: node-1
+              role: backup_node
+              name: celestia.service
+              state: active
+              type: simple
+              severity: message
+              unit: appd
+            exp_annotations:
+              summary: "celestia.service is not active on node-1"
+              description: "systemd has not reported the unit as active for 2 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+          - exp_labels:
+              job: celestia-app
+              instance: 10.30.0.3:26660
+              host: node-1
+              role: backup_node
+              severity: message
+              unit: celestia_app
+            exp_annotations:
+              summary: "celestia-app metrics are unreachable on node-1"
+              description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  - name: Crash loop of node-1's celestia.service sends a message
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x19'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service",state="active",type="simple"}
+        values: '1x19'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service"}
+        values: '0x9 1+1x9'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.30.0.3:9910
+              host: node-1
+              role: backup_node
+              name: celestia.service
+              severity: message
+              unit: appd
+            exp_annotations:
+              summary: "celestia.service is crash looping on node-1"
+              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # node_exporter on node-1 answers but lists only a unit of the default name: the not-loaded rule
+  # looks for node-1's own, celestia.service.
+  - name: node-1 lists no celestia.service; not loaded, under its own name
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              host: node-1
+              name: celestia.service
+              severity: message
+              unit: appd
+            exp_annotations:
+              summary: "celestia.service is not loaded on node-1"
+              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

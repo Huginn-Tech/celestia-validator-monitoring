@@ -1,0 +1,257 @@
+# A host down on the example-fibre-apart inventory: val-1 (validator node, standby Fibre), fibre-1
+# (the active Fibre, with no node), node-1 (the backup node that Fibre reads, its celestia-appd unit
+# celestia.service), mon-1 (the monitor, on a host of its own) and kms-1, not scraped. Fibre on
+# fibre-1 needs node-1: while node-1 is down, Fibre's health check answers NOT_SERVING (its app
+# check fails) and FibreNotServing (not_ready) names fibre-1, while MonitorCannotReach names node-1.
+# While fibre-1 is down, FibreDown pages and nothing names node-1.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # node-1 stops answering at 5m (the host or its link); val-1 goes on advancing. From 5m Fibre on
+  # fibre-1 answers NOT_SERVING. A message for each after 3 minutes, the not_ready page after 10.
+  - name: node-1 down; not_ready on fibre-1 and MonitorCannotReach for node-1, no NodeNotAdvancing or ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1x20'
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1x4 0x16'
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x4 0x16'
+      - series: >-
+          up{job="node",instance="10.30.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x20'
+      - series: >-
+          up{job="otelcol",instance="10.30.0.1:9911",host="val-1",role="fibre"}
+        values: '1x20'
+      - series: >-
+          up{job="otelcol",instance="10.30.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1x20'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x20'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1000+10x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '0x20'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.30.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 0x16'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x4 1x16'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.1:7980",host="val-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: node-1
+            exp_annotations:
+              summary: "Monitor cannot reach node-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: page
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 10 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+      - eval_time: 15m
+        alertname: NodeNotAdvancing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts: []
+
+  # fibre-1 stops answering at 5m; the standby on val-1 stays stopped and node-1 answers. FibreDown
+  # pages after 10 minutes, MonitorCannotReach names fibre-1 only, and nothing names node-1.
+  - name: fibre-1 down; FibreDown pages, MonitorCannotReach for fibre-1 only, nothing on node-1
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1x20'
+      - series: >-
+          up{job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x16'
+      - series: >-
+          up{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x20'
+      - series: >-
+          up{job="otelcol",instance="10.30.0.1:9911",host="val-1",role="fibre"}
+        values: '1x20'
+      - series: >-
+          up{job="otelcol",instance="10.30.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1x4 0x16'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x20'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.30.0.3:26660",host="node-1",role="backup_node"}
+        values: '1000+10x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.3:9910",host="node-1",role="backup_node",name="celestia.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '0x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 0x16'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+            exp_annotations:
+              summary: "Monitor cannot reach fibre-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 14m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Fibre is not running on any host"
+              description: >-
+                For 10 minutes no Fibre host (fibre-1, val-1) has reported fibre.service as active: Fibre is stopped everywhere,
+                the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+      - eval_time: 15m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+            exp_annotations:
+              summary: "Monitor cannot reach fibre-1"
+              description: >-
+                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
+                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
+                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
+                until it answers again; this message stands in for its ServiceDown messages.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 15m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: NodeBehind
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreNotServing
+        exp_alerts: []

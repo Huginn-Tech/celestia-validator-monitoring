@@ -85,3 +85,7 @@ lint/upstream                    | tools/ci/check_upstream.py                   
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
 dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
 rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       | No ValidatorSigningTwice where tmkms signs through several nodes
+rules/own-units                  | ci.yml, tools/ci/units.yml, tests/units      | Each host's own unit names
+rules/same-units                 | ci.yml                                       | The same unit names on every host render as one name
+dashboard/own-units              | ci.yml                                       | Each host's own unit names reach the dashboard
+dashboard-report/rules-base      | ci.yml                                       | The rules and dashboard settings render as on the base branch | pull_request

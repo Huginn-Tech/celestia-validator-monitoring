@@ -7,9 +7,6 @@
   from the inventory, and ServiceDown is a message. The pages of upgrade signalling, UpgradeSignalMissing,
   and of governance votes, GovVoteMissing, read the chain through celestia-mon-signal and name no host either.
 #}
-{% set appd = celestia_mon_units.appd ~ '.service' %}
-{% set fibre = (celestia_mon_units.fibre | default('')) ~ '.service' %}
-{% set tmkms = (celestia_mon_units.tmkms | default('')) ~ '.service' %}
 {% set remote = celestia_mon_signer == 'remote' %}
 {# tmkms signs through several nodes on purpose (several [[validator]] entries). #}
 {% set multi = remote and celestia_mon_signer_multi_node | default(false) | bool %}
@@ -33,6 +30,44 @@
 {%     set ns_kms.scraped = ns_kms.scraped + [h] %}
 {%   endif %}
 {% endfor %}
+{# Unit names, per host: its own celestia_mon_units, set in the inventory for that host or for all of
+   them (group_vars), else the role's defaults (ansible/roles/celestia_mon/defaults/main.yml), which
+   the hostvars of other hosts do not carry. unit(h, key) is the name without .service. #}
+{% macro unit(h, key) %}{{ (hostvars[h].celestia_mon_units | default({'appd': 'celestia-appd', 'fibre': 'fibre', 'tmkms': 'tmkms'}))[key] | default('') }}{% endmacro %}
+{# Each unit's names with .service, one per name the hosts of its role use, sorted: celestia-appd's on
+   the nodes, Fibre's on the Fibre hosts, tmkms's on the KMS hosts whose node_exporter runs. #}
+{% set ns_u = namespace(names={'appd': [], 'fibre': [], 'tmkms': []}) %}
+{% for key, hosts in [('appd', nodes), ('fibre', fibres), ('tmkms', ns_kms.scraped)] %}
+{%   for h in hosts %}
+{%     set n = unit(h, key) ~ '.service' %}
+{%     if n not in ns_u.names[key] %}
+{%       set ns_u.names = ns_u.names | combine({key: (ns_u.names[key] + [n]) | sort(case_sensitive=true)}) %}
+{%     endif %}
+{%   endfor %}
+{% endfor %}
+{% set appd_names = ns_u.names.appd or [celestia_mon_units.appd ~ '.service'] %}
+{% set fibre_names = ns_u.names.fibre or [(celestia_mon_units.fibre | default('')) ~ '.service'] %}
+{% set tmkms_names = ns_u.names.tmkms or [(celestia_mon_units.tmkms | default('')) ~ '.service'] %}
+{# one_of(names): what follows name in a selector's matcher on the unit name: ="x" where the
+   hosts share one name, as on most installs, else =~ over every name, each one's regular expression
+   metacharacters escaped as gen_dashboard.py's re2() escapes them, and the backslashes doubled for
+   the PromQL string. #}
+{% macro one_of(names) %}{{ '="' ~ names[0] ~ '"' if names | length == 1 else '=~"' ~ names | map('regex_replace', '([\\\\^$.*+?()\\[\\]{}|])', '\\\\\\1') | join('|') | replace('\\', '\\\\') ~ '"' }}{% endmacro %}
+{# The Fibre unit in the rules and their texts: its name where every Fibre host uses one; else each
+   Fibre host with its name (fibre_each), and for an alert on one Fibre host the name of that host's
+   (fibre_pick, alert template text). #}
+{% set fibre = fibre_names[0] %}
+{% set fibre_one = fibre_names | length == 1 %}
+{% set fibre_is = one_of(fibre_names) %}
+{% set ns_f = namespace(each=[], pick='') %}
+{% for h in fibres | sort %}
+{%   set n = unit(h, 'fibre') ~ '.service' %}
+{%   set ns_f.each = ns_f.each + [h ~ ': ' ~ n] %}
+{%   set ns_f.pick = ns_f.pick ~ ('{{ if eq $labels.host `' ~ h ~ '` }}' if loop.first
+       else '{{ else if eq $labels.host `' ~ h ~ '` }}' if not loop.last else '{{ else }}') ~ n %}
+{% endfor %}
+{% set fibre_each = ns_f.each | join(', ') %}
+{% set fibre_pick = fibre if fibre_one else ns_f.pick ~ '{{ end }}' %}
 {% set tensile_on = fibre_on and celestia_mon_tensile.validator | default('') | length > 0 %}
 {% set signal_on = celestia_mon_signal | default({}, true) | length > 0 %}
 {# The upgrade rules read the last value of each celestia-mon-signal metric in the past 7 days, as
@@ -76,13 +111,22 @@
 {% set host_unreached = 'max by (host) (' ~ reach ~ ') == 0' %}
 {% set none_reached = 'max(' ~ reach ~ ') == 0' %}
 {% set some_reached = 'max(' ~ reach ~ ') == 1' %}
-{# ServiceDown per unit: (key, unit, hosts it must be loaded on). A Fibre unit may be a stopped
+{# ServiceDown per unit: (key, its names, hosts it must be loaded on). A Fibre unit may be a stopped
    standby, which systemd drops from its list once it is also disabled, so Fibre has only the
    crash loop rule; FibreDown covers "no Fibre runs". #}
-{% set units = [('appd', appd, nodes)]
-   + ([('tmkms', tmkms, ns_kms.scraped)] if remote and ns_kms.scraped else [])
-   + ([('fibre', fibre, [])] if fibre_on else []) %}
-{% set tmkms_first = 'Check journalctl -u ' ~ celestia_mon_units.tmkms ~ ' on the KMS host first. ' if remote else '' %}
+{% set units = [('appd', appd_names, nodes)]
+   + ([('tmkms', tmkms_names, ns_kms.scraped)] if remote and ns_kms.scraped else [])
+   + ([('fibre', fibre_names, [])] if fibre_on else []) %}
+{# Where to look at tmkms first: its unit's journal on the KMS host, or on each KMS host where their
+   unit names differ. #}
+{% set ns_k = namespace(names=[], said=[]) %}
+{% for h in kms %}
+{%   set ns_k.names = ns_k.names + [unit(h, 'tmkms')] %}
+{%   set ns_k.said = ns_k.said + ['journalctl -u ' ~ unit(h, 'tmkms') ~ ' on ' ~ h] %}
+{% endfor %}
+{% set tmkms_said = ns_k.said | join(' and ') if ns_k.names | unique | length > 1
+   else 'journalctl -u ' ~ (ns_k.names[0] if ns_k.names else celestia_mon_units.tmkms) ~ ' on the KMS host' %}
+{% set tmkms_first = 'Check ' ~ tmkms_said ~ ' first. ' if remote else '' %}
 {% set vns_text = tmkms_first ~ 'The chain moves but no node of this install has seen a signature from the validator for more than '
    ~ th.not_signing_blocks ~ ' blocks.' %}
 {% set missed_ratio = th.signatures_missed_ratio | default(0.05) %}
@@ -148,10 +192,10 @@ groups:
           description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
           runbook: "{{ docs }}#servicedown"
 {% endif %}
-{% for key, name, hosts in units %}
+{% for key, names, hosts in units %}
 {% if key != 'fibre' %}
       - alert: ServiceDown
-        expr: node_systemd_unit_state{name="{{ name }}",state="active"} == 0
+        expr: node_systemd_unit_state{name{{ one_of(names) }},state="active"} == 0
         for: 2m
         labels:
           severity: message
@@ -163,7 +207,7 @@ groups:
 {% endif %}
       - alert: ServiceDown
         # increase() extrapolates to the window edges (2 restarts can read as 2.07); floor() counts whole restarts.
-        expr: floor(increase(node_systemd_service_restart_total{name="{{ name }}"}[30m])) > {{ th.crashloop_restarts }}
+        expr: floor(increase(node_systemd_service_restart_total{name{{ one_of(names) }}}[30m])) > {{ th.crashloop_restarts }}
         labels:
           severity: message
           unit: {{ key }}
@@ -173,7 +217,7 @@ groups:
           runbook: "{{ docs }}#servicedown"
 {% for h in hosts if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
       - alert: ServiceDown
-        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ name }}"}) and on () up{job="node",host="{{ h }}"} == 1
+        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, key) }}.service"}) and on () up{job="node",host="{{ h }}"} == 1
         for: 2m
         labels:
           severity: message
@@ -418,7 +462,7 @@ groups:
 {% endif %}
       - alert: FibreDown
         expr: >-
-          (count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) or vector(0)) == 0
+          (count(node_systemd_unit_state{name{{ fibre_is }},state="active"} == 1) or vector(0)) == 0
 {% if mon_only %}
           and on () {{ some_reached }}
 {% endif %}
@@ -427,7 +471,7 @@ groups:
           severity: page
         annotations:
           summary: "Fibre is not running on any host"
-          description: "For 10 minutes no Fibre host ({{ fibres | sort | join(', ') }}) has reported {{ fibre }} as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit."
+          description: "For 10 minutes no Fibre host ({{ fibres | sort | join(', ') if fibre_one else fibre_each }}) has reported {{ fibre if fibre_one else 'its Fibre unit' }} as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit."
           runbook: "{{ docs }}#fibredown"
 {% if tensile_on %}
 
@@ -467,7 +511,7 @@ groups:
       - alert: FibreDown
         expr: >-
           max by (endpoint) (celestia_mon_fibre_registered{endpoint!={{ e | to_json }}} == 1)
-          and on () max(node_systemd_unit_state{host={{ h | to_json }},name="{{ fibre }}",state="active"}) == 1
+          and on () max(node_systemd_unit_state{host={{ h | to_json }},name="{{ unit(h, 'fibre') }}.service",state="active"}) == 1
         for: 10m
         labels:
           severity: page
@@ -484,13 +528,19 @@ groups:
       # FibreBothActive: Fibre runs active-passive, but the Fibre unit has been active on more than
       # one host for 5 minutes.
       - alert: FibreBothActive
-        expr: count(node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1) > 1
+        expr: count(node_systemd_unit_state{name{{ fibre_is }},state="active"} == 1) > 1
         for: 5m
         labels:
           severity: message
         annotations:
           summary: "Fibre is active on more than one host"
+{% if fibre_one %}
           description: "For 5 minutes {{ fibre }} has been active on {% raw %}{{ range $i, $s := query `node_systemd_unit_state{name='{% endraw %}{{ fibre }}{% raw %}',state='active'} == 1` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }}{{ end }}{% endraw %}. Fibre runs on one host at a time: stop the one that should be the standby."
+{% else %}
+{# Each host with its unit; the matcher in PromQL's single quotes, its backslashes doubled again for
+   this YAML string. #}
+          description: "For 5 minutes a Fibre unit has been active on {% raw %}{{ range $i, $s := query `node_systemd_unit_state{name{% endraw %}{{ fibre_is | replace('"', "'") | replace('\\', '\\\\') }}{% raw %},state='active'} == 1` | sortByLabel `host` }}{{ if $i }}, {{ end }}{{ $s.Labels.host }} ({{ $s.Labels.name }}){{ end }}{% endraw %}. Fibre runs on one host at a time: stop the one that should be the standby."
+{% endif %}
           runbook: "{{ docs }}#fibrebothactive"
 
       # FibreNotServing: Fibre runs but does not do its job: it misses blobs sent to the validator,
@@ -521,9 +571,9 @@ groups:
         expr: >-
           max(celestia_mon_fibre_last_assigned_timestamp_seconds offset 1m)
           - on () group_right max by (host) (fibre_server_upload_shard_last_success_timestamp_seconds
-          or node_systemd_unit_start_time_seconds{name="{{ fibre }}"})
+          or node_systemd_unit_start_time_seconds{name{{ fibre_is }}})
           > 300
-          and on (host) max by (host) (node_systemd_unit_state{name="{{ fibre }}",state="active"}) == 1
+          and on (host) max by (host) (node_systemd_unit_state{name{{ fibre_is }},state="active"}) == 1
           and on (host) count by (host) (fibre_server_upload_shard_budget_bytes)
         for: 5m
         labels:
@@ -543,7 +593,7 @@ groups:
       # rise, and names the host whose Fibre runs now.
       - alert: FibreNotServing
         expr: >-
-          max by (host) (node_systemd_unit_state{name="{{ fibre }}",state="active"} == 1)
+          max by (host) (node_systemd_unit_state{name{{ fibre_is }},state="active"} == 1)
           and on () max_over_time((max(celestia_mon_fibre_obligations_24h{outcome="broken"})
           - max(celestia_mon_fibre_obligations_24h{outcome="broken"} offset 1m) > 0
           and max(celestia_mon_fibre_obligations_24h{outcome="broken"}) >= 2)[1h:1m])
@@ -586,7 +636,7 @@ groups:
       # 12) and a stopped standby does not answer (14, every serving_status 0): neither matches. The
       # page follows at 10 minutes, FibreDown's delay. ValidatorNotSigning holds both back
       # (Alertmanager): a validator out of the active set or a dead signer is one cause.
-{% set not_ready_text = " Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails: app (the app node answers on the right chain, synced, with a recent block), fibre_module, signer (answers with the key Fibre started with), validator (in the active set), registration (a valid provider host on chain) or store (a small write and read). Uploads to it may fail. Fibre's log names the check and what to do: journalctl -u " ~ fibre ~ " | grep 'health check failed'." %}
+{% set not_ready_text = " Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails: app (the app node answers on the right chain, synced, with a recent block), fibre_module, signer (answers with the key Fibre started with), validator (in the active set), registration (a valid provider host on chain) or store (a small write and read). Uploads to it may fail. Fibre's log names the check and what to do: journalctl -u " ~ fibre_pick ~ " | grep 'health check failed'." %}
       - alert: FibreNotServing
         expr: max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status="NOT_SERVING"}) == 1
         for: 3m
@@ -611,7 +661,7 @@ groups:
       - alert: FibreNotServing
         expr: >-
           absent(fibre_server_upload_shard_budget_bytes{host="{{ h }}"})
-          and on () node_systemd_unit_state{host="{{ h }}",name="{{ fibre }}",state="active"} == 1
+          and on () node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, 'fibre') }}.service",state="active"} == 1
         for: 30m
         labels:
           severity: message
@@ -628,10 +678,11 @@ groups:
       # on a monitor host that runs no Celestia service (the disk of Prometheus's data). The Fibre
       # store has its own rules unless it is also a node data mount. Each mount gets one set of
       # rules.
+{# celestia_mon_data_mounts is [/] on a host that sets none. #}
 {% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
 {% set store = hostvars[h].celestia_mon_fibre_mount | default('') if h in fibres else '' %}
-{% for m in hostvars[h].celestia_mon_data_mounts | default([]) if node_host or m != store %}
+{% for m in hostvars[h].celestia_mon_data_mounts | default(['/']) if node_host or m != store %}
 {% if node_host %}
       - alert: DiskLow
         expr: >-
@@ -672,7 +723,7 @@ groups:
 {% endfor %}
 {% for h in fibres if hostvars[h].celestia_mon_fibre_mount | default('') %}
 {% set m = hostvars[h].celestia_mon_fibre_mount %}
-{% if not ((h in nodes or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default([])) %}
+{% if not ((h in nodes or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default(['/'])) %}
       - alert: DiskLow
         expr: node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
         labels:

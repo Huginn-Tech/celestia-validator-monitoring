@@ -3,6 +3,8 @@
 # inventories into BUILD/<scenario>/dashboard-config.json (each render's rules under
 # BUILD/<scenario>/rules and BUILD/<scenario>/tests):
 #   single, split, mainnet  the example inventories; mainnet with tools/ci/mainnet-extras.yml
+#   fibre-apart             the example inventory of Fibre and its node on separate hosts
+#   units                   fibre-apart with unit names of their own on more hosts (tools/ci/units.yml)
 #   mocha                   the mainnet example on Mocha (chain_id mocha-5), as the rules job renders it
 #   five, nogov, nopage     mainnet's settings with one switch changed (below)
 #   table                   split's settings with one more node (below)
@@ -12,7 +14,7 @@ mkdir -p "$1"
 build=$(cd "$1" && pwd)
 # mainnet gets the same outside check, upgrade signalling and announcements as in the rules
 # job, and a validator name, so every optional panel and query is generated and checked.
-for s in single split mainnet; do
+for s in single split mainnet fibre-apart; do
   extra=()
   if [ "$s" = mainnet ]; then
     extra=(-e @tools/ci/mainnet-extras.yml)
@@ -40,3 +42,7 @@ mkdir -p "$build/table"
 jq '.nodes += ["val-2"] | .links += [{"host": "val-2", "mbps": null}]
     | .data_mounts += [{"host": "val-2", "mount": "/var/lib/celestia"}]' \
   "$build/split/dashboard-config.json" > "$build/table/dashboard-config.json"
+# fibre-apart with tools/ci/units.yml on top: the Fibre units and tmkms under names of their own on
+# some hosts, so the queries match a unit under several names (host_units).
+ansible-playbook -i ansible/inventory/example-fibre-apart/hosts.yml -i tools/ci/units.yml tools/ci/render.yml \
+  -e celestia_mon_ci_scenario=fibre-apart -e "celestia_mon_ci_build=$build/units" -e "celestia_mon_ci_tests=$build/units/tests"
