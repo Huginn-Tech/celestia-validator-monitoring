@@ -289,11 +289,12 @@ jobs:
           job: ${{ github.job }}
           steps: ${{ toJSON(steps) }}
 
-  # Renders the rules, Alertmanager, Prometheus and dashboard settings for the three example
-  # inventories (single, split, and mainnet with a backup node and a standby Fibre; the mainnet one
-  # also on Mocha and with gov off) and checks them with promtool and amtool from the pinned
-  # releases, whose tarballs are checked against the sha256 in versions.yml (no checksum file is
-  # fetched).
+  # Renders the rules, Alertmanager, Prometheus and dashboard settings for the four example
+  # inventories (single, split, mainnet with a backup node and a standby Fibre, and fibre-apart with
+  # Fibre and the node it reads on separate hosts; the mainnet one also on Mocha and with gov off,
+  # fibre-apart also with unit names of their own) and checks them with promtool and amtool from
+  # the pinned releases, whose tarballs are checked against the sha256 in versions.yml (no checksum
+  # file is fetched).
   rules:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -309,7 +310,7 @@ jobs:
       - name: Render the example inventories
         id: render
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             extra=()
             if [ "$s" = mainnet ]; then
               extra=(-e @tools/ci/mainnet-extras.yml)
@@ -320,7 +321,9 @@ jobs:
       # (gen_dashboard.py reads them); each must be the for: of every rule it names.
       - name: The hold times the dashboard prints match the rules
         id: holds
-        run: python tools/ci/check_render.py holds monitoring/rules/holds.json monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml
+        run: >-
+          python tools/ci/check_render.py holds monitoring/rules/holds.json
+          monitoring/rules/tests/{single,split,mainnet,fibre-apart}/celestia-mon.rules.yml
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
@@ -335,13 +338,13 @@ jobs:
         # Several rules share an alert name and severity on purpose (one per branch,
         # host or mount), which the duplicate-rules lint would report.
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             promtool check rules --lint=none "monitoring/rules/tests/$s/celestia-mon.rules.yml"
           done
       - name: promtool test rules
         id: promtool-test
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             promtool test rules monitoring/rules/tests/"$s"/*.test.yml
           done
       # The mainnet example rendered twice more: on Mocha (chain_id mocha-5, so GovVoteMissing sends its
@@ -381,16 +384,52 @@ jobs:
           promtool check rules --lint=none build/multi/rules/celestia-mon.rules.yml
           jq -e '.signer_multi_node' build/multi/dashboard-config.json
           python tools/ci/check_render.py twice monitoring/rules/tests/split/celestia-mon.rules.yml build/multi/rules/celestia-mon.rules.yml
+      # Unit names of a host's own (celestia_mon_units in its inventory entry): the fibre-apart example
+      # names node-1's celestia-appd unit celestia.service (its rule tests run above), and
+      # tools/ci/units.yml on top of it also val-1's standby Fibre fibre-standby.service and kms-1's
+      # tmkms tmkms-signer.service, with kms-1 scraped and no data mounts set. That render goes into
+      # tests/units, whose rule tests run there: each rule matches a unit under every name the hosts
+      # of its role use, each text names the unit of the host it is about, and DiskLow watches / on kms-1.
+      - name: Each host's own unit names
+        id: own-units
+        run: |
+          set -euo pipefail
+          ansible-playbook -i ansible/inventory/example-fibre-apart -i tools/ci/units.yml tools/ci/render.yml \
+            -e celestia_mon_ci_scenario=fibre-apart -e "celestia_mon_ci_tests=$PWD/monitoring/rules/tests/units" \
+            -e "celestia_mon_ci_build=$PWD/build/units"
+          promtool check rules --lint=none build/units/rules/celestia-mon.rules.yml
+          promtool test rules monitoring/rules/tests/units/*.test.yml
+      # Where every host uses the same unit names, set for all of them, the rules and the dashboard
+      # settings render as for an inventory that sets none: the mainnet example with the role's defaults
+      # set (into build/same-units) byte for byte as itself, and with one name of its own for
+      # celestia-appd (cosmovisor, into build/one-name) as itself with only that name changed, so with
+      # name="..." matchers and no host_units in the dashboard settings.
+      - name: The same unit names on every host render as one name
+        id: same-units
+        run: |
+          set -euo pipefail
+          for v in same-units:celestia-appd one-name:cosmovisor; do
+            name=${v%%:*}
+            printf 'all:\n  vars:\n    celestia_mon_units: {appd: %s, fibre: fibre, tmkms: tmkms}\n' "${v#*:}" >"$RUNNER_TEMP/$name.yml"
+            ansible-playbook -i ansible/inventory/example-mainnet -i "$RUNNER_TEMP/$name.yml" tools/ci/render.yml \
+              -e celestia_mon_ci_scenario=mainnet -e @tools/ci/mainnet-extras.yml \
+              -e "celestia_mon_ci_tests=$PWD/build/$name/tests" -e "celestia_mon_ci_build=$PWD/build/$name"
+          done
+          cmp build/mainnet/rules/celestia-mon.rules.yml build/same-units/rules/celestia-mon.rules.yml
+          cmp build/mainnet/dashboard-config.json build/same-units/dashboard-config.json
+          sed 's/celestia-appd\.service/cosmovisor.service/g' build/mainnet/rules/celestia-mon.rules.yml \
+            | cmp - build/one-name/rules/celestia-mon.rules.yml
+          cmp <(jq -S '.units.appd = "cosmovisor"' build/mainnet/dashboard-config.json) <(jq -S . build/one-name/dashboard-config.json)
       - name: promtool check config
         id: promtool-config
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             promtool check config --lint=none "build/$s/prometheus.yml"
           done
       - name: amtool check-config
         id: amtool-config
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             amtool check-config "build/$s/alertmanager.yml"
           done
       # Telegram (parse mode HTML) and Discord get celestia-mon's text: an announcement as its own
@@ -407,13 +446,13 @@ jobs:
         id: instance-limits
         run: |
           set -euo pipefail
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             python tools/ci/check_render.py limits "build/$s/prometheus.yml"
           done
           # A label reference: $labels.instance, .Labels.instance, a matcher, or a by, on, without or equal list.
           use='(\$labels|\.Labels)\.instance|\binstance *(=|!=|=~|!~)|\b(by|on|ignoring|without|group_left|group_right|equal:) *[([][^])]*\binstance\b'
           if grep -nE "$use" build/split/alertmanager.yml monitoring/alertmanager-templates.tmpl \
-               monitoring/rules/tests/{single,split,mainnet}/celestia-mon.rules.yml; then
+               monitoring/rules/tests/{single,split,mainnet,fibre-apart}/celestia-mon.rules.yml; then
             echo "Alertmanager's settings or the rules name instance, which alerts no longer carry"; exit 1
           fi
       # The mainnet example scrapes its backup node in the celestia-app job, every Fibre host,
@@ -617,25 +656,51 @@ jobs:
           EOF
           docker run -d --name prometheus --network host -v "$PWD/build/stub:/stub:ro" "prom/prometheus:v$PROMETHEUS_VERSION" \
             --config.file=/stub/prometheus.yml --storage.tsdb.path=/prometheus --web.listen-address=127.0.0.1:9090
-      # The settings of every scenario (single, split, mainnet, mocha, five, nogov, nopage, table; see the
-      # script), the same the dashboard-report job compares with the base branch.
+      # The settings of every scenario (single, split, mainnet, fibre-apart, units, mocha, five, nogov, nopage,
+      # table; see the script), the same the dashboard-report job compares with the base branch.
       - name: Render the dashboard settings for the example inventories
         id: render
         run: bash tools/ci/dashboard_configs.sh build
+      # fibre-apart: four servers (val-1, node-1, fibre-1, mon-1) and the remote signer's column, five in
+      # all, so the Servers now table (26) instead of the cards; units: five servers, kms-1 scraped.
       - name: Generate the dashboards
         id: generate
         run: |
-          for s in single split mainnet; do
+          for s in single split mainnet fibre-apart; do
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.again.json"
             cmp "build/$s/dashboard.json" "build/$s/dashboard.again.json"
             python -m json.tool "build/$s/dashboard.json" > /dev/null
           done
-          for s in five nogov nopage table; do
+          for s in five nogov nopage table units; do
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/dashboard.json"
           done
           jq -e '([.panels[] | select(.id == 26)] | length) == 1 and ([.panels[] | select(.id >= 30 and .id < 38)] | length) == 0
                  and ([.panels[] | select(.id == 18)] | length) == 0' build/table/dashboard.json
+          for s in fibre-apart units; do
+            jq -e '([.panels[] | select(.id == 26)] | length) == 1 and ([.panels[] | select(.id >= 30 and .id < 38)] | length) == 0' \
+              "build/$s/dashboard.json"
+          done
+      # A host's own unit names reach the dashboard: its settings list only the hosts whose names differ
+      # from the monitor's (host_units: none in single, split and mainnet; node-1 in fibre-apart), and the
+      # queries match a unit under every name the hosts of its role use (name=~), a host's own unit under
+      # its name (units: val-1's standby Fibre and kms-1's tmkms, tools/ci/units.yml).
+      - name: Each host's own unit names reach the dashboard
+        id: own-units
+        run: |
+          set -euo pipefail
+          for s in single split mainnet; do
+            jq -e 'has("host_units") | not' "build/$s/dashboard-config.json"
+          done
+          jq -e '.host_units == [{"host": "node-1", "appd": "celestia", "fibre": "fibre", "tmkms": "tmkms"}]' build/fibre-apart/dashboard-config.json
+          queries() {
+            jq -e --arg t "$2" '[.. | strings | select(contains($t))] | length > 0' "$1" > /dev/null || { echo "no query of $1 holds $2"; exit 1; }
+          }
+          queries build/fibre-apart/dashboard.json 'name=~"celestia-appd\\.service|celestia\\.service"'
+          queries build/fibre-apart/dashboard.json 'host="node-1",name="celestia.service"'
+          queries build/units/dashboard.json 'name=~"fibre-standby\\.service|fibre\\.service"'
+          queries build/units/dashboard.json 'host="val-1",name="fibre-standby.service"'
+          queries build/units/dashboard.json 'host="kms-1",name="tmkms-signer.service"'
       # single: local key, one node, Fibre off (two answer tiles; the Servers band's card and Hardware now
       # side by side). split: remote signer and Fibre (the Fibre row; four columns, the scraped KMS
       # host's third, the monitor's last). mainnet: a backup node, a standby Fibre, the outside check and
@@ -712,7 +777,7 @@ jobs:
         run: |
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090 --stub build/stub/metrics.txt \
             build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json \
-            build/table/dashboard.json
+            build/table/dashboard.json build/fibre-apart/dashboard.json build/units/dashboard.json
           nohup python -m http.server 9099 --bind 127.0.0.1 --directory build/stub > build/stub/http.log 2>&1 &
           for _ in $(seq 60); do
             reply=$(curl -sS http://127.0.0.1:9090/api/v1/query \
@@ -728,7 +793,7 @@ jobs:
         run: >-
           python tools/ci/check_queries.py --prometheus http://127.0.0.1:9090
           build/single/dashboard.json build/split/dashboard.json build/mainnet/dashboard.json build/five/dashboard.json
-          build/table/dashboard.json
+          build/table/dashboard.json build/fibre-apart/dashboard.json build/units/dashboard.json
       - uses: ./.github/actions/marks
         if: always()
         with:
