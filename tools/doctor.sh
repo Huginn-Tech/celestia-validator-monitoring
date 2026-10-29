@@ -430,14 +430,17 @@ joins() { # separator, items -> the items joined by the separator
 
 # node_addresses and fibre_addresses, which install.sh writes from the inventory: NAME=address
 # of each celestia-appd node and of each Fibre host, its celestia_mon_private_ip.
+# It writes the list in one printf, so a reader that stops at its first match cannot close the pipe
+# before the list is out (GitHub's runners ignore SIGPIPE, so a later write printed an error).
 addr_pairs() { # NAME=address list -> "NAME address" lines, one per entry
   local -a e=()
-  local x
+  local x out=""
   IFS=',' read -r -a e <<<"$1"
   for x in "${e[@]}"; do
     x=${x//[[:space:]]/}
-    if [[ $x == ?*=?* ]]; then printf '%s %s\n' "${x%%=*}" "${x#*=}"; fi
+    if [[ $x == ?*=?* ]]; then out+="${x%%=*} ${x#*=}"$'\n'; fi
   done
+  printf '%s' "$out"
 }
 node_named() { # address without port or brackets -> true and the inventory name of the node at that address
   local n a
@@ -459,7 +462,7 @@ own_address() { # -> this host's address in fibre_addresses or node_addresses (i
       printf '%s' "$a"
       return
     fi
-  done < <(addr_pairs "${C[fibre_addresses]}"; addr_pairs "${C[node_addresses]}")
+  done < <(addr_pairs "${C[fibre_addresses]},${C[node_addresses]}")
   printf '%s' "<this host's private address>"
 }
 # The Fibre hosts that have no celestia-appd node of their own, so each reads a node on another
@@ -1852,7 +1855,7 @@ check_fibre_app() {
       report WARN 27 "$name" "$src is $addr${via:+, the node on $via}, a public address: the app link is plaintext gRPC, which belongs on the private network, and that node's app gRPC is then open beyond it. Fix: $fix to that node's private (VLAN or WireGuard) address, $reload; on that node set [grpc] address to the same address in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port $port proto tcp\""
       return
     fi
-  elif addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1 | grep -qxF -- "$h"; then
+  elif [[ $'\n'$(addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1)$'\n' == *$'\n'"$h"$'\n'* ]]; then
     via=$h
   fi
   if [[ -n $via ]]; then

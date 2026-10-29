@@ -135,7 +135,7 @@ unit ci-kms "ExecStart=$bin/tmkms start -c /etc/tmkms/tmkms.toml"
 survey
 echo "::endgroup::"
 has 'tmkms runs here: nothing is installed here; put this box in the kms group.'
-if grep -qF 'celestia_mon_private_ip' <<<"$out"; then echo "the survey writes an entry for the KMS host"; exit 1; fi
+if grep -qE '^ +celestia_mon_private_ip:' <<<"$out"; then echo "the survey writes an entry for the KMS host"; exit 1; fi
 drop ci-kms
 
 echo "::group::a host that runs none of them, not as root"

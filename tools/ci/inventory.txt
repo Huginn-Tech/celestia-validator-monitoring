@@ -11,7 +11,7 @@ lint/ansible-lint                | ci.yml                                       
 lint/shellcheck                  | ci.yml                                       | shellcheck
 lint/install-sh-mode             | ci.yml                                       | install.sh is executable
 secrets/owner-files              | ci.yml                                       | Owner-only files are ignored and absent
-secrets/gitleaks                 | ci.yml                                       | gitleaks/gitleaks-action
+secrets/gitleaks                 | ci.yml                                       | gitleaks
 collectors/dry-run               | ci.yml                                       | Dry run on a fresh host
 collectors/install               | ci.yml                                       | Install
 collectors/second-run            | ci.yml                                       | Second run changes nothing

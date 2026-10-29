@@ -19,7 +19,7 @@ tls='signer_grpc_ca_file = "ca.crt"
 signer_grpc_cert_file = "c.crt"
 signer_grpc_key_file = "c.key"'
 args=(--config /dev/null --fibre-enabled true --fibre-unit ci-fibre --signer remote --data-mounts / --head-wait 2)
-inv=(--inventory-host fibre-1 --node-addresses val-1=10.255.4.1,node-1=10.255.4.5 --fibre-addresses fibre-1=10.255.4.3,val-1=10.255.4.1)
+inv=(--inventory-host fibre-1 --node-addresses "val-1=10.255.4.1,node-1=10.255.4.5" --fibre-addresses "fibre-1=10.255.4.3,val-1=10.255.4.1")
 
 echo "::group::a Fibre host without a node, at Fibre's default"
 printf '%s\n' 'signer_grpc_address = "10.255.4.1:26669"' "$tls" >"$cfg"
@@ -96,7 +96,7 @@ nh="$RUNNER_TEMP/node"
 mkdir -p "$nh/config"
 echo 'priv_validator_laddr = ""' >"$nh/config/config.toml"
 printf '%s\n' 'signer_grpc_address = "10.255.4.1:26669"' "$tls" >"$cfg"
-node=(--roles validator,fibre --node-home "$nh" --inventory-host val-1 --node-addresses val-1=10.255.4.1,node-1=10.255.4.5)
+node=(--roles "validator,fibre" --node-home "$nh" --inventory-host val-1 --node-addresses "val-1=10.255.4.1,node-1=10.255.4.5")
 printf '%s\n' '[grpc]' 'enable = true' >"$nh/config/app.toml"
 run sudo bash tools/doctor.sh "${args[@]}" "${node[@]}"
 grep -Eq '^OK +27 +fibre app node +Fibre.s default .* is 127\.0\.0\.1:9090: Fibre reads the node on this host \(val-1\), ' <<<"$out"

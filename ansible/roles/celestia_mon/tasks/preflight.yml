@@ -154,7 +154,7 @@
   ansible.builtin.command:
     argv: [findmnt, --noheadings, --first-only, --output, TARGET, --target, "{{ item }}"]
   loop: "{{ celestia_mon_data_mounts | map('string') | list }}"
-  register: celestia_mon_preflight_mounts
+  register: celestia_mon_preflight_mount_points
   changed_when: false
   failed_when: false
   check_mode: false
@@ -162,13 +162,13 @@
 - name: Check that each of celestia_mon_data_mounts is a mount point
   ansible.builtin.assert:
     that:
-      - celestia_mon_preflight_mounts.results | map(attribute='stdout') | list == celestia_mon_data_mounts | map('string') | list
+      - celestia_mon_preflight_mount_points.results | map(attribute='stdout') | list == celestia_mon_data_mounts | map('string') | list
     fail_msg: >-
       celestia_mon_data_mounts of {{ inventory_hostname }} lists a path that is not a mount point:
-      {% for r in celestia_mon_preflight_mounts.results if r.stdout != r.item -%}
+      {% for r in celestia_mon_preflight_mount_points.results if r.stdout != r.item -%}
       {{ r.item }} {{ ('is on ' ~ r.stdout) if r.stdout else 'does not exist on this host' }}{{ '' if loop.last else ', ' }}
       {%- endfor %}. Set celestia_mon_data_mounts of {{ inventory_hostname }} to
-      [{{ (celestia_mon_preflight_mounts.results | map(attribute='stdout') | select | unique | list or ['/']) | join(', ') }}]:
+      [{{ (celestia_mon_preflight_mount_points.results | map(attribute='stdout') | select | unique | list or ['/']) | join(', ') }}]:
       node_exporter reports each disk by the mount point that holds it.
     quiet: true
 
