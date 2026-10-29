@@ -1,0 +1,33 @@
+name: Record the checks that passed
+description: >-
+  Uploads the artifact marks-<job>: one line <job>/<id> for each step of the job with an id that ran
+  and passed, which the inventory job compares with tools/ci/inventory.txt. Run it last, with
+  "if: always()", and pass the job's steps context as toJSON(steps).
+inputs:
+  job:
+    description: The job's name in the inventory (the case's name in a matrix).
+    required: true
+  steps:
+    description: toJSON(steps) of the job.
+    required: true
+runs:
+  using: composite
+  steps:
+    # always(): these steps run after a failed step of the job too.
+    - name: Write the ids of the steps that passed
+      if: always()
+      shell: bash
+      env:
+        JOB_KEY: ${{ inputs.job }}
+        STEPS: ${{ inputs.steps }}
+      run: |
+        mkdir -p "$RUNNER_TEMP/marks"
+        jq -r --arg job "$JOB_KEY" 'to_entries[] | select(.value.outcome == "success") | "\($job)/\(.key)"' \
+          <<<"$STEPS" >"$RUNNER_TEMP/marks/$JOB_KEY.txt"
+        cat "$RUNNER_TEMP/marks/$JOB_KEY.txt"
+    - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      if: always()
+      with:
+        name: marks-${{ inputs.job }}
+        path: ${{ runner.temp }}/marks/${{ inputs.job }}.txt
+        retention-days: 3

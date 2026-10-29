@@ -1,0 +1,256 @@
+---
+# The names celestia-validator-monitoring takes from Celestia's source, by the file of the pinned
+# release that defines them: repo app is celestia-app at celestia_app in versions.yml, core is
+# celestia-core at celestia_core below, sdk is the Cosmos SDK fork at cosmos_sdk below. Every
+# regular expression under a file (Python re, searched over the whole file) must match there:
+# metrics maps each cometbft_ and fibre_server_ metric the repository uses to its definition,
+# find lists the other names.
+# tools/ci/check_upstream.py reads this file. In the lint job, offline, it fails on an upstream
+# link or version phrase that differs from these versions, and on a cometbft_ or fibre_server_
+# metric name that no metrics entry lists. In .github/workflows/upstream.yml it clones the three
+# releases and fails on each expression that no longer matches, on a celestia-app go.mod that
+# names other versions, and on a link to a file, directory or heading that does not exist there.
+
+# The releases of celestiaorg/celestia-core and celestiaorg/cosmos-sdk that celestia-app's go.mod
+# puts in place of github.com/cometbft/cometbft and github.com/cosmos/cosmos-sdk.
+celestia_core: v0.42.3
+cosmos_sdk: v0.52.12
+# Releases the docs and code name as the first with a feature: a phrase that names one of them with
+# "and newer", "or newer", "or later", "older than" or "before" keeps it when the pin moves.
+# v10.5.0: the first Fibre with the gRPC health check (upload readiness).
+floors: [v10.5.0]
+# Lines the version-phrase check leaves alone, by file and a text the line holds.
+exceptions:
+  # The release the Mocha layout was last tested on, updated by hand after a Mocha run.
+  - {file: docs/quickstart.md, text: The layout celestia-validator-monitoring is developed and tested on}
+
+files:
+  # celestia-core metrics (rules, dashboard, doctor): <namespace>_<subsystem>_<name>, with the
+  # labels the queries read.
+  - repo: core
+    file: config/config.go
+    find:
+      - 'Namespace:\s+"cometbft",'  # [instrumentation] namespace; doctor check 1
+      - 'PrometheusListenAddr:\s+":26660",'  # the metrics port; doctor check 1
+      - 'ListenAddress:\s+"tcp://127\.0\.0\.1:26657",'  # [rpc] laddr; doctor check 25
+  - {repo: core, file: consensus/metrics.go, find: ['MetricsSubsystem\s*=\s*"consensus"']}
+  - {repo: core, file: p2p/metrics.go, find: ['MetricsSubsystem\s*=\s*"p2p"']}
+  - {repo: core, file: privval/metrics.go, find: ['MetricsSubsystem\s*=\s*"privval"']}
+  - {repo: core, file: blocksync/metrics.go, find: ['MetricsSubsystem\s*=\s*"blocksync"']}
+  - {repo: core, file: proxy/metrics.go, find: ['MetricsSubsystem\s*=\s*"abci_connection"']}
+  - repo: core
+    file: consensus/metrics.gen.go
+    metrics:
+      cometbft_consensus_height: 'Name:\s+"height",'
+      cometbft_consensus_validator_last_signed_height:
+        '(?s)Name:\s+"validator_last_signed_height",(?:(?!Name:).)*?append\(labels, "validator_address"\)'
+      cometbft_consensus_validators_power: 'Name:\s+"validators_power",'
+      cometbft_consensus_validator_power: '(?s)Name:\s+"validator_power",(?:(?!Name:).)*?append\(labels, "validator_address"\)'
+      cometbft_consensus_validator_missed_blocks:
+        '(?s)Name:\s+"validator_missed_blocks",(?:(?!Name:).)*?append\(labels, "validator_address"\)'
+      cometbft_consensus_missing_validators_power: 'Name:\s+"missing_validators_power",'
+      cometbft_consensus_block_interval_seconds: 'HistogramOpts\{[^}]*Name:\s+"block_interval_seconds",'
+      cometbft_consensus_proposal_create_count: 'CounterOpts\{[^}]*Name:\s+"proposal_create_count",'
+      cometbft_consensus_proposer_missed_proposals:
+        ['CounterOpts\{[^}]*Name:\s+"proposer_missed_proposals",',
+         '(?s)Name:\s+"proposer_missed_proposals",(?:(?!Name:).)*?append\(labels, "proposer_address"\)']
+  - repo: core
+    file: p2p/metrics.gen.go
+    metrics: {cometbft_p2p_peers: 'Name:\s+"peers",'}
+  - repo: core
+    file: privval/metrics.gen.go
+    metrics:
+      cometbft_privval_signing_latency_seconds:
+        ['HistogramOpts\{[^}]*Name:\s+"signing_latency_seconds",',
+         '(?s)Name:\s+"signing_latency_seconds",(?:(?!Name:).)*?append\(labels, "message_type"\)']
+      cometbft_privval_signing_latency_median_seconds: 'Name:\s+"signing_latency_median_seconds",'
+      cometbft_privval_signing_failures_total:
+        ['CounterOpts\{[^}]*Name:\s+"signing_failures_total",',
+         '(?s)Name:\s+"signing_failures_total",(?:(?!Name:).)*?append\(labels, "message_type", "reason"\)']
+  - repo: core
+    file: blocksync/metrics.gen.go
+    metrics: {cometbft_blocksync_syncing: 'Name:\s+"syncing",'}
+  - repo: core
+    file: proxy/metrics.gen.go
+    metrics:
+      cometbft_abci_connection_method_timing_seconds:
+        ['HistogramOpts\{[^}]*Name:\s+"method_timing_seconds",',
+         '(?s)Name:\s+"method_timing_seconds",(?:(?!Name:).)*?append\(labels, "method", "type"\)']
+  # Label values the rules and the dashboard match on.
+  - repo: core
+    file: privval/latency_tracker.go  # message_type
+    find: ['messageType\w*\s*=\s*"prevote"', 'messageType\w*\s*=\s*"precommit"',
+           'messageType\w*\s*=\s*"proposal"', 'messageType\w*\s*=\s*"raw_bytes"']
+  - repo: core
+    file: privval/signer_client.go  # reason!~"timeout|no_connection"
+    find: ['failureReason\w*\s*=\s*"timeout"', 'failureReason\w*\s*=\s*"no_connection"']
+  - repo: core
+    file: proxy/app_conn.go  # method=~"process_proposal|finalize_block"
+    find: ['With\("method", "process_proposal"', 'With\("method", "finalize_block"']
+  # The node's settings doctor reads (checks 1, 2, 17, 20, 25), and the clock limit behind
+  # ClockNotSynced.
+  - repo: core
+    file: config/toml.go
+    find: ['(?m)^priv_validator_key_file = ', '(?m)^priv_validator_laddr = ', '(?m)^priv_validator_grpc_laddr = ',
+           '(?m)^priv_validator_grpc_cert_file = ', '(?m)^priv_validator_grpc_key_file = ',
+           '(?m)^priv_validator_grpc_client_ca_file = ', '(?m)^priv_validator_grpc_allow_insecure = ',
+           '(?ms)^\[rpc\]$.*?^laddr = .*?^grpc_laddr = .*?^pprof_laddr = ',
+           '(?ms)^\[instrumentation\]$.*?^prometheus = .*?^prometheus_listen_addr = .*?^namespace = .*?^trace_pull_address = ']
+  - {repo: core, file: state/validation.go, find: ['maxBlockTimeTolerance = 60 \* time\.Second']}
+  # The RPC that celestia-mon-signal reads.
+  - repo: core
+    file: rpc/core/routes.go
+    find: ['"status":\s+rpc\.NewRPCFunc\(', '"abci_info":\s+rpc\.NewRPCFunc\(',
+           '"abci_query":\s+rpc\.NewRPCFunc\(env\.ABCIQuery, "path,data,height,prove"\)',
+           '"blockchain":\s+rpc\.NewRPCFunc\(env\.BlockchainInfo, "minHeight,maxHeight"']
+  - repo: core
+    file: rpc/core/types/responses.go
+    find: ['json:"node_info"', 'json:"sync_info"', 'json:"catching_up"', 'json:"latest_block_height"',
+           'json:"latest_block_time"', 'json:"earliest_block_height"', 'json:"block_metas"', 'json:"response"']
+  - {repo: core, file: p2p/node_info.go, find: ['Network\s+string\s+`json:"network"`']}
+  - {repo: core, file: types/block_meta.go, find: ['Header\s+Header\s+`json:"header"`']}
+  - {repo: core, file: types/block.go, find: ['Time\s+time\.Time\s+`json:"time"`']}
+  - repo: core
+    file: abci/types/types.pb.go
+    find: ['json:"version,omitempty"', 'json:"app_version,omitempty"', 'json:"last_block_height,omitempty"',
+           'json:"code,omitempty"', 'json:"log,omitempty"', 'json:"value,omitempty"']
+
+  # Fibre's OpenTelemetry instruments. otelcol (celestia_mon_otelcol) turns each into its Prometheus
+  # name: dots become underscores, unit s adds _seconds, By adds _bytes, a counter adds _total.
+  - repo: app
+    file: fibre/server_metrics.go
+    metrics:
+      fibre_server_upload_shard_duration_seconds:
+        'Float64Histogram\("fibre\.server\.upload_shard\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+      fibre_server_upload_shard_rejected_total: 'Int64Counter\("fibre\.server\.upload_shard\.rejected",'
+      fibre_server_upload_shard_last_success_timestamp_seconds:
+        'Int64ObservableGauge\("fibre\.server\.upload_shard\.last_success_timestamp",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+      fibre_server_upload_shard_occupancy_bytes:
+        'Int64ObservableGauge\("fibre\.server\.upload_shard\.occupancy_bytes",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("By"\)'
+      fibre_server_upload_shard_budget_bytes:
+        'Int64ObservableGauge\("fibre\.server\.upload_shard\.budget_bytes",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("By"\)'
+      fibre_server_download_shard_duration_seconds:
+        'Float64Histogram\("fibre\.server\.download_shard\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+      fibre_server_prune_duration_seconds:
+        'Float64Histogram\("fibre\.server\.prune\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+    # The attributes otelcol sums away (upload_size, shard_size) or keeps (success), and the
+    # instrument FibreNotServing's comment names.
+    find: ['attribute\.Bool\("success", err == nil\)', 'attribute\.Int64\("upload_size", uploadSize\)',
+           'attribute\.Int64\("shard_size", shardSize\)', 'pruneDuration\.Record\([^\n]*attribute\.Bool\("success"',
+           '"fibre\.server\.sign\.duration"']
+  - repo: app
+    file: fibre/cmd/metrics.go  # Go runtime metrics: go_memory_used_bytes, the dashboard's Fibre memory
+    find: ['runtime\.Start\(']
+  # Fibre's health check: the probe (job fibre_health), FibreNotServing not_ready, and the table in
+  # docs/alerts.md that quotes each reason and message.
+  - repo: app
+    file: fibre/server_health.go
+    find: ['readinessServices = \[\]string\{"",',
+           '\{"app", ', '\{"fibre_module", ', '\{"signer", ', '\{"validator", ', '\{"registration", ', '\{"store", ',
+           '"health check failed", "check", name, "reason", res\.reason, "message", res\.message, "error", res\.err',
+           '= "app_unreachable"', '= "app_syncing"', '= "chain_stalled"', '= "chain_id_mismatch"', '= "fibre_module_unavailable"',
+           '= "signer_unreachable"', '= "signer_key_changed"', '= "validator_not_active"', '= "provider_not_registered"',
+           '= "provider_host_invalid"', '= "store_failed"',
+           '"The app node did not answer a valid status request\. Check app_grpc_address and that the node is running\."',
+           '"The app node reports chain ID %q, expected %q\."', '"The app node is still syncing\."',
+           '"The latest block is %s old \(limit %s\)\."', '"The app node did not answer the Fibre module query\."',
+           '"The app node has no Fibre module\. Check that app_grpc_address is the application gRPC endpoint of a chain with Fibre enabled\."',
+           '"The signer did not answer within the probe timeout\. Check signer_grpc_address and the node''s priv_validator_grpc_laddr\."',
+           '"The signer did not return a public key\. Check signer_grpc_address and the node''s priv_validator_grpc_laddr\."',
+           '"The signer reports a different public key than at startup\. Confirm the validator key and restart\."',
+           '"Could not fetch the validator set from the app node\."', '"Validator %s is not in the active set\."',
+           '"Could not query the Fibre provider registration from the app node\."',
+           '"Register a Fibre provider host for validator %s with MsgSetFibreProviderInfo\."',
+           '"The registered provider host %q is not a valid host:port\. Register it again\."',
+           '"The store failed a small write and read\. Check free disk space and permissions of the store directory\."']
+  # Fibre's settings doctor reads (checks 6, 7, 17), and the health-check defaults the docs and
+  # FibreNotServing name.
+  - repo: app
+    file: fibre/server_config.go
+    find: ['DefaultConfigFileName = "server_config\.toml"', 'filepath\.Join\(home, "config", DefaultConfigFileName\)',
+           'EnvHome = "FIBRE_HOME"', 'DefaultHomeDir = "\.celestia-fibre"',
+           'toml:"app_grpc_address"', 'toml:"server_listen_address"', 'toml:"signer_grpc_address"',
+           'toml:"signer_grpc_ca_file"', 'toml:"signer_grpc_cert_file"', 'toml:"signer_grpc_key_file"',
+           'ServerListenAddress:\s+"0\.0\.0\.0:7980",', 'SignerGRPCAddress:\s+"127\.0\.0\.1:26669",',
+           'toml:"health"', 'toml:"max_block_age"', 'CheckInterval: "10s", ProbeTimeout: "3s", MaxBlockAge: "2m"']
+  - {repo: app, file: fibre/cmd/root_cmd.go, find: ['flagHome = "home"']}
+  - repo: app
+    file: fibre/cmd/start_cmd.go
+    find: ['= "app-grpc-address"', '= "server-listen-address"', '= "signer-grpc-address"',
+           '= "signer-grpc-ca-file"', '= "signer-grpc-cert-file"', '= "signer-grpc-key-file"']
+  - repo: app
+    file: fibre/cmd/tracing.go
+    find: ['flagOTelEndpoint\s*=\s*"otel-endpoint"', 'envOTelEndpoint\s*=\s*"FIBRE_OTEL_ENDPOINT"']
+  # Log lines and errors the docs and notifications tell operators to look for.
+  - {repo: app, file: fibre/server_upload.go, find: ['"payment promise verification failed", "error", err']}
+  - {repo: app, file: fibre/server_download.go, find: ['"failed to retrieve blob shard"']}
+  - repo: app
+    file: x/fibre/keeper/keeper.go
+    find: ['"payment promise height %d is too far in the future', '"payment promise has already been processed"',
+           '"payment promise expired: ', '"insufficient balance in escrow account\. ', '"escrow account not found for signer ']
+  # The node's privval gRPC address when config.toml has none (doctor check 20).
+  - {repo: app, file: app/default_overrides.go, find: ['PrivValidatorGRPCListenAddr = "127\.0\.0\.1:26669"']}
+
+  # x/signal, which celestia-mon-signal reads (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon)
+  # and the docs and notifications name.
+  - repo: app
+    file: proto/celestia/signal/v1/query.proto
+    find: ['package celestia\.signal\.v1;', 'service Query \{',
+           'rpc VersionTally\(QueryVersionTallyRequest\)', 'rpc GetUpgrade\(QueryGetUpgradeRequest\)',
+           'message QueryVersionTallyRequest \{\s*uint64 version = 1;',
+           'message QueryVersionTallyResponse \{\s*uint64 voting_power\s*= 1;\s*uint64 threshold_power\s*= 2;\s*uint64 total_voting_power = 3;',
+           'message QueryGetUpgradeResponse \{\s*Upgrade upgrade = 1;']
+  - repo: app
+    file: proto/celestia/signal/v1/upgrade.proto
+    find: ['message Upgrade \{[^}]*\buint64 app_version = 1;[^}]*\bint64 upgrade_height = 2;']
+  - {repo: app, file: proto/celestia/signal/v1/tx.proto, find: ['package celestia\.signal\.v1;', 'message MsgSignalVersion \{']}
+  - {repo: app, file: x/signal/types/msgs.go, find: ['ModuleName\s*=\s*"signal"', 'StoreKey\s*=\s*ModuleName']}
+  - repo: app
+    file: x/signal/keeper.go
+    find: ['store\.Set\(valAddress, VersionToBytes\(version\)\)', 'binary\.BigEndian\.AppendUint64\(nil, version\)']
+  - {repo: app, file: x/signal/cli/tx.go, find: ['Use:\s+"signal version"']}  # tx signal signal
+  - {repo: app, file: x/signal/cli/query.go, find: ['Use:\s+"tally version"']}  # query signal tally
+  - repo: app
+    file: app/params/config.go  # the account and operator address prefixes celestia-mon-signal uses
+    find: ['Bech32PrefixAccAddr = "celestia"',
+           'Bech32PrefixValAddr = Bech32PrefixAccAddr \+ sdk\.PrefixValidator \+ sdk\.PrefixOperator\s']
+  # x/valaddr: doctor check 5, FibreDown's registration rules and the docs' set-host steps.
+  - {repo: app, file: x/valaddr/types/keys.go, find: ['ModuleName\s*=\s*"valaddr"']}
+  - {repo: app, file: x/valaddr/client/cli/query.go, find: ['Use:\s+"provider \[consensus-address\]"']}
+  - {repo: app, file: x/valaddr/client/cli/tx.go, find: ['Use:\s+"set-host \[host\]"']}
+  - repo: app
+    file: proto/celestia/valaddr/v1/query.proto  # doctor reads found and host from the answer
+    find: ['message QueryFibreProviderInfoResponse \{[^}]*\bbool found = 2;', 'message FibreProviderInfo \{[^}]*\bstring host = 1;']
+  - {repo: app, file: proto/celestia/valaddr/v1/tx.proto, find: ['package celestia\.valaddr\.v1;', 'message MsgSetFibreProviderInfo \{']}
+
+  # The Cosmos SDK fork: app.toml (doctor check 25), the ABCI store query and the x/gov proposals
+  # celestia-mon-signal reads (GovVoteMissing), the gov commands, and debug addr (doctor check 4).
+  - repo: sdk
+    file: server/config/config.go
+    find: ['DefaultGRPCAddress = "localhost:9090"', 'DefaultAPIAddress = "tcp://localhost:1317"']
+  - repo: sdk
+    file: server/config/toml.go
+    find: ['(?m)^\[api\]\s+(#[^\n]*\s+)*enable = \{\{ \.API\.Enable \}\}', 'address = "\{\{ \.API\.Address \}\}"',
+           '(?m)^\[grpc\]\s+(#[^\n]*\s+)*enable = \{\{ \.GRPC\.Enable \}\}', 'address = "\{\{ \.GRPC\.Address \}\}"']
+  - {repo: sdk, file: baseapp/abci.go, find: ['QueryPathStore\s*=\s*"store"']}
+  - {repo: sdk, file: types/address.go, find: ['PrefixValidator = "val"', 'PrefixOperator = "oper"']}
+  - repo: sdk
+    file: proto/cosmos/gov/v1/query.proto
+    find: ['package cosmos\.gov\.v1;', 'service Query \{', 'rpc Proposals\(QueryProposalsRequest\)',
+           'message QueryProposalsRequest \{[^}]*\bProposalStatus proposal_status = 1;[^}]*\bstring voter = 2\b',
+           'message QueryProposalsResponse \{[^}]*\brepeated Proposal proposals = 1;']
+  - repo: sdk
+    file: proto/cosmos/gov/v1/gov.proto
+    find: ['message Proposal \{[^}]*\buint64 id = 1;[^}]*\bvoting_start_time = 8\b[^}]*\bvoting_end_time = 9\b[^}]*\bstring title = 11;',
+           'PROPOSAL_STATUS_VOTING_PERIOD = 2;']
+  - repo: sdk
+    file: x/gov/keeper/grpc_query.go  # Proposals with a voter answers only the proposals it voted on
+    find: ['if len\(req\.Voter\) > 0 \{']
+  - {repo: sdk, file: proto/cosmos/gov/v1/tx.proto, find: ['message MsgVote \{']}
+  - repo: sdk
+    file: x/gov/autocli.go  # tx gov vote, query gov proposal, query gov vote
+    find: ['Use:\s+"vote \[proposal-id\] \[option\]"', 'Use:\s+"proposal \[proposal-id\]"',
+           'Use:\s+"vote \[proposal-id\] \[voter-addr\]"']
+  - repo: sdk
+    file: client/debug/main.go
+    find: ['Use:\s+"addr \[address\]"', 'Printf\("Bech32 Con: %s\\n", sdk\.ConsAddress\(addr\)\)']

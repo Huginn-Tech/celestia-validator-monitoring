@@ -5,7 +5,8 @@ the job summary; it never changes versions.yml. For each pinned component it lis
 newer release on the pinned line (same major.minor) and the newest release of each newer
 line, with its date. A release becomes a candidate once it is at least 14 days old; pin
 it by changing the version and every sha256 in versions.yml (the comments there name the
-official checksum files).
+official checksum files). celestia_app has no sha256 and follows the release the validators
+run, whatever its age: CLAUDE.md lists the steps of a Celestia release.
 
 Usage, from the repository root (needs PyYAML):
   python tools/ci/check_versions.py [versions.yml]
@@ -31,6 +32,7 @@ GITHUB_REPOS = {
     "blackbox_exporter": "prometheus/blackbox_exporter",
     "grafana": "grafana/grafana",
     "uv": "astral-sh/uv",
+    "celestia_app": "celestiaorg/celestia-app",
 }
 # 1.2.3, v1.2.3, and Grafana's security releases such as v12.4.11+security-01.
 VERSION = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:\+security-(\d+))?$")

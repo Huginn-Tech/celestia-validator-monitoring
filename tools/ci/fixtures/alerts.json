@@ -1,0 +1,6 @@
+{"receiver": "page", "status": "firing", "alerts": [
+  {"status": "firing", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/"},
+   "annotations": {"summary": "Disk / on val-1 is almost full", "description": "Less than 5% free."}},
+  {"status": "resolved", "labels": {"alertname": "DiskLow", "severity": "page", "host": "val-1", "mountpoint": "/data"},
+   "annotations": {"summary": "Disk /data on val-1 is almost full"}}],
+ "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}
