@@ -604,8 +604,10 @@ port_peers() { # port -> the remote addresses (not loopback) connected to this h
 # every host of a range, reach it. A value without a port doctor can read warns: doctor cannot
 # tell where it listens. Arguments: the setting as the report names it (such as "[grpc]
 # address"), its value, its key, its section ("" = top level), its file, the value to set (with
-# "<private address>"), who may connect, the placeholder for that source in the ufw command, and
-# optional words for the report line after where it listens (such as ", without mTLS"). Sets:
+# "<private address>"), who may connect, the placeholder for that source in the ufw command (or
+# the sources, comma-separated, one ufw command each; empty when no other host needs the port, so
+# the value to set is the fix), and optional words for the report line after where it listens
+# (such as ", without mTLS"). Sets:
 #   LOCK_SEV   OK, WARN or FAIL
 #   LOCK_OPEN  wildcard or public when the port listens there, else empty
 #   LOCK_TEXT  what doctor found, for the report line
@@ -614,8 +616,8 @@ port_peers() { # port -> the remote addresses (not loopback) connected to this h
 LOCK_SEV="" LOCK_OPEN="" LOCK_TEXT="" LOCK_BIND="" LOCK_UFW=""
 port_lock() {
   local label=$1 value=$2 key=$3 sec=$4 file=$5 want=$6 who=$7 src=$8 after=${9:-}
-  local hp h port l where="" classes="" peers kind s rule del=""
-  local -a anyrules=() ranges=() ones=()
+  local hp h port l where="" classes="" peers kind s rule del="" cmds=""
+  local -a anyrules=() ranges=() ones=() srcs=()
   LOCK_SEV=OK LOCK_OPEN="" LOCK_BIND="" LOCK_UFW=""
   LOCK_TEXT="$label = $value"
   if [[ $value == unix://* ]]; then
@@ -704,8 +706,13 @@ port_lock() {
   fi
   peers=$(port_peers "$port")
   if [[ -n $peers ]]; then LOCK_TEXT+="; connected now from $peers"; fi
-  if [[ $LOCK_SEV != OK ]]; then
-    LOCK_UFW="let only $who reach port $port: \"sudo ufw allow from $src to any port $port proto tcp\"$del"
+  if [[ $LOCK_SEV != OK && -z $src ]]; then
+    LOCK_BIND="in $file${sec:+ under [$sec]}, set $key = $want"
+    LOCK_UFW=${del#, then }
+  elif [[ $LOCK_SEV != OK ]]; then
+    IFS=',' read -r -a srcs <<<"$src"
+    for s in "${srcs[@]}"; do cmds+="${cmds:+ and }\"sudo ufw allow from $s to any port $port proto tcp\""; done
+    LOCK_UFW="let only $who reach port $port: $cmds$del"
   fi
 }
 
@@ -1087,9 +1094,9 @@ check_signer_binds() {
 # address of the release (celestia-core v0.42.3, celestia-app's cosmos-sdk fork); only an
 # explicit enable = false turns the app gRPC or the REST API off here.
 check_node_ports() {
-  local name="node ports" cfg app en v item label value key sec file want who src sev=OK note=""
+  local name="node ports" cfg app en v item label value key sec file want who src sev=OK note="" r gwant gwho gsrc
   local one="the one host that needs it (the monitor, for celestia-mon-signal)" onesrc="<address of that host>"
-  local -a items=() bad=() oks=() sets=() ufws=()
+  local -a items=() bad=() oks=() sets=() ufws=() readers=() names=()
   if ! node_host; then report SKIP 25 "$name" "not a validator or backup node host"; return; fi
   cfg=$NODE_HOME/config/config.toml
   app=$NODE_HOME/config/app.toml
@@ -1103,7 +1110,27 @@ check_node_ports() {
     else
       v=$(toml_get "$app" grpc address)
       v=${v:-localhost:9090}
-      items+=("[grpc] address|$v|address|grpc|$app|\"127.0.0.1:${v##*:}\" when only the Fibre on this host reads it (its app_grpc_address), else \"<private address>:${v##*:}\" (the address in the app_grpc_address of the Fibre hosts that read it)|the Fibre hosts|<Fibre host address>")
+      gwant="\"127.0.0.1:${v##*:}\" when only the Fibre on this host reads it (its app_grpc_address), else \"<private address>:${v##*:}\" (the address in the app_grpc_address of the Fibre hosts that read it)"
+      gwho="the Fibre hosts"
+      gsrc="<Fibre host address>"
+      # With the inventory's Fibre hosts known, the ones without a node of their own read a node
+      # on another host, maybe this one; the others read their own node on 127.0.0.1.
+      if [[ -n ${C[fibre_addresses]} ]]; then
+        mapfile -t readers < <(fibre_readers)
+        if ((${#readers[@]} == 0)); then
+          gwant="\"127.0.0.1:${v##*:}\" (every Fibre host of the inventory has a node of its own to read)"
+          gwho=""
+          gsrc=""
+        else
+          gsrc=""
+          for r in "${readers[@]}"; do
+            names+=("${r% *} at ${r#* }")
+            gsrc+="${gsrc:+,}${r#* }"
+          done
+          gwho="the Fibre hosts without a node of their own that read this node ($(join "${names[@]}"))"
+        fi
+      fi
+      items+=("[grpc] address|$v|address|grpc|$app|$gwant|$gwho|$gsrc")
     fi
     en=$(toml_get "$app" api enable)
     if [[ $en == false ]]; then
@@ -1503,9 +1530,12 @@ check_fibre_otel() {
 # client certificate for the node's mTLS address. A plaintext signer warns even on loopback:
 # the node's plaintext listener serves signatures to every account of its host (check 20), so
 # every fix here leads to mTLS. The check reads both configs and never connects to the port.
+# With node_addresses (the inventory's nodes), it names the node Fibre signs through, and warns
+# when that address is no node of the inventory: celestia-mon then watches no node it signs
+# through, or the address is mistyped.
 check_fibre_signer() {
   local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply home f v kf tls=false ncfg g gh gp target problem=""
-  local mode when loop=false port ncert kind fix
+  local mode when loop=false port ncert kind fix via="" unknown=false
   local -a files=()
   local re4='^([0-9]{1,3}(\.[0-9]{1,3}){3}):[0-9]+$' re6='^\[([0-9A-Fa-f:.]+)\]:[0-9]+$'
   if fibre_skip 17 "$name"; then return; fi
@@ -1612,12 +1642,27 @@ check_fibre_signer() {
       return
     fi
   fi
+  # The inventory node at that address: this host's own for loopback or one of its addresses.
+  if [[ $loop == true ]] || host_address "$ip"; then
+    if ! node_host; then
+      unknown=true
+    else
+      via=${C[inventory_host]}
+    fi
+  elif ! via=$(node_named "$ip"); then
+    unknown=true
+  fi
+  if [[ -z ${C[node_addresses]} ]]; then unknown=false; fi
   if [[ $tls == false ]]; then
     report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  elif [[ $unknown == true ]]; then
+    v="no celestia-appd node of the inventory has that address ($(node_list))"
+    if [[ $loop == true ]] || host_address "$ip"; then v="this host runs no celestia-appd node of the inventory (roles: ${C[roles]})"; fi
+    report WARN 17 "$name" "$src is $addr with mTLS, but $v: Fibre signs through a node celestia-mon does not watch, or the address is mistyped, and then every signature of this Fibre fails. Fix: set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group and run install.sh there"
   elif [[ $loop == true ]]; then
-    report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS"
+    report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS${via:+: Fibre signs through $via}"
   else
-    report OK 17 "$name" "$src is $addr, an IP address, mTLS"
+    report OK 17 "$name" "$src is $addr, an IP address, mTLS${via:+: Fibre signs through $via}"
   fi
 }
 
