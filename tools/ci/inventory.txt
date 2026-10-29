@@ -54,6 +54,8 @@ doctor-signer/run                | tools/ci/doctor/signer.sh                    
 doctor-ports/run                 | tools/ci/doctor/ports.sh                     | doctor on the validator's ports
 doctor-monitor/run               | tools/ci/doctor/monitor.sh                   | doctor checks 11 and 12 against Prometheus on loopback
 doctor-readiness/run             | tools/ci/doctor/readiness.sh                 | The readiness probe and doctor check 24
+doctor-chain/run                 | tools/ci/doctor/chain.sh                     | doctor on the node Fibre reads
+doctor-survey/run                | tools/ci/doctor/survey.sh                    | doctor --survey on each kind of host
 install/refuses-unsafe           | ci.yml                                       | The install refuses unsafe settings
 install/dry-run                  | ci.yml                                       | The dry run changes nothing and lists the ufw rules
 install/edit-vault               | ci.yml                                       | --edit-vault creates and edits an encrypted vault.yml
