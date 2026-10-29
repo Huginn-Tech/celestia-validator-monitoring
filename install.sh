@@ -608,7 +608,8 @@ vault_files=()
 if [[ -n $inv_dir ]]; then
   while IFS= read -r -d '' vault_file; do
     [[ $(head -c 15 -- "$vault_file") == "\$ANSIBLE_VAULT;" ]] ||
-      die "$vault_file is not encrypted: encrypt it (sudo $repo/install.sh --edit-vault $vault_file), then run again"
+      die "$vault_file is not encrypted: encrypt it (sudo $repo/install.sh --edit-vault $vault_file), or delete it from this copy" \
+        "when the monitor's secrets are in $secrets_file or this box is not the monitor; then run again"
     vault_mode=$(stat -L -c %a -- "$vault_file")
     (((8#$vault_mode & 8#044) == 0)) || die "$vault_file is readable by group or other: chmod 600 $vault_file"
     vault_files+=("$vault_file")
