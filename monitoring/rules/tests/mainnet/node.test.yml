@@ -71,7 +71,7 @@ tests:
                 The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
                 Prometheus cannot reach the node on val-1, so signatures made through it are not seen;
                 an explorer shows whether blocks are missed.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 19m
         alertname: ValidatorNotSigning
         exp_alerts:
@@ -84,7 +84,7 @@ tests:
                 The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
                 Prometheus cannot reach the node on val-1, so signatures made through it are not seen;
                 an explorer shows whether blocks are missed.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 20m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -163,7 +163,7 @@ tests:
               description: >-
                 Check journalctl -u tmkms on the KMS host first.
                 The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
 
   # fibre-1 is 30 blocks behind val-1 from the start.
   - name: Backup node 30 blocks behind; NodeBehind sends a message after 10m
@@ -197,7 +197,7 @@ tests:
               description: >-
                 For 10 minutes the node has been more than 20 blocks behind the highest node of this install,
                 or has not advanced while another node did. A node that lags cannot take over signing.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
       - eval_time: 10m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -238,7 +238,7 @@ tests:
               description: >-
                 For 10 minutes the node has been more than 20 blocks behind the highest node of this install,
                 or has not advanced while another node did. A node that lags cannot take over signing.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
 
   # Both nodes stop at 10m (chain halt or upgrade height). NodeNotAdvancing pages at 12m; the
   # last signed height stays one block behind, and no node lags the other.
@@ -268,7 +268,7 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning
         exp_alerts: []
@@ -321,4 +321,4 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"

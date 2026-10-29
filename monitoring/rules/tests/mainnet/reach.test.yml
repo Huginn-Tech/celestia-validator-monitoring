@@ -62,7 +62,7 @@ tests:
                 (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
                 alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
                 validator still signs: an explorer shows its recent blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: NodeNotAdvancing
         exp_alerts: []
@@ -91,7 +91,7 @@ tests:
                 (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
                 alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
                 validator still signs: an explorer shows its recent blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
 
   - name: The link comes back; the page resolves
     interval: 1m
@@ -118,7 +118,7 @@ tests:
                 (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
                 alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
                 validator still signs: an explorer shows its recent blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 15m
         alertname: MonitorCannotReach
         exp_alerts: []
@@ -174,7 +174,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: ServiceDown
         exp_alerts: []
@@ -212,7 +212,7 @@ tests:
                 (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
                 it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
                 until it answers again; this message stands in for its ServiceDown messages.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 12m
         alertname: MonitorCannotReach
         exp_alerts: []
@@ -228,7 +228,7 @@ tests:
                 (val-1, fibre-1): the link between the monitor and the hosts is down, or every host is. No
                 alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
                 validator still signs: an explorer shows its recent blocks.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
 
   - name: val-1's node_exporter down while its node answers; ServiceDown as before, no MonitorCannotReach
     interval: 1m
@@ -259,7 +259,7 @@ tests:
             exp_annotations:
               summary: "node_exporter is unreachable on val-1"
               description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
       - eval_time: 8m
         alertname: MonitorCannotReach
         exp_alerts: []
@@ -297,7 +297,7 @@ tests:
             exp_annotations:
               summary: "node_exporter is unreachable on mon-1"
               description: "Prometheus has not reached node_exporter for 3 minutes; service and disk alerts for this host are blind."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
       - eval_time: 8m
         alertname: MonitorCannotReach
         exp_alerts: []

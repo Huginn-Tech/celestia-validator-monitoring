@@ -42,7 +42,7 @@ tests:
               description: >-
                 Rule evaluation failed in the last 10 minutes, so some alerts may not fire.
                 The Prometheus log names the rule and the error.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#monitoringbroken"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitoringbroken"
       - eval_time: 20m
         alertname: MonitoringBroken
         exp_alerts: []

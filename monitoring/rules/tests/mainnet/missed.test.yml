@@ -54,7 +54,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 40m
         alertname: SignaturesMissed
         exp_alerts:
@@ -66,7 +66,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
 
   # val-1 goes down at 20m and its series end; tmkms is pointed at fibre-1, which counts its first
   # miss at 25m. The misses val-1 counted stay in the hour, so the alert keeps firing across the
@@ -98,7 +98,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 22m
         alertname: SignaturesMissed
         exp_alerts:
@@ -110,7 +110,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 90m
         alertname: SignaturesMissed
         exp_alerts:
@@ -122,7 +122,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
 
   # The misses stop at 20m (tmkms fixed). val-1's count stays at 101: 100 misses in the hour up to
   # 20m. They leave the hour window step by step, and the share drops to 5% at about 74m.
@@ -150,7 +150,7 @@ tests:
                 Check journalctl -u tmkms on the KMS host first.
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 80m
         alertname: SignaturesMissed
         exp_alerts: []

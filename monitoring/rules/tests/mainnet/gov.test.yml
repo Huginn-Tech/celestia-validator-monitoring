@@ -53,7 +53,7 @@ tests:
                 <validator account key>. A vote sent through an authz grant from the validator account counts; a
                 vote from any other account does not. This alert resolves when the vote is on chain or the voting
                 period has ended. It pages when less than a day is left.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # The same vote with 25 hours left at 0: the message from the start, the page once less than a
   # day is left (from 1h on, held 10 minutes); the validator votes at 1h30m and both resolve.
@@ -88,7 +88,7 @@ tests:
                 <validator account key>. A vote sent through an authz grant from the validator account counts; a
                 vote from any other account does not. This alert resolves when the vote is on chain or the voting
                 period has ended. It pages when less than a day is left.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h15m
         alertname: GovVoteMissing
         exp_alerts:
@@ -104,7 +104,7 @@ tests:
                 account key>. A vote sent through an authz grant from the validator account counts; a vote from
                 any other account does not. This alert resolves when the vote is on chain or the voting period has
                 ended. It pages when less than a day is left.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
           - exp_labels:
               severity: page
               proposal_id: '9'
@@ -117,7 +117,7 @@ tests:
                 account key>. A vote sent through an authz grant from the validator account counts; a vote from
                 any other account does not. This alert resolves when the vote is on chain or the voting period has
                 ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
         exp_alerts: []
@@ -152,7 +152,7 @@ tests:
                 gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h50m
         alertname: GovVoteMissing
         exp_alerts:
@@ -167,7 +167,7 @@ tests:
                 gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # An expedited vote of 1 day with 13 hours left at 0: half the vote is left from 1h on, so the
   # page then, held 10 minutes; no message, which would come at the same time. Without the title
@@ -199,7 +199,7 @@ tests:
                 tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # A day's vote with 90 minutes left: the page from 10m on. No reading from 40m to 1h (a scrape
   # outage) keeps it, on the reading of 30m; it resolves once the voting period has ended.
@@ -230,7 +230,7 @@ tests:
                 gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
         exp_alerts: []
@@ -263,7 +263,7 @@ tests:
                 gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
                 authz grant from the validator account counts; a vote from any other account does not. This alert
                 resolves when the vote is on chain or the voting period has ended.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 25m
         alertname: GovVoteMissing
         exp_alerts: []
@@ -304,4 +304,4 @@ tests:
                 seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
                 reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
                 journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
-              runbook: https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable

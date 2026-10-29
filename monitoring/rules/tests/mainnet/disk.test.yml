@@ -36,7 +36,7 @@ tests:
             exp_annotations:
               summary: "/ on fibre-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 10m
         alertname: DiskLow
         exp_alerts:
@@ -52,7 +52,7 @@ tests:
             exp_annotations:
               summary: "/ on fibre-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
               instance: 10.20.0.2:9910
@@ -65,7 +65,7 @@ tests:
             exp_annotations:
               summary: "/ on fibre-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   # val-1's disk also holds the standby Fibre's store: it gets the node data rules only.
   - name: Validator node disk turns read-only; one page at once
@@ -99,7 +99,7 @@ tests:
             exp_annotations:
               summary: "/ on val-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store on fibre-1 turns read-only; a message, never a page
     interval: 1m
@@ -138,7 +138,7 @@ tests:
             exp_annotations:
               summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
               description: "Fibre cannot store new shards on a read-only filesystem."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   # mon-1 runs no Celestia service: the disk of Prometheus's data sends messages, never a page.
   - name: The monitor's disk on mon-1 under 5%; a message after 10m and no page
@@ -173,7 +173,7 @@ tests:
             exp_annotations:
               summary: "/ on mon-1 has little free space"
               description: "Free space has been below 10% for 10 minutes."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: The monitor's disk on mon-1 turns read-only; a message at once
     interval: 1m
@@ -206,4 +206,4 @@ tests:
             exp_annotations:
               summary: "/ on mon-1 is read-only"
               description: "The filesystem is read-only."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"

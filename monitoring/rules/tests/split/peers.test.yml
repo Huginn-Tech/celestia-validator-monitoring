@@ -38,7 +38,7 @@ tests:
                 For 5 minutes the node has had fewer than 2 peers (1 now): nodes it peers with are down or cannot reach it.
                 While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
                 Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 15m
         alertname: NodePeersLow
         exp_alerts: []
@@ -75,7 +75,7 @@ tests:
                 For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
                 and the validator misses every block until a peer connects.
                 Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 41m
         alertname: NodePeersLow
         exp_alerts:
@@ -92,7 +92,7 @@ tests:
                 For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
                 and the validator misses every block until a peer connects.
                 Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
           - exp_labels:
               chain_id: celestia
               job: celestia-app
@@ -106,7 +106,7 @@ tests:
                 For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
                 While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
                 Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 45m
         alertname: NodePeersLow
         exp_alerts: []
@@ -142,4 +142,4 @@ tests:
                 For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
                 While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
                 Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"

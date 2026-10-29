@@ -139,7 +139,7 @@
 {% set missed = 'cometbft_consensus_validator_missed_blocks{job="celestia-app"}' %}
 {% set missed_before = 'last_over_time(' ~ missed ~ '[1h] offset 1m)' %}
 {% set missed_1h = 'sum_over_time((' ~ missed ~ ' - ' ~ missed_before ~ ' >= 0 or ' ~ missed ~ ' * 1 < ' ~ missed_before ~ ')[1h:1m])' %}
-{% set docs = 'https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
+{% set docs = 'https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md' %}
 groups:
   - name: celestia_mon
     rules:

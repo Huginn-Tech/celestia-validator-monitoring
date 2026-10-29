@@ -42,7 +42,7 @@ tests:
                 or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
                 data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
                 and a rebuild's progress; mdadm --detail /dev/md2 shows why. This alert resolves when the array is whole again.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
       - eval_time: 30m
         alertname: RaidDegraded
         exp_alerts:
@@ -60,7 +60,7 @@ tests:
                 or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
                 data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
                 and a rebuild's progress; mdadm --detail /dev/md2 shows why. This alert resolves when the array is whole again.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
       - eval_time: 31m
         alertname: RaidDegraded
         exp_alerts: []
@@ -94,7 +94,7 @@ tests:
                 or dropped out, the array started without it, or a new disk is still being rebuilt. The host still serves its
                 data from the disks left, but one more failure loses it. cat /proc/mdstat shows which disk is missing ([U_])
                 and a rebuild's progress; mdadm --detail /dev/md0 shows why. This alert resolves when the array is whole again.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
 
   # The monthly check and a resync after an unclean shutdown keep [2/2]; an array that is not
   # started (inactive) reports 0 needed and 0 active; RAID 0 needs every disk it has. None fires.

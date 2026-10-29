@@ -45,7 +45,7 @@ import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-USER_AGENT = "celestia-mon-signal (https://github.com/s0urledd/celestia-validator-monitoring)"
+USER_AGENT = "celestia-mon-signal (https://github.com/Huginn-Tech/celestia-validator-monitoring)"
 
 # celestia-app: proto/celestia/signal/v1/query.proto, and the signal store (store key "signal",
 # x/signal/types/msgs.go), which keeps each validator's signalled version under its operator

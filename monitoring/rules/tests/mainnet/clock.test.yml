@@ -36,7 +36,7 @@ tests:
                 a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
                 runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
                 allow outgoing NTP (UDP 123).
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
       - eval_time: 80m
         alertname: ClockNotSynced
         exp_alerts:
@@ -54,7 +54,7 @@ tests:
                 a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
                 runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
                 allow outgoing NTP (UDP 123).
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
       - eval_time: 81m
         alertname: ClockNotSynced
         exp_alerts: []
@@ -85,7 +85,7 @@ tests:
                 a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
                 runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
                 allow outgoing NTP (UDP 123).
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
 
   # A step or a clocksource switch sets 16 s until the daemon's next update; on val-1 that takes 50
   # minutes, under the hour. fibre-1 runs with the daemon's usual saw tooth, up to 0.5 s between

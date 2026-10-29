@@ -27,7 +27,7 @@ tests:
               description: >-
                 A heartbeat to the dead-man service failed in the last 15 minutes.
                 Until it gets through, the dead-man service cannot tell you that monitoring is down.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
       # the 0 at 9m is the one at 23m.
       - eval_time: 23m
@@ -41,7 +41,7 @@ tests:
               description: >-
                 A heartbeat to the dead-man service failed in the last 15 minutes.
                 Until it gets through, the dead-man service cannot tell you that monitoring is down.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       - eval_time: 24m
         alertname: DeadmanFailing
         exp_alerts: []

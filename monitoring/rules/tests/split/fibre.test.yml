@@ -91,7 +91,7 @@ tests:
               description: >-
                 For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
                 the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   - name: Idle network; Fibre runs for hours without any upload and stays quiet
     interval: 1m
@@ -136,7 +136,7 @@ tests:
             exp_annotations:
               summary: "Fibre on fibre-1 sends no metrics"
               description: "The Fibre unit is active but no Fibre metrics have arrived for 30 minutes; set its OTLP endpoint."
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   # From 11m every upload fails (the signer behind signer_grpc_address cannot be reached) and none
   # is accepted. The last accepted uploads leave the 5-minute window at 14m; 10 minutes later, at
@@ -179,7 +179,7 @@ tests:
                 For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing.
                 Check the signer first: Fibre signs through the node at its signer_grpc_address,
                 so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   # Some clients send uploads that fail their checks, while the others are accepted: no message.
   - name: Some uploads fail while others are accepted; no uploads_failing
@@ -256,7 +256,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 14m
         alertname: FibreNotServing
         exp_alerts:
@@ -273,7 +273,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 15m
         alertname: FibreNotServing
         exp_alerts:
@@ -290,7 +290,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
               reason: not_ready
@@ -304,7 +304,7 @@ tests:
                 registration (a valid provider host on chain) or store (a small write and read).
                 Uploads to it may fail. Fibre's log names the check and what to do:
                 journalctl -u fibre.service | grep 'health check failed'.
-              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   - name: Fibre answers SERVING; no not_ready
     interval: 1m
