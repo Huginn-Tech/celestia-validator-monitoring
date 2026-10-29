@@ -1843,16 +1843,21 @@ jobs:
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
           python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same \
-            'sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[300s])) / (sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count[300s])) > 0)' \
-            'sum by (host) (increase(fibre_server_sign_duration_seconds_count{success="false"}[300s]) or increase(fibre_server_upload_shard_rejected_total[300s])) / (sum by (host) (increase(fibre_server_sign_duration_seconds_count[300s]) or increase(fibre_server_upload_shard_rejected_total[300s])) > 0)' \
+            'increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[300s]))' \
+            'increase(fibre_server_sign_duration_seconds_count{success="false"}[300s]) or increase(fibre_server_upload_shard_rejected_total[300s]))' \
+            'increase(fibre_server_upload_shard_duration_seconds_count[300s]))' \
+            'increase(fibre_server_sign_duration_seconds_count[300s]) or increase(fibre_server_upload_shard_rejected_total[300s]))' \
             "Share of upload requests that failed, over " \
             "Share of the uploads that passed their checks and then failed here, over " \
             " windows; an empty chart is good. FibreNotServing (uploads failing)" \
             " windows: not signed, or refused while the storage budget was full; an empty chart is good. FibreNotServing (uploads failing)" \
-            "Clients' invalid payment promises make small rises; a quiet network leaves the chart empty." \
-            "Uploads a client gets wrong, such as an invalid payment promise, fail at their checks and are left out, so a quiet network leaves the chart empty, as does one such client sending again." \
-            "Failures include clients' invalid payment promises and uploads refused while the storage budget is full, so a few are not this setup's fault. Every upload failing for " \
-            "Failures include clients' invalid payment promises, which are not this setup's fault, and uploads refused while the storage budget is full. No upload accepted for " \
+            "Clients' invalid payment promises make small rises;" \
+            "Uploads a client gets wrong, such as an invalid payment promise, fail at their checks and are left out, so" \
+            "a quiet network leaves the chart empty. Blobs" \
+            "a quiet network leaves the chart empty, as does one such client sending again. Blobs" \
+            "promises and uploads refused" "promises, which are not this setup's fault, and uploads refused" \
+            "budget is full, so a few are not this setup's fault. Every upload failing for " \
+            "budget is full. No upload accepted for " \
             "Failed uploads and none accepted for " "No upload accepted for " \
             " is FibreNotServing (uploads failing)." \
             " while signatures fail or the budget is full is FibreNotServing (uploads failing)."
