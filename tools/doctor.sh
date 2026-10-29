@@ -58,6 +58,7 @@ declare -A C=(
   [fibre_enabled]=""
   [appd_unit]="celestia-appd"
   [fibre_unit]="fibre"
+  [tmkms_unit]="tmkms"
   [node_rpc_url]="http://127.0.0.1:26657"
   [node_metrics_url]="http://127.0.0.1:26660/metrics"
   [node_home]=""
@@ -113,6 +114,8 @@ when --config names it.
                          metrics are expected (default: true if the Fibre
                          unit exists)
   appd_unit, fibre_unit  systemd unit names (default: celestia-appd, fibre)
+  tmkms_unit             tmkms's systemd unit name, on a KMS host (default:
+                         tmkms)
   node_rpc_url           default http://127.0.0.1:26657; a loopback URL
                          follows [rpc] laddr in the node's config.toml when
                          that names another address of the host
@@ -3191,7 +3194,7 @@ survey() {
   SURVEY_UNITS=$(survey_units)
   appd=$(survey_pick appd "${C[appd_unit]}")
   fibre=$(survey_pick fibre "${C[fibre_unit]}")
-  tmkms=$(survey_pick tmkms tmkms)
+  tmkms=$(survey_pick tmkms "${C[tmkms_unit]}")
   me=${HOSTNAME:-$(uname -n)}
   me=${me%%.*}
   printf 'celestia-mon-doctor --survey on %s: what this box runs; nothing was changed.\n' "$me"

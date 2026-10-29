@@ -25,6 +25,8 @@ signer={{ celestia_mon_signer }}
 fibre_enabled={{ 'true' if celestia_mon_fibre_enabled else 'false' }}
 appd_unit={{ celestia_mon_units.appd }}
 fibre_unit={{ celestia_mon_units.fibre }}
+{# install.sh --uninstall reads the three unit names here (ansible/uninstall.yml). #}
+tmkms_unit={{ celestia_mon_units.tmkms | default('') }}
 {% if inventory_hostname in node_hosts %}
 {# doctor follows [rpc] laddr in the node's config.toml when the RPC listens on another address. #}
 node_rpc_url=http://127.0.0.1:{{ celestia_mon_node_rpc_port }}
