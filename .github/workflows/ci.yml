@@ -737,7 +737,8 @@ jobs:
 
   # doctor on the runner, each case of the matrix on a runner of its own (tools/ci/doctor/<case>.sh),
   # so the units, addresses and firewall rules of one case never meet another's. Each case keeps the
-  # name of the job it was (doctor, doctor-standby, doctor-md, doctor-signer, doctor-ports).
+  # name of the job it was (doctor, doctor-standby, doctor-md, doctor-signer, doctor-ports); chain
+  # and survey run as doctor-chain and doctor-survey.
   # roles: doctor for each role and set of roles as root, with no config as another user, and with
   # every key of doctor.conf.j2; each run exits 0 or 1 and writes nothing to stderr.
   # standby: doctor on the mainnet roles, on the runner: a stopped stand-in for a standby Fibre unit
@@ -767,6 +768,18 @@ jobs:
   # private range on 26660, as celestia_mon_firewall_sources may name, let no one in; a private
   # range on the REST API warns (WARN 25); with a Tailscale interface they fail again; metrics on a
   # Tailscale address warn (WARN 1). A monitor-only host skips the node and Fibre checks.
+  # chain: check 27, the node a stand-in Fibre unit reads (--app-grpc-address over app_grpc_address in
+  # its server_config.toml over Fibre's default 127.0.0.1:9090), and doctor never connects to it. On a
+  # host without a node the default fails (FAIL 27), and warns on a standby; a node of node_addresses
+  # on another host is named (OK 27), an address that is none warns (WARN 27); next to its node the
+  # node's [grpc] address must take the dial (OK 27; FAIL 27 on another address or with enable =
+  # false). Check 17 names the node Fibre signs through and warns on an address that is none, and
+  # check 25 names, in its ufw command for the app gRPC, the Fibre hosts without a node of their own.
+  # survey: doctor --survey on stand-ins, one after the other: a Fibre host that reads a node on
+  # another host (a dummy interface, and a WireGuard one where the runner has the module), one box
+  # with a node and Fibre on loopback, a backup node under cosmovisor, the KMS host, and a host that
+  # runs none of them, not as root. It finds each unit by its binary and prints the groups, the entry
+  # for hosts.yml and the steps on the Celestia side, exits 0 and writes no file.
   doctor:
     name: ${{ matrix.job }}
     strategy:
@@ -778,6 +791,8 @@ jobs:
           - {case: md, job: doctor-md, name: doctor reads the md RAID arrays}
           - {case: signer, job: doctor-signer, name: doctor on the signing path}
           - {case: ports, job: doctor-ports, name: "doctor on the validator's ports"}
+          - {case: chain, job: doctor-chain, name: doctor on the node Fibre reads}
+          - {case: survey, job: doctor-survey, name: doctor --survey on each kind of host}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

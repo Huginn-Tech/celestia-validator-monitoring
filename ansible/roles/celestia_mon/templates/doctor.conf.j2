@@ -11,6 +11,14 @@
 {% for h in groups.get('fibre', []) if hostvars[h].celestia_mon_fibre_public_endpoint | default('') %}
 {% set ns.endpoints = ns.endpoints + [h ~ '=' ~ hostvars[h].celestia_mon_fibre_public_endpoint] %}
 {% endfor %}
+{# NAME=address (celestia_mon_private_ip) of every celestia-appd node and of every Fibre host. #}
+{% set addresses = namespace(nodes=[], fibres=[]) %}
+{% for h in node_hosts if hostvars[h].celestia_mon_private_ip | default('') %}
+{% set addresses.nodes = addresses.nodes + [h ~ '=' ~ hostvars[h].celestia_mon_private_ip] %}
+{% endfor %}
+{% for h in fibre_hosts if hostvars[h].celestia_mon_private_ip | default('') %}
+{% set addresses.fibres = addresses.fibres + [h ~ '=' ~ hostvars[h].celestia_mon_private_ip] %}
+{% endfor %}
 roles={{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
 inventory_host={{ inventory_hostname }}
 signer={{ celestia_mon_signer }}
@@ -23,7 +31,8 @@ node_rpc_url=http://127.0.0.1:{{ celestia_mon_node_rpc_port }}
 node_metrics_url=http://{{ ('[' ~ celestia_mon_private_ip ~ ']') if ':' in celestia_mon_private_ip else celestia_mon_private_ip }}:{{ celestia_mon_node_metrics_port }}/metrics
 node_home={{ celestia_mon_node_home | default('') }}
 {% endif %}
-data_mounts={{ celestia_mon_data_mounts | default([]) | join(',') }}
+{# Unset, celestia_mon_data_mounts is [/]: doctor's check 10 then reads the disk of /. #}
+data_mounts={{ celestia_mon_data_mounts | default(['/']) | join(',') }}
 {% if inventory_hostname in groups.get('fibre', []) %}
 fibre_mount={{ celestia_mon_fibre_mount | default('') }}
 {% endif %}
@@ -31,6 +40,10 @@ fibre_otel_endpoint=http://127.0.0.1:{{ celestia_mon_ports.otelcol_otlp }}
 fibre_public_endpoint={{ ns.endpoints | join(',') }}
 {# Every Fibre host, active or standby: with two or more, a stopped Fibre unit is a standby. #}
 fibre_hosts={{ fibre_hosts | join(',') }}
+{# Checks 17 and 27 name the node a Fibre signs through and reads; check 25 names, in its ufw
+   command for the app gRPC, the Fibre hosts that have no node of their own to read. #}
+node_addresses={{ addresses.nodes | join(',') }}
+fibre_addresses={{ addresses.fibres | join(',') }}
 {% if inventory_hostname in groups.get('monitor', []) %}
 prometheus_url=http://127.0.0.1:{{ celestia_mon_ports.prometheus }}
 alertmanager_url=http://127.0.0.1:{{ celestia_mon_ports.alertmanager }}
