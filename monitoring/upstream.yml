@@ -163,14 +163,15 @@ files:
            '"Register a Fibre provider host for validator %s with MsgSetFibreProviderInfo\."',
            '"The registered provider host %q is not a valid host:port\. Register it again\."',
            '"The store failed a small write and read\. Check free disk space and permissions of the store directory\."']
-  # Fibre's settings doctor reads (checks 6, 7, 17), and the health-check defaults the docs and
-  # FibreNotServing name.
+  # Fibre's settings doctor reads (checks 6, 7, 17 and 27, and the survey), and the health-check
+  # defaults the docs and FibreNotServing name.
   - repo: app
     file: fibre/server_config.go
     find: ['DefaultConfigFileName = "server_config\.toml"', 'filepath\.Join\(home, "config", DefaultConfigFileName\)',
            'EnvHome = "FIBRE_HOME"', 'DefaultHomeDir = "\.celestia-fibre"',
            'toml:"app_grpc_address"', 'toml:"server_listen_address"', 'toml:"signer_grpc_address"',
            'toml:"signer_grpc_ca_file"', 'toml:"signer_grpc_cert_file"', 'toml:"signer_grpc_key_file"',
+           'AppGRPCAddress:\s+"127\.0\.0\.1:9090",',
            'ServerListenAddress:\s+"0\.0\.0\.0:7980",', 'SignerGRPCAddress:\s+"127\.0\.0\.1:26669",',
            'toml:"health"', 'toml:"max_block_age"', 'CheckInterval: "10s", ProbeTimeout: "3s", MaxBlockAge: "2m"']
   - {repo: app, file: fibre/cmd/root_cmd.go, find: ['flagHome = "home"']}
