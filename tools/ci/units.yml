@@ -1,0 +1,14 @@
+# Unit names that differ between hosts, in CI: a second inventory on top of the fibre-apart example
+# (ansible-playbook -i ansible/inventory/example-fibre-apart -i tools/ci/units.yml). The example
+# already names node-1's celestia-appd unit celestia.service; here val-1's standby Fibre runs as
+# fibre-standby.service and kms-1, scraped, runs tmkms as tmkms-signer.service and sets no data
+# mounts. The rules job tests the rules rendered from it (monitoring/rules/tests/units), and the
+# dashboard job its dashboard (build/units).
+all:
+  hosts:
+    val-1:
+      celestia_mon_units: {appd: celestia-appd, fibre: fibre-standby, tmkms: tmkms}
+    kms-1:
+      celestia_mon_private_ip: 10.30.0.5
+      celestia_mon_kms_scrape: true
+      celestia_mon_units: {appd: celestia-appd, fibre: fibre, tmkms: tmkms-signer}
