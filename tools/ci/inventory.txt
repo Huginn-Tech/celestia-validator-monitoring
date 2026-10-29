@@ -74,6 +74,10 @@ install/uninstall                | ci.yml                                       
 install/uninstall-again          | ci.yml                                       | A second uninstall changes nothing
 install/purge                    | ci.yml                                       | Uninstall --purge leaves nothing behind
 install/purge-again              | ci.yml                                       | A second purge changes nothing
+install/survey                   | ci.yml                                       | --survey runs doctor's survey and prepares nothing
+install/grafana-password         | ci.yml                                       | The generated Grafana admin password opens Grafana
+install/one-install              | ci.yml                                       | A host belongs to one install
+install/secrets                  | ci.yml                                       | The monitor's secrets come from --edit-secrets
 molecule/test                    | ci.yml                                       | molecule test
 lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory

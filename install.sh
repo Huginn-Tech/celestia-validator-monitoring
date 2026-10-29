@@ -1,32 +1,54 @@
 #!/usr/bin/env bash
 # install.sh: installs celestia-validator-monitoring on this host, or removes it.
 #
-#   sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check] [--verbose]
-#   sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check] [--verbose]
+#   sudo ./install.sh [--inventory PATH] [--host NAME] [--ask-vault-pass] [--yes] [--check] [--verbose]
+#   sudo ./install.sh --uninstall [--purge] [--host NAME] [--yes] [--check] [--verbose]
+#   sudo ./install.sh --survey
+#   sudo ./install.sh --edit-secrets
 #   sudo ./install.sh --edit-vault FILE
 #
-# Run it on each host, from a copy of this repository, with the inventory all hosts share.
-# Every install is pre-checked and reversible. Steps: preflight checks and a dry run of
-# ansible/site.yml for this host only, with a short plan; a confirmation (skipped with
-# --yes); the real run; celestia-mon-doctor; and the command that removes it again.
+# Run it on each host, from a copy of this repository, with the inventory all hosts share:
+# ~/celestia-mon-inventory of the user who runs sudo, unless --inventory names another. The
+# host is the inventory host whose celestia_mon_private_ip is an address of this machine,
+# unless --host names it. Every install is pre-checked and reversible. Steps: preflight checks
+# and a dry run of ansible/site.yml for this host only, with a short plan; a confirmation
+# (skipped with --yes); the real run; the command that removes it again; and what is still to
+# do on this host, from celestia-mon-doctor.
 #
 # Nothing is installed with apt or pip: the uv binary pinned in versions.yml (its sha256
 # checked) builds a throwaway virtualenv from the host's own python3, under
 # /var/tmp/celestia-mon-install, and installs ansible-core and every package it needs from
 # ansible/requirements.lock, each file checked against the sha256 there (--require-hashes).
-# The vault password, and with --edit-vault ansible-vault's decrypted copy of the file, go to
-# /run/celestia-mon-install instead, in memory (/run is a tmpfs), never to the disk. Both
-# directories are root's only and are removed when the script ends, also when it fails.
+# The vault password, and with --edit-vault ansible-vault's decrypted copy of the file (with
+# --edit-secrets the copy being edited), go to /run/celestia-mon-install instead, in memory
+# (/run is a tmpfs), never to the disk. Both directories are root's only and are removed when
+# the script ends, also when it fails.
+#
+# The host is found, and the vault password asked for, after the virtualenv is built: its PyYAML
+# reads hosts.yml and the host_vars and group_vars files that are not encrypted, without Ansible
+# and without the password. The password is asked for when a file this host's run reads is
+# encrypted with ansible-vault (with --ask-vault-pass, first, as before). A copy of the monitor's
+# encrypted host_vars on another host stops the run: that host reads none of its secrets.
+#
+# The monitor's secrets (the receivers, the dead-man URL) live in the inventory's vault.yml, or
+# outside the inventory in /etc/celestia-mon/secrets.yml (root's only), which --edit-secrets
+# writes and the monitor's run reads as extra variables; both at once stop the run.
 #
 # --uninstall does the same with ansible/uninstall.yml, which reads no inventory settings:
-# it needs neither the inventory nor the vault password. It removes the services, their
-# binaries and the ufw rules the install added, and keeps the data, the settings and the
-# system users, so a reinstall picks up where it left off. --uninstall --purge deletes
-# those too, after a confirmation of its own that names them.
+# it needs neither the inventory nor the vault password, and takes the host's name from the
+# doctor settings the install wrote. It removes the services, their binaries and the ufw rules
+# the install added, and keeps the data, the settings and the system users, so a reinstall
+# picks up where it left off. --uninstall --purge deletes those too, after a confirmation of
+# its own that names them.
+#
+# --survey runs celestia-mon-doctor's survey from this copy (tools/doctor.sh --survey): it reads
+# this host and prints its inventory entry and the steps that are the operator's. Nothing is
+# downloaded, written or changed.
 #
 # --edit-vault opens an inventory's vault.yml in ansible-vault from the same throwaway
 # virtualenv: it creates the file when it is missing, encrypts it when it is still plain text,
-# and edits it when it is encrypted. Nothing is installed.
+# and edits it when it is encrypted. --edit-secrets opens /etc/celestia-mon/secrets.yml, from a
+# template when it is missing, in an editor, with nothing downloaded. Neither installs anything.
 
 set -euo pipefail
 export LC_ALL=C.UTF-8
@@ -36,33 +58,47 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 work=/var/tmp/celestia-mon-install
 secrets=/run/celestia-mon-install
 python=/usr/bin/python3
+# The monitor's secrets outside the inventory (--edit-secrets).
+secrets_file=/etc/celestia-mon/secrets.yml
+# The Grafana role writes this file, root's only, when the inventory sets no admin password.
+grafana_password_file=/etc/celestia-mon/grafana-admin-password
 
 usage() {
   cat <<'EOF'
 Usage:
-  sudo ./install.sh --inventory FILE --host NAME [--ask-vault-pass] [--yes] [--check] [--verbose]
-  sudo ./install.sh --uninstall [--purge] [--inventory FILE] --host NAME [--yes] [--check] [--verbose]
+  sudo ./install.sh [--inventory PATH] [--host NAME] [--ask-vault-pass] [--yes] [--check] [--verbose]
+  sudo ./install.sh --uninstall [--purge] [--host NAME] [--yes] [--check] [--verbose]
+  sudo ./install.sh --survey
+  sudo ./install.sh --edit-secrets
   sudo ./install.sh --edit-vault FILE
 
-Installs celestia-validator-monitoring on this machine as inventory host NAME, or
-removes it with --uninstall. Run it on each host in turn. Every install is pre-checked
-and reversible: a dry run shows the plan before anything changes, and --uninstall
-removes it again.
+Installs celestia-validator-monitoring on this machine, or removes it with --uninstall.
+Run it on each host in turn, with the inventory every host shares. Every install is
+pre-checked and reversible: a dry run shows the plan before anything changes, and
+--uninstall removes it again.
 
-  --inventory FILE   the inventory all hosts share (a hosts.yml, or its directory);
-                     not needed with --uninstall
-  --host NAME        the inventory host this machine is (a host name, not a group)
-  --ask-vault-pass   ask for the ansible-vault password, when this host's inventory
-                     files hold vault-encrypted values (not needed with --uninstall)
+  --inventory PATH   the inventory all hosts share (its directory, or the hosts.yml in it);
+                     default: ~/celestia-mon-inventory of the user who runs sudo
+  --host NAME        the inventory host this machine is (a host name, not a group);
+                     default: the host whose celestia_mon_private_ip is an address of
+                     this machine
+  --ask-vault-pass   ask for the ansible-vault password first; without it, install.sh
+                     asks when a file this host's run reads is vault-encrypted
   --yes              apply the plan without asking
   --check            dry run only: show the plan and change nothing
   --uninstall        remove celestia-mon's services, binaries and the ufw rules it
-                     added; keep its data, settings and users for a reinstall
+                     added; keep its data, settings and users for a reinstall. It
+                     needs no inventory, and no --host on a host it installed on
   --purge            with --uninstall: also delete the data (/var/lib/celestia-mon),
                      the settings (/etc/celestia-mon) and the celestia-mon-* users
                      and groups, after a second confirmation
   --verbose          show Ansible's whole output (every task, result and diff) instead of
                      one line per part; an install keeps it in /var/log/celestia-mon either way
+  --survey           read this machine and print its inventory entry and your steps on
+                     it (celestia-mon-doctor --survey); nothing is downloaded or changed
+  --edit-secrets     on the monitor host: create or edit its secrets (the receivers, the
+                     dead-man URL) in /etc/celestia-mon/secrets.yml, root's only, which
+                     its install reads (the editor is $EDITOR, else nano or vi), then exit
   --edit-vault FILE  create, encrypt or edit a vault.yml with ansible-vault (asks for
                      its password; the editor is $EDITOR, else nano or vi), then exit
 EOF
@@ -75,6 +111,12 @@ die() {
 
 step() {
   printf '\n==> %s\n' "$*"
+}
+
+join() { # TEXT... -> the texts joined with ", "
+  local out="" x
+  for x in "$@"; do out+="${out:+, }$x"; done
+  printf '%s' "$out"
 }
 
 # Prints a value from versions.yml by its dotted key under celestia_mon_versions,
@@ -114,14 +156,14 @@ fetch() { # URL FILE
 # Runs a playbook from ansible/ for this host only, on this machine, and keeps its full output in
 # a log. The terminal shows the progress view of tools/install-output.awk (one line per part with
 # what it changed, warnings and errors), or everything with --verbose. celestia_mon_install_host lets the playbook
-# refuse a group name given as --host.
+# refuse a group name given as --host. An install also reads the monitor's secrets file, when there is one.
 run_playbook() { # LOG PLAYBOOK [ansible-playbook arguments]
   local log=$1 book=$2 dry=0 arg
   shift 2
   for arg in "$@"; do [[ $arg != --check ]] || dry=1; done
   (cd "$repo/ansible" && "$work/venv/bin/ansible-playbook" "${inv_args[@]}" --limit "$host" \
     -e ansible_connection=local -e ansible_become=false -e "celestia_mon_install_host=$host" \
-    "${vault[@]}" "$@" "$book") 2>&1 | tee "$log" |
+    "${vault[@]}" "${secret_vars[@]}" "$@" "$book") 2>&1 | tee "$log" |
     if $verbose; then cat; else awk -v dry="$dry" -f "$repo/tools/install-output.awk"; fi
 }
 
@@ -153,6 +195,221 @@ changes() { # LOG
     $1 == h && $2 == ":" { for (i = 3; i <= NF; i++) if ($i ~ /^changed=/) { sub(/^changed=/, "", $i); n = $i } }
     END { print n + 0 }
   ' "$1"
+}
+
+# Prints the addresses of this machine, one a line, as the preflight reads them: lines such as
+# "inet 10.0.0.5/24 ...", "inet6 fd00::5/64 ..." or "inet 10.0.0.5 peer 10.0.0.6/32 ...".
+machine_addresses() {
+  ip -o addr show 2>/dev/null | sed -nE 's/.* inet6? ([0-9A-Fa-f.:]+)[/ ].*/\1/p'
+}
+
+# Reads the inventory with the virtualenv's PyYAML, without Ansible and without the vault
+# password: hosts.yml (every .yml, .yaml or .json file of an inventory directory) and the
+# host_vars and group_vars next to it that are not encrypted. Prints tab-separated lines:
+#   host NAME ADDRESS   every inventory host, with its celestia_mon_private_ip (- when none)
+#   match NAME          a host whose celestia_mon_private_ip is an address of this machine
+#   chosen NAME         the host this run is for: HOST, else the one host that matches
+#   monitor NAME        the host of the monitor group
+#   vault PATH          a file with vault-encrypted values that the run for the chosen host reads:
+#                       on the monitor every one (it renders every host's settings), elsewhere
+#                       its own, its groups' and those of the other hosts celestia-mon manages
+#   foreign PATH        a vault-encrypted file of the monitor's on another host, which that
+#                       host's run does not need
+#   error PATH TEXT     a file it could not read
+inventory_facts() { # HOST (or empty) ADDRESS...
+  "$work/venv/bin/python" -I - "$inventory" "$@" <<'PY'
+import ipaddress
+import os
+import sys
+
+import yaml
+
+inventory, chosen, here = sys.argv[1], sys.argv[2], sys.argv[3:]
+ENCRYPTED = object()
+
+
+def address(value):
+    try:
+        return ipaddress.ip_address(str(value).strip()).compressed
+    except ValueError:
+        return None
+
+
+here = {address(a) for a in here} - {None}
+
+
+class Tagged(str):
+    """A value with a tag such as !vault or !unsafe: never an address."""
+    vault = False
+
+
+class Loader(yaml.SafeLoader):
+    pass
+
+
+def tagged(loader, suffix, node):
+    value = Tagged(loader.construct_scalar(node) if isinstance(node, yaml.ScalarNode) else "")
+    value.vault = suffix == "vault"
+    return value
+
+
+Loader.add_multi_constructor("!", tagged)
+
+
+def vaulted(value):
+    if isinstance(value, Tagged):
+        return value.vault
+    if isinstance(value, dict):
+        return any(vaulted(v) for v in value.values())
+    if isinstance(value, list):
+        return any(vaulted(v) for v in value)
+    return False
+
+
+def load(path):
+    with open(path, "rb") as f:
+        if f.read(15) == b"$ANSIBLE_VAULT;":
+            return ENCRYPTED
+        f.seek(0)
+        return yaml.load(f, Loader=Loader)
+
+
+hosts = {}      # name: {"address", "groups", "inline": a !vault value in its entry}
+inline = set()  # groups whose vars in the inventory hold a !vault value
+errors = []
+
+
+def walk(name, group, parents):
+    groups = parents + [name]
+    if not isinstance(group, dict):
+        return
+    if vaulted(group.get("vars")):
+        inline.add(name)
+    members = group.get("hosts")
+    for host, settings in members.items() if isinstance(members, dict) else []:
+        entry = hosts.setdefault(str(host), {"address": None, "groups": {"all"}, "inline": False})
+        entry["groups"].update(groups)
+        if isinstance(settings, dict):
+            ip = settings.get("celestia_mon_private_ip")
+            if ip is not None and not isinstance(ip, Tagged):
+                entry["address"] = str(ip)
+            entry["inline"] = entry["inline"] or vaulted(settings)
+    children = group.get("children")
+    for child, sub in children.items() if isinstance(children, dict) else []:
+        walk(str(child), sub, groups)
+
+
+if os.path.isdir(inventory):
+    base = inventory
+    sources = [os.path.join(base, n) for n in sorted(os.listdir(base))
+               if n.endswith((".yml", ".yaml", ".json")) and os.path.isfile(os.path.join(base, n))]
+else:
+    base, sources = os.path.dirname(inventory), [inventory]
+for path in sources:
+    try:
+        data = load(path)
+    except (OSError, yaml.YAMLError) as e:
+        errors.append((path, " ".join(str(e).split())))
+        continue
+    if isinstance(data, dict):
+        for name, group in data.items():
+            walk(str(name), group, [] if name == "all" else ["all"])
+
+
+def var_files(kind, name):
+    """The files Ansible reads for host_vars/NAME or group_vars/NAME next to the inventory."""
+    root = os.path.join(base, kind)
+    found = [os.path.join(root, name + ext) for ext in ("", ".yml", ".yaml", ".json")
+             if os.path.isfile(os.path.join(root, name + ext))]
+    top = os.path.join(root, name)
+    if os.path.isdir(top):
+        for where, dirs, files in os.walk(top, followlinks=True):
+            dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+            found += [os.path.join(where, f) for f in sorted(files) if not f.startswith(".") and not f.endswith("~")]
+    return found
+
+
+encrypted, lazy = [], []  # (kind, name, path): a whole file vault-encrypted; a plain file with a !vault value
+for kind, names in (("host_vars", list(hosts)), ("group_vars", sorted({"all"}.union(*[e["groups"] for e in hosts.values()])))):
+    for name in names:
+        for path in var_files(kind, name):
+            try:
+                data = load(path)
+            except (OSError, yaml.YAMLError) as e:
+                errors.append((path, " ".join(str(e).split())))
+                continue
+            if data is ENCRYPTED:
+                encrypted.append((kind, name, path))
+                continue
+            if isinstance(data, dict) and kind == "host_vars":
+                ip = data.get("celestia_mon_private_ip")
+                if ip is not None and not isinstance(ip, Tagged):
+                    hosts[name]["address"] = str(ip)
+            if vaulted(data):
+                lazy.append((kind, name, path))
+
+monitors = [h for h, e in hosts.items() if "monitor" in e["groups"]]
+monitor = monitors[0] if len(monitors) == 1 else ""
+matches = [h for h, e in hosts.items() if address(e["address"] or "") in here]
+if not chosen and len(matches) == 1:
+    chosen = matches[0]
+everything = chosen == monitor or chosen not in hosts
+own_groups = hosts[chosen]["groups"] if chosen in hosts else set()
+# Hosts whose settings a run on another host reads (the monitor's address, each Fibre's endpoint).
+managed = {h for h, e in hosts.items() if e["groups"] & {"validator", "backup_node", "fibre", "monitor"}}
+
+out = [("host", h, e["address"] or "-") for h, e in hosts.items()]
+out += [("match", h) for h in matches]
+out += [("chosen", chosen), ("monitor", monitor)]
+if chosen:
+    for kind, name, path in encrypted:
+        if kind == "host_vars" and name == monitor and not everything:
+            out.append(("foreign", path))
+        elif everything or (name in own_groups if kind == "group_vars" else (name == chosen or name in managed)):
+            out.append(("vault", path))
+    # Inline !vault values are decrypted only when a task reads them.
+    for kind, name, path in lazy:
+        if everything or name == chosen or (kind == "group_vars" and name in own_groups):
+            out.append(("vault", path))
+    out += [("vault", "%s (the entry of %s)" % (inventory, h)) for h, e in hosts.items()
+            if e["inline"] and (everything or h == chosen)]
+    out += [("vault", "%s (the vars of %s)" % (inventory, g)) for g in sorted(inline) if everything or g in own_groups]
+out += [("error",) + e for e in errors]
+for row in out:
+    print("\t".join(row))
+PY
+}
+
+# The template of /etc/celestia-mon/secrets.yml for --edit-secrets.
+secrets_template() {
+  cat <<'EOF'
+---
+# The secrets of the monitor host. Only this host needs them: its install (sudo ./install.sh)
+# reads this file, and its settings win over the same settings in the inventory. Keep them
+# here or in the inventory's vault.yml, not in both. Change it with: sudo ./install.sh --edit-secrets
+# Only root reads it; sudo ./install.sh --uninstall keeps it, --uninstall --purge deletes it.
+
+# Receivers: one list. Page alerts go to every receiver, message alerts to every receiver
+# except PagerDuty, so list at least one of another type. Types: telegram, discord, slack,
+# pagerduty, webhook (docs/alerts.md).
+celestia_mon_receivers:
+  - type: telegram
+    bot_token: "000000000:REPLACE_ME"
+    chat_id: -1000000000000
+  # - type: pagerduty
+  #   routing_key: "REPLACE_ME"
+
+# Required: the https ping URL of your dead-man check, which alerts you when the pings stop.
+celestia_mon_deadman_webhook_url: "https://deadman.example.invalid/ping/REPLACE_ME"
+
+# Optional: Grafana's admin password, at least 16 characters. Without it, the first install
+# generates one: sudo cat /etc/celestia-mon/grafana-admin-password
+# celestia_mon_grafana_admin_password: "REPLACE_ME"
+
+# Optional, with celestia_mon_announcements in the inventory (docs/alerts.md#celestiaannouncement):
+# the token of the Discord bot that reads Celestia's announcements.
+# celestia_mon_discord_bot_token: "REPLACE_ME"
+EOF
 }
 
 inventory=""
@@ -195,6 +452,14 @@ while (($# > 0)); do
       mode=uninstall
       shift
       ;;
+    --survey)
+      mode=survey
+      shift
+      ;;
+    --edit-secrets)
+      mode=edit-secrets
+      shift
+      ;;
     --edit-vault)
       (($# >= 2)) || die "--edit-vault needs a vault.yml file"
       mode=edit-vault
@@ -219,9 +484,10 @@ if [[ $mode == edit-vault ]]; then
   if [[ -n $host || -n $inventory ]] || $yes || $check || $ask_vault || $purge; then
     die "--edit-vault takes only the vault file"
   fi
-elif [[ -z $host || ($mode == install && -z $inventory) ]]; then
-  usage >&2
-  exit 2
+elif [[ $mode == survey || $mode == edit-secrets ]]; then
+  if [[ -n $host || -n $inventory ]] || $yes || $check || $ask_vault || $purge || $verbose; then
+    die "--$mode takes no other option"
+  fi
 fi
 ! $check || log_file=$logs/check.log
 if $purge && [[ $mode != uninstall ]]; then
@@ -239,10 +505,24 @@ if [[ $mode == edit-vault ]]; then
   vault_target=$(realpath -m -- "$vault_target")
   host=edit-vault
 fi
-[[ $host =~ ^[A-Za-z0-9._-]+$ ]] || die "--host takes one inventory host name: $host"
+# Without --host, --uninstall removes celestia-mon from the host the install recorded in doctor's
+# settings (inventory_host), else from this machine's name: uninstall.yml reads nothing else of it.
+if [[ $mode == uninstall && -z $host ]]; then
+  host=$(sed -n 's/^inventory_host=//p' /etc/celestia-mon/doctor.conf 2>/dev/null | head -n 1 || true)
+  [[ -n $host ]] || host=$(hostname -s 2>/dev/null || true)
+  [[ $host =~ ^[A-Za-z0-9._-]+$ ]] || host=this-host
+fi
+[[ -z $host || $host =~ ^[A-Za-z0-9._-]+$ ]] || die "--host takes one inventory host name: $host"
 # uninstall.yml reads no inventory settings, so --uninstall runs with this host's name as the
 # whole inventory: it needs neither the inventory file nor the vault password.
 if [[ $mode == install ]]; then
+  if [[ -z $inventory ]]; then
+    home=$(getent passwd "${SUDO_USER:-root}" | cut -d: -f6 || true)
+    inventory=${home:-/root}/celestia-mon-inventory
+    [[ -e $inventory ]] ||
+      die "no inventory at $inventory: put there the inventory all hosts share (its hosts.yml, with group_vars/ and" \
+        "host_vars/ when it has them), or name it with --inventory. sudo ./install.sh --survey prints this host's entry for it."
+  fi
   [[ -e $inventory ]] || die "inventory not found: $inventory"
   inventory=$(realpath -e -- "$inventory")
   inv_args=(-i "$inventory")
@@ -279,15 +559,71 @@ unsafe=$(find -L "${checked[@]}" -xdev ! -type l \( -perm -0002 -o \( ! -user 0 
   die "$unsafe belongs to another user, or another user or group can write to it: only root or the user running sudo" \
     "may own these files and write to them (chown -R, chmod -R go-w)"
 
-# The secrets (receiver tokens, the dead-man URL, the Grafana password) live in the inventory's
-# vault.yml files, which must be encrypted with ansible-vault, never left in plain text.
+# The survey is celestia-mon-doctor's, from this copy, before anything is downloaded.
+if [[ $mode == survey ]]; then
+  exec bash "$repo/tools/doctor.sh" --survey
+fi
+
+# The secrets file is edited as a copy in memory (/run), so no editor's swap or backup file
+# lands next to it, and replaces the file only when the copy changed.
+if [[ $mode == edit-secrets ]]; then
+  [[ -t 0 ]] || die "--edit-secrets needs a terminal"
+  # A root-owned editor would write through a link to whatever file it names.
+  [[ ! -L $secrets_file ]] || die "$secrets_file is a symbolic link: remove it, then run --edit-secrets again"
+  [[ ! -e $secrets_file || -f $secrets_file ]] || die "$secrets_file is not a regular file"
+  editor=${EDITOR:-${VISUAL:-}}
+  [[ -n $editor ]] || editor=$(command -v nano || command -v vi || true)
+  [[ -n $editor ]] || die "no editor found: set EDITOR"
+  read -r -a editor_cmd <<<"$editor"
+  if [[ -e $secrets || -L $secrets ]]; then
+    die "$secrets exists: another install.sh may be running. If none is, remove it (sudo rm -rf $secrets) and run again."
+  fi
+  mkdir -m 0700 -- "$secrets" || die "cannot create $secrets"
+  trap 'rm -rf -- "$secrets"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM HUP
+  draft=$secrets/secrets.yml
+  (
+    umask 077
+    if [[ -f $secrets_file ]]; then cat -- "$secrets_file"; else secrets_template; fi >"$draft"
+    cp -- "$draft" "$secrets/before"
+  )
+  step "Editing $secrets_file"
+  "${editor_cmd[@]}" "$draft" || die "the editor stopped with an error; $secrets_file is as it was"
+  if cmp -s -- "$draft" "$secrets/before"; then
+    if [[ -f $secrets_file ]]; then echo "No change: $secrets_file is as it was."; else echo "Nothing saved: $secrets_file was not created."; fi
+    exit 0
+  fi
+  [[ -d /etc/celestia-mon ]] || install -d -m 0755 -o root -g root /etc/celestia-mon
+  if ! install -m 0600 -o root -g root -- "$draft" "$secrets_file.new" || ! mv -f -- "$secrets_file.new" "$secrets_file"; then
+    die "could not write $secrets_file"
+  fi
+  printf 'Saved %s (root only). The install on this host reads it: sudo %q\n' "$secrets_file" "$repo/install.sh"
+  exit 0
+fi
+
+# The secrets (receiver tokens, the dead-man URL) live in the inventory's vault.yml files, which
+# must be encrypted with ansible-vault, never left in plain text, or in /etc/celestia-mon/secrets.yml.
+vault_files=()
 if [[ -n $inv_dir ]]; then
   while IFS= read -r -d '' vault_file; do
     [[ $(head -c 15 -- "$vault_file") == "\$ANSIBLE_VAULT;" ]] ||
-      die "$vault_file is not encrypted: encrypt it with ansible-vault encrypt $vault_file, then run again with --ask-vault-pass"
+      die "$vault_file is not encrypted: encrypt it (sudo $repo/install.sh --edit-vault $vault_file), then run again"
     vault_mode=$(stat -L -c %a -- "$vault_file")
     (((8#$vault_mode & 8#044) == 0)) || die "$vault_file is readable by group or other: chmod 600 $vault_file"
+    vault_files+=("$vault_file")
   done < <(find -L "$inv_dir/host_vars" "$inv_dir/group_vars" -type f \( -name vault.yml -o -name vault.yaml \) -print0 2>/dev/null)
+fi
+if [[ $mode == install ]] && [[ -e $secrets_file || -L $secrets_file ]]; then
+  [[ ! -L $secrets_file && -f $secrets_file ]] || die "$secrets_file is not a regular file: remove it, then run --edit-secrets"
+  secrets_mode=$(stat -c %a -- "$secrets_file")
+  if [[ $(stat -c %u -- "$secrets_file") != 0 ]] || (((8#$secrets_mode & 8#077) != 0)); then
+    die "$secrets_file must belong to root and be readable by root only: sudo chown root: $secrets_file && sudo chmod 600 $secrets_file"
+  fi
+  ((${#vault_files[@]} == 0)) ||
+    die "the monitor's secrets are in $secrets_file and in ${vault_files[0]}: keep one. To keep $secrets_file, move what the vault" \
+      "holds there (sudo ./install.sh --edit-secrets) and delete the vault file from the inventory; to keep the vault, delete" \
+      "$secrets_file (sudo rm $secrets_file)."
 fi
 
 uv_version=$(pin uv.version) || die "versions.yml has no uv.version"
@@ -351,6 +687,74 @@ export UV_CACHE_DIR=$work/uv-cache UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1 UV_N
 # anything else. Wheels only, so no package build code runs as root.
 "$work/uv" pip install --quiet --python "$work/venv/bin/python" --require-hashes --only-binary :all: -r "$lock" ||
   die "could not install Ansible from ansible/requirements.lock: a download failed, or a file did not match its sha256 there (see above)"
+
+# Which inventory host this machine is, and what of the inventory its run reads.
+secret_vars=()
+if [[ $mode == install ]]; then
+  mapfile -t addresses < <(machine_addresses)
+  declare -A address_of=()
+  known=() matched=() needs_vault=() foreign=() unreadable=()
+  chosen="" monitor_host=""
+  # With --host the facts only add to the run: an inventory they cannot be read from runs as before.
+  if ! inventory_facts "$host" "${addresses[@]}" >"$work/inventory-facts"; then
+    [[ -n $host ]] || die "could not read the inventory $inventory (the error is above): fix it, or name this host with --host"
+    : >"$work/inventory-facts"
+  fi
+  while IFS=$'\t' read -r kind name value; do
+    case $kind in
+      host)
+        address_of[$name]=$value
+        known+=("$name $value")
+        ;;
+      match) matched+=("$name (${address_of[$name]:-})") ;;
+      chosen) chosen=$name ;;
+      monitor) monitor_host=$name ;;
+      vault) needs_vault+=("$name") ;;
+      foreign) foreign+=("$name") ;;
+      error) unreadable+=("$name: $value") ;;
+    esac
+  done <"$work/inventory-facts"
+  if [[ -z $host ]]; then
+    ((${#unreadable[@]} == 0)) || die "cannot read the inventory, ${unreadable[0]}"
+    ((${#matched[@]} < 2)) ||
+      die "several hosts of $inventory have an address of this machine as their celestia_mon_private_ip" \
+        "($(join "${matched[@]}")): name the one this machine is with --host"
+    [[ -n $chosen ]] ||
+      die "no host of $inventory has an address of this machine (${addresses[*]:-none}) as its celestia_mon_private_ip" \
+        "(the inventory: $(join "${known[@]}")). Set it to this machine's private address in this host's entry, or" \
+        "name the host with --host. On the KMS host celestia-mon installs nothing, unless celestia_mon_kms_scrape is set."
+    host=$chosen
+    [[ $host =~ ^[A-Za-z0-9._-]+$ ]] || die "the inventory host $host has a name install.sh does not take: name it with letters, digits, . _ or -"
+  fi
+  if [[ -n ${address_of[$host]:-} && ${address_of[$host]} != - ]]; then
+    echo "Installing as $host (${address_of[$host]}) from $inventory"
+  else
+    echo "Installing as $host from $inventory"
+  fi
+  # A copy of the monitor's vault on another host would stop Ansible there with a vault error,
+  # though that host reads none of the monitor's secrets.
+  if ((${#foreign[@]} > 0)) && ! $ask_vault; then
+    die "this host does not need ${foreign[0]}: delete it from this copy. It holds the secrets of the monitor host" \
+      "($monitor_host), which only the monitor's install reads."
+  fi
+  if ((${#needs_vault[@]} > 0)) && ! $ask_vault; then
+    [[ -t 0 ]] || die "${needs_vault[0]} holds vault-encrypted values that the install of $host reads: run install.sh on a terminal," \
+      "where it asks for the vault password"
+    echo "${needs_vault[0]} holds vault-encrypted values that the install of $host reads."
+    IFS= read -rs -p "Vault password: " vault_pass
+    echo
+    ask_vault=true
+  fi
+  # The monitor's secrets outside the inventory: read by the monitor's install only.
+  if [[ -e $secrets_file ]]; then
+    if [[ -n $monitor_host && $host != "$monitor_host" ]]; then
+      die "$secrets_file holds the monitor's secrets, and this machine is $host, not the monitor host ($monitor_host):" \
+        "its install reads none. Delete it here (sudo rm $secrets_file) and keep the secrets on $monitor_host only."
+    fi
+    secret_vars=(-e "@$secrets_file")
+    echo "The monitor's secrets: $secrets_file"
+  fi
+fi
 
 # Everything Ansible writes for itself stays under $work.
 mkdir -p -- "$work/ansible"
@@ -436,8 +840,8 @@ if ! $yes; then
     cat <<'PURGE'
 
 --purge also deletes, and this cannot be undone:
-  /var/lib/celestia-mon   Prometheus's data and Grafana's database
-  /etc/celestia-mon       celestia-mon's settings
+  /var/lib/celestia-mon   Prometheus's data, Grafana's database and the record of the install this host is in
+  /etc/celestia-mon       celestia-mon's settings, the secrets of --edit-secrets among them
   the celestia-mon-* system users and groups
 PURGE
     read -r -p "Delete them on $host too? [y/N] " answer
@@ -458,9 +862,11 @@ if [[ $mode == uninstall ]]; then
   step "celestia-mon is removed from $host ($(changes "$work/run.log") change(s))."
   if ! $purge; then
     echo "Removed with the services: the settings files that hold secrets (Alertmanager's config, Grafana's admin"
-    echo "password and datasource, the API passwords); a reinstall writes them again from the inventory."
-    echo "Kept for a reinstall: /var/lib/celestia-mon (data), /etc/celestia-mon (the other settings) and the celestia-mon-* users."
-    printf 'To delete them too:\n  sudo %q --uninstall --purge --host %q\n' "$repo/install.sh" "$host"
+    echo "password and datasource, the API passwords); a reinstall writes them again from the inventory and the secrets."
+    echo "Kept for a reinstall: /var/lib/celestia-mon (data, and the record of the install this host is in),"
+    echo "/etc/celestia-mon (the other settings, the secrets of --edit-secrets and a generated Grafana password among"
+    echo "them) and the celestia-mon-* users."
+    printf 'To delete them too:\n  sudo %q --uninstall --purge\n' "$repo/install.sh"
   fi
   exit 0
 fi
@@ -478,31 +884,37 @@ fi
 if awk '/^TASK \[celestia_mon_alertmanager : Post the test notification/ { t = 1; next }
         t && /^ok:/ { found = 1 } t && /^TASK / { t = 0 } END { exit !found }' "$work/run.log"; then
   echo "A test message went to the chat receivers (Telegram, Discord, Slack, webhooks; not PagerDuty)."
-  echo "If it does not arrive within a minute, check their settings in the vault."
+  echo "If it does not arrive within a minute, check their settings in the secrets or the vault."
+fi
+# The Grafana role reads the generated password only when celestia_mon_grafana_admin_password is unset.
+if awk '/^TASK \[celestia_mon_grafana : Read the generated Grafana admin password/ { t = 1; next }
+        t && /^ok:/ { found = 1 } t && /^TASK / { t = 0 } END { exit !found }' "$work/run.log"; then
+  echo "Grafana's admin password (user admin), generated by the install: sudo cat $grafana_password_file"
 fi
 
-step "celestia-mon-doctor on $host"
-# doctor exits 0 when no check failed, also with WARN lines, which are worth fixing too.
-set +e
-/usr/local/bin/celestia-mon-doctor | tee "$work/doctor.log"
-status=${PIPESTATUS[0]}
-set -e
-case $status in
-  0)
-    if grep -q '^WARN' "$work/doctor.log"; then
-      echo "doctor: no check failed, but read the WARN lines above (each ends with its fix)."
-    else
-      echo "doctor: every check passed."
-    fi
-    ;;
-  1) echo "doctor: fix the FAIL lines above (each ends with the fix), then run: sudo celestia-mon-doctor" ;;
-  *) echo "doctor exited with status $status." ;;
-esac
-
-echo "The whole output of this install: $log_file"
-
 step "To remove celestia-mon from $host again"
-# The removal needs no inventory and no vault password.
-printf '  sudo %q --uninstall --host %q\n' "$repo/install.sh" "$host"
+# The removal needs no inventory, no vault password and no --host.
+printf '  sudo %q --uninstall\n' "$repo/install.sh"
 echo "  removes the services, their binaries and the ufw rules the install added, and keeps the data,"
 echo "  settings and users for a reinstall; add --purge to delete those too."
+
+# doctor exits 0 when no check failed, also with WARN lines, which are worth fixing too. Its whole
+# report goes to the log; here only the lines that ask for something.
+step "Still to do on this box"
+set +e
+/usr/local/bin/celestia-mon-doctor >"$work/doctor.log" 2>&1
+status=$?
+set -e
+todo=$(grep -E '^(FAIL|WARN|NOT YET) ' "$work/doctor.log" || true)
+if [[ -n $todo ]]; then
+  printf '%s\n' "$todo"
+  echo "Each line is a celestia-mon-doctor check and ends with its fix, for you to apply at a moment you choose;"
+  echo "some clear by themselves once the other hosts are installed. Then run: sudo celestia-mon-doctor"
+elif ((status == 0)); then
+  echo "Nothing: every celestia-mon-doctor check passed."
+fi
+if ((status > 1)); then
+  echo "celestia-mon-doctor exited with status $status:"
+  tail -n 5 -- "$work/doctor.log"
+fi
+echo "doctor's whole report and the whole output of this install: $log_file"

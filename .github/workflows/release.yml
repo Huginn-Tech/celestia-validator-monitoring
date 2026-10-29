@@ -1,0 +1,51 @@
+name: release
+
+# On a tag v*, the package as one tarball and its SHA256SUMS, attached to a GitHub release of that
+# tag: celestia-validator-monitoring-<tag>.tar.gz is git archive of the tagged commit (everything
+# the repository tracks, install.sh executable), unpacking to celestia-validator-monitoring-<tag>/.
+# On each host: download both, check the tarball with sha256sum -c SHA256SUMS, unpack it. Nothing
+# here creates or pushes a tag: whoever releases does (git tag -a <tag>, git push origin <tag>).
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # Creating the release and attaching its files.
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      # Files 0644 and 0755 (tar.umask 022), owned by root in the archive.
+      - name: Build the tarball and SHA256SUMS
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          [[ $TAG =~ ^v[0-9A-Za-z._-]+$ ]] || { echo "the tag $TAG is not a release name such as v1.2.0"; exit 1; }
+          name="celestia-validator-monitoring-$TAG"
+          mkdir -p dist
+          git -c tar.umask=0022 archive --format=tar.gz --prefix="$name/" -o "dist/$name.tar.gz" HEAD
+          (cd dist && sha256sum "$name.tar.gz" >SHA256SUMS && cat SHA256SUMS)
+          tar -tvzf "dist/$name.tar.gz" "$name/install.sh" >dist/install-sh.txt
+          grep -q '^-rwxr-xr-x ' dist/install-sh.txt || { cat dist/install-sh.txt; echo "install.sh is not executable in the tarball"; exit 1; }
+      - name: Attach them to the release of the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="celestia-validator-monitoring-$TAG"
+          gh release create "$TAG" "dist/$name.tar.gz" dist/SHA256SUMS --repo "$GITHUB_REPOSITORY" --verify-tag --title "$TAG" \
+            --notes "celestia-validator-monitoring $TAG: check the tarball with sha256sum -c SHA256SUMS, then unpack it on each host."

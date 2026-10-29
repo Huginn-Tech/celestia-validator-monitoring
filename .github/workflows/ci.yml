@@ -858,10 +858,12 @@ jobs:
   # operator's (it even carries the comment celestia-mon) that must survive both, and the
   # inventory names monitor addresses other than this host's (celestia_mon_firewall_sources),
   # so rules are added, recorded and removed. No setup action: install.sh brings its own Ansible,
-  # from the committed ansible/requirements.lock.
+  # from the committed ansible/requirements.lock. The install itself runs as an operator runs it,
+  # sudo ./install.sh with no option on a terminal; the other runs keep --inventory, --host and
+  # --yes. The inventory sets no Grafana admin password, so the install generates one.
   install:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -902,7 +904,6 @@ jobs:
               celestia_mon_receivers:
                 - {type: webhook, url: "http://127.0.0.1:9/message"}
               celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
-              celestia_mon_grafana_admin_password: ci-test-only-not-a-secret
               celestia_mon_announcements:
                 - {channel_id: "111111111111111111", severity: page}
               celestia_mon_announcements_discord_api: http://127.0.0.1:8765/api/v10
@@ -958,15 +959,19 @@ jobs:
           sudo ufw --force enable
           sudo ufw status verbose
       # Each gate stops install.sh before any change: a placeholder dead-man URL, a firewall
-      # source wider than its private block, a vault.yml in plain text or readable by others.
+      # source wider than its private block, a shared setting of the wrong kind, a data mount that
+      # is not a mount point, a unit name systemd has not loaded, a vault.yml in plain text,
+      # readable by others, of the monitor on another host, or with no terminal to ask its
+      # password on. A failed check shows as its message, never as Ansible's raw result.
       - name: The install refuses unsafe settings
         id: refuses-unsafe
         run: |
           set -euo pipefail
+          sudo apt-get install -y -qq expect >/dev/null
           refused() {
             local inv=$1 want=$2 rc=0
-            sudo bash ./install.sh --inventory "$inv" --host ci --check >"$RUNNER_TEMP/gate.log" 2>&1 || rc=$?
-            if [ "$rc" = 0 ] || ! grep -qF -- "$want" "$RUNNER_TEMP/gate.log"; then
+            sudo bash ./install.sh --inventory "$inv" --host ci --check >"$RUNNER_TEMP/gate.log" 2>&1 </dev/null || rc=$?
+            if [ "$rc" = 0 ] || ! grep -qF -- "$want" "$RUNNER_TEMP/gate.log" || grep -qF 'FAILED! =>' "$RUNNER_TEMP/gate.log"; then
               cat "$RUNNER_TEMP/gate.log"; echo "install.sh did not stop with: $want"; exit 1
             fi
           }
@@ -986,10 +991,27 @@ jobs:
             'https unless the node is this host'
           # Grafana on a private address of this host (10.255.0.3, on lo) without its clients, or with a range.
           listen='\n    celestia_mon_grafana_listen: 10.255.0.3'
-          refused "$(gate grafana "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen#")" \
+          at='^(    celestia_mon_prometheus_retention_size: 1GB)$'
+          refused "$(gate grafana "s#$at#\\1$listen#")" 'set celestia_mon_grafana_clients'
+          refused "$(gate grafana-range "s#$at#\\1$listen\\n    celestia_mon_grafana_clients: [10.255.0.0/16]#")" \
             'set celestia_mon_grafana_clients'
-          refused "$(gate grafana-range "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$listen\\n    celestia_mon_grafana_clients: [10.255.0.0/16]#")" \
-            'set celestia_mon_grafana_clients'
+          # Each shared setting is checked apart and named: here the signer.
+          refused "$(gate signer 's#celestia_mon_signer: local#celestia_mon_signer: tmkms#')" \
+            'celestia_mon_signer is tmkms: set it to local (the key file on the node) or remote (tmkms).'
+          # A data mount inside the root filesystem: the stop names the mount point that holds it.
+          refused "$(gate mounts 's#celestia_mon_data_mounts: \[/\]#celestia_mon_data_mounts: [/, /usr]#')" \
+            '/usr is on /. Set celestia_mon_data_mounts of ci to [/]'
+          # This host's own celestia_mon_units names a unit systemd does not have: the stop names the
+          # loaded unit that runs celestia-appd (a stand-in, never started) and the whole map to set.
+          printf '%s\n' '[Unit]' 'Description=celestia-appd stand-in for CI' '[Service]' 'ExecStart=/opt/ci/bin/celestia-appd start' |
+            sudo tee /etc/systemd/system/celestia-ci-node.service >/dev/null
+          sudo systemctl daemon-reload
+          units='\n      celestia_mon_units: {appd: celestia-appd, fibre: systemd-logind, tmkms: tmkms}'
+          refused "$(gate units "s#^(      celestia_mon_data_mounts: \\[/\\])\$#\\1$units#")" \
+            'systemd has no unit celestia-appd.service loaded on ci (not-found). The units here that run celestia-appd: celestia-ci-node (inactive).'
+          grep -qF 'celestia_mon_units: {appd: celestia-ci-node, fibre: systemd-logind, tmkms: tmkms}' "$RUNNER_TEMP/gate.log"
+          sudo rm /etc/systemd/system/celestia-ci-node.service
+          sudo systemctl daemon-reload
           mkdir -p "$RUNNER_TEMP/gate-monitor"
           chmod 0755 "$RUNNER_TEMP/gate-monitor"
           cat >"$RUNNER_TEMP/gate-monitor/hosts.yml" <<'EOF'
@@ -1012,6 +1034,14 @@ jobs:
               celestia_mon_units: {appd: systemd-journald, fibre: systemd-logind, tmkms: tmkms}
           EOF
           refused "$RUNNER_TEMP/gate-monitor/hosts.yml" 'Set celestia_mon_private_ip of the monitor host mon'
+          # A copy of the monitor's vault.yml on the validator host, whose install reads none of it.
+          mkdir -p "$RUNNER_TEMP/gate-foreign/host_vars/mon"
+          chmod -R 0755 "$RUNNER_TEMP/gate-foreign"
+          cp "$RUNNER_TEMP/gate-monitor/hosts.yml" "$RUNNER_TEMP/gate-foreign/hosts.yml"
+          printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' '00' >"$RUNNER_TEMP/gate-foreign/host_vars/mon/vault.yml"
+          chmod 0600 "$RUNNER_TEMP/gate-foreign/host_vars/mon/vault.yml"
+          refused "$RUNNER_TEMP/gate-foreign/hosts.yml" \
+            "this host does not need $RUNNER_TEMP/gate-foreign/host_vars/mon/vault.yml: delete it from this copy."
           vault="$(dirname "$INV")/host_vars/ci/vault.yml"
           mkdir -p "$(dirname "$vault")"
           echo 'celestia_mon_grafana_admin_password: ci-test-only-not-a-secret' >"$vault"
@@ -1019,13 +1049,26 @@ jobs:
           printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' '00' >"$vault"
           chmod 0644 "$vault"
           refused "$INV" 'is readable by group or other'
-          # An encrypted vault.yml that only its owner reads passes the gate, and the dry run runs the
-          # install playbook (it stops there because no vault password was given), never the removal.
+          # An encrypted vault.yml that only its owner reads passes the gate. The install of ci reads
+          # it, so install.sh asks for its password, and stops when there is no terminal to ask on.
           chmod 0600 "$vault"
-          sudo bash ./install.sh --inventory "$INV" --host ci --check --verbose >"$RUNNER_TEMP/gate.log" 2>&1 || true
+          refused "$INV" "$vault holds vault-encrypted values that the install of ci reads: run install.sh on a terminal"
+          # On a terminal (expect types a password at the prompt) the dry run runs the install
+          # playbook, which stops at the vault, never the removal.
+          cat >/tmp/vault-ask.exp <<'EOF'
+          set timeout 600
+          spawn sudo bash ./install.sh --inventory [lindex $argv 0] --host ci --check --verbose
+          expect {
+            -re {Vault password: ?$} { send "not-the-password\r"; exp_continue }
+            eof
+          }
+          exit [lindex [wait] 3]
+          EOF
+          expect /tmp/vault-ask.exp "$INV" | tr -d '\r' >"$RUNNER_TEMP/gate.log" || true
           if grep -qF 'PLAY [Remove celestia-mon]' "$RUNNER_TEMP/gate.log" ||
+             ! grep -qF "$vault holds vault-encrypted values that the install of ci reads." "$RUNNER_TEMP/gate.log" ||
              ! grep -qF 'PLAY [Check the inventory and this host]' "$RUNNER_TEMP/gate.log"; then
-            cat "$RUNNER_TEMP/gate.log"; echo "with a vault.yml in the inventory, the dry run did not run the install playbook"; exit 1
+            cat "$RUNNER_TEMP/gate.log"; echo "with a vault.yml in the inventory, the dry run did not ask its password and run the install playbook"; exit 1
           fi
           rm -r "$(dirname "$INV")/host_vars"
           test ! -e /var/tmp/celestia-mon-install
@@ -1039,7 +1082,26 @@ jobs:
           fi
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "the dry run created units"; exit 1; fi
           if sudo ufw show added | grep -q 'from 10\.255\.255\.1 '; then echo "the dry run added ufw rules"; exit 1; fi
+          # The record of the install this host belongs to: its directory and the file.
+          grep -Eq '^  install record +2 to change$' "$RUNNER_TEMP/check.log"
+          sudo test ! -e /var/lib/celestia-mon/install-id
           test ! -e /var/tmp/celestia-mon-install
+      # --survey hands over to celestia-mon-doctor's survey (tools/doctor.sh --survey) before
+      # anything is downloaded, and takes no other option.
+      - name: --survey runs doctor's survey and prepares nothing
+        id: survey
+        run: |
+          set -euo pipefail
+          rc=0
+          sudo ./install.sh --survey >"$RUNNER_TEMP/survey.log" 2>&1 </dev/null || rc=$?
+          cat "$RUNNER_TEMP/survey.log"
+          want=0
+          sudo bash tools/doctor.sh --survey >/dev/null 2>&1 </dev/null || want=$?
+          if [ "$rc" != "$want" ]; then echo "install.sh --survey exited $rc, tools/doctor.sh --survey $want"; exit 1; fi
+          if grep -qF 'Preparing Ansible' "$RUNNER_TEMP/survey.log"; then echo "--survey prepared Ansible"; exit 1; fi
+          test ! -e /var/tmp/celestia-mon-install
+          if out=$(sudo ./install.sh --survey --yes 2>&1 </dev/null); then echo "--survey took another option"; exit 1; fi
+          grep -qF -- '--survey takes no other option' <<<"$out"
       # --edit-vault on a terminal (expect gives it one and types the password at each prompt): it
       # creates an encrypted vault.yml that only its owner reads, and opens it again decrypted. The
       # editor is a script: it writes the file the first time and copies what it is shown the second,
@@ -1048,7 +1110,6 @@ jobs:
         id: edit-vault
         run: |
           set -euo pipefail
-          sudo apt-get install -y -qq expect >/dev/null
           dir="$RUNNER_TEMP/editvault/host_vars/mon"
           mkdir -p "$dir"
           printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>/tmp/ed-paths' \
@@ -1086,11 +1147,39 @@ jobs:
             echo "--edit-vault followed a symbolic link"; exit 1
           fi
           grep -qF 'is a symbolic link' <<<"$out"
-      # A first install sends one test message to the chat receivers; a run that changes nothing does not.
+      # The install as an operator runs it: sudo ./install.sh with no option, on a terminal (expect
+      # answers its question). It reads ~/celestia-mon-inventory of the sudo user, finds this host
+      # by its address, asks for no vault password, and ends with the generated Grafana password's
+      # command and doctor's lines that ask for something, the whole report staying in the log. A
+      # first install sends one test message to the chat receivers; a run that changes nothing does not.
       - name: Install
         id: install
         run: |
-          sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/install.log"
+          set -euo pipefail
+          mkdir -p "$HOME/celestia-mon-inventory"
+          chmod 0755 "$HOME/celestia-mon-inventory"
+          cp "$INV" "$HOME/celestia-mon-inventory/hosts.yml"
+          cat >/tmp/install.exp <<'EOF'
+          set timeout 1500
+          spawn sudo ./install.sh
+          expect {
+            -re {Apply this to ci\? \[y/N\] $} { send "y\r"; exp_continue }
+            eof
+          }
+          exit [lindex [wait] 3]
+          EOF
+          expect /tmp/install.exp | tr -d '\r' | tee "$RUNNER_TEMP/install.log"
+          grep -qxF "Installing as ci (127.0.0.1) from $HOME/celestia-mon-inventory" "$RUNNER_TEMP/install.log"
+          if grep -qF 'Vault password' "$RUNNER_TEMP/install.log"; then echo "the install asked for a vault password"; exit 1; fi
+          grep -qxF "Grafana's admin password (user admin), generated by the install: sudo cat /etc/celestia-mon/grafana-admin-password" \
+            "$RUNNER_TEMP/install.log"
+          grep -qxF "  sudo $PWD/install.sh --uninstall" "$RUNNER_TEMP/install.log"
+          sed -n '/^==> Still to do on this box$/,$p' "$RUNNER_TEMP/install.log" >"$RUNNER_TEMP/todo.log"
+          grep -Eq '^(FAIL|WARN|NOT YET) +[0-9]+ ' "$RUNNER_TEMP/todo.log"
+          if grep -Eq '^(OK|SKIP|INFO) +[0-9]+ ' "$RUNNER_TEMP/todo.log"; then echo "the install's end shows doctor lines that ask for nothing"; exit 1; fi
+          grep -qxF "doctor's whole report and the whole output of this install: /var/log/celestia-mon/install.log" "$RUNNER_TEMP/todo.log"
+          sudo grep -Eq '^OK +[0-9]+ ' /var/log/celestia-mon/install.log
+          grep -Eq '^  install record +2 changes$' "$RUNNER_TEMP/install.log"
           grep -q '^A test message went to the chat receivers' "$RUNNER_TEMP/install.log"
           # One line per part on the terminal; Ansible's whole output in the log, root's only.
           grep -Eq '^  Prometheus +[0-9]+ changes?$' "$RUNNER_TEMP/install.log"
@@ -1104,9 +1193,55 @@ jobs:
           grep -q '^The dry run finds nothing to change\.' "$RUNNER_TEMP/second.log"
           grep -q '^No changes: ci already matches the inventory\.' "$RUNNER_TEMP/second.log"
           grep -Eq '^  Prometheus +no change$' "$RUNNER_TEMP/second.log"
+          grep -Eq '^  install record +no change$' "$RUNNER_TEMP/second.log"
           if grep -q '^A test message went' "$RUNNER_TEMP/second.log"; then echo "a run that changed nothing sent a test message"; exit 1; fi
           test ! -e /var/tmp/celestia-mon-install
           test ! -e /run/celestia-mon-install
+      # Without celestia_mon_grafana_admin_password the install generated one, for root only, and
+      # it opens Grafana as admin. Without that file a Grafana that has its admin account already
+      # stops the install: a new password would not open it.
+      - name: The generated Grafana admin password opens Grafana
+        id: grafana-password
+        run: |
+          set -euo pipefail
+          f=/etc/celestia-mon/grafana-admin-password
+          test "$(sudo stat -c '%U:%G %a' "$f")" = "root:root 600"
+          test "$(sudo cat "$f" | wc -c)" = 32
+          sudo cmp "$f" /etc/celestia-mon/grafana/admin-password
+          admin() { sudo sh -c 'printf "user = \"admin:%s\"\n" "$(cat /etc/celestia-mon/grafana-admin-password)"'; }
+          test "$(admin | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9914/api/user)" = 200
+          sudo mv "$f" "$f.ci"
+          rc=0
+          sudo bash ./install.sh --inventory "$INV" --host ci --check >"$RUNNER_TEMP/grafana-gate.log" 2>&1 </dev/null || rc=$?
+          sudo mv "$f.ci" "$f"
+          if [ "$rc" = 0 ] || ! grep -qF 'Grafana on ci already has its admin account' "$RUNNER_TEMP/grafana-gate.log"; then
+            cat "$RUNNER_TEMP/grafana-gate.log"; echo "install.sh did not stop on a Grafana whose admin password it does not have"; exit 1
+          fi
+      # One host, one install: the install recorded the monitor this host belongs to, and an
+      # inventory with another monitor (this host at another address) stops before any change. On
+      # a host installed before the record existed, the record is the one change of the dry run.
+      - name: A host belongs to one install
+        id: one-install
+        run: |
+          set -euo pipefail
+          rec=/var/lib/celestia-mon/install-id
+          sudo cat "$rec"
+          test "$(sudo stat -c '%U:%G %a' "$rec")" = "root:root 644"
+          sudo grep -qx 'monitor=127.0.0.1' "$rec"
+          mkdir -p "$RUNNER_TEMP/other-install"
+          chmod 0755 "$RUNNER_TEMP/other-install"
+          sed 's#celestia_mon_private_ip: 127\.0\.0\.1#celestia_mon_private_ip: 10.255.0.3#' "$INV" >"$RUNNER_TEMP/other-install/hosts.yml"
+          rc=0
+          sudo bash ./install.sh --inventory "$RUNNER_TEMP/other-install/hosts.yml" --host ci --check >"$RUNNER_TEMP/other.log" 2>&1 </dev/null ||
+            rc=$?
+          if [ "$rc" = 0 ] || ! grep -qF 'ci belongs to the install monitored from 127.0.0.1' "$RUNNER_TEMP/other.log"; then
+            cat "$RUNNER_TEMP/other.log"; echo "install.sh did not stop on an inventory with another monitor"; exit 1
+          fi
+          sudo mv "$rec" "$rec.ci"
+          sudo bash ./install.sh --inventory "$INV" --host ci --check | tee "$RUNNER_TEMP/record.log"
+          sudo mv "$rec.ci" "$rec"
+          grep -Eq '^  install record +1 to change$' "$RUNNER_TEMP/record.log"
+          grep -qxF 'The dry run reports 1 change(s); the details are above.' "$RUNNER_TEMP/record.log"
       # The releases store their files as uid 1001 (Prometheus, Alertmanager, node_exporter, the
       # collector) or 1000 (Grafana), and root runs some of them (promtool, amtool, the collector's
       # validate): everything under /opt/celestia-mon must belong to root, and nothing there may be
@@ -1380,6 +1515,83 @@ jobs:
             if ((peak * 2 > high)); then echo "$unit peaked above half of its MemoryHigh: raise its default in celestia_mon_memory"; fail=1; fi
           done
           exit "$fail"
+      # The monitor's secrets outside the inventory: --edit-secrets (on a terminal, with a script as
+      # the editor) writes /etc/celestia-mon/secrets.yml for root only from a copy edited in memory,
+      # and the install reads it: here a receiver that only that file names. A vault.yml next to it
+      # stops the install, and so does the file on a host that is not the monitor.
+      - name: The monitor's secrets come from --edit-secrets
+        id: secrets
+        run: |
+          set -euo pipefail
+          s=/etc/celestia-mon/secrets.yml
+          cat >/tmp/secrets-ci.yml <<'EOF'
+          ---
+          celestia_mon_receivers:
+            - {type: webhook, url: "http://127.0.0.1:9/from-secrets"}
+          celestia_mon_deadman_webhook_url: http://127.0.0.1:9/deadman
+          EOF
+          printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>/tmp/sec-paths' 'cp /tmp/secrets-ci.yml "$1"' >/tmp/sec.sh
+          chmod 755 /tmp/sec.sh
+          cat >/tmp/sec.exp <<'EOF'
+          set timeout 120
+          spawn sudo EDITOR=[lindex $argv 0] ./install.sh --edit-secrets
+          expect eof
+          exit [lindex [wait] 3]
+          EOF
+          expect /tmp/sec.exp /tmp/sec.sh | tr -d '\r' | tee "$RUNNER_TEMP/secrets.log"
+          grep -qF "Saved $s (root only)." "$RUNNER_TEMP/secrets.log"
+          test "$(sudo stat -c '%U:%G %a' "$s")" = "root:root 600"
+          sudo cmp /tmp/secrets-ci.yml "$s"
+          sudo grep -qx '/run/celestia-mon-install/secrets.yml' /tmp/sec-paths
+          test ! -e /run/celestia-mon-install
+          # An editor that changes nothing leaves the file as it was.
+          expect /tmp/sec.exp /bin/true | tr -d '\r' | tee "$RUNNER_TEMP/secrets-same.log"
+          grep -qxF "No change: $s is as it was." "$RUNNER_TEMP/secrets-same.log"
+          if out=$(sudo ./install.sh --edit-secrets --yes 2>&1 </dev/null); then echo "--edit-secrets took another option"; exit 1; fi
+          grep -qF -- '--edit-secrets takes no other option' <<<"$out"
+          # The secrets in two places: the install stops before it prepares anything.
+          vault="$(dirname "$INV")/host_vars/ci/vault.yml"
+          mkdir -p "$(dirname "$vault")"
+          printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' '00' >"$vault"
+          chmod 0600 "$vault"
+          rc=0
+          out=$(sudo bash ./install.sh --inventory "$INV" --host ci --check 2>&1 </dev/null) || rc=$?
+          rm -r "$(dirname "$INV")/host_vars"
+          if [ "$rc" = 0 ] || ! grep -qF "the monitor's secrets are in $s and in $vault: keep one." <<<"$out"; then
+            printf '%s\n' "$out"; echo "install.sh ran with the monitor's secrets in two places"; exit 1
+          fi
+          # On a host that is not the monitor (found by its address, no --host) the file stops the install.
+          mkdir -p "$RUNNER_TEMP/not-monitor"
+          chmod 0755 "$RUNNER_TEMP/not-monitor"
+          cat >"$RUNNER_TEMP/not-monitor/hosts.yml" <<'EOF'
+          all:
+            hosts:
+              ci:
+                celestia_mon_private_ip: 127.0.0.1
+              mon:
+                celestia_mon_private_ip: 10.255.0.4
+            children:
+              validator:
+                hosts:
+                  ci:
+              monitor:
+                hosts:
+                  mon:
+          EOF
+          rc=0
+          out=$(sudo bash ./install.sh --inventory "$RUNNER_TEMP/not-monitor/hosts.yml" 2>&1 </dev/null) || rc=$?
+          if [ "$rc" = 0 ] || ! grep -qF "$s holds the monitor's secrets, and this machine is ci, not the monitor host (mon)" <<<"$out"; then
+            printf '%s\n' "$out"; echo "install.sh read the monitor's secrets on another host"; exit 1
+          fi
+          grep -qxF "Installing as ci (127.0.0.1) from $RUNNER_TEMP/not-monitor/hosts.yml" <<<"$out"
+          # The monitor's install reads it: the receivers it names replace the inventory's.
+          sudo bash ./install.sh --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/secrets-run.log"
+          grep -qxF "The monitor's secrets: $s" "$RUNNER_TEMP/secrets-run.log"
+          grep -q '^A test message went to the chat receivers' "$RUNNER_TEMP/secrets-run.log"
+          sudo grep -qF 'http://127.0.0.1:9/from-secrets' /etc/celestia-mon/alertmanager/alertmanager.yml
+          if sudo grep -qF 'http://127.0.0.1:9/message' /etc/celestia-mon/alertmanager/alertmanager.yml; then
+            echo "Alertmanager still has the inventory's receiver"; exit 1
+          fi
       # Grafana moved to a private address of the host (10.255.0.3, on lo) with one client,
       # 10.255.0.9: its unit allows loopback, that address (the install's own wait for Grafana comes
       # from it) and the client. A request from the client's address gets an answer; one from
@@ -1392,7 +1604,7 @@ jobs:
           mkdir -p "$inv"
           chmod 0755 "$inv"
           add='\n    celestia_mon_grafana_listen: 10.255.0.3\n    celestia_mon_grafana_clients: [10.255.0.9]'
-          sed -E "s#^(    celestia_mon_grafana_admin_password: .*)\$#\\1$add#" "$INV" >"$inv/hosts.yml"
+          sed -E "s#^(    celestia_mon_prometheus_retention_size: 1GB)\$#\\1$add#" "$INV" >"$inv/hosts.yml"
           grep -qx '    celestia_mon_grafana_clients: \[10\.255\.0\.9\]' "$inv/hosts.yml"
           sudo bash ./install.sh --inventory "$inv/hosts.yml" --host ci --yes >"$RUNNER_TEMP/grafana-private.log" 2>&1 ||
             { cat "$RUNNER_TEMP/grafana-private.log"; sudo tail -n 40 /var/log/celestia-mon/install.log; exit 1; }
@@ -1404,10 +1616,12 @@ jobs:
           from() { curl -s -o /dev/null -w '%{http_code}' --max-time 5 --interface "$1" http://10.255.0.3:9914/api/health || true; }
           test "$(from 10.255.0.9)" = 200
           test "$(from 10.255.0.4)" = 000
+      # With no --host: the host's name comes from the settings the install wrote.
       - name: Uninstall removes the services and the recorded rules, and keeps data, settings and users
         id: uninstall
         run: |
-          sudo bash ./install.sh --uninstall --inventory "$INV" --host ci --yes | tee "$RUNNER_TEMP/uninstall.log"
+          sudo ./install.sh --uninstall --yes | tee "$RUNNER_TEMP/uninstall.log"
+          grep -qF 'celestia-mon is removed from ci (' "$RUNNER_TEMP/uninstall.log"
           left=0
           if systemctl list-unit-files 'celestia-mon-*' --no-legend | grep -q .; then echo "unit files left"; left=1; fi
           if systemctl list-units --all 'celestia-mon-*' --no-legend | grep -q .; then echo "units left"; left=1; fi
@@ -1420,7 +1634,8 @@ jobs:
                    /etc/celestia-mon/signal/config.json; do
             if sudo test -e "$p"; then echo "$p left"; left=1; fi
           done
-          for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon; do
+          for p in /var/lib/celestia-mon/prometheus /var/lib/celestia-mon/grafana /etc/celestia-mon /var/lib/celestia-mon/install-id \
+                   /etc/celestia-mon/secrets.yml /etc/celestia-mon/grafana-admin-password; do
             sudo test -e "$p" || { echo "$p removed without --purge"; left=1; }
           done
           getent passwd celestia-mon-prometheus >/dev/null || { echo "users removed without --purge"; left=1; }
@@ -1431,7 +1646,7 @@ jobs:
           grep -qx "ufw allow from 10.255.255.2 to any port 9910 proto tcp comment 'celestia-mon'" <<<"$added" ||
             { echo "uninstall removed a rule that was there before the install"; left=1; }
           grep -qx 'ufw allow 22/tcp' <<<"$added" || { echo "uninstall touched another ufw rule"; left=1; }
-          grep -qF -- '--uninstall --purge --host ci' "$RUNNER_TEMP/uninstall.log" || { echo "no --purge hint"; left=1; }
+          grep -qxF "  sudo $PWD/install.sh --uninstall --purge" "$RUNNER_TEMP/uninstall.log" || { echo "no --purge hint"; left=1; }
           exit "$left"
       - name: A second uninstall changes nothing
         id: uninstall-again
@@ -1497,10 +1712,9 @@ jobs:
 
   # On a pull request, the dashboard of every scenario of the dashboard job made by the base branch's
   # generator and by this branch's, from the same settings, and the values that differ in the job
-  # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
-  # text changes named after it, which this branch makes on purpose: the celestia-app release in the
-  # link to Celestia's Fibre dashboard. A pull request that changes the dashboard on purpose names its
-  # text changes there, or leaves --same out to report only.
+  # summary. With --same it fails unless each scenario comes out as the base branch's; this branch
+  # names no text change. A pull request that changes the dashboard on purpose names its text changes
+  # after --same (old new, in pairs), or leaves --same out to report only.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1523,8 +1737,7 @@ jobs:
               --out "build/$s/base.json" 2> "build/$s/base.err" || rm -f "build/$s/base.json"
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" \
-            --same celestia-app/blob/v10.4.0/ celestia-app/blob/v10.5.0/
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same
       - uses: ./.github/actions/marks
         if: always()
         with:

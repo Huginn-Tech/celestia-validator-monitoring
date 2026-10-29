@@ -1,24 +1,66 @@
 ---
+# One check per condition, each naming its setting; every failed one is shown, not only the first.
+# The conditions are evaluated before any check runs, so each reads a setting that may be missing
+# or of the wrong type through default() or a test first.
 - name: Check the shared settings
   ansible.builtin.assert:
     that:
-      - celestia_mon_signer in ['local', 'remote']
-      - celestia_mon_fibre_enabled | type_debug == 'bool'
-      - celestia_mon_units.appd | length > 0
-      - (not celestia_mon_fibre_enabled) or (celestia_mon_units.fibre | length > 0)
-      - (celestia_mon_signer == 'local') or (celestia_mon_units.tmkms | length > 0)
-      - groups.get('validator', []) | length == 1
-      - groups.get('monitor', []) | length == 1
-      - groups.get('backup_node', []) | intersect(groups.get('validator', [])) | length == 0
-      - (not celestia_mon_fibre_enabled) or (groups.get('fibre', []) | length > 0)
-    fail_msg: >-
-      celestia_mon_signer must be local or remote, celestia_mon_fibre_enabled must be a boolean,
-      celestia_mon_units must name the services in use, and the inventory needs exactly one
-      validator host and one monitor host (one validator per celestia-mon install). A
-      backup_node host is a second celestia-appd node, never the validator host itself, and
-      with celestia_mon_fibre_enabled the fibre group lists every host with a Fibre install,
-      active or standby.
+      - item.ok | bool
+    fail_msg: "{{ item.text }}"
     quiet: true
+  loop:
+    - setting: celestia_mon_signer
+      ok: "{{ celestia_mon_signer in ['local', 'remote'] }}"
+      text: >-
+        celestia_mon_signer is {{ celestia_mon_signer }}: set it to local (the key file on the node) or remote (tmkms).
+    - setting: celestia_mon_fibre_enabled
+      ok: "{{ celestia_mon_fibre_enabled | type_debug == 'bool' }}"
+      text: >-
+        celestia_mon_fibre_enabled is {{ celestia_mon_fibre_enabled }} ({{ celestia_mon_fibre_enabled | type_debug }}): set it to
+        true or false, unquoted.
+    - setting: celestia_mon_units.appd
+      ok: "{{ celestia_mon_units is mapping and celestia_mon_units.appd | default('') | length > 0 }}"
+      text: >-
+        celestia_mon_units.appd is not set: name celestia-appd's systemd unit there, without .service. celestia_mon_units
+        is one map with the keys appd, fibre and tmkms; setting it replaces the whole default map, so list every key.
+    - setting: celestia_mon_units.fibre
+      ok: >-
+        {{ (celestia_mon_fibre_enabled is not sameas true)
+           or (celestia_mon_units is mapping and celestia_mon_units.fibre | default('') | length > 0) }}
+      text: >-
+        celestia_mon_units.fibre is not set, and celestia_mon_fibre_enabled is true: name Fibre's systemd unit there, without
+        .service. celestia_mon_units is one map with the keys appd, fibre and tmkms; list every key.
+    - setting: celestia_mon_units.tmkms
+      ok: >-
+        {{ (celestia_mon_signer != 'remote')
+           or (celestia_mon_units is mapping and celestia_mon_units.tmkms | default('') | length > 0) }}
+      text: >-
+        celestia_mon_units.tmkms is not set, and celestia_mon_signer is remote: name tmkms's systemd unit there, without
+        .service. celestia_mon_units is one map with the keys appd, fibre and tmkms; list every key.
+    - setting: validator group
+      ok: "{{ groups.get('validator', []) | length == 1 }}"
+      text: >-
+        The validator group lists {{ groups.get('validator', []) | length }} hosts ({{ groups.get('validator', []) | join(', ')
+        or 'none' }}): it needs exactly one, the celestia-appd node the signer normally connects to. One celestia-mon install
+        watches one validator; other synced nodes that can take over signing go in the backup_node group.
+    - setting: monitor group
+      ok: "{{ groups.get('monitor', []) | length == 1 }}"
+      text: >-
+        The monitor group lists {{ groups.get('monitor', []) | length }} hosts ({{ groups.get('monitor', []) | join(', ')
+        or 'none' }}): it needs exactly one, the host of Prometheus, Alertmanager and Grafana.
+    - setting: backup_node group
+      ok: "{{ groups.get('backup_node', []) | intersect(groups.get('validator', [])) | length == 0 }}"
+      text: >-
+        {{ groups.get('backup_node', []) | intersect(groups.get('validator', [])) | join(', ') }} is in both the validator and
+        the backup_node group: a backup node is a second celestia-appd node, never the validator host itself. Take it out of
+        backup_node.
+    - setting: fibre group
+      ok: "{{ (celestia_mon_fibre_enabled is not sameas true) or (groups.get('fibre', []) | length > 0) }}"
+      text: >-
+        celestia_mon_fibre_enabled is true, and the inventory has no fibre group: list every host with a Fibre install there,
+        active or standby, or set celestia_mon_fibre_enabled to false.
+  loop_control:
+    label: "{{ item.setting }}"
 
 - name: Check this host's private address
   ansible.builtin.assert:
