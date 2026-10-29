@@ -22,8 +22,8 @@
       ansible.builtin.assert:
         that:
           - celestia_mon_ci_scenario is defined
-          - celestia_mon_ci_scenario in ['single', 'split', 'mainnet']
-        fail_msg: Pass -e celestia_mon_ci_scenario=single, split or mainnet, matching the inventory (example-<scenario>).
+          - celestia_mon_ci_scenario in ['single', 'split', 'mainnet', 'fibre-apart']
+        fail_msg: Pass -e celestia_mon_ci_scenario=single, split, mainnet or fibre-apart, matching the inventory (example-<scenario>).
         quiet: true
   # celestia_mon runs its inventory checks (signer, Fibre, units, one validator and
   # one monitor, private address), so CI checks every example inventory with them.

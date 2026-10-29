@@ -11,7 +11,7 @@ lint/ansible-lint                | ci.yml                                       
 lint/shellcheck                  | ci.yml                                       | shellcheck
 lint/install-sh-mode             | ci.yml                                       | install.sh is executable
 secrets/owner-files              | ci.yml                                       | Owner-only files are ignored and absent
-secrets/gitleaks                 | ci.yml                                       | gitleaks/gitleaks-action
+secrets/gitleaks                 | ci.yml                                       | gitleaks
 collectors/dry-run               | ci.yml                                       | Dry run on a fresh host
 collectors/install               | ci.yml                                       | Install
 collectors/second-run            | ci.yml                                       | Second run changes nothing
@@ -79,3 +79,13 @@ lint/upstream                    | tools/ci/check_upstream.py                   
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
 dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
 rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       | No ValidatorSigningTwice where tmkms signs through several nodes
+install/survey                   | ci.yml                                       | --survey runs doctor's survey and prepares nothing
+install/grafana-password         | ci.yml                                       | The generated Grafana admin password opens Grafana
+install/one-install              | ci.yml                                       | A host belongs to one install
+install/secrets                  | ci.yml                                       | The monitor's secrets come from --edit-secrets
+doctor-chain/run                 | tools/ci/doctor/chain.sh                     | doctor on the node Fibre reads
+doctor-survey/run                | tools/ci/doctor/survey.sh                    | doctor --survey on each kind of host
+rules/own-units                  | ci.yml, tools/ci/units.yml, tests/units      | Each host's own unit names
+rules/same-units                 | ci.yml                                       | The same unit names on every host render as one name
+dashboard/own-units              | ci.yml                                       | Each host's own unit names reach the dashboard
+dashboard-report/rules-base      | ci.yml                                       | The rules and dashboard settings render as on the base branch | pull_request

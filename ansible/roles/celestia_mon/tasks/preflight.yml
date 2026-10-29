@@ -42,6 +42,34 @@
       machine is (install.sh --host).
     quiet: true
 
+# One host, one install: site.yml records the private address of the monitor this host was
+# installed for. An inventory with another monitor (a second install, such as a testnet next to
+# mainnet) would take over the first one's node_exporter and doctor here. A host installed
+# before the record existed has none yet; its next run writes it.
+- name: Read the install this host belongs to
+  ansible.builtin.slurp:
+    src: /var/lib/celestia-mon/install-id
+  register: celestia_mon_preflight_record
+  failed_when: false
+
+- name: Check that this host belongs to no other install
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_preflight_recorded in ['', celestia_mon_preflight_monitor_ip]
+    fail_msg: >-
+      {{ inventory_hostname }} belongs to the install monitored from {{ celestia_mon_preflight_recorded }} (recorded in
+      /var/lib/celestia-mon/install-id), and the monitor of this inventory is {{ celestia_mon_monitor_host }} at
+      {{ celestia_mon_preflight_monitor_ip }}: one host can be in one celestia-mon install. If the monitor really moved to
+      {{ celestia_mon_preflight_monitor_ip }}, delete the record (sudo rm /var/lib/celestia-mon/install-id) and run again.
+    quiet: true
+  vars:
+    celestia_mon_preflight_monitor_ip: "{{ hostvars[celestia_mon_monitor_host].celestia_mon_private_ip | string | lower }}"
+    celestia_mon_preflight_recorded: >-
+      {{ (celestia_mon_preflight_record.content | b64decode | regex_findall(celestia_mon_preflight_record_pattern, multiline=true)
+          | first | default('') | lower) if celestia_mon_preflight_record.content is defined else '' }}
+    # The address alone: the file ends with a newline, which [^ ] would take too.
+    celestia_mon_preflight_record_pattern: '^monitor=([^\s]+)'
+
 # Grafana listens on 127.0.0.1 unless the operator names a private address of the monitor
 # host. There is no fallback: a wildcard such as 0.0.0.0, or an address this machine does
 # not have, stops the install.
@@ -107,12 +135,153 @@
       with {{ ansible_facts.service_mgr }}, and the play runs as uid {{ ansible_facts.effective_user_id }}.
     quiet: true
 
+# node_exporter reports each filesystem by its mount point, and DiskLow and the dashboard's disk
+# rows match celestia_mon_data_mounts exactly: a directory such as /var/lib/celestia on the root
+# disk would match nothing and leave the disk unwatched without a sign. findmnt names the mount
+# point that holds each path (findmnt -T <path>).
+- name: Check that celestia_mon_data_mounts is a list
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_data_mounts is sequence
+      - celestia_mon_data_mounts is not string
+      - celestia_mon_data_mounts is not mapping
+    fail_msg: >-
+      celestia_mon_data_mounts of {{ inventory_hostname }} is {{ celestia_mon_data_mounts }}: set it to a list of mount points,
+      such as [/] or [/, /var/lib/celestia].
+    quiet: true
+
+- name: Read the mount point that holds each of celestia_mon_data_mounts
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --first-only, --output, TARGET, --target, "{{ item }}"]
+  loop: "{{ celestia_mon_data_mounts | map('string') | list }}"
+  register: celestia_mon_preflight_mount_points
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Check that each of celestia_mon_data_mounts is a mount point
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_preflight_mount_points.results | map(attribute='stdout') | list == celestia_mon_data_mounts | map('string') | list
+    fail_msg: >-
+      celestia_mon_data_mounts of {{ inventory_hostname }} lists a path that is not a mount point:
+      {% for r in celestia_mon_preflight_mount_points.results if r.stdout != r.item -%}
+      {{ r.item }} {{ ('is on ' ~ r.stdout) if r.stdout else 'does not exist on this host' }}{{ '' if loop.last else ', ' }}
+      {%- endfor %}. Set celestia_mon_data_mounts of {{ inventory_hostname }} to
+      [{{ (celestia_mon_preflight_mount_points.results | map(attribute='stdout') | select | unique | list or ['/']) | join(', ') }}]:
+      node_exporter reports each disk by the mount point that holds it.
+    quiet: true
+
 # celestia-mon reloads systemd when one of its unit files changes, which would also load staged
 # edits to the Celestia services' units on this host. Stop first, so the operator reloads them.
 - name: Check that systemd has loaded the Celestia services' unit files
   ansible.builtin.include_tasks: reload_check.yml
   vars:
     celestia_mon_reload_check_units: "{{ celestia_mon_host_units | map('regex_replace', '$', '.service') | list }}"
+
+# The rules, the dashboard and doctor read each Celestia service of this host by its name in
+# celestia_mon_units, which a host may set for itself (its inventory entry or host_vars). A name
+# systemd has not loaded here would leave that service unwatched, so the run stops and names
+# the loaded units that run the binary: celestia-appd (or cosmovisor for it), fibre or tmkms,
+# read from each unit's ExecStart. Read-only.
+- name: Note the Celestia units systemd has not loaded here
+  ansible.builtin.set_fact:
+    celestia_mon_preflight_unloaded: >-
+      {{ celestia_mon_reload_check_state.results | default([]) | rejectattr('status.LoadState', 'defined') | map(attribute='item') | list
+         + celestia_mon_reload_check_state.results | default([]) | selectattr('status.LoadState', 'defined')
+           | rejectattr('status.LoadState', 'equalto', 'loaded') | map(attribute='item') | list }}
+
+# Every service unit systemd knows (loaded now or with a unit file), but templates and celestia-mon's
+# own: role, 0 when active else 1, name and state, one a line, active ones first.
+- name: Look for the units that run celestia-appd, Fibre and tmkms here
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -o pipefail
+      { systemctl list-unit-files --type=service --no-legend --plain; systemctl list-units --type=service --all --no-legend --plain; } |
+        awk '{ for (i = 1; i <= NF; i++) if ($i ~ /[.]service$/) { if ($i !~ /@[.]service$/ && $i !~ /^celestia-mon-/) print $i; break } }' |
+        sort -u | xargs -r -d '\n' systemctl show --property=Id,LoadState,ActiveState,ExecStart,Environment -- |
+        awk '
+          # A blank line ends a unit, and so does a property seen twice.
+          function flush(   n, parts, bin, role) {
+            if (id != "" && load == "loaded" && !(id in seen)) {
+              seen[id] = 1
+              n = split(path, parts, "/"); bin = parts[n]
+              if (bin == "celestia-appd") role = "appd"
+              else if (bin == "cosmovisor" && (env !~ /(^| )"?DAEMON_NAME=/ || env ~ /(^| )"?DAEMON_NAME=celestia-appd("| |$)/)) role = "appd"
+              else if (bin == "fibre" || bin == "tmkms") role = bin
+              sub(/[.]service$/, "", id)
+              if (role != "") print role, (active == "active" ? 0 : 1), id, active
+            }
+            id = load = active = path = env = ""; split("", got)
+          }
+          /^$/ { flush(); next }
+          { key = substr($0, 1, index($0, "=") - 1); value = substr($0, index($0, "=") + 1) }
+          (key in got) { flush() }
+          { got[key] = 1 }
+          key == "Id" { id = value }
+          key == "LoadState" { load = value }
+          key == "ActiveState" { active = value }
+          key == "Environment" { env = value }
+          key == "ExecStart" && path == "" && match(value, /path=[^ ;]+/) { path = substr(value, RSTART + 5, RLENGTH - 5) }
+          END { flush() }
+        ' | sort -k1,1 -k2,2n -k3,3
+  environment:
+    LC_ALL: C
+  register: celestia_mon_preflight_unit_search
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: celestia_mon_preflight_unloaded | length > 0
+
+# A map setting replaces the whole default map, so the stop prints all of celestia_mon_units.
+- name: Check that systemd has loaded the units celestia_mon_units names
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_preflight_unloaded | length == 0
+    fail_msg: >-
+      {% for k in ['appd', 'fibre', 'tmkms'] if (celestia_mon_units[k] | default('') ~ '.service') in celestia_mon_preflight_unloaded -%}
+      celestia_mon_units.{{ k }} is {{ celestia_mon_units[k] }}, and systemd has no unit {{ celestia_mon_units[k] }}.service loaded on
+      {{ inventory_hostname }} ({{ celestia_mon_preflight_state[celestia_mon_units[k] ~ '.service'] | default('not-found') }}).
+      {% if celestia_mon_preflight_found[k] -%}
+      The units here that run {{ celestia_mon_preflight_binary[k] }}:
+      {% for c in celestia_mon_preflight_found[k] %}{{ c[0] }} ({{ c[1] }}){{ '' if loop.last else ', ' }}{% endfor %}.
+      {%- else -%}
+      No loaded unit here runs {{ celestia_mon_preflight_binary[k] }}. If {{ inventory_hostname }} runs none, take it out of
+      the {{ celestia_mon_preflight_group[k] }}.
+      {%- endif %}{{ celestia_mon_newline }}
+      {%- endfor -%}
+      Set celestia_mon_units in the entry of {{ inventory_hostname }} in the inventory (or in its host_vars), as the whole map:
+      celestia_mon_units: {appd: {{ celestia_mon_preflight_fix.appd }}, fibre: {{ celestia_mon_preflight_fix.fibre }},
+      tmkms: {{ celestia_mon_preflight_fix.tmkms }}}
+    quiet: true
+  vars:
+    celestia_mon_preflight_results: "{{ celestia_mon_reload_check_state.results | default([]) }}"
+    celestia_mon_preflight_state: >-
+      {{ dict(celestia_mon_preflight_results | map(attribute='item')
+              | zip(celestia_mon_preflight_results | map(attribute='status') | map(attribute='LoadState', default='not-found'))) }}
+    celestia_mon_preflight_search: "{{ celestia_mon_preflight_unit_search.stdout | default('') }}"
+    # Per key, [unit, state] of each loaded unit that runs its binary, active ones first.
+    celestia_mon_preflight_found:
+      appd: "{{ celestia_mon_preflight_search | regex_findall('^appd [01] ([^ ]+) ([^ ]+)$', multiline=true) | map('list') | list }}"
+      fibre: "{{ celestia_mon_preflight_search | regex_findall('^fibre [01] ([^ ]+) ([^ ]+)$', multiline=true) | map('list') | list }}"
+      tmkms: "{{ celestia_mon_preflight_search | regex_findall('^tmkms [01] ([^ ]+) ([^ ]+)$', multiline=true) | map('list') | list }}"
+    celestia_mon_preflight_binary: {appd: celestia-appd, fibre: fibre, tmkms: tmkms}
+    celestia_mon_preflight_group: {appd: validator or backup_node group, fibre: fibre group, tmkms: kms group}
+    # The map to set: for a name systemd has not loaded, the first unit found that runs its binary.
+    celestia_mon_preflight_fix:
+      appd: >-
+        {{ (celestia_mon_preflight_found.appd[0][0] if celestia_mon_preflight_found.appd else '<the unit that runs celestia-appd>')
+           if (celestia_mon_units.appd | default('') ~ '.service') in celestia_mon_preflight_unloaded
+           else celestia_mon_units.appd | default('') }}
+      fibre: >-
+        {{ (celestia_mon_preflight_found.fibre[0][0] if celestia_mon_preflight_found.fibre else '<the unit that runs fibre>')
+           if (celestia_mon_units.fibre | default('') ~ '.service') in celestia_mon_preflight_unloaded
+           else celestia_mon_units.fibre | default('') }}
+      tmkms: >-
+        {{ (celestia_mon_preflight_found.tmkms[0][0] if celestia_mon_preflight_found.tmkms else '<the unit that runs tmkms>')
+           if (celestia_mon_units.tmkms | default('') ~ '.service') in celestia_mon_preflight_unloaded
+           else celestia_mon_units.tmkms | default('') }}
 
 - name: Check that celestia-mon's ports are free or held by its own services
   ansible.builtin.include_tasks: port_check.yml
@@ -266,7 +435,7 @@
 # ExecStart, or FIBRE_OTEL_ENDPOINT from an EnvironmentFile= or Environment= (the flag wins, and
 # an EnvironmentFile= wins over Environment=). celestia-mon never edits or restarts Fibre: when
 # the unit does not point at the collector, the plan names the change and the restart as a
-# step for the operator.
+# step for the operator. A Fibre unit systemd has not loaded stopped the run above.
 - name: Read where Fibre sends its metrics
   when:
     - celestia_mon_plan_file is defined
@@ -303,9 +472,7 @@
       Memory:    {{ celestia_mon_preflight_mem_available_mib }} MiB available now
       Disk:      {{ celestia_mon_preflight_install_mib }} MiB to install{{ celestia_mon_preflight_data_text }}
       {% if celestia_mon_preflight_fibre_unit.status is defined %}
-      {% if celestia_mon_preflight_fibre_unit.status.LoadState | default('') != 'loaded' %}
-      Fibre:     {{ celestia_mon_units.fibre }}.service is not loaded on this host: set celestia_mon_units.fibre to the name of the Fibre unit.
-      {% elif celestia_mon_preflight_fibre_ok | bool %}
+      {% if celestia_mon_preflight_fibre_ok | bool %}
       Fibre:     {{ celestia_mon_units.fibre }}.service sends its metrics to the collector ({{ celestia_mon_preflight_fibre_now }}).
       {% elif '$' in celestia_mon_preflight_fibre_got %}
       Fibre:     {{ celestia_mon_units.fibre }}.service takes its OTLP endpoint from a variable ({{ celestia_mon_preflight_fibre_now }});

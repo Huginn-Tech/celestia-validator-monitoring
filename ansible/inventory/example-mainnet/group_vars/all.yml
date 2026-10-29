@@ -1,5 +1,6 @@
 ---
-# Shared settings, free of secrets. The secrets are in host_vars/mon-1/vault.yml.
+# Shared settings, free of secrets. The secrets stay on mon-1 (sudo ./install.sh --edit-secrets there,
+# or host_vars/mon-1/vault.yml, encrypted).
 celestia_mon_signer: remote
-# Fibre is part of this layout. Keep it false while Fibre is not active on the network.
+# Fibre is part of this layout: the validator runs a Fibre server.
 celestia_mon_fibre_enabled: true

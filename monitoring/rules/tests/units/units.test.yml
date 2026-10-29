@@ -1,0 +1,258 @@
+# Unit names that differ between hosts: the example-fibre-apart inventory with tools/ci/units.yml on
+# top (the rules job's own-units step renders it here). celestia-appd runs as celestia-appd.service on
+# val-1 and celestia.service on node-1, Fibre as fibre.service on fibre-1 and fibre-standby.service
+# on val-1 (the standby), and tmkms as tmkms-signer.service on kms-1, which is scraped here and sets
+# no data mounts. The rules match a unit under every name the hosts of its role use, and each text
+# that names a unit names that host's own.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: Both Fibre units inactive; FibreDown names each host's unit
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x20'
+      - series: >-
+          up{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x16'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre-standby.service",state="active",type="simple"}
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Fibre is not running on any host"
+              description: >-
+                For 10 minutes no Fibre host (fibre-1: fibre.service, val-1: fibre-standby.service) has reported its Fibre unit
+                as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names
+                the wrong unit.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+
+  # The standby on val-1 starts at 5m: a failover, under its own unit name, stops FibreDown.
+  - name: Fibre fails over to val-1's fibre-standby.service; no FibreDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x30'
+      - series: >-
+          up{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x25'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre-standby.service",state="active",type="simple"}
+        values: '0x6 1x23'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreBothActive
+        exp_alerts: []
+
+  - name: Fibre active on both hosts; FibreBothActive names each host's unit
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre-standby.service",state="active",type="simple"}
+        values: '0x4 1x25'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FibreBothActive
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FibreBothActive
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: "Fibre is active on more than one host"
+              description: >-
+                For 5 minutes a Fibre unit has been active on fibre-1 (fibre.service), val-1 (fibre-standby.service).
+                Fibre runs on one host at a time: stop the one that should be the standby.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrebothactive"
+
+  # Both Fibre servers answer NOT_SERVING: each message names its own host's unit for the log.
+  - name: not_ready on both Fibre hosts; each names its own unit
+    interval: 1m
+    input_series:
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '1x10'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.1:7980",host="val-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '1x10'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+          - exp_labels:
+              host: val-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on val-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre-standby.service | grep 'health check failed'.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  - name: Crash loop of val-1's fibre-standby.service sends a message
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.1:9910",host="val-1",role="validator"}
+        values: '1x19'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x19'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre-standby.service",state="active",type="simple"}
+        values: '1x9 0 1 0 1 0 1 0 1 0 1'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.30.0.1:9910",host="val-1",role="validator",name="fibre-standby.service"}
+        values: '0x9 1+1x9'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.30.0.1:9910
+              host: val-1
+              role: validator
+              name: fibre-standby.service
+              severity: message
+              unit: fibre
+            exp_annotations:
+              summary: "fibre-standby.service is crash looping on val-1"
+              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  - name: kms-1's tmkms-signer.service stops; a message under its own name
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.30.0.5:9910",host="kms-1",role="kms"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.5:9910",host="kms-1",role="kms",name="tmkms-signer.service",state="active",type="simple"}
+        values: '1x4 0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.30.0.5:9910
+              host: kms-1
+              role: kms
+              name: tmkms-signer.service
+              state: active
+              type: simple
+              severity: message
+              unit: tmkms
+            exp_annotations:
+              summary: "tmkms-signer.service is not active on kms-1"
+              description: "systemd has not reported the unit as active for 2 minutes."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # The last own signature is at 5m (height 1049); the alert fires at 8m and points at kms-1's unit.
+  - name: The validator stops signing; ValidatorNotSigning names kms-1's tmkms unit
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x30'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.30.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x5 1049x25'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ValidatorNotSigning
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "The validator is not signing"
+              description: >-
+                Check journalctl -u tmkms-signer on the KMS host first.
+                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
+
+  # kms-1 sets no celestia_mon_data_mounts: DiskLow watches its / (the default), and pages there as on
+  # every KMS host.
+  - name: kms-1's / (no data mounts set) under 5% pages at once
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.30.0.5:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '100000000000x10'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.30.0.5:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '2000000000x10'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.30.0.5:9910",host="kms-1",role="kms",device="/dev/sda1",fstype="ext4",mountpoint="/"}
+        values: '0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.30.0.5:9910
+              host: kms-1
+              role: kms
+              device: /dev/sda1
+              fstype: ext4
+              mountpoint: /
+              severity: page
+            exp_annotations:
+              summary: "/ on kms-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 5% free space."
+              runbook: "https://github.com/s0urledd/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"

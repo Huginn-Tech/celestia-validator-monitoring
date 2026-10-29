@@ -1,16 +1,47 @@
 ---
-# The admin account sees and changes everything; its user name is always admin.
+# The admin account sees and changes everything; its user name is always admin. Its password is
+# celestia_mon_grafana_admin_password, kept in the monitor's secrets or vault; unset (or empty),
+# the install generates one, once, into /etc/celestia-mon/grafana-admin-password (root only),
+# which --uninstall keeps with Grafana's data and --purge deletes.
 - name: Check the Grafana admin password
   ansible.builtin.assert:
     that:
-      - celestia_mon_grafana_admin_password is defined
       - celestia_mon_grafana_admin_password | string | length >= 16
       - "'REPLACE_ME' not in celestia_mon_grafana_admin_password | string"
     fail_msg: >-
-      Set celestia_mon_grafana_admin_password in the inventory to a password of at least 16 characters
-      (for example the output of: openssl rand -base64 18) and keep it in ansible-vault. Grafana reads it
-      only on its first start.
+      Set celestia_mon_grafana_admin_password to a password of at least 16 characters (for example the output of:
+      openssl rand -base64 18), in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault, or leave it
+      unset and the install generates one. Grafana reads it only on its first start.
     quiet: true
+  when: celestia_mon_grafana_admin_password | default('', true) | string | length > 0
+
+# Grafana reads the password only when it creates its admin account on its first start: a
+# password generated now would not open a Grafana that made its account with another one.
+- name: Check that a generated admin password can open Grafana
+  when: celestia_mon_grafana_admin_password | default('', true) | string | length == 0
+  vars:
+    celestia_mon_grafana_generated_file: /etc/celestia-mon/grafana-admin-password
+  block:
+    - name: Look for a generated Grafana admin password and Grafana's database
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+        get_mime: false
+      loop:
+        - "{{ celestia_mon_grafana_generated_file }}"
+        - "{{ celestia_mon_grafana_data_dir }}/grafana.db"
+      register: celestia_mon_grafana_password_paths
+
+    - name: Check that Grafana has no admin account made with another password
+      ansible.builtin.assert:
+        that:
+          - celestia_mon_grafana_password_paths.results[0].stat.exists or not celestia_mon_grafana_password_paths.results[1].stat.exists
+        fail_msg: >-
+          celestia_mon_grafana_admin_password is not set, and Grafana on {{ inventory_hostname }} already has its admin account
+          ({{ celestia_mon_grafana_data_dir }}/grafana.db), made with the password that was set before: a generated one would
+          not open it. Set celestia_mon_grafana_admin_password to that password again, in the monitor's secrets
+          (sudo ./install.sh --edit-secrets) or its vault.
+        quiet: true
 
 # An empty or wildcard address would make Grafana listen on every interface; the
 # private-address pattern rejects both. The preflight checks that it is on this host.
@@ -184,12 +215,41 @@
     group: celestia-mon-grafana
     mode: "0750"
 
+# Without celestia_mon_grafana_admin_password: letters and digits, written once (force: false),
+# so the password never changes. install.sh prints the command that shows it.
+- name: Generate the Grafana admin password
+  when: celestia_mon_grafana_admin_password | default('', true) | string | length == 0
+  vars:
+    celestia_mon_grafana_generated_file: /etc/celestia-mon/grafana-admin-password
+  block:
+    - name: Generate the Grafana admin password once
+      ansible.builtin.copy:
+        dest: "{{ celestia_mon_grafana_generated_file }}"
+        content: "{{ lookup('ansible.builtin.password', '/dev/null', length=32, chars=['ascii_letters', 'digits']) }}"
+        force: false
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      diff: false
+
+    # Missing only in a dry run on a fresh host, where the step above wrote nothing.
+    - name: Read the generated Grafana admin password
+      ansible.builtin.slurp:
+        src: "{{ celestia_mon_grafana_generated_file }}"
+      register: celestia_mon_grafana_generated_password
+      failed_when: false
+      no_log: true
+
 # Grafana reads the admin password only when it creates the admin user on its
 # first start. Later changes to celestia_mon_grafana_admin_password have no effect;
 # change the password in the Grafana UI (Profile > Change password).
 - name: Write the Grafana admin password
   ansible.builtin.copy:
-    content: "{{ celestia_mon_grafana_admin_password }}"
+    content: >-
+      {{ celestia_mon_grafana_admin_password if celestia_mon_grafana_admin_password | default('', true) | string | length > 0
+         else (celestia_mon_grafana_generated_password.content | b64decode | trim)
+         if celestia_mon_grafana_generated_password.content is defined else 'generated-by-the-first-real-run' }}
     dest: "{{ celestia_mon_grafana_admin_password_file }}"
     owner: root
     group: celestia-mon-grafana

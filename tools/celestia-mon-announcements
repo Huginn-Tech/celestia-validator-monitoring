@@ -170,7 +170,8 @@ def discord_get(api, token, path):
                                "check celestia_mon_announcements_discord_api") from None
         if e.code == 401:
             raise DiscordError("unauthorized", "Discord refused the bot token (401): put a valid "
-                               "celestia_mon_discord_bot_token in the vault") from None
+                               "celestia_mon_discord_bot_token in the monitor's secrets "
+                               "(sudo ./install.sh --edit-secrets) or its vault") from None
         if e.code == 403:
             raise DiscordError("forbidden", f"Discord answered 403 {message}: give the bot View Channel "
                                "and Read Message History in this channel") from None

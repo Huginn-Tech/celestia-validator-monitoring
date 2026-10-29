@@ -40,9 +40,13 @@
 #
 # Checks 1, 8, 20 and 25 read where each port listens (ss), the connections to it now, whether
 # the host has a Tailscale interface (ip) and, while ufw is enabled, its rules (ufw status, as
-# root); doctor never connects to those ports and never changes a firewall rule.
+# root); doctor never connects to those ports and never changes a firewall rule. Checks 17 and
+# 27 read which node Fibre signs through and reads, and name it from node_addresses.
 #
-# Needs only bash, coreutils, util-linux (runuser, setsid), curl, ss and ip
+# With --survey it runs no check: it reads what the host runs and prints the host's inventory
+# groups, its entry for hosts.yml and the steps on the Celestia side (see survey below).
+#
+# Needs only bash, coreutils, util-linux (runuser, setsid, findmnt), curl, ss and ip
 # (iproute2), systemctl, grep, sed and awk.
 
 set -u
@@ -54,6 +58,7 @@ declare -A C=(
   [fibre_enabled]=""
   [appd_unit]="celestia-appd"
   [fibre_unit]="fibre"
+  [tmkms_unit]="tmkms"
   [node_rpc_url]="http://127.0.0.1:26657"
   [node_metrics_url]="http://127.0.0.1:26660/metrics"
   [node_home]=""
@@ -65,6 +70,8 @@ declare -A C=(
   [fibre_otel_endpoint]="http://127.0.0.1:9915"
   [fibre_hosts]=""
   [node_hosts]=""
+  [node_addresses]=""
+  [fibre_addresses]=""
   [prometheus_url]="http://127.0.0.1:9912"
   [alertmanager_url]="http://127.0.0.1:9913"
   [blackbox_url]="http://127.0.0.1:9919"
@@ -83,22 +90,32 @@ declare -A C=(
 usage() {
   cat <<'EOF'
 Usage: celestia-mon-doctor [--config FILE] [--KEY VALUE ...]
+       celestia-mon-doctor --survey [--KEY VALUE ...]
 
 Read-only checks for a Celestia validator, backup node, Fibre, KMS or monitor
 host. Settings come from /etc/celestia-mon/doctor.conf (KEY=VALUE lines) and
 can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
 
+--survey runs no check: it finds the celestia-appd, Fibre and tmkms units of
+this host by what they run, whatever their names, and prints the inventory
+groups of this host, its entry for hosts.yml and the steps on the Celestia
+side that are yours. It changes and writes nothing, and reads doctor.conf only
+when --config names it.
+
   roles                  comma-separated: validator, backup_node, fibre, kms,
                          monitor (default: guessed from the units on this
                          host; a backup node needs --roles backup_node)
   inventory_host         this host's name in the inventory, to find its own
-                         entry in fibre_public_endpoint
+                         entry in fibre_public_endpoint, node_addresses and
+                         fibre_addresses
   signer                local or remote; with local, no remote signer metrics
                          are expected (default: not set, not compared)
   fibre_enabled         true or false; with false, no Fibre or collector
                          metrics are expected (default: true if the Fibre
                          unit exists)
   appd_unit, fibre_unit  systemd unit names (default: celestia-appd, fibre)
+  tmkms_unit             tmkms's systemd unit name, on a KMS host (default:
+                         tmkms)
   node_rpc_url           default http://127.0.0.1:26657; a loopback URL
                          follows [rpc] laddr in the node's config.toml when
                          that names another address of the host
@@ -123,6 +140,13 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   node_hosts             comma-separated inventory names of the celestia-appd
                          nodes (validator and backup nodes), on the monitor
                          (default: the celestia-app targets)
+  node_addresses         comma-separated NAME=address, the private address of
+                         each celestia-appd node of the inventory: checks 17
+                         and 27 name the node Fibre signs through and reads
+                         (default: none, nothing named)
+  fibre_addresses        the same for each Fibre host: check 25 names those
+                         without a node of their own in its ufw command for
+                         the app gRPC (default: none)
   prometheus_url         celestia-mon's Prometheus, on the monitor host
                          (default http://127.0.0.1:9912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
@@ -404,6 +428,54 @@ joins() { # separator, items -> the items joined by the separator
   printf '%s' "$out"
 }
 
+# node_addresses and fibre_addresses, which install.sh writes from the inventory: NAME=address
+# of each celestia-appd node and of each Fibre host, its celestia_mon_private_ip.
+# It writes the list in one printf, so a reader that stops at its first match cannot close the pipe
+# before the list is out (GitHub's runners ignore SIGPIPE, so a later write printed an error).
+addr_pairs() { # NAME=address list -> "NAME address" lines, one per entry
+  local -a e=()
+  local x out=""
+  IFS=',' read -r -a e <<<"$1"
+  for x in "${e[@]}"; do
+    x=${x//[[:space:]]/}
+    if [[ $x == ?*=?* ]]; then out+="${x%%=*} ${x#*=}"$'\n'; fi
+  done
+  printf '%s' "$out"
+}
+node_named() { # address without port or brackets -> true and the inventory name of the node at that address
+  local n a
+  while read -r n a; do
+    if [[ ${a,,} == "${1,,}" ]]; then
+      printf '%s' "$n"
+      return 0
+    fi
+  done < <(addr_pairs "${C[node_addresses]}")
+  return 1
+}
+node_list() { # -> the nodes of node_addresses for a report line, such as "val-1 at 10.0.0.1, node-1 at 10.0.0.5"
+  addr_pairs "${C[node_addresses]}" | awk '{ printf "%s%s at %s", (NR > 1 ? ", " : ""), $1, $2 }'
+}
+own_address() { # -> this host's address in fibre_addresses or node_addresses (inventory_host), else a placeholder
+  local n a
+  while read -r n a; do
+    if [[ -n ${C[inventory_host]} && $n == "${C[inventory_host]}" ]]; then
+      printf '%s' "$a"
+      return
+    fi
+  done < <(addr_pairs "${C[fibre_addresses]},${C[node_addresses]}")
+  printf '%s' "<this host's private address>"
+}
+# The Fibre hosts that have no celestia-appd node of their own, so each reads a node on another
+# host: fibre_addresses less this host and the names node_addresses lists, "NAME address" lines.
+fibre_readers() {
+  local n a nodes
+  nodes=$(addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1)
+  while read -r n a; do
+    [[ $n != "${C[inventory_host]}" ]] || continue
+    if ! grep -qxF -- "$n" <<<"$nodes"; then printf '%s %s\n' "$n" "$a"; fi
+  done < <(addr_pairs "${C[fibre_addresses]}")
+}
+
 # ------------------------------------------------- who reaches a port
 
 is_tailnet() { # address without port -> true in 100.64.0.0/10, where Tailscale gives its devices addresses
@@ -550,8 +622,10 @@ port_peers() { # port -> the remote addresses (not loopback) connected to this h
 # every host of a range, reach it. A value without a port doctor can read warns: doctor cannot
 # tell where it listens. Arguments: the setting as the report names it (such as "[grpc]
 # address"), its value, its key, its section ("" = top level), its file, the value to set (with
-# "<private address>"), who may connect, the placeholder for that source in the ufw command, and
-# optional words for the report line after where it listens (such as ", without mTLS"). Sets:
+# "<private address>"), who may connect, the placeholder for that source in the ufw command (or
+# the sources, comma-separated, one ufw command each; empty when no other host needs the port, so
+# the value to set is the fix), and optional words for the report line after where it listens
+# (such as ", without mTLS"). Sets:
 #   LOCK_SEV   OK, WARN or FAIL
 #   LOCK_OPEN  wildcard or public when the port listens there, else empty
 #   LOCK_TEXT  what doctor found, for the report line
@@ -560,8 +634,8 @@ port_peers() { # port -> the remote addresses (not loopback) connected to this h
 LOCK_SEV="" LOCK_OPEN="" LOCK_TEXT="" LOCK_BIND="" LOCK_UFW=""
 port_lock() {
   local label=$1 value=$2 key=$3 sec=$4 file=$5 want=$6 who=$7 src=$8 after=${9:-}
-  local hp h port l where="" classes="" peers kind s rule del=""
-  local -a anyrules=() ranges=() ones=()
+  local hp h port l where="" classes="" peers kind s rule del="" cmds=""
+  local -a anyrules=() ranges=() ones=() srcs=()
   LOCK_SEV=OK LOCK_OPEN="" LOCK_BIND="" LOCK_UFW=""
   LOCK_TEXT="$label = $value"
   if [[ $value == unix://* ]]; then
@@ -650,8 +724,13 @@ port_lock() {
   fi
   peers=$(port_peers "$port")
   if [[ -n $peers ]]; then LOCK_TEXT+="; connected now from $peers"; fi
-  if [[ $LOCK_SEV != OK ]]; then
-    LOCK_UFW="let only $who reach port $port: \"sudo ufw allow from $src to any port $port proto tcp\"$del"
+  if [[ $LOCK_SEV != OK && -z $src ]]; then
+    LOCK_BIND="in $file${sec:+ under [$sec]}, set $key = $want"
+    LOCK_UFW=${del#, then }
+  elif [[ $LOCK_SEV != OK ]]; then
+    IFS=',' read -r -a srcs <<<"$src"
+    for s in "${srcs[@]}"; do cmds+="${cmds:+ and }\"sudo ufw allow from $s to any port $port proto tcp\""; done
+    LOCK_UFW="let only $who reach port $port: $cmds$del"
   fi
 }
 
@@ -725,20 +804,28 @@ home_ok() {
 METRICS=""
 check_metrics() {
   local name="node metrics" url=${C[node_metrics_url]} cfg prom="" laddr="" ns="" note="" a lhost wild="" bind fw sev=WARN
-  local port open="" only del="" seen=false reach=false
+  local port open="" only del="" seen=false reach=false bind_is="this host's private address"
   local -a bad=() tnet=()
   if ! node_host; then report SKIP 1 "$name" "not a validator or backup node host"; return; fi
   # The address the monitor scrapes, which is where the metrics belong: this host's
-  # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660").
+  # private address, never 0.0.0.0 or an empty host (CometBFT's default ":26660"). The install
+  # writes it from celestia_mon_private_ip, which is 127.0.0.1 on a one-box install, where the
+  # monitor scrapes loopback; run by hand, the default URL's loopback stands for the private address.
   bind=$(url_hostport "$url")
-  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then bind="<private address>:$(url_port "$url")"; fi
+  if [[ $bind == 127.* || $bind == localhost* || $bind == '[::1]'* ]]; then
+    if [[ -n ${C[inventory_host]} ]]; then
+      bind_is="the loopback address the monitor on this host scrapes"
+    else
+      bind="<private address>:$(url_port "$url")"
+    fi
+  fi
   cfg=$NODE_HOME/config/config.toml
   if [[ -r $cfg ]]; then
     prom=$(toml_get "$cfg" instrumentation prometheus)
     laddr=$(toml_get "$cfg" instrumentation prometheus_listen_addr)
     ns=$(toml_get "$cfg" instrumentation namespace)
     if [[ $prom != true ]]; then
-      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" and prometheus_listen_addr = \"$bind\" (this host's private address, never 0.0.0.0 or an empty host) under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
+      report FAIL 1 "$name" "prometheus = ${prom:-unset} in $cfg. Fix: set \"prometheus = true\" and prometheus_listen_addr = \"$bind\" ($bind_is, never 0.0.0.0 or an empty host) under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose"
       return
     fi
   else
@@ -1033,9 +1120,9 @@ check_signer_binds() {
 # address of the release (celestia-core v0.42.3, celestia-app's cosmos-sdk fork); only an
 # explicit enable = false turns the app gRPC or the REST API off here.
 check_node_ports() {
-  local name="node ports" cfg app en v item label value key sec file want who src sev=OK note=""
+  local name="node ports" cfg app en v item label value key sec file want who src sev=OK note="" r gwant gwho gsrc
   local one="the one host that needs it (the monitor, for celestia-mon-signal)" onesrc="<address of that host>"
-  local -a items=() bad=() oks=() sets=() ufws=()
+  local -a items=() bad=() oks=() sets=() ufws=() readers=() names=()
   if ! node_host; then report SKIP 25 "$name" "not a validator or backup node host"; return; fi
   cfg=$NODE_HOME/config/config.toml
   app=$NODE_HOME/config/app.toml
@@ -1049,7 +1136,27 @@ check_node_ports() {
     else
       v=$(toml_get "$app" grpc address)
       v=${v:-localhost:9090}
-      items+=("[grpc] address|$v|address|grpc|$app|\"127.0.0.1:${v##*:}\" when only the Fibre on this host reads it (its app_grpc_address), else \"<private address>:${v##*:}\" (the address in the app_grpc_address of the Fibre hosts that read it)|the Fibre hosts|<Fibre host address>")
+      gwant="\"127.0.0.1:${v##*:}\" when only the Fibre on this host reads it (its app_grpc_address), else \"<private address>:${v##*:}\" (the address in the app_grpc_address of the Fibre hosts that read it)"
+      gwho="the Fibre hosts"
+      gsrc="<Fibre host address>"
+      # With the inventory's Fibre hosts known, the ones without a node of their own read a node
+      # on another host, maybe this one; the others read their own node on 127.0.0.1.
+      if [[ -n ${C[fibre_addresses]} ]]; then
+        mapfile -t readers < <(fibre_readers)
+        if ((${#readers[@]} == 0)); then
+          gwant="\"127.0.0.1:${v##*:}\" (every Fibre host of the inventory has a node of its own to read)"
+          gwho=""
+          gsrc=""
+        else
+          gsrc=""
+          for r in "${readers[@]}"; do
+            names+=("${r% *} at ${r#* }")
+            gsrc+="${gsrc:+,}${r#* }"
+          done
+          gwho="the Fibre hosts without a node of their own that read this node ($(join "${names[@]}"))"
+        fi
+      fi
+      items+=("[grpc] address|$v|address|grpc|$app|$gwant|$gwho|$gsrc")
     fi
     en=$(toml_get "$app" api enable)
     if [[ $en == false ]]; then
@@ -1216,7 +1323,7 @@ check_address() {
 # The fix for a missing or wrong x/valaddr registration. set-host is signed by the validator's
 # account key, which also controls the validator's staking settings: it belongs on the
 # operator's workstation (a Ledger), never on a server. An ops key with an authz grant for
-# MsgSetFibreProviderInfo can send it instead (docs/quickstart.md, Mainnet layout).
+# MsgSetFibreProviderInfo can send it instead (docs/layouts.md, Registering Fibre with set-host).
 set_host_fix() { # host:port -> the fix, for a report line
   printf '%s' "register $1 from your workstation, never with a key on this server: celestia-appd tx valaddr set-host $1 --from <validator account key, on a Ledger> --node <RPC of a synced node>; with an authz grant for set-host to an ops key, add --generate-only and --from <validator account address>, and send the file with \"celestia-appd tx authz exec <file> --from <ops key>\""
 }
@@ -1313,6 +1420,35 @@ fibre_home() { # unit, argv -> Fibre's home: --home, else FIBRE_HOME, else ~/.ce
     h=$(unit_home "$1")
     printf '%s' "${h:-/root}/.celestia-fibre"
   fi
+}
+
+# One setting of Fibre's start command: its flag in ExecStart, with the unit's variables filled
+# in, over its key in <home>/config/server_config.toml, over celestia-app's default (flag > config
+# file > default, fibre/cmd/start_cmd.go). Fibre writes that file at its first start, and a missing
+# file leaves the defaults. Returns 1 when a variable of the flag is not set in the unit (FS_VAL is
+# the flag's value as written), 2 when the file exists but cannot be read, or doctor is not root
+# and so cannot tell.
+FS_VAL="" FS_SRC=""
+fibre_setting() { # unit, argv, config file, flag, key, default -> FS_VAL and FS_SRC
+  local v
+  FS_VAL="" FS_SRC=""
+  if v=$(flag_value "$2" "$4"); then
+    FS_VAL=$v
+    FS_SRC="--$4 in ExecStart"
+    unit_expand "$1" "$v" || return 1
+    FS_VAL=$EXPANDED
+    return 0
+  fi
+  if [[ -r $3 ]]; then
+    FS_VAL=$(toml_get "$3" "" "$5")
+    FS_SRC="$5 in $3"
+    if [[ -z $FS_VAL ]]; then FS_SRC="Fibre's default (no $5 in $3)"; fi
+  elif [[ -e $3 || $(id -u) -ne 0 ]]; then
+    return 2
+  else
+    FS_SRC="Fibre's default ($3 does not exist; Fibre writes it at its first start)"
+  fi
+  FS_VAL=${FS_VAL:-$6}
 }
 
 # With two or more Fibre hosts (fibre_hosts), one runs Fibre and the others keep a
@@ -1449,9 +1585,12 @@ check_fibre_otel() {
 # client certificate for the node's mTLS address. A plaintext signer warns even on loopback:
 # the node's plaintext listener serves signatures to every account of its host (check 20), so
 # every fix here leads to mTLS. The check reads both configs and never connects to the port.
+# With node_addresses (the inventory's nodes), it names the node Fibre signs through, and warns
+# when that address is no node of the inventory: celestia-mon then watches no node it signs
+# through, or the address is mistyped.
 check_fibre_signer() {
   local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply home f v kf tls=false ncfg g gh gp target problem=""
-  local mode when loop=false port ncert kind fix
+  local mode when loop=false port ncert kind fix via="" unknown=false
   local -a files=()
   local re4='^([0-9]{1,3}(\.[0-9]{1,3}){3}):[0-9]+$' re6='^\[([0-9A-Fa-f:.]+)\]:[0-9]+$'
   if fibre_skip 17 "$name"; then return; fi
@@ -1558,12 +1697,175 @@ check_fibre_signer() {
       return
     fi
   fi
+  # The inventory node at that address: this host's own for loopback or one of its addresses.
+  if [[ $loop == true ]] || host_address "$ip"; then
+    if ! node_host; then
+      unknown=true
+    else
+      via=${C[inventory_host]}
+    fi
+  elif ! via=$(node_named "$ip"); then
+    unknown=true
+  fi
+  if [[ -z ${C[node_addresses]} ]]; then unknown=false; fi
   if [[ $tls == false ]]; then
     report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  elif [[ $unknown == true ]]; then
+    # doctor knows each node by its celestia_mon_private_ip only, so another address of a node of
+    # the inventory (its VLAN next to its Tailscale address) lands here too and needs nothing.
+    fix="set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group and run install.sh there"
+    if [[ $loop == true ]] || host_address "$ip"; then
+      report WARN 17 "$name" "$src is $addr with mTLS, but this host runs no celestia-appd node of the inventory (roles: ${C[roles]}): Fibre signs through a node celestia-mon does not watch, or the address is mistyped, which fails every signature of this Fibre. Fix: $fix"
+    else
+      report WARN 17 "$name" "$src is $addr with mTLS, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. It is another address of one of those nodes, a node celestia-mon does not watch, or a mistyped address, which fails every signature of this Fibre. Fix: if $ip is another private address of one of those nodes, nothing; else $fix"
+    fi
   elif [[ $loop == true ]]; then
-    report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS"
+    report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS${via:+: Fibre signs through $via}"
   else
-    report OK 17 "$name" "$src is $addr, an IP address, mTLS"
+    report OK 17 "$name" "$src is $addr, an IP address, mTLS${via:+: Fibre signs through $via}"
+  fi
+}
+
+host_of() { # host:port, maybe after a scheme (tcp://, or a gRPC resolver such as dns:///) -> the host, without brackets
+  local h=${1#*://}
+  h=${h#/}
+  h=${h%:*}
+  h=${h#\[}
+  printf '%s' "${h%\]}"
+}
+host_port() { # address, port -> address:port, an IPv6 address in brackets
+  if [[ $1 == *:* ]]; then printf '[%s]:%s' "$1" "$2"; else printf '%s:%s' "$1" "$2"; fi
+}
+app_reach_here() { # host of the address Fibre reads, without port or brackets -> true when it is this host
+  case $1 in
+    '' | 0.0.0.0 | :: | localhost | 127.* | ::1) return 0 ;;
+  esac
+  host_address "$1"
+}
+
+# The app gRPC of the node on this host against the address a Fibre on this host dials: [grpc]
+# address in app.toml (localhost:9090 when unset), off with enable = false. Dialing an empty host,
+# 0.0.0.0 or localhost reaches loopback, and a listener on every interface (an empty host, 0.0.0.0
+# or ::) takes loopback too. Sets APP_GRPC, the [grpc] address, and APP_DIAL, the address Fibre can
+# dial to reach it.
+APP_GRPC="" APP_DIAL=""
+node_app_grpc() { # readable app.toml, host Fibre dials, its port -> 0 when the node's app gRPC listens there, 1 when not, 2 when it is off
+  local gh nh=$2
+  APP_GRPC="" APP_DIAL=""
+  if [[ $(toml_get "$1" grpc enable) == false ]]; then return 2; fi
+  APP_GRPC=$(toml_get "$1" grpc address)
+  APP_GRPC=${APP_GRPC:-localhost:9090}
+  gh=$(host_of "$APP_GRPC")
+  case $gh in
+    '' | 0.0.0.0 | :: | localhost) APP_DIAL=127.0.0.1 ;;
+    *:*) APP_DIAL="[$gh]" ;;
+    *) APP_DIAL=$gh ;;
+  esac
+  APP_DIAL+=":${APP_GRPC##*:}"
+  if [[ ${APP_GRPC##*:} != "$3" ]]; then return 1; fi
+  case $gh in '' | 0.0.0.0 | ::) return 0 ;; esac
+  case $nh in
+    '' | 0.0.0.0 | localhost) nh=127.0.0.1 ;;
+    ::) nh=::1 ;;
+  esac
+  if [[ $gh == localhost ]]; then gh=127.0.0.1; fi
+  [[ ${gh,,} == "${nh,,}" ]]
+}
+
+# Fibre reads the chain through one celestia-appd node's app gRPC: --app-grpc-address, else
+# app_grpc_address in <home>/config/server_config.toml, else 127.0.0.1:9090 (celestia-app
+# fibre/server_config.go). It dials it in plaintext and reads the chain ID there once when it
+# starts, with no retry (fibre/server.go), so a Fibre whose node does not answer exits, and systemd
+# restarts it. On a host without a celestia-appd node, an address of this host reaches nothing;
+# on a host with one, it must be where that node's app gRPC listens ([grpc] address in app.toml,
+# localhost:9090 when unset, the default of celestia-app's cosmos-sdk fork). A node on another host
+# is named from node_addresses: an address that is no node of the inventory warns, as nothing then
+# watches the node this Fibre depends on. A problem fails for an active Fibre and warns for a
+# standby, which is a unit check 6 counts as one: inactive or failed, with two or more Fibre hosts.
+# A unit systemd is restarting (activating) is an active Fibre that exits, as one whose node does
+# not answer does. doctor reads the configs and the listening sockets and never connects to the
+# port.
+check_fibre_app() {
+  local name="fibre app node" unit=${C[fibre_unit]} argv home cfg addr src h port app l nodes state
+  local apply="then restart Fibre at a moment you choose" when="now" standby="" sev=FAIL via="" rc=0 fix reload why
+  if fibre_skip 27 "$name"; then return; fi
+  if ! unit_loaded "$unit"; then report SKIP 27 "$name" "$unit.service not found (check 6)"; return; fi
+  state=$(unit_prop "$unit" ActiveState)
+  if fibre_standby_layout && [[ $state == inactive || $state == failed ]]; then
+    apply="and leave the unit stopped: it uses the new value when it next starts"
+    when="once it starts"
+    standby="standby: "
+    sev=WARN
+  fi
+  argv=$(unit_argv "$unit")
+  home=$(fibre_home "$unit" "$argv")
+  cfg=$home/config/server_config.toml
+  fibre_setting "$unit" "$argv" "$cfg" app-grpc-address app_grpc_address 127.0.0.1:9090 || rc=$?
+  if ((rc == 1)); then
+    report SKIP 27 "$name" "$FS_SRC is $FS_VAL, whose variables are not set in the unit's Environment= or a readable EnvironmentFile=; check the value by hand"
+    return
+  elif ((rc == 2)); then
+    report SKIP 27 "$name" "no --app-grpc-address in ExecStart, and $cfg is not readable (run as root)"
+    return
+  fi
+  addr=$FS_VAL
+  src=$FS_SRC
+  fix="set --app-grpc-address in ExecStart (or app_grpc_address in $cfg)"
+  reload="run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  why="$when, Fibre cannot read the chain: it reads the chain ID there when it starts, with no retry, so it exits and systemd restarts it"
+  # A gRPC target may name its resolver first (dns:///host:port).
+  h=$(host_of "$addr")
+  port=${addr##*:}
+  if [[ $addr != *:* || ! $port =~ ^[0-9]+$ ]]; then
+    report WARN 27 "$name" "$src is $addr: doctor reads no host and port in it, so it cannot tell which node Fibre reads. Fix: $fix to \"<private address of the node it reads>:9090\", $reload"
+    return
+  fi
+  if app_reach_here "$h" && ! node_host; then
+    nodes=$(node_list)
+    l=$(listeners "$port")
+    if [[ -n $l ]]; then
+      report WARN 27 "$name" "${standby}$src is $addr, and port $port listens here (${l//$'\n'/, }), but this host is in no node group of the inventory (roles: ${C[roles]}): if a celestia-appd node runs here, nothing watches it. Fix: put this host in the backup_node group and re-run install.sh on it; or $fix to the private address of the node Fibre reads${nodes:+ ($nodes)}, $reload"
+    else
+      report "$sev" 27 "$name" "${standby}$src is $addr, but this host runs no celestia-appd node and nothing listens on port $port here: $why. Fix: $fix to the private address of the node it reads, \"<that address>:9090\"${nodes:+ (the nodes of the inventory: $nodes)}, $reload; on that node set [grpc] address = \"<its private address>:9090\" in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port 9090 proto tcp\" (check 25 there shows who reaches it)"
+    fi
+    return
+  fi
+  if app_reach_here "$h"; then
+    via=${C[inventory_host]:+ (${C[inventory_host]})}
+    app=$NODE_HOME/config/app.toml
+    if [[ ! -r $app ]]; then
+      report SKIP 27 "$name" "$src is $addr, the node on this host$via; $app is not readable, so its [grpc] address was not compared (run as root or pass --node-home)"
+      return
+    fi
+    node_app_grpc "$app" "$h" "$port" || rc=$?
+    if ((rc == 2)); then
+      report "$sev" 27 "$name" "${standby}$src is $addr, the node on this host$via, but it serves no app gRPC ([grpc] enable = false in $app): $why. Fix: under [grpc] in $app, set enable = true and address = \"127.0.0.1:$port\", then restart celestia-appd at a moment you choose (check 25 shows who else reaches it)"
+    elif ((rc == 1)); then
+      report "$sev" 27 "$name" "${standby}$src is $addr, the node on this host$via, but that node serves its app gRPC on $APP_GRPC ([grpc] address in $app), not there: $why. Fix: $fix to \"$APP_DIAL\", $reload"
+    else
+      report OK 27 "$name" "$src is $addr: Fibre reads the node on this host$via, whose [grpc] address is $APP_GRPC ($app)"
+    fi
+    return
+  fi
+  # A node on another host: an IP address is named from node_addresses, a host name only when it is
+  # an inventory name (doctor resolves no name).
+  if [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
+    via=$(node_named "$h")
+    if [[ $(lock_class "$h") == public ]]; then
+      report WARN 27 "$name" "$src is $addr${via:+, the node on $via}, a public address: the app link is plaintext gRPC, which belongs on the private network, and that node's app gRPC is then open beyond it. Fix: $fix to that node's private (VLAN or WireGuard) address, $reload; on that node set [grpc] address to the same address in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port $port proto tcp\""
+      return
+    fi
+  elif [[ $'\n'$(addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1)$'\n' == *$'\n'"$h"$'\n'* ]]; then
+    via=$h
+  fi
+  if [[ -n $via ]]; then
+    report OK 27 "$name" "$src is $addr: Fibre reads the node on $via, another host, over plaintext gRPC on the private network (check 25 on $via shows who reaches its app gRPC)"
+  elif [[ -z ${C[node_addresses]} ]]; then
+    report OK 27 "$name" "$src is $addr, a node on another host (with node_addresses, which install.sh writes, doctor names it)"
+  elif [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
+    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. If it is a node outside the inventory, nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing); a mistyped address keeps Fibre from starting (check 6). Fix: if $h is another private address of one of those nodes, nothing; else put that node's host in the inventory's backup_node group and run install.sh there, or $fix to the private address of a node of the inventory, $reload"
+  else
+    report WARN 27 "$name" "$src is $addr, a host name that names no node of the inventory ($(node_list)), and doctor resolves no name, so it cannot tell which node Fibre reads. Fix: $fix to that node's private IP address and port, $reload"
   fi
 }
 
@@ -2284,7 +2586,7 @@ check_node_lag() {
   fix="apply check 11's fix for those celestia-app targets"
   if ((${#behind[@]} > 0)); then
     t+="${t:+; }more than $limit blocks behind the highest node ($max; the NodeBehind alert after 10 minutes of it): $(join "${behind[@]}")"
-    fix="a node that trails cannot take the validator role over; on that host run celestia-mon-doctor (check 3) and check its peers, disk and \"journalctl -u ${C[appd_unit]} -n 100\""
+    fix="a node that trails cannot take the validator role over; on that host run celestia-mon-doctor (check 3) and check its peers, its disk and the journal of its celestia-appd unit (\"journalctl -u <that unit> -n 100\"; each box may name its own)"
   fi
   if ((${#nodata[@]} > 0)); then
     t+="${t:+; }no height from $(join "${nodata[@]}") (its celestia-app target is down or missing: check 11)"
@@ -2561,7 +2863,7 @@ check_deadman() {
   if [[ -z $sent ]]; then
     report WARN 22 "$name" "Prometheus has no notification metrics of Alertmanager's dead-man receiver (alertmanager_notifications_total{receiver_name=\"deadman\"}), so doctor cannot tell whether heartbeats go out. Fix: re-run install.sh on this host: it writes the dead-man receiver from celestia_mon_deadman_webhook_url and starts Alertmanager with --enable-feature=receiver-name-in-metrics"
   elif awk -v f="$failed" 'BEGIN { exit !(f + 0 > 0) }'; then
-    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's vault and that this host reaches the service, then re-run install.sh on this host"
+    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault and that this host reaches the service, then re-run install.sh on this host"
   elif awk -v s="$sent" 'BEGIN { exit !(s + 0 > 0) }'; then
     report OK 22 "$name" "about $(num "$sent") heartbeats sent to the dead-man service in the last 10 minutes, none failed"
   else
@@ -2818,16 +3120,361 @@ check_fibre_ready() {
   fi
 }
 
+# ------------------------------------------------------------------- survey
+
+# --survey, on each host before its install: what the host runs and its place in the inventory.
+# It finds the units that run celestia-appd (also through cosmovisor, with
+# DAEMON_NAME=celestia-appd), Fibre and tmkms by their binary, whatever their names, reads their
+# settings with the readers of the checks, and prints the groups of the host, its entry for
+# hosts.yml and the steps on the Celestia side, which are the operator's. It runs no check and
+# writes no file.
+
+# Every service unit file and loaded service unit that runs one of them, one line each:
+# "<appd|fibre|tmkms> <unit without .service> <ActiveState>". Template units are left out.
+survey_units() {
+  local -a units=()
+  local unit path state kind
+  mapfile -t units < <({
+    systemctl list-unit-files --type=service --no-legend --plain 2>/dev/null
+    systemctl list-units --type=service --all --no-legend --plain 2>/dev/null
+  } | awk '$1 ~ /\.service$/ && $1 !~ /@\.service$/ { print $1 }' | sort -u)
+  ((${#units[@]} > 0)) || return 0
+  while read -r unit path state; do
+    case ${path##*/} in
+      celestia-appd) kind=appd ;;
+      fibre) kind=fibre ;;
+      tmkms) kind=tmkms ;;
+      cosmovisor)
+        if ! unit_env "$unit" DAEMON_NAME || [[ $ENV_VAL != celestia-appd ]]; then continue; fi
+        kind=appd
+        ;;
+      *) continue ;;
+    esac
+    printf '%s %s %s\n' "$kind" "${unit%.service}" "$state"
+  done < <(systemctl show -p Id -p ExecStart -p ActiveState -- "${units[@]}" 2>/dev/null | awk '
+    function flush() { if (id != "" && path != "") print id, path, st; id = ""; path = ""; st = "" }
+    /^Id=/ { id = substr($0, 4) }
+    /^ActiveState=/ { st = substr($0, 13) }
+    /^ExecStart=/ && path == "" && match($0, /path=[^ ;]*/) { path = substr($0, RSTART + 5, RLENGTH - 5) }
+    /^$/ { flush() }
+    END { flush() }')
+}
+
+SURVEY_UNITS=""
+survey_pick() { # kind, preferred unit -> the unit of that kind: the preferred one while active, else an active one, else the preferred one, else the first
+  awk -v k="$1" -v p="$2" '
+    $1 != k { next }
+    $2 == p { pref = 1; if ($3 == "active") pa = 1 }
+    $3 == "active" && act == "" { act = $2 }
+    first == "" { first = $2 }
+    END { print (pa ? p : (act != "" ? act : (pref ? p : first))) }' <<<"$SURVEY_UNITS"
+}
+survey_also() { # kind, unit -> the other units of that kind, with their state
+  awk -v k="$1" -v u="$2" '$1 == k && $2 != u { printf "%s%s.service (%s)", (n++ ? ", " : ""), $2, $3 }' <<<"$SURVEY_UNITS"
+}
+survey_state() { # unit -> its ActiveState
+  awk -v u="$1" '$2 == u { print $3; exit }' <<<"$SURVEY_UNITS"
+}
+
+# The private addresses of this host, "address interface kind" lines: WireGuard interfaces first,
+# then the other private addresses, Tailscale's last (100.64.0.0/10, where only the tailnet policy
+# filters). Loopback and the bridges of containers and VMs are left out.
+survey_addresses() {
+  local wg ifc a r kind
+  local -a out=()
+  wg=" $(ip -o link show type wireguard 2>/dev/null | awk -F': ' '{ sub(/@.*/, "", $2); printf "%s ", $2 }')"
+  while read -r ifc a; do
+    ifc=${ifc%@*}
+    a=${a%/*}
+    [[ $ifc != lo && ! $ifc =~ ^(docker|br-|veth|virbr|lxc|cni|flannel) && $a != 127.* && $a =~ ${C[private_address_regex]} ]] || continue
+    if [[ $wg == *" $ifc "* ]]; then
+      r=0 kind=WireGuard
+    elif [[ $ifc == tailscale* ]] || is_tailnet "$a"; then
+      r=2 kind=Tailscale
+    else
+      r=1 kind=private
+    fi
+    out+=("$r $a $ifc $kind")
+  done < <(ip -o addr show scope global 2>/dev/null | awk '{ print $2, $4 }')
+  if ((${#out[@]} > 0)); then printf '%s\n' "${out[@]}" | sort -s -n -k1,1 | cut -d ' ' -f 2-; fi
+}
+
+mount_of() { # path -> the mount point that holds it (of its nearest existing parent)
+  local p=$1
+  while [[ -n $p && ! -e $p ]]; do p=${p%/*}; done
+  findmnt -n -o TARGET -T "${p:-/}" 2>/dev/null | head -n 1
+}
+
+survey() {
+  local me appd fibre tmkms also cfg="" app="" laddr="" power role="" why="" prom mladdr mhost mport=26660 ns bind g
+  local fargv fhome fcfg fstate="" fapply fport="" fmount="" aaddr="" ah aport saddr="" stls="without mTLS" otel want
+  local ip note kind ifc single=false m mon rc n f v where
+  local -a cands=() mounts=() groups=() steps=() entry=() others=()
+  SURVEY_UNITS=$(survey_units)
+  appd=$(survey_pick appd "${C[appd_unit]}")
+  fibre=$(survey_pick fibre "${C[fibre_unit]}")
+  tmkms=$(survey_pick tmkms "${C[tmkms_unit]}")
+  me=${HOSTNAME:-$(uname -n)}
+  me=${me%%.*}
+  printf 'celestia-mon-doctor --survey on %s: what this box runs; nothing was changed.\n' "$me"
+  if [[ $(id -u) -ne 0 ]]; then printf '%s\n' "Not run as root, so the node's and Fibre's settings may not be readable: run it with sudo."; fi
+  if [[ -z $appd && -z $fibre && -n $tmkms ]]; then
+    printf '\n  %-14s %s\n\n' tmkms "$tmkms.service ($(survey_state "$tmkms"))"
+    printf '%s\n' "tmkms runs here: nothing is installed here; put this box in the kms group." \
+      "In hosts.yml, list it under all: hosts: by its name alone ($me:) and under children: in kms. To watch its disks as well, give it celestia_mon_kms_scrape: true, celestia_mon_private_ip and celestia_mon_data_mounts."
+    return
+  fi
+
+  # The node: validator or backup node, as check 2 tells them apart.
+  if [[ -n $appd ]]; then
+    C[appd_unit]=$appd
+    find_node
+    cfg=$NODE_HOME/config/config.toml
+    app=$NODE_HOME/config/app.toml
+    follow_rpc_laddr
+    read_status
+    power=$(status_value voting_power)
+    if [[ ! -r $cfg ]]; then
+      role="validator or backup_node"
+      why="$cfg is not readable (run as root, or pass --node-home)"
+    else
+      laddr=$(toml_get "$cfg" "" priv_validator_laddr)
+      if [[ -n $laddr ]]; then
+        role=validator
+        why="priv_validator_laddr = $laddr: tmkms signs through this node"
+      elif [[ $power =~ ^[1-9][0-9]*$ ]]; then
+        role=validator
+        why="it signs with its local key file, which has voting power $power"
+      elif [[ $power == 0 ]]; then
+        role=backup_node
+        why="priv_validator_laddr is empty and its local key has no voting power (a jailed or unbonded validator's key has none either: then it is the validator)"
+      else
+        role=backup_node
+        why="priv_validator_laddr is empty and its RPC did not answer: it is the validator instead if it signs with its local key file"
+      fi
+    fi
+    groups+=("$role")
+  fi
+
+  # Fibre: where it listens, which node it reads and which it signs through, and its OTLP endpoint.
+  if [[ -n $fibre ]]; then
+    C[fibre_unit]=$fibre
+    groups+=(fibre)
+    fstate=$(survey_state "$fibre")
+    fapply="then restart Fibre at a moment you choose"
+    # A stopped or failed unit stays stopped (a standby, as check 6 counts one); one that systemd is
+    # restarting is a Fibre that exits.
+    if [[ $fstate == inactive || $fstate == failed ]]; then fapply="and leave the unit stopped: it uses the new value when it next starts"; fi
+    fargv=$(unit_argv "$fibre")
+    fhome=$(fibre_home "$fibre" "$fargv")
+    fcfg=$fhome/config/server_config.toml
+    fmount=$(mount_of "$fhome")
+    if fibre_setting "$fibre" "$fargv" "$fcfg" server-listen-address server_listen_address 0.0.0.0:7980; then fport=${FS_VAL##*:}; fi
+    if fibre_setting "$fibre" "$fargv" "$fcfg" app-grpc-address app_grpc_address 127.0.0.1:9090; then aaddr=$FS_VAL; fi
+    if fibre_setting "$fibre" "$fargv" "$fcfg" signer-grpc-address signer_grpc_address 127.0.0.1:26669; then saddr=$FS_VAL; fi
+    n=0
+    for f in ca cert key; do
+      rc=0
+      fibre_setting "$fibre" "$fargv" "$fcfg" "signer-grpc-$f-file" "signer_grpc_${f}_file" "" || rc=$?
+      if ((rc < 2)) && [[ -n $FS_VAL ]]; then n=$((n + 1)); fi
+    done
+    if ((n == 3)); then stls=mTLS; fi
+    want=${C[fibre_otel_endpoint]%/}
+    otel=""
+    if otel=$(flag_value "$fargv" otel-endpoint); then
+      if unit_expand "$fibre" "$otel"; then otel=$EXPANDED; fi
+    elif unit_env "$fibre" FIBRE_OTEL_ENDPOINT; then
+      otel=$ENV_VAL
+    fi
+    otel=${otel%/}
+  fi
+  if [[ -n $tmkms ]]; then groups+=(kms); fi
+  if unit_loaded celestia-mon-prometheus; then groups+=(monitor); fi
+
+  # The address the monitor reaches this host on: 127.0.0.1 where the node and Fibre read each
+  # other on loopback with no remote signer, as on one box; else the first private address.
+  mapfile -t cands < <(survey_addresses)
+  if [[ -n $appd && -n $aaddr && -n $saddr ]] && app_reach_here "$(host_of "$aaddr")" && app_reach_here "$(host_of "$saddr")" &&
+    [[ -z $laddr || $(lock_class "$(host_of "$laddr")") == loopback ]]; then
+    single=true
+  fi
+  for v in "${cands[@]:1}"; do
+    read -r m ifc kind <<<"$v"
+    others+=("$m ($ifc)")
+  done
+  if ((${#cands[@]} == 0)); then
+    ip=127.0.0.1
+    note="no private address found: 127.0.0.1 works only when every box of the install is this one"
+  elif [[ $single == true ]]; then
+    ip=127.0.0.1
+    note="the node and Fibre here read each other on loopback, as on one box: keep 127.0.0.1 when the monitor runs here too, else ${cands[0]%% *}"
+  else
+    read -r ip ifc kind <<<"${cands[0]}"
+    note="$ifc, $kind${others[*]:+; also on this box: $(join "${others[@]}")}"
+  fi
+
+  # Data mounts: the mount point of the node's data, /, and on the monitor that of
+  # /var/lib/celestia-mon, Prometheus's data.
+  if [[ -n $appd ]]; then
+    m=$(mount_of "$NODE_HOME/data")
+    if [[ -n $m ]]; then mounts+=("$m"); fi
+  fi
+  if [[ " ${mounts[*]} " != *" / "* ]]; then mounts+=(/); fi
+  mon=$(mount_of /var/lib/celestia-mon)
+  if [[ -n $mon && " ${mounts[*]} " != *" $mon "* ]] && [[ ${#groups[@]} -eq 0 || " ${groups[*]} " == *" monitor "* ]]; then
+    mounts+=("$mon")
+  fi
+
+  v=$ip
+  if [[ $v == *:* ]]; then v="\"$v\""; fi
+  entry+=("    $me:" "      celestia_mon_private_ip: $v  # $note" "      celestia_mon_data_mounts: [$(joins ', ' "${mounts[@]}")]")
+  if [[ -n $mon && " ${mounts[*]} " != *" $mon "* ]]; then
+    entry+=("      # when the monitor runs on this box, add $mon, the disk of /var/lib/celestia-mon (Prometheus's data)")
+  fi
+  if [[ -n $fibre ]]; then
+    entry+=("      celestia_mon_fibre_mount: ${fmount:-<mount point of $fhome>}"
+      "      celestia_mon_fibre_public_endpoint: \"<public host or IP>:${fport:-7980}\"  # what valaddr set-host registers while this box's Fibre is the active one")
+    if [[ -n $fport && $fport != 7980 ]]; then entry+=("      celestia_mon_fibre_port: $fport"); fi
+  fi
+  if [[ -n $appd && -r $cfg ]]; then
+    mladdr=$(toml_get "$cfg" instrumentation prometheus_listen_addr)
+    # CometBFT's default ":26660" is every interface.
+    mladdr=${mladdr:-:26660}
+    mport=${mladdr##*:}
+    if [[ ! $mport =~ ^[0-9]+$ ]]; then mport=26660; fi
+    if [[ $mport != 26660 ]]; then entry+=("      celestia_mon_node_metrics_port: $mport"); fi
+  fi
+  if [[ -n $appd && ! -f $cfg ]]; then
+    entry+=("      # celestia_mon_node_home: <the node's home>: doctor found no config/config.toml in $NODE_HOME")
+  fi
+  if [[ ${appd:-celestia-appd} != celestia-appd || ${fibre:-fibre} != fibre || ${tmkms:-tmkms} != tmkms ]]; then
+    entry+=("      celestia_mon_units: {appd: ${appd:-celestia-appd}, fibre: ${fibre:-fibre}, tmkms: ${tmkms:-tmkms}}  # the whole map: it replaces the default one")
+  fi
+  if [[ -n $fibre ]]; then
+    where="another box"
+    if [[ -n $aaddr ]] && app_reach_here "$(host_of "$aaddr")"; then where="this box"; fi
+    entry+=("      # Fibre reads the chain at ${aaddr:-<not read>} ($where) and signs through ${saddr:-<not read>} ($stls)")
+  fi
+
+  # Your steps: the node's metrics, Fibre's OTLP endpoint, the app gRPC Fibre reads, Fibre's mTLS.
+  if [[ -n $appd && ! -r $cfg ]]; then
+    steps+=("Run the survey as root: $cfg is not readable, so the node's metrics were not read")
+  elif [[ -n $appd ]]; then
+    prom=$(toml_get "$cfg" instrumentation prometheus)
+    ns=$(toml_get "$cfg" instrumentation namespace)
+    mhost=$(host_of "$mladdr")
+    bind=$(host_port "$ip" "$mport")
+    if [[ $prom != true ]]; then
+      steps+=("The node serves no metrics (prometheus = ${prom:-unset}): under [instrumentation] in $cfg, set prometheus = true and prometheus_listen_addr = \"$bind\", then restart celestia-appd at a moment you choose")
+    elif [[ -z $mhost || $mhost == 0.0.0.0 || $mhost == :: ]]; then
+      steps+=("The node's metrics listen on every interface (prometheus_listen_addr = \"$mladdr\"): set it to \"$bind\" under [instrumentation] in $cfg, then restart celestia-appd at a moment you choose; only the monitor reaches that port")
+    elif [[ $mhost != "$ip" && ! ($mhost == localhost && $ip == 127.0.0.1) ]]; then
+      steps+=("The node's metrics listen on $mhost, not on $ip, the address of this entry: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or celestia_mon_private_ip to $mhost, if the monitor reaches this box there), then restart celestia-appd at a moment you choose")
+    fi
+    if [[ -n $ns && $ns != cometbft ]]; then
+      steps+=("Set namespace = \"cometbft\" under [instrumentation] in $cfg (it is \"$ns\"), then restart celestia-appd at a moment you choose: the alerts read the cometbft_ metrics")
+    fi
+  fi
+  if [[ -n $fibre ]]; then
+    if [[ -z $otel ]]; then
+      steps+=("Fibre sends no metrics yet: add \"--otel-endpoint $want\" to ExecStart in $fibre.service (or Environment=FIBRE_OTEL_ENDPOINT=$want), run \"systemctl daemon-reload\", $fapply. The collector the install puts on this box takes them there")
+    elif [[ $otel != "$want" && $otel != "${want/127.0.0.1/localhost}" ]]; then
+      steps+=("Fibre sends its metrics to $otel: set --otel-endpoint (or FIBRE_OTEL_ENDPOINT) in $fibre.service to $want, the collector the install puts on this box, run \"systemctl daemon-reload\", $fapply")
+    fi
+    if [[ -z $aaddr || -z $saddr ]]; then
+      steps+=("Run the survey as root: $fcfg is not readable, so which node Fibre reads and signs through was not read")
+    fi
+  fi
+  if [[ -n $aaddr ]]; then
+    ah=$(host_of "$aaddr")
+    aport=${aaddr##*:}
+    if app_reach_here "$ah" && [[ -z $appd ]]; then
+      steps+=("Fibre reads the chain at $aaddr, but no celestia-appd node runs on this box: set --app-grpc-address in ExecStart (or app_grpc_address in $fcfg) to \"<private address of the node it reads>:9090\", run \"systemctl daemon-reload\" if you changed the unit, $fapply. On that node, set [grpc] address = \"<its private address>:9090\" in app.toml, restart celestia-appd there at a moment you choose, and let only this box reach it: \"sudo ufw allow from $ip to any port 9090 proto tcp\"")
+    elif app_reach_here "$ah" && [[ -r $app ]]; then
+      rc=0
+      node_app_grpc "$app" "$ah" "$aport" || rc=$?
+      if ((rc == 2)); then
+        steps+=("Fibre reads the node on this box at $aaddr, but that node serves no app gRPC ([grpc] enable = false in $app): under [grpc] set enable = true and address = \"127.0.0.1:$aport\", then restart celestia-appd at a moment you choose")
+      elif ((rc == 1)); then
+        steps+=("Fibre reads the node on this box at $aaddr, but that node serves its app gRPC on $APP_GRPC ([grpc] address in $app): set --app-grpc-address in ExecStart (or app_grpc_address in $fcfg) to \"$APP_DIAL\", run \"systemctl daemon-reload\" if you changed the unit, $fapply")
+      fi
+    elif ! app_reach_here "$ah"; then
+      steps+=("Fibre reads the chain at $aaddr, a node on another box. On that box, [grpc] address in app.toml must be \"$(host_port "$ah" "$aport")\" (then restart celestia-appd there at a moment you choose), and only this box may reach that port: \"sudo ufw allow from $ip to any port $aport proto tcp\"")
+    fi
+  fi
+  if [[ -n $saddr && $stls != mTLS ]]; then
+    steps+=("Fibre signs through $saddr without mTLS, so the node's privval gRPC serves signatures with the validator key to whoever reaches it, every account on its box included: serve it with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in that node's config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $fcfg), $fapply")
+  fi
+  # A node without a Fibre of its own may be the one a Fibre on another box reads.
+  if [[ -n $appd && -z $fibre && -r $app && $ip != 127.0.0.1 && $(toml_get "$app" grpc enable) != false ]]; then
+    g=$(toml_get "$app" grpc address)
+    g=${g:-localhost:9090}
+    if [[ $(lock_class "$(host_of "$g")") == loopback ]]; then
+      steps+=("Only if a Fibre on another box reads this node (that box's survey says so): set [grpc] address = \"$(host_port "$ip" "${g##*:}")\" in $app (it is \"$g\", loopback), restart celestia-appd at a moment you choose, and let only that box reach it: \"sudo ufw allow from <that box's private address> to any port ${g##*:} proto tcp\"")
+    fi
+  fi
+
+  printf '\nRead on this box:\n'
+  if [[ -n $appd ]]; then
+    also=$(survey_also appd "$appd")
+    printf '  %-14s %s\n' celestia-appd "$appd.service ($(survey_state "$appd")), home $NODE_HOME: $role, as $why${also:+; also $also}"
+  else
+    printf '  %-14s %s\n' celestia-appd none
+  fi
+  if [[ -n $fibre ]]; then
+    also=$(survey_also fibre "$fibre")
+    printf '  %-14s %s\n' Fibre "$fibre.service ($fstate), home $fhome (on ${fmount:-unknown}), port ${fport:-unknown}; reads the chain at ${aaddr:-<not read>} ($where); signs through ${saddr:-<not read>} ($stls)${also:+; also $also}"
+  else
+    printf '  %-14s %s\n' Fibre none
+  fi
+  if [[ -n $tmkms ]]; then printf '  %-14s %s\n' tmkms "$tmkms.service ($(survey_state "$tmkms"))"; fi
+  v=none
+  if ((${#cands[@]} > 0)); then
+    v=""
+    for m in "${cands[@]}"; do
+      read -r n ifc kind <<<"$m"
+      v+="${v:+, }$n ($ifc, $kind)"
+    done
+  fi
+  printf '  %-14s %s\n' addresses "$v"
+
+  if ((${#groups[@]} == 0)); then
+    printf '\nGroups: monitor, if this box is the monitor (it runs no celestia-appd, Fibre or tmkms)\n'
+  elif [[ " ${groups[*]} " == *" monitor "* ]]; then
+    printf '\nGroups: %s\n' "$(join "${groups[@]}")"
+  else
+    printf '\nGroups: %s (and monitor, when the monitor runs on this box too)\n' "$(join "${groups[@]}")"
+  fi
+  printf '\nEntry for hosts.yml, under all: hosts: (name the box as you like):\n'
+  printf '%s\n' "${entry[@]}"
+  if ((${#steps[@]} == 0)); then
+    printf '\nYour steps on the Celestia side: none found.\n'
+  else
+    printf '\nYour steps on the Celestia side, at a moment you choose (celestia-mon never makes them):\n'
+    n=0
+    for v in "${steps[@]}"; do
+      n=$((n + 1))
+      printf '  %d. %s\n' "$n" "$v"
+    done
+  fi
+  printf '\n%s\n' "Next: put the entry of every box in one hosts.yml in ~/celestia-mon-inventory (start from the example of your layout) and each box in its groups under children:, copy that folder to every box but the KMS box, then run on each: sudo ./install.sh"
+}
+
 # ------------------------------------------------------------------- main
 
 conf=/etc/celestia-mon/doctor.conf
 conf_given=false
+survey_mode=false
 overrides=()
 while (($# > 0)); do
   case $1 in
     -h | --help)
       usage
       exit 0
+      ;;
+    --survey)
+      survey_mode=true
+      shift
       ;;
     --config=*)
       conf=${1#*=}
@@ -2857,7 +3504,9 @@ while (($# > 0)); do
   esac
 done
 
-if [[ -r $conf ]]; then
+# The survey reads the host, not the settings an earlier install wrote (unless --config names them).
+if [[ $survey_mode == true && $conf_given == false ]]; then conf=""; fi
+if [[ -n $conf && -r $conf ]]; then
   load_conf "$conf"
 elif [[ $conf_given == true ]]; then
   echo "celestia-mon-doctor: cannot read $conf" >&2
@@ -2867,6 +3516,10 @@ for ((i = 0; i < ${#overrides[@]}; i += 2)); do
   key=${overrides[i]}
   set_opt "${key//-/_}" "${overrides[i + 1]}"
 done
+if [[ $survey_mode == true ]]; then
+  survey
+  exit 0
+fi
 
 if [[ -z ${C[roles]} ]]; then
   roles=()
@@ -2914,6 +3567,7 @@ check_gov
 check_fibre_ready
 check_node_ports
 check_service_users
+check_fibre_app
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."

@@ -18,6 +18,8 @@ ansible/roles/celestia_mon_grafana/templates/dashboard-config.json.j2:
       "gov_page": true | false,                    # GovVoteMissing also pages (celestia_mon_gov_page)
       "announcements_enabled": true | false,       # celestia_mon_announcements
       "units": {"appd": "...", "fibre": "...", "tmkms": "..."},
+      "host_units": [{"host": "...", "appd": "...", "fibre": "...", "tmkms": "..."}],  # only the hosts
+                                                   # whose own celestia_mon_units differ from units; optional
       "thresholds": {...},                         # celestia_mon_thresholds
       "nodes": ["..."],                            # celestia-appd hosts: validator, then backup_node
       "kms_hosts": ["..."],                        # kms hosts with celestia_mon_kms_scrape
@@ -703,7 +705,9 @@ class Setup:
     whose node_exporter runs, with a remote signer; servers the nodes, then the other node_exporter
     hosts (the monitor's among them), in inventory order: the order of the status board, the table
     and the host colours. data_mounts and stores are the disks DiskLow watches as data mounts and as
-    Fibre stores, as the rules template picks them."""
+    Fibre stores, as the rules template picks them. A host's systemd unit names are its entry in
+    host_units, else units (unit()); a query matches a unit under every name the hosts of its role use
+    (is_unit()), as the alert rules do."""
 
     def __init__(self, cfg):
         t = cfg["thresholds"]
@@ -755,6 +759,9 @@ class Setup:
         self.units = {"appd": cfg["units"]["appd"] + ".service",
                       "fibre": cfg["units"].get("fibre", "") + ".service",
                       "tmkms": cfg["units"].get("tmkms", "") + ".service"}
+        # The hosts whose unit names differ from units, with their own (unit()).
+        self.host_units = {u["host"]: {k: u.get(k, "") + ".service" for k in self.units}
+                           for u in cfg.get("host_units", [])}
         self.N = t["not_signing_blocks"]
         self.R = t.get("signatures_missed_ratio", 0.05)
         self.NB = t.get("node_behind_blocks", 20)
@@ -795,6 +802,22 @@ class Setup:
     def ms(self):
         """The signer's median limit in milliseconds, as text."""
         return "%g" % (self.S * 1000)
+
+    def unit(self, host, key):
+        """The unit of key (appd, fibre or tmkms) on host, with .service: its own name, else the shared one."""
+        return self.host_units.get(host, self.units)[key]
+
+    def names(self, key):
+        """The unit names of key on the hosts of its role (the nodes, the Fibre hosts, the scraped KMS hosts),
+        sorted; the shared name alone where the role has no host."""
+        hosts = {"appd": self.nodes, "fibre": self.fibre_hosts, "tmkms": self.kms_hosts}[key]
+        return sorted({self.unit(h, key) for h in hosts}) or [self.units[key]]
+
+    def is_unit(self, key):
+        """The matcher on the name label of key's unit: name="x" where the hosts of its role share one name,
+        as on most installs, else name=~ over every name, as the alert rules match it."""
+        names = self.names(key)
+        return "name=%s" % q(names[0]) if len(names) == 1 else "name=~%s" % q("|".join(re2(n) for n in names))
 
 
 def lookup(hosts):
@@ -895,7 +918,7 @@ def twice10(s):
 
 def fibre_active(s):
     """One series per host whose Fibre unit systemd reports active, labelled host only."""
-    return '(max by (host) (node_systemd_unit_state{name=%s,state="active"} == 1))' % q(s.units["fibre"])
+    return '(max by (host) (node_systemd_unit_state{%s,state="active"} == 1))' % s.is_unit("fibre")
 
 
 def fibre_seen(s):
@@ -915,7 +938,7 @@ def wrong_host(s):
     registration rule, one term per Fibre host with an endpoint."""
     return "(%s)" % " or ".join(
         "(max by (endpoint) (celestia_mon_fibre_registered{endpoint!=%s} == 1) and on () "
-        '(max(node_systemd_unit_state{host=%s,name=%s,state="active"}) == 1))' % (q(e), q(h), q(s.units["fibre"]))
+        '(max(node_systemd_unit_state{host=%s,name=%s,state="active"}) == 1))' % (q(e), q(h), q(s.unit(h, "fibre")))
         for h, e in s.fibre_endpoints)
 
 
@@ -2086,8 +2109,8 @@ def check_lanes(s):
                      + ["%s * 0 + %d" % (firing('alertname="FibreNotServing",reason=%s' % q(r)), 21 + i)
                         for i, (r, _) in enumerate(reasons)]
                      + ["%s * 0 + 5" % firing('alertname="FibreBothActive"'),
-                        '((%s == 1) and on () %s) * 0 + 1' % (seen('node_systemd_unit_state{name=%s,state="active"}'
-                                                                   % q(s.units["fibre"])), gate),
+                        '((%s == 1) and on () %s) * 0 + 1' % (seen('node_systemd_unit_state{%s,state="active"}'
+                                                                   % s.is_unit("fibre")), gate),
                         nodata()])),
              uptime("((((count(%s) > bool 0) or on () (%s * 0)) unless on () %s) or on () (%s * 0)) and on () %s"
                     % (fibre_active(s), PROM, fibre_alert, PROM, PROM)),
@@ -2417,13 +2440,13 @@ def servers_table(s):
         parts.append(label('%s * 0 + 4 or (max by (host) (up{job="otelcol"}) == 1) * 0 + 8' % fibre_seen(s),
                            "part", "fibre"))
     if s.kms_hosts:
-        tmkms = 'node_systemd_unit_state{name=%s,state="active",host=~%s}' % (
-            q(s.units["tmkms"]), q("|".join(re2(h) for h in s.kms_hosts)))
+        tmkms = 'node_systemd_unit_state{%s,state="active",host=~%s}' % (
+            s.is_unit("tmkms"), q("|".join(re2(h) for h in s.kms_hosts)))
         kms = "(max by (host) (%s) == 1) * 0 + 16 or (max by (host) (%s) == 0) * 0 + 32" % (tmkms, tmkms)
         # The ServiceDown rule for a unit that is not loaded, per KMS host.
         for k in s.kms_hosts:
             kms += (' or (absent(node_systemd_unit_state{host=%s,name=%s}) and on () (up{job="node",host=%s} == 1)) '
-                    "* 0 + 64" % (q(k), q(s.units["tmkms"]), q(k)))
+                    "* 0 + 64" % (q(k), q(s.unit(k, "tmkms")), q(k)))
         parts.append(label(kms, "part", "kms"))
     if s.mon_only:
         # The monitor on a host of its own runs no Celestia service: its role is the monitoring.
@@ -2464,13 +2487,13 @@ def servers_table(s):
                      % (label("%s / %s" % (rates[0], cap), "dir", "in"), label("%s / %s" % (rates[1], cap), "dir", "out"),
                         q(link["host"])))
     network = "%s %s" % (" or ".join(peaks), nodata_all)
-    # The units whose restarts count, with ServiceDown's crash-loop words (TITLES) for each.
-    crashes = ([(s.units["appd"], "Node crashing")] + ([(s.units["fibre"], "Fibre crash")] if s.fibre else [])
-               + ([(s.units["tmkms"], "Signer crash")] if s.kms_hosts else []))
-    units = [u for u, _ in crashes]
+    # The units whose restarts count, with ServiceDown's crash-loop words (TITLES) for each, and their names.
+    crashes = ([("appd", "Node crashing")] + ([("fibre", "Fibre crash")] if s.fibre else [])
+               + ([("tmkms", "Signer crash")] if s.kms_hosts else []))
+    units = [u for k, _ in crashes for u in s.names(k)]
     restart_sel = "{name=~%s}" % q("|".join(re2(u) for u in units))
-    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{name=%s}[30m]))) > %s) * 0 - %d"
-                        % (q(u), num(s.CL), 10 + i) for i, (u, _) in enumerate(crashes))
+    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{%s}[30m]))) > %s) * 0 - %d"
+                        % (s.is_unit(k), num(s.CL), 10 + i) for i, (k, _) in enumerate(crashes))
     restarts = ("(%s or floor(sum by (host) (increase(node_systemd_service_restart_total%s[24h])))) and on (host) %s %s"
                 % (crash, restart_sel, NE_UP, nodata_all))
 
@@ -2780,7 +2803,7 @@ def fibre_signer_words(s):
 
 def signer_service(s, host):
     """tmkms's unit on a scraped KMS host, as ServiceDown reads it."""
-    sel = "host=%s,name=%s" % (q(host), q(s.units["tmkms"]))
+    sel = "host=%s,name=%s" % (q(host), q(s.unit(host, "tmkms")))
     return chain(
         'max(ALERTS{alertname="ServiceDown",unit="tmkms",alertstate="firing",host=%s,job!="",state=""}) * 0 + 11'
         % q(host),
@@ -3676,7 +3699,7 @@ def fibre_row(s):
     is the Upload time fact."""
     ok = 'fibre_server_upload_shard_duration_seconds_count{success="true"}'
     count = "fibre_server_upload_shard_duration_seconds_count"
-    unit = q(s.units["fibre"])
+    fibre_is = s.is_unit("fibre")
     failing = s.hold("FibreNotServing uploads_failing", UPLOAD_WINDOW)
 
     accepted = cell(
@@ -3710,7 +3733,7 @@ def fibre_row(s):
         one(chain("max((max by (host) (fibre_server_upload_shard_occupancy_bytes) / max by (host) "
                   "(fibre_server_upload_shard_budget_bytes > 0)) and on (host) %s)" % fibre_active(s),
                   "(max((%s == 0) and on (host) %s) - 1)" % (FIBRE_ALIVE, fibre_active(s)),
-                  '(absent(node_systemd_unit_state{name=%s,state="active"} == 1) * -2)' % unit)),
+                  '(absent(node_systemd_unit_state{%s,state="active"} == 1) * -2)' % fibre_is)),
         unit="percentunit", decimals=0, no_value="No Fibre data",
         mappings=mapping((-1, "No limit", None), (-2, "Not running", None)))
     cleanups = cell(
@@ -3790,7 +3813,7 @@ def fibre_row(s):
     # rule's level dashed and named in its legend: flat on a healthy server and on a quiet network, a
     # rise when Fibre misses blobs (with the outside check) or fails every upload (without it). Each
     # chart of the row says what the red band of FibreDown's page (annotations) is.
-    active = 'max by (host) (node_systemd_unit_state{name=%s,state="active"}) == 1' % unit
+    active = 'max by (host) (node_systemd_unit_state{%s,state="active"}) == 1' % fibre_is
     red_band = " Red band: FibreDown paged; no Fibre server ran, so the %s stop."
     if s.tensile:
         # The missed_uploads rule's value: the newest blob sent to the validator, in Tensile's record of a
@@ -3806,8 +3829,8 @@ def fibre_row(s):
         level = rule_number("FibreNotServing", "missed_uploads", r"^\s*>\s*(\d+)\s*$")
         gap = ("max(celestia_mon_fibre_last_assigned_timestamp_seconds offset 1m) - on () group_right max by (host) "
                "(fibre_server_upload_shard_last_success_timestamp_seconds or node_systemd_unit_start_time_seconds"
-               "{name=%s}) and on (host) %s and on (host) count by (host) (fibre_server_upload_shard_budget_bytes)"
-               % (unit, active))
+               "{%s}) and on (host) %s and on (host) count by (host) (fibre_server_upload_shard_budget_bytes)"
+               % (fibre_is, active))
         first_legend = "{{host}} behind the network (alert at %g min)" % (level / 60.0)
         first_chart = timeseries(
             210, "Fibre behind the network",
@@ -4177,7 +4200,7 @@ def stacked(s, h, pid, width, variant, metric):
         targets = [target(r, "100 * %s / %s" % (e, cores), names[k]) for r, k, e in parts]
         rest = "100 * %s / %s" % (other, cores)
         if fibre:
-            runs = '(max(node_systemd_unit_state{%s,name=%s,state="active"}) == 1)' % (hs, q(s.units["fibre"]))
+            runs = '(max(node_systemd_unit_state{%s,name=%s,state="active"}) == 1)' % (hs, q(s.unit(h, "fibre")))
             targets += [target("D", "%s unless on () %s" % (rest, runs), names["other"]),
                         target("G", "%s and on () %s" % (rest, runs), names["other_fibre"])]
         else:
@@ -4364,7 +4387,7 @@ def restarts_chart(s, pid):
         for j, k in enumerate(kinds):
             ref = chr(65 + len(targets))
             targets.append(target(ref, "max_over_time(floor(sum(increase(node_systemd_service_restart_total{host=%s,"
-                                  "name=%s}[30m])))[$__interval:1m]) > 0" % (q(h), q(s.units[k])),
+                                  "name=%s}[30m])))[$__interval:1m]) > 0" % (q(h), q(s.unit(h, k))),
                                   "%s · %s" % (h, SERVICE_NAMES[k]), interval="30m"))
             overrides.append(override("byFrameRefID", ref, color=fixed(tone(server_hue(s, h), ORDER_SHADES[j]))))
     p = timeseries(pid, "Restarts (alert above %g in 30 min)" % s.CL, "", targets, "none", threshold=(s.CL, "orange"),
@@ -4505,8 +4528,9 @@ MARKER_WORDS = {"Node and signer starts": "%s starts", "Fibre starts": "Fibre st
 
 
 def node_units(s):
-    """The units whose starts the Validator charts mark: the node's, and tmkms's where its host is scraped."""
-    return [s.units[k] for k in ["appd"] + (["tmkms"] if s.kms_hosts else [])]
+    """The units whose starts the Validator charts mark: the nodes', and tmkms's where its host is scraped,
+    each under every name its hosts use."""
+    return [u for k in ["appd"] + (["tmkms"] if s.kms_hosts else []) for u in s.names(k)]
 
 
 def marker_words(s, name):
@@ -4557,7 +4581,7 @@ def annotations(s, ids):
              [111, 112, 115, 116]),
     ]
     if s.fibre:
-        notes.append(note("Fibre starts", starts("{name=%s}" % q(s.units["fibre"])), "{{name}} started on {{host}}",
+        notes.append(note("Fibre starts", starts("{%s}" % s.is_unit("fibre")), "{{name}} started on {{host}}",
                           MARKER, [210, 211, 212, 213, 215]))
     notes.append(note("Validator signs through", moved, "Validator signs through {{host}}", MARKER,
                       [25, 111, 112, 115, 116]))

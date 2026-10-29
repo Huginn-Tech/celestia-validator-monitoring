@@ -44,7 +44,7 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 
 ## Where alerts go
 
-`celestia_mon_receivers`, in the vault file on the monitor, is one list of receivers: any number, several of one type allowed. The type decides what each receiver gets:
+`celestia_mon_receivers`, in the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault, is one list of receivers: any number, several of one type allowed. The type decides what each receiver gets:
 
 | Receiver `type` | Keys | page | message |
 |---|---|---|---|
@@ -87,15 +87,15 @@ To see what is firing now, open Prometheus (`http://127.0.0.1:9912/alerts`) or A
 
 ## Before planned restarts and upgrades
 
-Silence the host on the monitor first, so a planned restart pages nobody. `amtool` comes with Alertmanager, in `/opt/celestia-mon/alertmanager-<version>/` (the version in `versions.yml`). Run it as root (`sudo -i`): its login to Alertmanager is in a file only root can read.
+Silence the host on the monitor first, so a planned restart pages nobody. `amtool` comes with Alertmanager, in `/opt/celestia-mon/alertmanager-<version>/`. Run it as root (`sudo -i`): its login to Alertmanager is in a file only root can read.
 
 ```sh
-amtool=/opt/celestia-mon/alertmanager-<version>/amtool
+amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
 am="--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
 $amtool $am silence add host=<host> --duration=30m --comment="planned restart of <host>"
 ```
 
-It prints the silence's ID. Every alert labelled with that host is held back until the silence ends; the Watchdog keeps running. The alerts about the whole install name no host, so a host silence does not cover them. Silence them by name when the planned work stops what they watch everywhere: FibreDown when Fibre stops and no standby starts in its place, NodeNotAdvancing when the only node restarts (one celestia-appd host, no backup node), ValidatorNotSigning when the node the signer uses restarts, or tmkms restarts or is pointed at another node:
+It prints the silence's ID. Every alert labelled with that host is held back until the silence ends; the Watchdog keeps running. When you stop a node that a Fibre on another host reads, silence that Fibre host too: its Fibre cannot restart until the node is back. The alerts about the whole install name no host, so a host silence does not cover them. Silence them by name when the planned work stops what they watch everywhere: FibreDown when Fibre stops and no standby starts in its place, NodeNotAdvancing when the only node restarts (one celestia-appd host, no backup node), ValidatorNotSigning when the node the signer uses restarts, or tmkms restarts or is pointed at another node:
 
 ```sh
 $amtool $am silence add alertname=FibreDown --duration=30m --comment="planned Fibre stop"
@@ -131,7 +131,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 **Check first.**
 
 1. On the host in the alert, `systemctl status <unit>` and `journalctl -u <unit> -n 100`. After an upgrade or a config change, the last lines usually name the cause: a binary that does not match the network's app version, a config key, a full or read-only disk.
-2. For "is not loaded": the unit was stopped and disabled, or `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Correct `celestia_mon_units` if needed and run `install.sh` again on that host and on the monitor.
+2. For "is not loaded": the unit was stopped and disabled, or renamed after the install, so `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Each host may set its own `celestia_mon_units` (the whole map), and the alert names the unit of that host. Correct it in that host's entry and run `install.sh` again on that host, where the install stops while a name is not a unit systemd has loaded and names the units that run the service, and on the monitor.
 3. For "is unreachable": from the monitor, `curl -s http://<host private address>:<port>/metrics | head`. If that fails while the service runs, check its listen address (for celestia-appd, `prometheus_listen_addr` in `config.toml`), a firewall on the host, and the private network between the hosts. `sudo celestia-mon-doctor` on the host checks the listen addresses and the node's metrics; on the monitor, check 11 names each target that is down and what to fix.
 
 **Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#troubleshooting), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
@@ -146,17 +146,17 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 1. [status.celestia.org](https://status.celestia.org/) and an explorer. If the whole chain stopped, coordinate with the other validators instead of fixing locally.
 2. `systemctl status celestia-appd` and `journalctl -u celestia-appd -n 200` on each node: a stopped service, an upgrade height that needs a new binary, a consensus failure, an app hash mismatch.
-3. Peers and sync: on the dashboard, the Consensus node row of each server's card shows whether the node signs, is in sync, behind (and by how many blocks), stalled, syncing or down, and its peers (with five servers or more, the Servers now table's Node and Peers columns); `sudo celestia-mon-doctor` (check 3) on each node shows whether its height advances and `catching_up`.
+3. Peers and sync: on the dashboard, the Consensus node row of each server's card shows whether the node signs, is in sync, behind (and by how many blocks), stalled, syncing or down, and its peers (with five columns or more, counting a remote signer whose host is not scraped, the Servers now table's Node and Peers columns); `sudo celestia-mon-doctor` (check 3) on each node shows whether its height advances and `catching_up`.
 
 ## NodeBehind
 
-**What it means.** One node lags the others of this install: for 10 minutes it has been more than 20 blocks (`node_behind_blocks`) behind the highest node, or it has not advanced while another node did. This is how a backup node that could not take over signing is caught: after a tmkms repoint, a node that lags signs late or not at all. With one node it cannot fire. The alert names the host of the node that lags. A Fibre that reads that node (its `app_grpc_address`, as on `fibre-1` in the [mainnet layout](quickstart.md#mainnet-layout)) lags with it: once the node's newest block is older than Fibre's `max_block_age` (2 minutes), Fibre's health check reports `chain_stalled`, and [FibreNotServing](#fibrenotserving) (`not_ready`) follows.
+**What it means.** One node lags the others of this install: for 10 minutes it has been more than 20 blocks (`node_behind_blocks`) behind the highest node, or it has not advanced while another node did. This is how a backup node that could not take over signing is caught: after a tmkms repoint, a node that lags signs late or not at all. With one node it cannot fire. The alert names the host of the node that lags. A Fibre that reads that node (its `app_grpc_address`, as on `fibre-1` in the [mainnet layout](layouts.md#mainnet-layout)) lags with it: once the node's newest block is older than Fibre's `max_block_age` (2 minutes), Fibre's health check reports `chain_stalled`, and [FibreNotServing](#fibrenotserving) (`not_ready`) follows.
 
 **Severity.** message. It is held back while NodeNotAdvancing fires, and while NodePeersLow pages for its host.
 
 **Check first.**
 
-1. The node's server card on the dashboard: its Consensus node row shows the blocks it is behind the highest node (or stalled, syncing, down) and its peers (with five servers or more, the Servers now table's Node and Peers columns); the "Block processing time (slowest 1%)" chart shows whether a node is too slow to keep up.
+1. The node's server card on the dashboard: its Consensus node row shows the blocks it is behind the highest node (or stalled, syncing, down) and its peers (with five columns or more, counting a remote signer whose host is not scraped, the Servers now table's Node and Peers columns); the "Block processing time (slowest 1%)" chart shows whether a node is too slow to keep up.
 2. On that host, `sudo celestia-mon-doctor` (check 3: height and `catching_up`), then `journalctl -u celestia-appd -n 100`: block sync after a restart, too few peers, a full or slow disk.
 3. On the monitor, `sudo celestia-mon-doctor` check 18 lists every node's height and lag, and which one signs.
 
@@ -184,7 +184,7 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 
 **Check first.** Never load the validator key on another machine because of this page alone: a node that Prometheus cannot reach may still be signing, and two signers of one key double-sign. When the description names a node Prometheus cannot reach, check on an explorer whether the validator misses blocks before you act.
 
-1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host first: whether tmkms runs, which node it connects to, and why it fails. Then the link between that node and the KMS host, and the grey failure bars on the "Signing time" chart. If the node tmkms connects to is down, the way out is your tmkms repoint to a synced backup node ([mainnet layout](quickstart.md#mainnet-layout)); the Consensus node rows of the server cards show which backup node is in sync and how many blocks any other is behind.
+1. With a remote signer, `journalctl -u tmkms -n 100` on the KMS host first: whether tmkms runs, which node it connects to, and why it fails. Then the link between that node and the KMS host, and the grey failure bars on the "Signing time" chart. If the node tmkms connects to is down, the way out is your tmkms repoint to a synced backup node ([when a role moves](layouts.md#when-a-role-moves)); the Consensus node rows of the server cards show which backup node is in sync and how many blocks any other is behind.
 2. Is the validator jailed or out of the active set? Look it up in an explorer or with `celestia-appd query staking validator <celestiavaloper address>`. If it is jailed, find out why before you unjail.
 3. The key: `sudo celestia-mon-doctor` (check 4) on the validator host prints the consensus address the node signs with, from its `/status`. Compare it with your validator's consensus address on chain. With a remote signer, do not use `celestia-appd comet show-address` for this: it reads the local key file, not the signer.
 
@@ -231,7 +231,7 @@ Only with `celestia_mon_signer: remote`.
 
 **Check first.**
 
-1. The "Signing time" chart: whether the median this alert watches is above its dashed 10 ms line, how slow the slowest vote signatures are, and whether signatures fail (its grey bars); the remote signer's card reads "Bad proposals" while proposals fail (with five servers or more, the Servers now table's Signing time column, on the node whose proposals fail).
+1. The "Signing time" chart: whether the median this alert watches is above its dashed 10 ms line, how slow the slowest vote signatures are, and whether signatures fail (its grey bars); the remote signer's card reads "Bad proposals" while proposals fail (with five columns or more, counting a remote signer whose host is not scraped, the Servers now table's Signing time column, on the node whose proposals fail).
 2. Latency: the network path between the validator and the KMS host (round trip, same datacenter or not) and the load on the KMS host. Celestia recommends keeping the signer close, for example by colocation.
 3. Proposal failures: the tmkms log on the KMS host around the failed proposals, and whether the tmkms version and its chain settings match the network's current app version (often the cause after an upgrade).
 
@@ -258,7 +258,7 @@ celestia-mon-tensile on the monitor reads Tensile's verdict for your validator e
 **Check first.**
 
 1. On the monitor, `sudo celestia-mon-doctor` check 19 shows which Fibre host is active, if any, and check 11 whether each host's node_exporter answers.
-2. On the Fibre host that should be active, `systemctl status <fibre unit>` and `journalctl -u <fibre unit> -n 100`. `sudo celestia-mon-doctor` there (check 6) shows the unit and its listening port. If that host is down, start the standby Fibre on another Fibre host and point `x/valaddr` at it with `celestia-appd tx valaddr set-host`, from your workstation or through an ops key with an authz grant, never with a key on a server ([mainnet layout](quickstart.md#mainnet-layout)); check 5 on the validator shows the registration. Before you start a standby, check 17 on its host shows whether its signer reaches the validator node.
+2. On the Fibre host that should be active, `systemctl status <fibre unit>` and `journalctl -u <fibre unit> -n 100`. `sudo celestia-mon-doctor` there (check 6) shows the unit and its listening port. If that host is down, start the standby Fibre on another Fibre host and point `x/valaddr` at it with `celestia-appd tx valaddr set-host`, from your workstation or through an ops key with an authz grant, never with a key on a server ([registering Fibre with set-host](layouts.md#registering-fibre-with-set-host)); check 5 on the validator shows the registration. Before you start a standby, check 17 on its host shows whether its signer reaches the validator node.
 3. For a planned Fibre stop with no standby started in its place, silence the alert by name first ([Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)): a host silence does not cover it.
 
 **Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#troubleshooting).
@@ -309,16 +309,16 @@ Possible causes: the host is not registered or not reachable from outside, the v
 
 1. For `missed_uploads`: Tensile's page for your validator lists the recent blobs. `journalctl -u <fibre unit> -n 100` shows the uploads Fibre received and why any failed; no upload lines at all point at the registration (`doctor` check 5 on the validator host) or at a port that publishers cannot reach.
 2. For `not_served`: `journalctl -u <fibre unit>` for "failed to retrieve blob shard" (a store error; a shard Fibre does not hold is logged only at debug level), the Fibre store's disk (read-only, full, I/O errors in `journalctl -k`), and Failed clean-ups on the dashboard.
-3. For `no_telemetry`: `sudo celestia-mon-doctor` on the Fibre host (check 7) shows where the unit sends its metrics, and check 13 on the monitor shows whether they arrive. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT` ([quickstart step 6](quickstart.md#6-point-fibre-at-its-collector)).
+3. For `no_telemetry`: `sudo celestia-mon-doctor` on the Fibre host (check 7) shows where the unit sends its metrics, and check 13 on the monitor shows whether they arrive. Fibre needs `--otel-endpoint http://127.0.0.1:9915` or `FIBRE_OTEL_ENDPOINT` ([quickstart step 6](quickstart.md#6-your-steps)).
 4. Registration and reachability: `sudo celestia-mon-doctor` on the validator host (check 5) shows the registered `host:port`; on the Fibre host, check 6 shows the unit and its listening port. From outside, a TCP connection to the registered `host:port` must succeed; [Tensile](https://tensile.huginn.tech) shows your server from outside. If the port does not answer while the unit is active, read `journalctl -u <fibre unit> -n 100` and restart Fibre at a moment you choose.
 5. The validator is bonded and the node is synced (Fibre logs "derived storage budget is 0" when it finds no stake), and the signer supports `SignRawBytes` (`raw_bytes` failures add to the grey failure bars on the "Signing time" chart).
-6. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([mainnet layout](quickstart.md#mainnet-layout)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
+6. For `uploads_failing`: `journalctl -u <fibre unit> -n 100` names the error. If tmkms was pointed at another node, point Fibre's `--signer-grpc-address` (or `signer_grpc_address`) at that node's privval gRPC and restart Fibre ([after a tmkms repoint](layouts.md#after-a-tmkms-repoint)); `sudo celestia-mon-doctor` checks 17 (Fibre's signer) and 20 (where the node's signer ports listen) show both ends.
 7. Uploads refused over their payment promise: `journalctl -u <fibre unit> | grep 'payment promise verification failed'` prints each with its `error` ([celestia-app v10.5.0 `x/fibre/keeper/keeper.go`](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/x/fibre/keeper/keeper.go)). "payment promise height … is too far in the future": the promise names a height more than one block above the newest block of the node at Fibre's `app_grpc_address`, so that node commits blocks later than the publisher's node does; check its peers ([NodePeersLow](#nodepeerslow)), its disk, and the Block processing time chart. "payment promise has already been processed", "payment promise expired" and "insufficient balance in escrow account" (or "escrow account not found") come from the publisher's side: nothing to fix on your hosts.
 8. For `not_ready`: on the Fibre host in the alert, `journalctl -u <fibre unit> | grep 'health check failed'` prints each failing check, with its `check`, its `reason` and, in `message`, what to do; a `server not ready` line lists every check that fails, and `health check passed` and `server ready` show when they recover. The messages, by check:
 
 | `check` | `message` (`reason`) | What to do |
 |---|---|---|
-| `app` | "The app node did not answer a valid status request. Check app_grpc_address and that the node is running." (`app_unreachable`) | The node at Fibre's `app_grpc_address` is down or not at that address: `systemctl status celestia-appd` there, and `doctor` check 3. |
+| `app` | "The app node did not answer a valid status request. Check app_grpc_address and that the node is running." (`app_unreachable`) | The node at Fibre's `app_grpc_address` is down or not at that address: `doctor` check 27 on the Fibre host names that node, then `systemctl status <its celestia-appd unit>` there, and `doctor` check 3. |
 | `app` | "The app node reports chain ID "<chain>", expected "<chain>"." (`chain_id_mismatch`) | `app_grpc_address` points at a node of another network. |
 | `app` | "The app node is still syncing." (`app_syncing`) | Wait until the node has caught up; its server card shows how far behind it is. |
 | `app` | "The latest block is <age> old (limit <max_block_age>)." (`chain_stalled`) | The node stalled or the chain halted: [NodeNotAdvancing](#nodenotadvancing) and [NodeBehind](#nodebehind). The limit is `max_block_age` under `[health]` in Fibre's config. |
@@ -333,7 +333,7 @@ Possible causes: the host is not registered or not reachable from outside, the v
 
 ## DiskLow
 
-**What it means.** A disk you listed in `celestia_mon_data_mounts` or `celestia_mon_fibre_mount` is filling up or turned read-only. A node whose data disk turns read-only stops working, and the validator can be jailed for downtime; a backup node whose disk fills cannot take over signing.
+**What it means.** A disk you listed in `celestia_mon_data_mounts` (`/` on a box that sets none) or `celestia_mon_fibre_mount` is filling up or turned read-only. A node whose data disk turns read-only stops working, and the validator can be jailed for downtime; a backup node whose disk fills cannot take over signing.
 
 **Severity.** page or message, by disk and condition:
 
@@ -390,7 +390,7 @@ Only on hosts the monitor reaches over the network: not on the monitor's own hos
 
 **What it means.** For 3 minutes Prometheus on the monitor has reached none of a host's metrics endpoints: celestia-appd's metrics, node_exporter and, on a Fibre host, the OpenTelemetry collector. From the monitor, a host that is down and a link that is down look the same: the host is off or cut from the network, the link between it and the monitor is down (WireGuard, either provider's network), or each of those services stopped. The message names the host and stands in for its ServiceDown messages; its service and disk alerts cannot fire until it answers again. The alerts that follow the roles still page for what that host held: [ValidatorNotSigning](#validatornotsigning) when the validator signed through its node, [FibreDown](#fibredown) when it ran the active Fibre and no standby takes over.
 
-Where the monitor has a host of its own (`mon-1` in the [mainnet layout](quickstart.md#mainnet-layout)), it can lose every host at once. When no Celestia host answers for 3 minutes, one page, "Monitor cannot reach any server", stands in for the messages: no alert that reads the hosts' metrics can fire meanwhile, and NodeNotAdvancing and FibreDown's unit check, which would otherwise page for the missing metrics, wait for a host that answers. It names no host; its description lists them. The validator may well be signing: this page says the monitor is blind, not that the validator is down. A monitor that shares a host with a node or Fibre reads that host locally and never loses all of them, so there is no page; the messages for the other hosts remain.
+Where the monitor has a host of its own (`mon-1` in the [mainnet layout](layouts.md#mainnet-layout)), it can lose every host at once. When no Celestia host answers for 3 minutes, one page, "Monitor cannot reach any server", stands in for the messages: no alert that reads the hosts' metrics can fire meanwhile, and NodeNotAdvancing and FibreDown's unit check, which would otherwise page for the missing metrics, wait for a host that answers. It names no host; its description lists them. The validator may well be signing: this page says the monitor is blind, not that the validator is down. A monitor that shares a host with a node or Fibre reads that host locally and never loses all of them, so there is no page; the messages for the other hosts remain.
 
 **Severity.** message for one host; page when no host answers.
 
@@ -407,14 +407,14 @@ Only with `celestia_mon_signal` set.
 
 **What it means.** Celestia moves to a new app version through x/signal: validators signal the next version, and once 5/6 of the voting power has signalled it, anyone can schedule the upgrade, which then happens a fixed number of blocks later (about a week on mainnet). This alert says that such a round is open, some voting power has signalled the next version, and for 10 minutes your validator has not signalled it, or has signalled another version. Once the upgrade is scheduled, x/signal accepts no more signals: the page ends, and [UpgradeScheduled](#upgradescheduled) says that your validator did not signal. Your validator's signal is read from chain state, so a signal sent through an authz grant counts too. The alert names no host.
 
-celestia-mon-signal on the monitor reads x/signal every minute through a node's CometBFT RPC and serves it as metrics: the app version, the voting power that signalled the next version against the 5/6 threshold, the scheduled upgrade with its height and the time until it at the measured block time, and the version your validator signalled. It sends no transaction and needs no key. Set it up in the inventory, on the monitor host ([quickstart](quickstart.md#upgrade-signalling)): `celestia_mon_signal: {chain_id: "celestia", rpc: ["<CometBFT RPC URL>", ...], validator: "<celestiavaloper1...>"}`. The RPCs are tried in order, and one that serves another network than `chain_id`, or whose node is catching up or has made no block for 2 minutes, is skipped. A collector or RPC outage of up to 7 days does not end the page: the upgrade alerts use the last reading of the past 7 days, and [SignalUnreadable](#signalunreadable) reports the outage.
+celestia-mon-signal on the monitor reads x/signal every minute through a node's CometBFT RPC and serves it as metrics: the app version, the voting power that signalled the next version against the 5/6 threshold, the scheduled upgrade with its height and the time until it at the measured block time, and the version your validator signalled. It sends no transaction and needs no key. Set it up in the inventory, on the monitor host ([upgrade signalling](reference.md#upgrade-signalling)): `celestia_mon_signal: {chain_id: "celestia", rpc: ["<CometBFT RPC URL>", ...], validator: "<celestiavaloper1...>"}`. The RPCs are tried in order, and one that serves another network than `chain_id`, or whose node is catching up or has made no block for 2 minutes, is skipped. A collector or RPC outage of up to 7 days does not end the page: the upgrade alerts use the last reading of the past 7 days, and [SignalUnreadable](#signalunreadable) reports the outage.
 
 **Severity.** page. Until your signal is on chain, PagerDuty keeps the incident open and the chat channels get the alert again every 4 hours.
 
 **Check first.**
 
 1. Upgrade celestia-appd on every node, the validator and each backup node, to a release that supports the version in the alert, at a moment you choose: Celestia asks validators to upgrade the binary before they signal. The release notes and Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)) name the release.
-2. Signal with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([mainnet layout](quickstart.md#mainnet-layout)): `celestia-appd tx signal signal <version> --from <validator account key> --node <RPC of a synced node>`. An ops key can send it through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/celestia.signal.v1.MsgSignalVersion`, then `celestia-appd tx signal signal <version> --from <validator account address> --generate-only > signal.json` and `celestia-appd tx authz exec signal.json --from <ops key>`.
+2. Signal with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([registering Fibre with set-host](layouts.md#registering-fibre-with-set-host)): `celestia-appd tx signal signal <version> --from <validator account key> --node <RPC of a synced node>`. An ops key can send it through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/celestia.signal.v1.MsgSignalVersion`, then `celestia-appd tx signal signal <version> --from <validator account address> --generate-only > signal.json` and `celestia-appd tx authz exec signal.json --from <ops key>`.
 3. `celestia-appd query signal tally <version> --node <RPC of a synced node>` shows the voting power that has signalled. The alert resolves a few minutes after your signal is in a block.
 
 x/signal accepts a signal for any version at or above the current one, so one validator that signals early opens a round before a release exists. If Celestia's announcements name no release for the version yet, silence UpgradeSignalMissing until they do (`doctor` check 21 lists that silence while it holds the page back).
@@ -449,14 +449,14 @@ Only with `celestia_mon_signal` set, unless it sets `gov: false`.
 
 celestia-mon-signal on the monitor reads the proposals with x/signal, every minute through the same RPCs: the proposals in their voting period, and those with a vote from the validator account, both at one height. For each it serves the start and end of the voting period, whether the validator account voted, and the title, which whoever submitted the proposal wrote: at most 80 characters of it on one line, square brackets made round, so no chat channel shows a link under other words. While the RPCs fail the Proposals query, the service keeps serving the proposals it read last, so the alert goes on from that reading: it still comes on time for a proposal already read, but a vote cast meanwhile does not resolve it, and a proposal opened meanwhile is not seen. The rules read each proposal's last value of the past hour, so a short outage of the service or of its scrape neither resolves the alert nor sends it again; after an hour without the service, the alert resolves. [SignalUnreadable](#signalunreadable) reports either outage.
 
-**Severity.** message once less than 2 days are left, and a page once less than 1 day is left, where the page is on: by default with `chain_id: celestia` (mainnet), and not on other networks, where the message is all ([quickstart](quickstart.md#upgrade-signalling) has `gov_page` to change it). Neither comes before half the vote has passed: a 3-day vote gets the message 36 hours before its end, and a vote of 2 days or less gets both at half its length, a 24-hour vote (an expedited proposal, or a testnet's short voting period) 12 hours before its end; where the page is on, such a vote gets the page alone, and so does a longer one first read with less than a day left (`gov` turned on then, or the readings back after more than an hour). GovVoteMissing has its own route: each notification is sent once and comes again only after 4 days, longer than the alert can last, with a "resolved" one at the end.
+**Severity.** message once less than 2 days are left, and a page once less than 1 day is left, where the page is on: by default with `chain_id: celestia` (mainnet), and not on other networks, where the message is all ([upgrade signalling](reference.md#upgrade-signalling) has `gov_page` to change it). Neither comes before half the vote has passed: a 3-day vote gets the message 36 hours before its end, and a vote of 2 days or less gets both at half its length, a 24-hour vote (an expedited proposal, or a testnet's short voting period) 12 hours before its end; where the page is on, such a vote gets the page alone, and so does a longer one first read with less than a day left (`gov` turned on then, or the readings back after more than an hour). GovVoteMissing has its own route: each notification is sent once and comes again only after 4 days, longer than the alert can last, with a "resolved" one at the end.
 
 It resolves a few minutes after the validator account's vote is in a block, or when the voting period has ended. An expedited proposal that does not pass by the end of its short voting period becomes a regular one: its voting period then ends a full voting period after it started, and x/gov removes its votes during that tally, so a vote cast during the expedited period must be sent again. The alert resolves when the end moves out, and comes again as the new end nears.
 
 **Check first.**
 
 1. The proposal and its forum post: `celestia-appd query gov proposal <proposal> --node <RPC of a synced node>`.
-2. Vote with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([mainnet layout](quickstart.md#mainnet-layout)): `celestia-appd tx gov vote <proposal> yes|no|no_with_veto|abstain --from <validator account key> --node <RPC of a synced node>`. With no view on a proposal, vote `abstain` rather than leave the vote empty or silence the alert. An ops key can vote through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/cosmos.gov.v1.MsgVote`, then `celestia-appd tx gov vote <proposal> <option> --from <validator account address> --generate-only > vote.json` and `celestia-appd tx authz exec vote.json --from <ops key>`.
+2. Vote with the validator's account key, kept on your workstation or a Ledger as for `set-host` ([registering Fibre with set-host](layouts.md#registering-fibre-with-set-host)): `celestia-appd tx gov vote <proposal> yes|no|no_with_veto|abstain --from <validator account key> --node <RPC of a synced node>`. With no view on a proposal, vote `abstain` rather than leave the vote empty or silence the alert. An ops key can vote through an authz grant, with the same three commands as for `set-host` there: the grant with `--msg-type=/cosmos.gov.v1.MsgVote`, then `celestia-appd tx gov vote <proposal> <option> --from <validator account address> --generate-only > vote.json` and `celestia-appd tx authz exec vote.json --from <ops key>`.
 3. `celestia-appd query gov vote <proposal> <validator account address> --node <RPC of a synced node>` shows the vote on chain. `sudo celestia-mon-doctor` on the monitor (check 23) lists the proposals in their voting period, with their end and whether the validator account voted on each, and for each without its vote when GovVoteMissing comes.
 
 **Links.** [x/gov](https://github.com/celestiaorg/cosmos-sdk/tree/v0.52.12/x/gov) in the Cosmos SDK fork that celestia-app v10.5.0 builds with.
@@ -491,9 +491,9 @@ Only with `celestia_mon_signal` set.
 
 **Check first.**
 
-1. On the monitor, `journalctl -u celestia-mon-alertmanager -n 100`: each failed notification names the receiver and the error, for example a rejected bot token, a removed chat, a deleted Discord or Slack webhook, or an invalid PagerDuty routing key. A Telegram send that failed on the network (DNS, a timeout, TLS) is not in the journal: Alertmanager would log it with the request URL, which holds the bot token, so journald drops such lines. For Telegram, read `alertmanager_notifications_failed_total{integration="telegram"}` in Prometheus (its `reason` label) and this alert instead. If a journal of the monitor was ever shared, revoke the bot token in BotFather and put the new one in the vault file.
-2. Fix the receiver in the vault file (`sudo ./install.sh --edit-vault <file>` on the monitor) and run `install.sh` on the monitor again; it sends a test message to the chat receivers.
-3. Send a test alert of each severity ([quickstart step 10](quickstart.md#10-check-that-alerts-reach-you)) and check that it arrives everywhere you expect.
+1. On the monitor, `journalctl -u celestia-mon-alertmanager -n 100`: each failed notification names the receiver and the error, for example a rejected bot token, a removed chat, a deleted Discord or Slack webhook, or an invalid PagerDuty routing key. A Telegram send that failed on the network (DNS, a timeout, TLS) is not in the journal: Alertmanager would log it with the request URL, which holds the bot token, so journald drops such lines. For Telegram, read `alertmanager_notifications_failed_total{integration="telegram"}` in Prometheus (its `reason` label) and this alert instead. If a journal of the monitor was ever shared, revoke the bot token in BotFather and put the new one in the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault.
+2. Fix the receiver in the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault (`sudo ./install.sh --edit-vault <file>`) and run `install.sh` on the monitor again; it sends a test message to the chat receivers.
+3. Send a test alert of each severity ([quickstart step 7](quickstart.md#7-open-grafana-and-test-the-alert-paths)) and check that it arrives everywhere you expect.
 
 ## DeadmanFailing
 
@@ -504,7 +504,7 @@ Only with `celestia_mon_signal` set.
 **Check first.**
 
 1. On the monitor, `journalctl -u celestia-mon-alertmanager -n 100`: each failed heartbeat names the `deadman` receiver and the error, for example a 404 for a wrong URL. `sudo celestia-mon-doctor` there (check 22) counts the heartbeats sent and failed in the last 10 minutes.
-2. Compare `celestia_mon_deadman_webhook_url` in the vault file with the ping URL your dead-man service shows, fix it, and run `install.sh` on the monitor again.
+2. Compare `celestia_mon_deadman_webhook_url` in the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault with the ping URL your dead-man service shows, fix it, and run `install.sh` on the monitor again.
 3. Outbound HTTPS from the monitor to the dead-man service.
 
 ## CelestiaAnnouncement
@@ -516,7 +516,7 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several). Keep your alert receivers out of it: a `discord` receiver posts into a channel of its own.
 2. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) (or reuse one): turn on **Message Content Intent**, invite it to your server, and give it **View Channel** and **Read Message History** in that channel. Copy its token.
 3. In the inventory, on the monitor host: `celestia_mon_announcements: [{channel_id: "<channel ID>", severity: page}]` (Developer Mode, then right-click the channel, Copy Channel ID). `page` reaches PagerDuty and every chat channel, `message` the chat channels only. A channel that follows only testnet announcements is best set to `message`, so routine testnet news does not page.
-4. In the monitor's vault (`sudo ./install.sh --edit-vault <file>`): `celestia_mon_discord_bot_token: "<token>"`. Then run `install.sh` on the monitor.
+4. In the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault (`sudo ./install.sh --edit-vault <file>`): `celestia_mon_discord_bot_token: "<token>"`. Then run `install.sh` on the monitor.
 
 **Severity.** The one you set per channel (`page` by default).
 
@@ -530,9 +530,9 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 
 **Check first.**
 
-1. On the monitor, `journalctl -u celestia-mon-announcements -n 50`. Each failed read names its cause and fix: Discord refused the token (401: a reset or wrong token, fix it in the vault), the bot may not read the channel (403: give it View Channel and Read Message History there), the channel is unknown (404: the ID, or the bot is not on that server), or Discord is unreachable.
+1. On the monitor, `journalctl -u celestia-mon-announcements -n 50`. Each failed read names its cause and fix: Discord refused the token (401: a reset or wrong token, fix it in the monitor's secrets or vault), the bot may not read the channel (403: give it View Channel and Read Message History there), the channel is unknown (404: the ID, or the bot is not on that server), or Discord is unreachable.
 2. `systemctl status celestia-mon-announcements` when the service is down.
-3. After a fix in the vault, run `install.sh` on the monitor again.
+3. After a fix in the monitor's secrets or vault, run `install.sh` on the monitor again.
 
 ## Watchdog
 
@@ -543,7 +543,7 @@ It is optional. celestia-mon-announcements, a small service on the monitor host,
 
 Connect the dead-man check to PagerDuty and to email or another channel than your alert chat. A dead monitor host, or a whole data centre gone, then still rings your phone, and when the alert chat is what broke, the dead-man service is the one left to tell you. If the dead-man service alerts you, assume that no other celestia-validator-monitoring alert can reach you until you find the cause.
 
-With the monitor on a host of its own, as `mon-1` in the [mainnet layout](quickstart.md#mainnet-layout), a dead-man alert says the monitor is down or cut off, not the validator: check from outside first (an explorer for its signatures, [Tensile](https://tensile.huginn.tech) for the Fibre endpoint). When the monitor shares a host with Fibre or a node, a dead-man alert also means that host is probably down, and nothing else can tell you so: if it ran the active Fibre, start the standby Fibre on another Fibre host and send `set-host` ([FibreDown](#fibredown)).
+With the monitor on a host of its own, as `mon-1` in the [mainnet layout](layouts.md#mainnet-layout), a dead-man alert says the monitor is down or cut off, not the validator: check from outside first (an explorer for its signatures, [Tensile](https://tensile.huginn.tech) for the Fibre endpoint). When the monitor shares a host with Fibre or a node, a dead-man alert also means that host is probably down, and nothing else can tell you so: if it ran the active Fibre, start the standby Fibre on another Fibre host and send `set-host` ([FibreDown](#fibredown)).
 
 **Severity.** heartbeat.
 
@@ -553,4 +553,4 @@ With the monitor on a host of its own, as `mon-1` in the [mainnet layout](quicks
 2. On the monitor, `systemctl status celestia-mon-prometheus celestia-mon-alertmanager` and `journalctl -u celestia-mon-alertmanager -n 100`; `sudo celestia-mon-doctor` (check 22) shows whether heartbeats went out in the last 10 minutes. A failed notification shows there with its receiver and error, for example a rejected bot token or a removed chat (a Telegram failure on the network does not: see [NotificationsFailing](#notificationsfailing)); so do failed heartbeats to the dead-man URL.
 3. Outbound HTTPS from the monitor to the dead-man service and to the receivers, and the URL in `celestia_mon_deadman_webhook_url`.
 
-The heartbeat resumes one hour after the last failed notification. To test the chain end to end, stop Alertmanager on the monitor for longer than the dead-man period, then start it again (see the [quickstart](quickstart.md#8-set-up-the-dead-man-service)).
+The heartbeat resumes one hour after the last failed notification. To test the chain end to end, stop Alertmanager on the monitor for longer than the dead-man period, then start it again (see [quickstart step 7](quickstart.md#7-open-grafana-and-test-the-alert-paths)).
