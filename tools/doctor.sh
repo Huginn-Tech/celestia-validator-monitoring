@@ -1396,6 +1396,35 @@ fibre_home() { # unit, argv -> Fibre's home: --home, else FIBRE_HOME, else ~/.ce
   fi
 }
 
+# One setting of Fibre's start command: its flag in ExecStart, with the unit's variables filled
+# in, over its key in <home>/config/server_config.toml, over celestia-app's default (flag > config
+# file > default, fibre/cmd/start_cmd.go). Fibre writes that file at its first start, and a missing
+# file leaves the defaults. Returns 1 when a variable of the flag is not set in the unit (FS_VAL is
+# the flag's value as written), 2 when the file exists but cannot be read, or doctor is not root
+# and so cannot tell.
+FS_VAL="" FS_SRC=""
+fibre_setting() { # unit, argv, config file, flag, key, default -> FS_VAL and FS_SRC
+  local v
+  FS_VAL="" FS_SRC=""
+  if v=$(flag_value "$2" "$4"); then
+    FS_VAL=$v
+    FS_SRC="--$4 in ExecStart"
+    unit_expand "$1" "$v" || return 1
+    FS_VAL=$EXPANDED
+    return 0
+  fi
+  if [[ -r $3 ]]; then
+    FS_VAL=$(toml_get "$3" "" "$5")
+    FS_SRC="$5 in $3"
+    if [[ -z $FS_VAL ]]; then FS_SRC="Fibre's default (no $5 in $3)"; fi
+  elif [[ -e $3 || $(id -u) -ne 0 ]]; then
+    return 2
+  else
+    FS_SRC="Fibre's default ($3 does not exist; Fibre writes it at its first start)"
+  fi
+  FS_VAL=${FS_VAL:-$6}
+}
+
 # With two or more Fibre hosts (fibre_hosts), one runs Fibre and the others keep a
 # stopped standby: an inactive unit with a closed port is then expected, and the
 # monitor (check 19) tells which host is active.
@@ -1663,6 +1692,146 @@ check_fibre_signer() {
     report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS${via:+: Fibre signs through $via}"
   else
     report OK 17 "$name" "$src is $addr, an IP address, mTLS${via:+: Fibre signs through $via}"
+  fi
+}
+
+host_of() { # host:port, maybe after a scheme (tcp://, or a gRPC resolver such as dns:///) -> the host, without brackets
+  local h=${1#*://}
+  h=${h#/}
+  h=${h%:*}
+  h=${h#\[}
+  printf '%s' "${h%\]}"
+}
+host_port() { # address, port -> address:port, an IPv6 address in brackets
+  if [[ $1 == *:* ]]; then printf '[%s]:%s' "$1" "$2"; else printf '%s:%s' "$1" "$2"; fi
+}
+app_reach_here() { # host of the address Fibre reads, without port or brackets -> true when it is this host
+  case $1 in
+    '' | 0.0.0.0 | :: | localhost | 127.* | ::1) return 0 ;;
+  esac
+  host_address "$1"
+}
+
+# The app gRPC of the node on this host against the address a Fibre on this host dials: [grpc]
+# address in app.toml (localhost:9090 when unset), off with enable = false. Dialing an empty host,
+# 0.0.0.0 or localhost reaches loopback, and a listener on every interface (an empty host, 0.0.0.0
+# or ::) takes loopback too. Sets APP_GRPC, the [grpc] address, and APP_DIAL, the address Fibre can
+# dial to reach it.
+APP_GRPC="" APP_DIAL=""
+node_app_grpc() { # readable app.toml, host Fibre dials, its port -> 0 when the node's app gRPC listens there, 1 when not, 2 when it is off
+  local gh nh=$2
+  APP_GRPC="" APP_DIAL=""
+  if [[ $(toml_get "$1" grpc enable) == false ]]; then return 2; fi
+  APP_GRPC=$(toml_get "$1" grpc address)
+  APP_GRPC=${APP_GRPC:-localhost:9090}
+  gh=$(host_of "$APP_GRPC")
+  case $gh in
+    '' | 0.0.0.0 | :: | localhost) APP_DIAL=127.0.0.1 ;;
+    *:*) APP_DIAL="[$gh]" ;;
+    *) APP_DIAL=$gh ;;
+  esac
+  APP_DIAL+=":${APP_GRPC##*:}"
+  if [[ ${APP_GRPC##*:} != "$3" ]]; then return 1; fi
+  case $gh in '' | 0.0.0.0 | ::) return 0 ;; esac
+  case $nh in
+    '' | 0.0.0.0 | localhost) nh=127.0.0.1 ;;
+    ::) nh=::1 ;;
+  esac
+  if [[ $gh == localhost ]]; then gh=127.0.0.1; fi
+  [[ ${gh,,} == "${nh,,}" ]]
+}
+
+# Fibre reads the chain through one celestia-appd node's app gRPC: --app-grpc-address, else
+# app_grpc_address in <home>/config/server_config.toml, else 127.0.0.1:9090 (celestia-app
+# fibre/server_config.go). It dials it in plaintext and reads the chain ID there once when it
+# starts, with no retry (fibre/server.go), so a Fibre whose node does not answer exits, and systemd
+# restarts it. On a host without a celestia-appd node, an address of this host reaches nothing;
+# on a host with one, it must be where that node's app gRPC listens ([grpc] address in app.toml,
+# localhost:9090 when unset, the default of celestia-app's cosmos-sdk fork). A node on another host
+# is named from node_addresses: an address that is no node of the inventory warns, as nothing then
+# watches the node this Fibre depends on. As in check 17, a problem fails for an active Fibre and
+# warns for a standby. doctor reads the configs and the listening sockets and never connects to
+# the port.
+check_fibre_app() {
+  local name="fibre app node" unit=${C[fibre_unit]} argv home cfg addr src h port app l nodes
+  local apply="then restart Fibre at a moment you choose" when="now" standby="" sev=FAIL via="" rc=0 fix reload why
+  if fibre_skip 27 "$name"; then return; fi
+  if ! unit_loaded "$unit"; then report SKIP 27 "$name" "$unit.service not found (check 6)"; return; fi
+  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then
+    apply="and leave the unit stopped: it uses the new value when it next starts"
+    when="once it starts"
+    standby="standby: "
+    sev=WARN
+  fi
+  argv=$(unit_argv "$unit")
+  home=$(fibre_home "$unit" "$argv")
+  cfg=$home/config/server_config.toml
+  fibre_setting "$unit" "$argv" "$cfg" app-grpc-address app_grpc_address 127.0.0.1:9090 || rc=$?
+  if ((rc == 1)); then
+    report SKIP 27 "$name" "$FS_SRC is $FS_VAL, whose variables are not set in the unit's Environment= or a readable EnvironmentFile=; check the value by hand"
+    return
+  elif ((rc == 2)); then
+    report SKIP 27 "$name" "no --app-grpc-address in ExecStart, and $cfg is not readable (run as root)"
+    return
+  fi
+  addr=$FS_VAL
+  src=$FS_SRC
+  fix="set --app-grpc-address in ExecStart (or app_grpc_address in $cfg)"
+  reload="run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  why="$when, Fibre cannot read the chain: it reads the chain ID there when it starts, with no retry, so it exits and systemd restarts it"
+  # A gRPC target may name its resolver first (dns:///host:port).
+  h=$(host_of "$addr")
+  port=${addr##*:}
+  if [[ $addr != *:* || ! $port =~ ^[0-9]+$ ]]; then
+    report WARN 27 "$name" "$src is $addr: doctor reads no host and port in it, so it cannot tell which node Fibre reads. Fix: $fix to \"<private address of the node it reads>:9090\", $reload"
+    return
+  fi
+  if app_reach_here "$h" && ! node_host; then
+    nodes=$(node_list)
+    l=$(listeners "$port")
+    if [[ -n $l ]]; then
+      report WARN 27 "$name" "${standby}$src is $addr, and port $port listens here (${l//$'\n'/, }), but this host is in no node group of the inventory (roles: ${C[roles]}): if a celestia-appd node runs here, nothing watches it. Fix: put this host in the backup_node group and re-run install.sh on it; or $fix to the private address of the node Fibre reads${nodes:+ ($nodes)}, $reload"
+    else
+      report "$sev" 27 "$name" "${standby}$src is $addr, but this host runs no celestia-appd node and nothing listens on port $port here: $why. Fix: $fix to the private address of the node it reads, \"<that address>:9090\"${nodes:+ (the nodes of the inventory: $nodes)}, $reload; on that node set [grpc] address = \"<its private address>:9090\" in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port 9090 proto tcp\" (check 25 there shows who reaches it)"
+    fi
+    return
+  fi
+  if app_reach_here "$h"; then
+    via=${C[inventory_host]:+ (${C[inventory_host]})}
+    app=$NODE_HOME/config/app.toml
+    if [[ ! -r $app ]]; then
+      report SKIP 27 "$name" "$src is $addr, the node on this host$via; $app is not readable, so its [grpc] address was not compared (run as root or pass --node-home)"
+      return
+    fi
+    node_app_grpc "$app" "$h" "$port" || rc=$?
+    if ((rc == 2)); then
+      report "$sev" 27 "$name" "${standby}$src is $addr, the node on this host$via, but it serves no app gRPC ([grpc] enable = false in $app): $why. Fix: under [grpc] in $app, set enable = true and address = \"127.0.0.1:$port\", then restart celestia-appd at a moment you choose (check 25 shows who else reaches it)"
+    elif ((rc == 1)); then
+      report "$sev" 27 "$name" "${standby}$src is $addr, the node on this host$via, but that node serves its app gRPC on $APP_GRPC ([grpc] address in $app), not there: $why. Fix: $fix to \"$APP_DIAL\", $reload"
+    else
+      report OK 27 "$name" "$src is $addr: Fibre reads the node on this host$via, whose [grpc] address is $APP_GRPC ($app)"
+    fi
+    return
+  fi
+  # A node on another host: an IP address is named from node_addresses, a host name only when it is
+  # an inventory name (doctor resolves no name).
+  if [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
+    via=$(node_named "$h")
+    if [[ $(lock_class "$h") == public ]]; then
+      report WARN 27 "$name" "$src is $addr${via:+, the node on $via}, a public address: the app link is plaintext gRPC, which belongs on the private network, and that node's app gRPC is then open beyond it. Fix: $fix to that node's private (VLAN or WireGuard) address, $reload; on that node set [grpc] address to the same address in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port $port proto tcp\""
+      return
+    fi
+  elif addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1 | grep -qxF -- "$h"; then
+    via=$h
+  fi
+  if [[ -n $via ]]; then
+    report OK 27 "$name" "$src is $addr: Fibre reads the node on $via, another host, over plaintext gRPC on the private network (check 25 on $via shows who reaches its app gRPC)"
+  elif [[ -z ${C[node_addresses]} ]]; then
+    report OK 27 "$name" "$src is $addr, a node on another host (with node_addresses, which install.sh writes, doctor names it)"
+  elif [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
+    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)): nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing), or the address is mistyped. Fix: put that node's host in the inventory's backup_node group and run install.sh there, or $fix to the private address of a node of the inventory, $reload"
+  else
+    report WARN 27 "$name" "$src is $addr, a host name that names no node of the inventory ($(node_list)), and doctor resolves no name, so it cannot tell which node Fibre reads. Fix: $fix to that node's private IP address and port, $reload"
   fi
 }
 
@@ -3013,6 +3182,7 @@ check_gov
 check_fibre_ready
 check_node_ports
 check_service_users
+check_fibre_app
 
 if ((failed)); then
   echo "Some checks failed. celestia-mon-doctor changed nothing; apply the fixes above yourself."
