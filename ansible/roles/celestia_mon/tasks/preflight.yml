@@ -185,8 +185,9 @@
 - name: Note the Celestia units systemd has not loaded here
   ansible.builtin.set_fact:
     celestia_mon_preflight_unloaded: >-
-      {{ celestia_mon_reload_check_state.results | default([]) | rejectattr('status.LoadState', 'equalto', 'loaded')
-         | map(attribute='item') | list }}
+      {{ celestia_mon_reload_check_state.results | default([]) | rejectattr('status.LoadState', 'defined') | map(attribute='item') | list
+         + celestia_mon_reload_check_state.results | default([]) | selectattr('status.LoadState', 'defined')
+           | rejectattr('status.LoadState', 'equalto', 'loaded') | map(attribute='item') | list }}
 
 # Every service unit systemd knows (loaded now or with a unit file), but templates and celestia-mon's
 # own: role, 0 when active else 1, name and state, one a line, active ones first.
@@ -256,7 +257,7 @@
     celestia_mon_preflight_results: "{{ celestia_mon_reload_check_state.results | default([]) }}"
     celestia_mon_preflight_state: >-
       {{ dict(celestia_mon_preflight_results | map(attribute='item')
-              | zip(celestia_mon_preflight_results | map(attribute='status') | map(attribute='LoadState'))) }}
+              | zip(celestia_mon_preflight_results | map(attribute='status') | map(attribute='LoadState', default='not-found'))) }}
     celestia_mon_preflight_search: "{{ celestia_mon_preflight_unit_search.stdout | default('') }}"
     # Per key, [unit, state] of each loaded unit that runs its binary, active ones first.
     celestia_mon_preflight_found:
