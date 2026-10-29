@@ -17,4 +17,4 @@ Rules for anyone (human or agent) changing this repo:
 3. The upstream workflow lists each expression of `monitoring/upstream.yml` that no longer matches: find the new name, update the entry and every use of the old name.
 4. When celestia-app's go.mod moved to another celestia-core or Cosmos SDK fork release, the upstream workflow says so: update `celestia_core` or `cosmos_sdk` in `monitoring/upstream.yml`, then step 3 again.
 5. After upgrading Mocha, run `doctor` on the Mocha monitor: check 12 shows that every metric the rules read has series, and check 21 covers every loaded page alert.
-6. Update the release in the "tested on" line of the Mocha layout (`docs/quickstart.md`).
+6. Update the release in the "tested on" line of the Mocha layout (`docs/layouts.md`).

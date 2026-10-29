@@ -22,7 +22,7 @@ floors: [v10.5.0]
 # Lines the version-phrase check leaves alone, by file and a text the line holds.
 exceptions:
   # The release the Mocha layout was last tested on, updated by hand after a Mocha run.
-  - {file: docs/quickstart.md, text: The layout celestia-validator-monitoring is developed and tested on}
+  - {file: docs/layouts.md, text: The layout celestia-validator-monitoring is developed and tested on}
 
 files:
   # celestia-core metrics (rules, dashboard, doctor): <namespace>_<subsystem>_<name>, with the

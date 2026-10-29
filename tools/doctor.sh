@@ -1312,7 +1312,7 @@ check_address() {
 # The fix for a missing or wrong x/valaddr registration. set-host is signed by the validator's
 # account key, which also controls the validator's staking settings: it belongs on the
 # operator's workstation (a Ledger), never on a server. An ops key with an authz grant for
-# MsgSetFibreProviderInfo can send it instead (docs/quickstart.md, Mainnet layout).
+# MsgSetFibreProviderInfo can send it instead (docs/layouts.md, Registering Fibre with set-host).
 set_host_fix() { # host:port -> the fix, for a report line
   printf '%s' "register $1 from your workstation, never with a key on this server: celestia-appd tx valaddr set-host $1 --from <validator account key, on a Ledger> --node <RPC of a synced node>; with an authz grant for set-host to an ops key, add --generate-only and --from <validator account address>, and send the file with \"celestia-appd tx authz exec <file> --from <ops key>\""
 }
