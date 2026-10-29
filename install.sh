@@ -692,7 +692,7 @@ export UV_CACHE_DIR=$work/uv-cache UV_PYTHON_DOWNLOADS=never UV_NO_CONFIG=1 UV_N
 secret_vars=()
 if [[ $mode == install ]]; then
   mapfile -t addresses < <(machine_addresses)
-  declare -A address_of=()
+  declare -A address_of=() is_here=()
   known=() matched=() needs_vault=() foreign=() unreadable=()
   chosen="" monitor_host=""
   # With --host the facts only add to the run: an inventory they cannot be read from runs as before.
@@ -706,7 +706,10 @@ if [[ $mode == install ]]; then
         address_of[$name]=$value
         known+=("$name $value")
         ;;
-      match) matched+=("$name (${address_of[$name]:-})") ;;
+      match)
+        matched+=("$name (${address_of[$name]:-})")
+        is_here[$name]=1
+        ;;
       chosen) chosen=$name ;;
       monitor) monitor_host=$name ;;
       vault) needs_vault+=("$name") ;;
@@ -731,9 +734,19 @@ if [[ $mode == install ]]; then
   else
     echo "Installing as $host from $inventory"
   fi
+  # The two stops below advise deleting a file. With the --host of another machine, that file can
+  # be this machine's own (on the monitor, its vault or its secrets), so they first make sure that
+  # this machine is $host: in the inventory, and at an address of this machine when it has one there.
+  this_machine_is_host() {
+    [[ -n ${address_of[$host]+set} ]] || die "$inventory has no host $host: name the host this machine is with --host"
+    [[ ${address_of[$host]} == - || -n ${is_here[$host]:-} ]] ||
+      die "$host is at ${address_of[$host]} in $inventory, which is not an address of this machine" \
+        "(${addresses[*]:-none}): name the host this machine is with --host"
+  }
   # A copy of the monitor's vault on another host would stop Ansible there with a vault error,
   # though that host reads none of the monitor's secrets.
   if ((${#foreign[@]} > 0)) && ! $ask_vault; then
+    this_machine_is_host
     die "this host does not need ${foreign[0]}: delete it from this copy. It holds the secrets of the monitor host" \
       "($monitor_host), which only the monitor's install reads."
   fi
@@ -748,6 +761,7 @@ if [[ $mode == install ]]; then
   # The monitor's secrets outside the inventory: read by the monitor's install only.
   if [[ -e $secrets_file ]]; then
     if [[ -n $monitor_host && $host != "$monitor_host" ]]; then
+      this_machine_is_host
       die "$secrets_file holds the monitor's secrets, and this machine is $host, not the monitor host ($monitor_host):" \
         "its install reads none. Delete it here (sudo rm $secrets_file) and keep the secrets on $monitor_host only."
     fi

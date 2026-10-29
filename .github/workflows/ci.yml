@@ -1122,6 +1122,13 @@ jobs:
           chmod 0600 "$RUNNER_TEMP/gate-foreign/host_vars/mon/vault.yml"
           refused "$RUNNER_TEMP/gate-foreign/hosts.yml" \
             "this host does not need $RUNNER_TEMP/gate-foreign/host_vars/mon/vault.yml: delete it from this copy."
+          # The same copy with the --host of another machine (ci at an address this one does not have),
+          # as on a monitor that got the validator's command: install.sh names the host and advises no delete.
+          sed -i 's#celestia_mon_private_ip: 127\.0\.0\.1#celestia_mon_private_ip: 10.255.9.9#' "$RUNNER_TEMP/gate-foreign/hosts.yml"
+          refused "$RUNNER_TEMP/gate-foreign/hosts.yml" 'ci is at 10.255.9.9 in'
+          if grep -qF 'delete it' "$RUNNER_TEMP/gate.log"; then
+            cat "$RUNNER_TEMP/gate.log"; echo "install.sh advised a delete for the --host of another machine"; exit 1
+          fi
           vault="$(dirname "$INV")/host_vars/ci/vault.yml"
           mkdir -p "$(dirname "$vault")"
           echo 'celestia_mon_grafana_admin_password: ci-test-only-not-a-secret' >"$vault"
