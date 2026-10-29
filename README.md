@@ -2,6 +2,9 @@
 
 Ready-made monitoring for Celestia validators running Fibre.
 
+<img width="1883" height="797" alt="image" src="https://github.com/user-attachments/assets/c12e5225-8943-4b55-861d-e00affcbdb4a" />
+
+
 It watches a consensus validator, its Fibre server and its remote signer (tmkms), on one host or split across validator, KMS, Fibre and monitor hosts, with optional backup nodes and a standby Fibre; when tmkms moves to a backup node or a standby Fibre takes over, the alerts and the dashboard follow. It ships:
 
 - one Grafana dashboard that reads like a status page: what is wrong now in the words of your alerts; one-word answers (is the validator signing and through which node, is Fibre serving and reachable from outside, is a network upgrade coming, is a governance vote missing); each server's state, such as whether a backup node could take over signing; a day of uptime bars per check and per server, read from the alert states; which server held each role; and below them a list of every firing alert, then the charts behind the alerts, with their thresholds drawn;
