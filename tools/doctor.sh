@@ -65,6 +65,8 @@ declare -A C=(
   [fibre_otel_endpoint]="http://127.0.0.1:9915"
   [fibre_hosts]=""
   [node_hosts]=""
+  [node_addresses]=""
+  [fibre_addresses]=""
   [prometheus_url]="http://127.0.0.1:9912"
   [alertmanager_url]="http://127.0.0.1:9913"
   [blackbox_url]="http://127.0.0.1:9919"
@@ -123,6 +125,13 @@ can be overridden with flags (--node-rpc-url URL sets node_rpc_url).
   node_hosts             comma-separated inventory names of the celestia-appd
                          nodes (validator and backup nodes), on the monitor
                          (default: the celestia-app targets)
+  node_addresses         comma-separated NAME=address, the private address of
+                         each celestia-appd node of the inventory: checks 17
+                         and 27 name the node Fibre signs through and reads
+                         (default: none, nothing named)
+  fibre_addresses        the same for each Fibre host: check 25 names those
+                         without a node of their own in its ufw command for
+                         the app gRPC (default: none)
   prometheus_url         celestia-mon's Prometheus, on the monitor host
                          (default http://127.0.0.1:9912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
@@ -402,6 +411,51 @@ joins() { # separator, items -> the items joined by the separator
   shift
   for x in "$@"; do out+="${out:+$sep}$x"; done
   printf '%s' "$out"
+}
+
+# node_addresses and fibre_addresses, which install.sh writes from the inventory: NAME=address
+# of each celestia-appd node and of each Fibre host, its celestia_mon_private_ip.
+addr_pairs() { # NAME=address list -> "NAME address" lines, one per entry
+  local -a e=()
+  local x
+  IFS=',' read -r -a e <<<"$1"
+  for x in "${e[@]}"; do
+    x=${x//[[:space:]]/}
+    if [[ $x == ?*=?* ]]; then printf '%s %s\n' "${x%%=*}" "${x#*=}"; fi
+  done
+}
+node_named() { # address without port or brackets -> true and the inventory name of the node at that address
+  local n a
+  while read -r n a; do
+    if [[ ${a,,} == "${1,,}" ]]; then
+      printf '%s' "$n"
+      return 0
+    fi
+  done < <(addr_pairs "${C[node_addresses]}")
+  return 1
+}
+node_list() { # -> the nodes of node_addresses for a report line, such as "val-1 at 10.0.0.1, node-1 at 10.0.0.5"
+  addr_pairs "${C[node_addresses]}" | awk '{ printf "%s%s at %s", (NR > 1 ? ", " : ""), $1, $2 }'
+}
+own_address() { # -> this host's address in fibre_addresses or node_addresses (inventory_host), else a placeholder
+  local n a
+  while read -r n a; do
+    if [[ -n ${C[inventory_host]} && $n == "${C[inventory_host]}" ]]; then
+      printf '%s' "$a"
+      return
+    fi
+  done < <(addr_pairs "${C[fibre_addresses]}"; addr_pairs "${C[node_addresses]}")
+  printf '%s' "<this host's private address>"
+}
+# The Fibre hosts that have no celestia-appd node of their own, so each reads a node on another
+# host: fibre_addresses less this host and the names node_addresses lists, "NAME address" lines.
+fibre_readers() {
+  local n a nodes
+  nodes=$(addr_pairs "${C[node_addresses]}" | cut -d ' ' -f 1)
+  while read -r n a; do
+    [[ $n != "${C[inventory_host]}" ]] || continue
+    if ! grep -qxF -- "$n" <<<"$nodes"; then printf '%s %s\n' "$n" "$a"; fi
+  done < <(addr_pairs "${C[fibre_addresses]}")
 }
 
 # ------------------------------------------------- who reaches a port
