@@ -4,8 +4,9 @@
 
 The dashboard-report job renders the settings of every scenario once (tools/ci/dashboard_configs.sh BUILD)
 and runs both generators on them: the base branch's into BUILD/<scenario>/base.json (left out when it
-failed, its stderr in base.err) and this branch's into BUILD/<scenario>/head.json. BASE names the base
-commit in the report. Panels are matched by id, those of collapsed rows too (a row then lists their ids);
+failed, its stderr in base.err) and this branch's into BUILD/<scenario>/head.json. A scenario the base
+branch does not have (not in its SCENARIOS) gets neither base file, and the report calls it new. BASE
+names the base commit in the report. Panels are matched by id, those of collapsed rows too (a row then lists their ids);
 the keys outside the panels (links, templating, annotations, ...) are the panel "dashboard". The report, in
 Markdown on stdout and in GITHUB_STEP_SUMMARY, gives per scenario "identical", or the number of values that
 differ and the text changes behind them, with a table of those values, JSON-encoded and cut to about 60
@@ -13,8 +14,8 @@ characters around their first difference (at most 50 rows a scenario, then "and 
 
 Without --same it only reports: the exit code is 0 unless this script itself breaks. With --same, each
 OLD NEW pair after it a text change this branch makes on purpose, it is a check: it exits 1 unless the
-base branch's generator made every scenario's dashboard and each value that differs is a text whose base
-value, with every OLD replaced by its NEW, is this branch's. The report names those changes, marks each
+base branch's generator made the dashboard of every scenario but the new ones and each value that differs
+is a text whose base value, with every OLD replaced by its NEW, is this branch's. The report names those changes, marks each
 value that differs otherwise, and ends with the result. Python 3 standard library only.
 """
 import collections
@@ -23,7 +24,7 @@ import os
 import re
 import sys
 
-SCENARIOS = ("single", "split", "mainnet", "five", "nogov", "nopage", "table", "mocha")
+SCENARIOS = ("single", "split", "mainnet", "five", "nogov", "nopage", "table", "mocha", "fibre-apart", "units")
 ROWS = 50
 WIDTH = 60
 WORD = re.compile(r"[\w.-]")
@@ -177,6 +178,9 @@ def main():
     for s in SCENARIOS:
         head = load(os.path.join(build, s, "head.json"))
         base_path = os.path.join(build, s, "base.json")
+        if not os.path.exists(base_path) and not os.path.exists(os.path.join(build, s, "base.err")):
+            lines.append("| %s | new: the base branch has no such scenario |" % s)
+            continue
         if not os.path.exists(base_path):
             lines.append("| %s | %s |" % (s, failed(build, s)))
             failing.append(s)

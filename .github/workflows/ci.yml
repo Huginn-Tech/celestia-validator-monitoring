@@ -1563,9 +1563,10 @@ jobs:
   # On a pull request, the dashboard of every scenario of the dashboard job made by the base branch's
   # generator and by this branch's, from the same settings, and the values that differ in the job
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
-  # text changes named after it, which this branch makes on purpose: the celestia-app release in the
-  # link to Celestia's Fibre dashboard. A pull request that changes the dashboard on purpose names its
-  # text changes there, or leaves --same out to report only.
+  # text changes named after it (OLD NEW pairs), which this branch makes on purpose: none. A scenario
+  # the base branch does not have is reported as new. A pull request that changes the dashboard on
+  # purpose names its text changes there, or leaves --same out to report only. Then the alert rules
+  # and the dashboard settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1583,13 +1584,85 @@ jobs:
           git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
           git worktree add "$RUNNER_TEMP/base" FETCH_HEAD
           bash tools/ci/dashboard_configs.sh build
-          for s in single split mainnet five nogov nopage table mocha; do
-            python "$RUNNER_TEMP/base/monitoring/dashboards/gen_dashboard.py" --config "build/$s/dashboard-config.json" \
-              --out "build/$s/base.json" 2> "build/$s/base.err" || rm -f "build/$s/base.json"
+          for s in single split mainnet five nogov nopage table mocha fibre-apart units; do
+            # A scenario missing from the base branch's report is new: no base dashboard, no base.err.
+            if grep -q "^SCENARIOS = .*\"$s\"" "$RUNNER_TEMP/base/tools/ci/dashboard_diff.py"; then
+              python "$RUNNER_TEMP/base/monitoring/dashboards/gen_dashboard.py" --config "build/$s/dashboard-config.json" \
+                --out "build/$s/base.json" 2> "build/$s/base.err" || rm -f "build/$s/base.json"
+            fi
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" \
-            --same celestia-app/blob/v10.4.0/ celestia-app/blob/v10.5.0/
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same
+      # The alert rules and the dashboard settings of each example inventory, rendered by the base branch
+      # from its checkout (its templates, inventories, roles and render.yml) and by this branch: single,
+      # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
+      # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
+      # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
+      # scenarios in changed, whose renders this branch changes on purpose: none, since where every host
+      # uses the same unit names the rules and settings render as before. The differences are in the
+      # job summary.
+      - name: The rules and dashboard settings render as on the base branch
+        id: rules-base
+        run: |
+          set -euo pipefail
+          changed=""
+          out="$RUNNER_TEMP/renders"
+          mkdir -p "$out"
+          render() {
+            local side=$1 name=$2 inv=$3 scenario=$4 dir=$PWD
+            shift 4
+            if [ "$side" = base ]; then dir="$RUNNER_TEMP/base"; fi
+            if [ ! -d "$dir/ansible/inventory/example-$inv" ]; then return 0; fi
+            if ! (cd "$dir" && ansible-playbook -i "ansible/inventory/example-$inv" tools/ci/render.yml \
+                  -e "celestia_mon_ci_scenario=$scenario" -e "celestia_mon_ci_build=$out/$side/$name" \
+                  -e "celestia_mon_ci_tests=$out/$side/$name/tests" "$@") >"$out/$side-$name.log" 2>&1; then
+              cat "$out/$side-$name.log"; echo "the $side branch did not render $name"; exit 1
+            fi
+          }
+          for side in base head; do
+            render "$side" single single single
+            render "$side" split split split
+            render "$side" mainnet mainnet mainnet -e @tools/ci/mainnet-extras.yml
+            render "$side" mocha mainnet mainnet \
+              -e '{"celestia_mon_signal": {"chain_id": "mocha-5", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci"}}'
+            render "$side" nogov mainnet mainnet \
+              -e '{"celestia_mon_signal": {"chain_id": "celestia", "rpc": ["http://127.0.0.1:26657"], "validator": "celestiavaloper1ci", "gov": false}}'
+            render "$side" multi split split -e celestia_mon_signer_multi_node=true
+            render "$side" fibre-apart fibre-apart fibre-apart
+          done
+          report=("## The rules and dashboard settings against the base branch" ""
+                  "Each example inventory rendered by the base branch and by this branch." ""
+                  "| scenario | result |" "|---|---|")
+          details=()
+          failing=()
+          for name in single split mainnet mocha nogov multi fibre-apart; do
+            if [ ! -d "$out/base/$name" ]; then
+              report+=("| $name | new: the base branch has no such example |")
+              continue
+            fi
+            differ=()
+            for f in rules/celestia-mon.rules.yml dashboard-config.json; do
+              if ! diff -u "$out/base/$name/$f" "$out/head/$name/$f" >"$out/$name.diff"; then
+                differ+=("$f")
+                details+=("" "<details><summary>$name: $f</summary>" "" '```diff' "$(head -n 200 "$out/$name.diff")" '```' "</details>")
+              fi
+            done
+            if [ ${#differ[@]} -eq 0 ]; then
+              report+=("| $name | identical |")
+            elif [[ " $changed " == *" $name "* ]]; then
+              report+=("| $name | changed on purpose: ${differ[*]} |")
+            else
+              report+=("| $name | **differs**: ${differ[*]} |")
+              failing+=("$name")
+            fi
+          done
+          if [ ${#failing[@]} -eq 0 ]; then
+            report+=("" "**Every example renders as on the base branch, apart from the scenarios changed on purpose.**")
+          else
+            report+=("" "**Not as on the base branch: ${failing[*]}.**")
+          fi
+          printf '%s\n' "${report[@]}" "${details[@]}" | tee -a "$GITHUB_STEP_SUMMARY"
+          [ ${#failing[@]} -eq 0 ]
       - uses: ./.github/actions/marks
         if: always()
         with:

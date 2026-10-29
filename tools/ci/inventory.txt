@@ -82,3 +82,4 @@ rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       
 rules/own-units                  | ci.yml, tools/ci/units.yml, tests/units      | Each host's own unit names
 rules/same-units                 | ci.yml                                       | The same unit names on every host render as one name
 dashboard/own-units              | ci.yml                                       | Each host's own unit names reach the dashboard
+dashboard-report/rules-base      | ci.yml                                       | The rules and dashboard settings render as on the base branch | pull_request
