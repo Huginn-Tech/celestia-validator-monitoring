@@ -1708,9 +1708,14 @@ check_fibre_signer() {
   if [[ $tls == false ]]; then
     report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
   elif [[ $unknown == true ]]; then
-    v="no celestia-appd node of the inventory has that address ($(node_list))"
-    if [[ $loop == true ]] || host_address "$ip"; then v="this host runs no celestia-appd node of the inventory (roles: ${C[roles]})"; fi
-    report WARN 17 "$name" "$src is $addr with mTLS, but $v: Fibre signs through a node celestia-mon does not watch, or the address is mistyped, and then every signature of this Fibre fails. Fix: set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group and run install.sh there"
+    # doctor knows each node by its celestia_mon_private_ip only, so another address of a node of
+    # the inventory (its VLAN next to its Tailscale address) lands here too and needs nothing.
+    fix="set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group and run install.sh there"
+    if [[ $loop == true ]] || host_address "$ip"; then
+      report WARN 17 "$name" "$src is $addr with mTLS, but this host runs no celestia-appd node of the inventory (roles: ${C[roles]}): Fibre signs through a node celestia-mon does not watch, or the address is mistyped, which fails every signature of this Fibre. Fix: $fix"
+    else
+      report WARN 17 "$name" "$src is $addr with mTLS, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. It is another address of one of those nodes, a node celestia-mon does not watch, or a mistyped address, which fails every signature of this Fibre. Fix: if $ip is another private address of one of those nodes, nothing; else $fix"
+    fi
   elif [[ $loop == true ]]; then
     report OK 17 "$name" "$src is $addr, the loopback signer on this host, mTLS${via:+: Fibre signs through $via}"
   else
@@ -1855,7 +1860,7 @@ check_fibre_app() {
   elif [[ -z ${C[node_addresses]} ]]; then
     report OK 27 "$name" "$src is $addr, a node on another host (with node_addresses, which install.sh writes, doctor names it)"
   elif [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
-    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)): nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing), or the address is mistyped. Fix: put that node's host in the inventory's backup_node group and run install.sh there, or $fix to the private address of a node of the inventory, $reload"
+    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. If it is a node outside the inventory, nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing); a mistyped address keeps Fibre from starting (check 6). Fix: if $h is another private address of one of those nodes, nothing; else put that node's host in the inventory's backup_node group and run install.sh there, or $fix to the private address of a node of the inventory, $reload"
   else
     report WARN 27 "$name" "$src is $addr, a host name that names no node of the inventory ($(node_list)), and doctor resolves no name, so it cannot tell which node Fibre reads. Fix: $fix to that node's private IP address and port, $reload"
   fi
