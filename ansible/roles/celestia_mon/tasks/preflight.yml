@@ -196,7 +196,7 @@
     cmd: |
       set -o pipefail
       { systemctl list-unit-files --type=service --no-legend --plain; systemctl list-units --type=service --all --no-legend --plain; } |
-        awk '{ for (i = 1; i <= NF; i++) if ($i ~ /[.]service$/) { if ($i !~ /@/ && $i !~ /^celestia-mon-/) print $i; break } }' |
+        awk '{ for (i = 1; i <= NF; i++) if ($i ~ /[.]service$/) { if ($i !~ /@[.]service$/ && $i !~ /^celestia-mon-/) print $i; break } }' |
         sort -u | xargs -r -d '\n' systemctl show --property=Id,LoadState,ActiveState,ExecStart,Environment -- |
         awk '
           # A blank line ends a unit, and so does a property seen twice.
