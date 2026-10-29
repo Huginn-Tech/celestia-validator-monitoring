@@ -2578,7 +2578,7 @@ check_node_lag() {
   fix="apply check 11's fix for those celestia-app targets"
   if ((${#behind[@]} > 0)); then
     t+="${t:+; }more than $limit blocks behind the highest node ($max; the NodeBehind alert after 10 minutes of it): $(join "${behind[@]}")"
-    fix="a node that trails cannot take the validator role over; on that host run celestia-mon-doctor (check 3) and check its peers, disk and \"journalctl -u ${C[appd_unit]} -n 100\""
+    fix="a node that trails cannot take the validator role over; on that host run celestia-mon-doctor (check 3) and check its peers, its disk and the journal of its celestia-appd unit (\"journalctl -u <that unit> -n 100\"; each box may name its own)"
   fi
   if ((${#nodata[@]} > 0)); then
     t+="${t:+; }no height from $(join "${nodata[@]}") (its celestia-app target is down or missing: check 11)"
