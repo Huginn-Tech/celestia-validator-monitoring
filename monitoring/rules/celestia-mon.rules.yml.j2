@@ -678,10 +678,11 @@ groups:
       # on a monitor host that runs no Celestia service (the disk of Prometheus's data). The Fibre
       # store has its own rules unless it is also a node data mount. Each mount gets one set of
       # rules.
+{# celestia_mon_data_mounts is [/] on a host that sets none. #}
 {% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
 {% set store = hostvars[h].celestia_mon_fibre_mount | default('') if h in fibres else '' %}
-{% for m in hostvars[h].celestia_mon_data_mounts | default([]) if node_host or m != store %}
+{% for m in hostvars[h].celestia_mon_data_mounts | default(['/']) if node_host or m != store %}
 {% if node_host %}
       - alert: DiskLow
         expr: >-
@@ -722,7 +723,7 @@ groups:
 {% endfor %}
 {% for h in fibres if hostvars[h].celestia_mon_fibre_mount | default('') %}
 {% set m = hostvars[h].celestia_mon_fibre_mount %}
-{% if not ((h in nodes or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default([])) %}
+{% if not ((h in nodes or h in kms) and m in hostvars[h].celestia_mon_data_mounts | default(['/'])) %}
       - alert: DiskLow
         expr: node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
         labels:
