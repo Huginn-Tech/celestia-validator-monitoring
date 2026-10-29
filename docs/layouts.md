@@ -12,7 +12,7 @@ These settings apply to every layout and are left out of the rows below:
 
 | Layout | Boxes and their groups | Also set in the inventory | Your steps on the Celestia side |
 |---|---|---|---|
-| [One box](#one-box) | node-1: `validator`, `fibre`, `monitor` | `celestia_mon_private_ip: 127.0.0.1` (or a private address) | Node metrics on `127.0.0.1:26660`; Fibre's `--otel-endpoint`. Fibre reads `127.0.0.1:9090`, its default. |
+| [One box](#one-box) (`example-single`, with Fibre added) | node-1: `validator`, `fibre`, `monitor` | `celestia_mon_private_ip: 127.0.0.1` (or a private address) | Node metrics on `127.0.0.1:26660`; Fibre's `--otel-endpoint`. Fibre reads `127.0.0.1:9090`, its default. |
 | [One box, no Fibre](#one-box-no-fibre) (an older network, a DR box; `example-single`) | node-1: `validator`, `monitor` | `celestia_mon_fibre_enabled: false` | Node metrics. |
 | [Validator and a Fibre box without a node](#validator-and-a-fibre-box-without-a-node) (`example-split`) | val-1: `validator`; fibre-1: `fibre`; mon-1: `monitor`; kms-1: `kms` | none | val-1: `[grpc] address = "<val-1 private>:9090"` and ufw from fibre-1 to 9090; `priv_validator_grpc_laddr` on val-1's private address with mTLS, ufw from fibre-1 to 26669. fibre-1: `app_grpc_address` and the signer at val-1, with mTLS. |
 | [Fibre box with its own node](#mainnet-layout) (`example-mainnet`) | val-1: `validator`, `fibre` (a stopped standby); fibre-1: `fibre`, `backup_node`; mon-1: `monitor`; kms-1: `kms` | none | fibre-1: Fibre reads `127.0.0.1:9090`, and signs through the node tmkms serves (val-1, mTLS). The node's `priv_validator_grpc_laddr` is set ahead of a repoint. Standby: OTLP endpoint set, unit disabled. |
@@ -30,7 +30,7 @@ The links that cross boxes stay on a private VLAN or WireGuard: the app gRPC (pl
 
 ## One box
 
-One box runs the validator, its Fibre and the monitor. Its `celestia_mon_private_ip` can be `127.0.0.1`. Fibre reads the node beside it on `127.0.0.1:9090`, its default, and signs through the node's privval gRPC on 127.0.0.1 (with mTLS: `doctor` check 17 warns without it). Your steps: the node's metrics on `127.0.0.1:26660` and Fibre's `--otel-endpoint` ([quickstart step 6](quickstart.md#6-your-steps)). When the box dies, nothing on it can alert: the dead-man service tells you.
+One box runs the validator, its Fibre and the monitor. Start from `ansible/inventory/example-single` and add Fibre: put `node-1` in a `fibre` group under `children:` too, set `celestia_mon_fibre_enabled: true` in `group_vars/all.yml`, and give `node-1` its `celestia_mon_fibre_mount` and `celestia_mon_fibre_public_endpoint`. With tmkms on a KMS box, also set `celestia_mon_signer: remote` and list that box by its name in a `kms` group. Its `celestia_mon_private_ip` can be `127.0.0.1`. Fibre reads the node beside it on `127.0.0.1:9090`, its default, and signs through the node's privval gRPC on 127.0.0.1 (with mTLS: `doctor` check 17 warns without it). Your steps: the node's metrics on `127.0.0.1:26660` and Fibre's `--otel-endpoint` ([quickstart step 6](quickstart.md#6-your-steps)). When the box dies, nothing on it can alert: the dead-man service tells you.
 
 ## One box, no Fibre
 
