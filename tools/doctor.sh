@@ -2855,7 +2855,7 @@ check_deadman() {
   if [[ -z $sent ]]; then
     report WARN 22 "$name" "Prometheus has no notification metrics of Alertmanager's dead-man receiver (alertmanager_notifications_total{receiver_name=\"deadman\"}), so doctor cannot tell whether heartbeats go out. Fix: re-run install.sh on this host: it writes the dead-man receiver from celestia_mon_deadman_webhook_url and starts Alertmanager with --enable-feature=receiver-name-in-metrics"
   elif awk -v f="$failed" 'BEGIN { exit !(f + 0 > 0) }'; then
-    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's vault and that this host reaches the service, then re-run install.sh on this host"
+    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault and that this host reaches the service, then re-run install.sh on this host"
   elif awk -v s="$sent" 'BEGIN { exit !(s + 0 > 0) }'; then
     report OK 22 "$name" "about $(num "$sent") heartbeats sent to the dead-man service in the last 10 minutes, none failed"
   else
