@@ -1,10 +1,10 @@
 ---
 # Secrets of the monitor host (Alertmanager receivers, the dead-man URL). Only the monitor
-# host needs this file. Replace the placeholders, then encrypt the whole file:
-# sudo ./install.sh --edit-vault host_vars/node-1/vault.yml (install.sh refuses a vault.yml
-# that is not encrypted). Or keep these lines outside the inventory instead:
-# sudo ./install.sh --edit-secrets writes /etc/celestia-mon/secrets.yml (root only), and this
-# file goes. Not both.
+# host needs this file. Replace the placeholders, then encrypt the whole file (install.sh
+# refuses a vault.yml that is not encrypted):
+#   sudo ./install.sh --edit-vault ~/celestia-mon-inventory/host_vars/node-1/vault.yml
+# Or keep these lines outside the inventory instead: sudo ./install.sh --edit-secrets writes
+# /etc/celestia-mon/secrets.yml (root only), and this file goes. Not both.
 # Receivers: one list. Page alerts go to every receiver, message alerts to every receiver
 # except PagerDuty. Types: telegram, discord, slack, pagerduty, webhook (docs/alerts.md).
 celestia_mon_receivers:

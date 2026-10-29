@@ -1,10 +1,11 @@
 ---
 # Secrets of the monitor host (Alertmanager receivers, the dead-man URL). Only mon-1 needs
 # this file: keep it off the other hosts. Replace the placeholders, then encrypt the whole
-# file: sudo ./install.sh --edit-vault host_vars/mon-1/vault.yml (install.sh refuses a
-# vault.yml that is not encrypted). Or keep these lines on mon-1 instead, outside the
-# inventory: sudo ./install.sh --edit-secrets there writes /etc/celestia-mon/secrets.yml
-# (root only), and this file goes; the inventory is then the same on every host. Not both.
+# file (install.sh refuses a vault.yml that is not encrypted):
+#   sudo ./install.sh --edit-vault ~/celestia-mon-inventory/host_vars/mon-1/vault.yml
+# Or keep these lines on mon-1 instead, outside the inventory: sudo ./install.sh
+# --edit-secrets there writes /etc/celestia-mon/secrets.yml (root only), and this file goes;
+# the inventory is then the same on every host. Not both.
 # Receivers: one list. Page alerts go to every receiver, message alerts to every receiver
 # except PagerDuty. Types: telegram, discord, slack, pagerduty, webhook (docs/alerts.md).
 celestia_mon_receivers:
