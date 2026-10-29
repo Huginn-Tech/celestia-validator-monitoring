@@ -1,4 +1,4 @@
-# FibreNotServing (uploads_failing) on the example-fibre-apart inventory: Fibre on fibre-1 reads
+# FibreNotServing (not_ready) on the example-fibre-apart inventory: Fibre on fibre-1 reads
 # node-1 (its app_grpc_address) and signs through the node tmkms serves (its signer_grpc_address),
 # val-1 at first. A tmkms repoint moves signing to node-1, and Fibre keeps dialling val-1 until it
 # is pointed at node-1 too.
@@ -8,9 +8,10 @@ evaluation_interval: 1m
 
 tests:
   # val-1 is lost at 10m and tmkms is pointed at node-1. Fibre on fibre-1 still signs through val-1,
-  # so from 11m every upload fails. It still reads node-1, and its unit stays active, so FibreDown
-  # stays quiet; uploads_failing goes out at 24m.
-  - name: tmkms repointed to node-1 while Fibre still signs through val-1; uploads_failing on fibre-1
+  # so from 11m every upload fails at the key read, before any signature, and its health check fails
+  # its signer check. It still reads node-1, and its unit stays active, so FibreDown stays quiet;
+  # not_ready sends its message at 14m and pages at 21m, and uploads_failing never fires.
+  - name: tmkms repointed to node-1 while Fibre still signs through val-1; not_ready on fibre-1
     interval: 1m
     input_series:
       - series: >-
@@ -31,23 +32,66 @@ tests:
       - series: >-
           fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.30.0.2:9911",host="fibre-1",role="fibre"}
         values: '1000000000000x40'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x10 0x30'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x10 1x30'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre"}
+        values: '0x41'
     alert_rule_test:
-      - eval_time: 23m
+      - eval_time: 13m
         alertname: FibreNotServing
         exp_alerts: []
+      - eval_time: 14m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreNotServing
         exp_alerts:
           - exp_labels:
               host: fibre-1
-              reason: uploads_failing
+              reason: not_ready
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 fails every upload"
+              summary: "Fibre on fibre-1 is not ready for uploads"
               description: >-
-                For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing.
-                Check the signer first: Fibre signs through the node at its signer_grpc_address,
-                so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error.
+                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+          - exp_labels:
+              host: fibre-1
+              reason: not_ready
+              severity: page
+            exp_annotations:
+              summary: "Fibre on fibre-1 is not ready for uploads"
+              description: >-
+                For 10 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
+                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
+                signer (answers with the key Fibre started with), validator (in the active set),
+                registration (a valid provider host on chain) or store (a small write and read).
+                Uploads to it may fail. Fibre's log names the check and what to do:
+                journalctl -u fibre.service | grep 'health check failed'.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreDown

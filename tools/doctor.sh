@@ -2341,6 +2341,8 @@ metric_event() {
     cometbft_consensus_validator_missed_blocks) echo "the first block committed without the validator's signature since the node started" ;;
     fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
+    fibre_server_sign_duration_seconds*) echo "the first upload that passes its checks, which Fibre then signs" ;;
+    fibre_server_upload_shard_rejected_total) echo "the first upload refused because the storage budget is full" ;;
     node_md_disks | node_md_disks_required) echo "node_exporter finds an md software RAID array in /proc/mdstat; a host without one, or behind a hardware RAID controller, has none" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
     celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;

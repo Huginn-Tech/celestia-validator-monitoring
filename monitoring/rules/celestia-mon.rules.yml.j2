@@ -605,14 +605,21 @@ groups:
           description: "{% raw %}In the last hour Tensile could not read rows of a blob the validator signed for, within the time Fibre must keep them, so clients could not fetch the validator's share of it; that makes {{ with query `max(celestia_mon_fibre_obligations_24h{outcome='broken'})` }}{{ . | first | value | printf `%.0f` }}{{ end }} failed reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.{% endraw %}"
           runbook: "{{ docs }}#fibrenotserving"
 {% endif %}
-      # Every upload fails and none is accepted. Fibre fetches the validator's public key for each
-      # upload and then signs through the node at its signer_grpc_address (celestia-app
-      # fibre/server_upload.go). An unreachable signer fails the upload before the signature is
-      # tried, so fibre.server.sign.duration does not count it; the upload count with success
-      # "false" counts both. Uploads that clients get wrong fail too, but next to accepted ones.
+      # No upload is accepted, and the uploads that pass their checks fail on this side: every
+      # signature fails, or the storage budget is full. Fibre checks each upload (the payment
+      # promise, its assignment, for which it reads the validator's key from the signer, and the
+      # rows), reserves room for it under the storage budget, stores it and signs it through the
+      # node at its signer_grpc_address (celestia-app fibre/server_upload.go):
+      # fibre.server.upload_shard.rejected counts each upload refused for a full budget, and
+      # fibre.server.sign.duration each signature tried, by success. An upload a client gets wrong
+      # (an escrow too low, an expired promise) fails before both, so it never fires this: on a
+      # quiet network one such client can be the only traffic and fail every upload. A signer Fibre
+      # cannot reach fails the upload at the key, before both too; Fibre's health check asks that
+      # signer every round, so not_ready reports it.
       - alert: FibreNotServing
         expr: >-
-          sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[5m])) > 0
+          sum by (host) (increase(fibre_server_sign_duration_seconds_count{success="false"}[5m])
+          or increase(fibre_server_upload_shard_rejected_total[5m])) > 0
           unless on (host) sum by (host) (increase(fibre_server_upload_shard_duration_seconds_count{success="true"}[5m])) > 0
         for: 10m
         labels:
@@ -620,7 +627,7 @@ groups:
           reason: uploads_failing
         annotations:
           summary: "{% raw %}Fibre on {{ $labels.host }} fails every upload{% endraw %}"
-          description: "For 15 minutes Fibre has accepted no upload while uploads kept failing, so it signs nothing. Check the signer first: Fibre signs through the node at its signer_grpc_address, so after tmkms is pointed at another node, point Fibre at that node too. Fibre's log names the error."
+          description: "For 15 minutes Fibre has accepted no upload, so it signs nothing: every signature it tried failed, or its storage budget was full. Failed signatures: Fibre's log says failed to sign payment promise; the signer behind its signer_grpc_address gives the validator's key but does not sign, so check tmkms's log and that it signs raw bytes. A full budget: the dashboard's Storage budget used and Failed clean-ups."
           runbook: "{{ docs }}#fibrenotserving"
       # Not ready: Fibre's own gRPC health check (service "") answers NOT_SERVING. Fibre answers
       # SERVING only while six checks pass, run every 10 seconds by default (celestia-app v10.5.0
