@@ -43,6 +43,26 @@ if grep -q '^celestia_mon_fibre_reachable' <<<"$m"; then echo "reachability with
 if grep -Eq '^celestia_mon_fibre_(last_assigned|last_endorsed|blobs|obligations)' <<<"$m"; then
   echo "a blob record without Tensile's signing object"; exit 1
 fi
+# Out of the active set, jailed or not: Tensile's host comes from the chain's list of bonded
+# providers, which has left the validator while its registration stands, so no registration is
+# read, not a 0 that FibreDown would take for none. A bonded validator with no host has none.
+mkdir -p "$v/celestiavalcons1jailed" "$v/celestiavalcons1unbonded" "$v/celestiavalcons1bonded"
+cat >"$v/celestiavalcons1jailed/status" <<'EOF'
+{"host": "", "jailed": true, "bond_status": "BOND_STATUS_UNBONDING", "reachable": null, "identity_status": "unknown", "last_endpoint_check": null}
+EOF
+cat >"$v/celestiavalcons1unbonded/status" <<'EOF'
+{"host": "", "jailed": false, "bond_status": "BOND_STATUS_UNBONDED", "reachable": null, "identity_status": "unknown", "last_endpoint_check": null}
+EOF
+cat >"$v/celestiavalcons1bonded/status" <<'EOF'
+{"host": "", "jailed": false, "bond_status": "BOND_STATUS_BONDED", "reachable": null, "identity_status": "", "last_endpoint_check": null}
+EOF
+for out in celestiavalcons1jailed celestiavalcons1unbonded; do
+  m=$(run http://127.0.0.1:8766/api/v1 "$out")
+  grep -Eq '^celestia_mon_tensile_last_success_timestamp_seconds [1-9]' <<<"$m"
+  if grep -q '^celestia_mon_fibre_registered' <<<"$m"; then echo "$out out of the active set read as not registered"; exit 1; fi
+done
+m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1bonded)
+grep -qx 'celestia_mon_fibre_registered{endpoint=""} 0' <<<"$m"
 m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1unknown)
 grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
 grep -qx 'celestia_mon_tensile_errors_total{reason="not_found"} 1' <<<"$m"
@@ -83,13 +103,16 @@ fi
 # Without last_assigned_at, the time of the newest assigned blob is the time of Tensile's newest
 # block (/tip) at the read at which the number of assigned blobs rose, only while that block is
 # under 2 minutes older than Tensile's clock at that read and the one before. The service reads
-# every second here.
+# every second here. Written aside and moved, so it never reads half a file: a read that fails
+# drops the number.
 tip() {
-  printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip"
+  printf '{"height": 100, "block_time": "%s", "server_time": "2026-10-18T06:25:20Z"}' "$1" >"$d/api/api/v1/tip.new"
+  mv "$d/api/api/v1/tip.new" "$d/api/api/v1/tip"
 }
 old() {
   printf '{"host": "203.0.113.7:7980", "reachable": true, "identity_status": "verified", "signing": {"assigned": %s, "signed": 0}}' \
-    "$1" >"$v/celestiavalcons1old/status"
+    "$1" >"$v/celestiavalcons1old/status.new"
+  mv "$v/celestiavalcons1old/status.new" "$v/celestiavalcons1old/status"
 }
 tip 2026-10-18T06:25:15Z
 old 216
@@ -117,4 +140,27 @@ if grep -q '^celestia_mon_fibre_last_assigned' <<<"$(scrape)"; then echo "a Tens
 # A rise between two reads in step sets the time: Tensile's newest block then, 06:25:15.
 old 231
 wait_for '^celestia_mon_fibre_last_assigned_timestamp_seconds 1792304715\.0$'
+# A read that fails, in each way it can, drops the number: blobs found after it may have settled
+# while Tensile was not read, so the first good read only notes them, and the time stays. The next
+# rise sets it, to Tensile's newest block then. was is the seconds of that time past 06:25.
+n=232
+was=15
+for reason in not_found network format; do
+  case $reason in
+    not_found) rm "$v/celestiavalcons1old/status" ;;
+    network) printf 'no JSON' >"$v/celestiavalcons1old/status" ;;
+    format) printf '{}' >"$v/celestiavalcons1old/status" ;;
+  esac
+  wait_for "^celestia_mon_tensile_errors_total\{reason=\"$reason\"\} [1-9]"
+  tip "2026-10-18T06:25:$((was + 1))Z"
+  old "$n"
+  wait_for "^celestia_mon_fibre_blobs_assigned_24h $n\$"
+  sleep 3
+  grep -qx "celestia_mon_fibre_last_assigned_timestamp_seconds 17923047$was\.0" <<<"$(scrape)" ||
+    { echo "blobs found after a failed read ($reason) taken for new ones"; exit 1; }
+  old "$((n + 1))"
+  was=$((was + 1))
+  wait_for "^celestia_mon_fibre_last_assigned_timestamp_seconds 17923047$was\.0\$"
+  n=$((n + 2))
+done
 kill "$svc"

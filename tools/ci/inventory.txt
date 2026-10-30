@@ -78,7 +78,7 @@ molecule/test                    | ci.yml                                       
 lint/upstream                    | tools/ci/check_upstream.py                   | Upstream links, versions and names follow the pin
 lint/inventory                   | tools/ci/inventory.py lint                   | Every check is in the test inventory
 dashboard-report/diff            | tools/ci/dashboard_diff.py                   | The dashboards against the base branch | pull_request
-rules/multi-node                 | ci.yml, tools/ci/check_render.py twice       | No ValidatorSigningTwice where tmkms signs through several nodes
+rules/multi-node                 | ci.yml, check_render.py twice, tests/multi   | The rules where tmkms signs through several nodes
 install/survey                   | ci.yml                                       | --survey runs doctor's survey and prepares nothing
 install/grafana-password         | ci.yml                                       | The generated Grafana admin password opens Grafana
 install/one-install              | ci.yml                                       | A host belongs to one install
@@ -89,3 +89,4 @@ rules/own-units                  | ci.yml, tools/ci/units.yml, tests/units      
 rules/same-units                 | ci.yml                                       | The same unit names on every host render as one name
 dashboard/own-units              | ci.yml                                       | Each host's own unit names reach the dashboard
 dashboard-report/rules-base      | ci.yml                                       | The rules and dashboard settings render as on the base branch | pull_request
+dashboard/first-screen           | tools/ci/check_dashboard.py first-screen     | The first screen mirrors the rules and the inhibitions

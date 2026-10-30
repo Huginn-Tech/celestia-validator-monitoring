@@ -86,3 +86,99 @@ run sudo bash tools/doctor.sh --config /dev/null --roles validator,fibre --signe
   --fibre-unit ci-mtls --fibre-hosts fibre-a,fibre-b --node-home "$home" --data-mounts / --head-wait 2
 line=$(grep -E '^WARN +17 +fibre signer +standby: ' <<<"$out")
 grep -qF 'an mTLS signer on this host, but the node serves its privval gRPC on 127.0.0.1:26669 in plaintext' <<<"$line"
+
+# A plaintext privval gRPC beyond loopback: celestia-appd refuses it unless it is allowed, in
+# config.toml or by the start flag, whose place in ExecStart does not matter; =false leaves it off.
+home="$RUNNER_TEMP/val-open"
+mkdir -p "$home/config"
+echo 'priv_validator_grpc_laddr = "10.255.0.5:26669"' >"$home/config/config.toml"
+node_start() { # the words after the node's command in ExecStart: runs doctor on that node
+  printf '%s\n' '[Service]' "ExecStart=/bin/true $1" | sudo tee /etc/systemd/system/ci-appd.service >/dev/null
+  sudo systemctl daemon-reload
+  run sudo bash tools/doctor.sh --config /dev/null --roles backup_node --appd-unit ci-appd --node-home "$home" --data-mounts / --head-wait 2
+}
+node_start 'start --privval-grpc-allow-insecure'
+grep -Eq '^FAIL +20 +signer binds +priv_validator_grpc_laddr = 10\.255\.0\.5:26669' <<<"$out"
+says 20 'With --privval-grpc-allow-insecure in ExecStart and no mTLS, whoever reaches priv_validator_grpc_laddr'
+says 20 'take --privval-grpc-allow-insecure out of ExecStart in ci-appd.service'
+node_start 'start --privval-grpc-allow-insecure --home /ci'
+grep -Eq '^FAIL +20 +signer binds ' <<<"$out"
+node_start 'start --home /ci'
+grep -Eq '^WARN +20 +signer binds ' <<<"$out"
+# The same setting in config.toml, which keeps its own wording.
+printf '%s\n' 'priv_validator_grpc_laddr = "10.255.0.5:26669"' 'priv_validator_grpc_allow_insecure = true' >"$home/config/config.toml"
+node_start 'start --home /ci'
+grep -Eq '^FAIL +20 +signer binds ' <<<"$out"
+says 20 'With priv_validator_grpc_allow_insecure = true and no mTLS'
+# A plaintext listener on loopback stays a warning, with the flag off or on.
+serve 127.0.0.1 26670 "$RUNNER_TEMP/rpc" http://127.0.0.1:26670/status
+echo 'priv_validator_grpc_laddr = "127.0.0.1:26670"' >"$home/config/config.toml"
+node_start 'start --privval-grpc-allow-insecure=false'
+grep -Eq '^WARN +20 +signer binds +priv_validator_grpc_laddr = 127\.0\.0\.1:26670' <<<"$out"
+node_start 'start --privval-grpc-allow-insecure'
+grep -Eq '^WARN +20 +signer binds ' <<<"$out"
+# A plaintext listener doctor sees beyond loopback proves it is allowed, however it was set.
+serve 10.255.0.2 26671 "$RUNNER_TEMP/rpc" http://10.255.0.2:26671/status
+echo 'priv_validator_grpc_laddr = "10.255.0.2:26671"' >"$home/config/config.toml"
+node_start 'start --home /ci'
+grep -Eq '^FAIL +20 +signer binds ' <<<"$out"
+says 20 'With a listener beyond loopback and no mTLS'
+
+# A Fibre that cannot start, and its stand-in for an active Fibre, whose home (FIBRE_HOME) holds its
+# server_config.toml. The flag after "fibre" reaches doctor as a word of ExecStart.
+fh="$RUNNER_TEMP/fibre-signer"
+mkdir -p "$fh/config"
+fibre_start() { # the words after the stand-in's command in ExecStart
+  printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" "ExecStart=/bin/sh -c 'exec sleep infinity' fibre $1" \
+    | sudo tee /etc/systemd/system/ci-active.service >/dev/null
+  sudo systemctl daemon-reload
+  sudo systemctl restart ci-active
+}
+fibre_only=(--config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-active --data-mounts / --head-wait 2)
+# Only some of the three signer files: a standby warns, an active Fibre fails, each naming what is missing.
+exec_some='ExecStart=/bin/true --signer-grpc-address 127.0.0.1:26669 --signer-grpc-cert-file /ci/c.crt'
+exec_some+=' --signer-grpc-key-file /ci/c.key --otel-endpoint http://127.0.0.1:9915'
+printf '%s\n' '[Service]' "$exec_some" | sudo tee /etc/systemd/system/ci-some.service >/dev/null
+sudo systemctl daemon-reload
+run sudo bash tools/doctor.sh --config /dev/null --roles fibre --fibre-enabled true --fibre-unit ci-some \
+  --fibre-hosts fibre-a,fibre-b --data-mounts / --head-wait 2
+grep -Eq '^WARN +17 +fibre signer +standby: --signer-grpc-address in ExecStart is 127\.0\.0\.1:26669, but only 2 of ' <<<"$out"
+says 17 '(no signer_grpc_ca_file): Fibre exits when it starts, as they "must be set together"'
+printf '%s\n' 'signer_grpc_address = "127.0.0.1:26669"' 'signer_grpc_cert_file = "c.crt"' >"$fh/config/server_config.toml"
+fibre_start '--otel-endpoint http://127.0.0.1:9915'
+run sudo bash tools/doctor.sh "${fibre_only[@]}"
+grep -Eq '^FAIL +17 +fibre signer +signer_grpc_address in .* is 127\.0\.0\.1:26669, but only 1 of ' <<<"$out"
+says 17 '(no signer_grpc_ca_file, signer_grpc_key_file)'
+# Plaintext to another host: Fibre refuses it while signer_grpc_allow_insecure is off, the flag over
+# the file, and the fix leads to mTLS, never to that setting.
+printf '%s\n' 'signer_grpc_address = "10.255.0.7:26669"' >"$fh/config/server_config.toml"
+run sudo bash tools/doctor.sh "${fibre_only[@]}"
+grep -Eq '^FAIL +17 +fibre signer +signer_grpc_address in .* is 10\.255\.0\.7:26669, a plaintext signer beyond loopback' <<<"$out"
+says 17 'Fibre exits when it starts, as that "is not localhost"'
+says 17 'Fix: serve the node'
+fibre_start '--signer-grpc-allow-insecure'
+run sudo bash tools/doctor.sh "${fibre_only[@]}"
+grep -Eq '^WARN +17 +fibre signer +signer_grpc_address in .* is 10\.255\.0\.7:26669, a plaintext signer without mTLS' <<<"$out"
+printf '%s\n' 'signer_grpc_address = "10.255.0.7:26669"' 'signer_grpc_allow_insecure = true' >"$fh/config/server_config.toml"
+fibre_start '--signer-grpc-allow-insecure=false'
+run sudo bash tools/doctor.sh "${fibre_only[@]}"
+grep -Eq '^FAIL +17 +fibre signer +signer_grpc_address in .* is 10\.255\.0\.7:26669, a plaintext signer beyond loopback' <<<"$out"
+fibre_start '--otel-endpoint http://127.0.0.1:9915'
+run sudo bash tools/doctor.sh "${fibre_only[@]}"
+grep -Eq '^WARN +17 +fibre signer +signer_grpc_address in .* is 10\.255\.0\.7:26669, a plaintext signer without mTLS' <<<"$out"
+
+# A config.toml without the key, from a home made on v8 or earlier: the node serves celestia-app's
+# default, which check 17 reads as check 20 does, while something listens there.
+home="$RUNNER_TEMP/val-old"
+mkdir -p "$home/config"
+echo 'priv_validator_laddr = ""' >"$home/config/config.toml"
+printf '%s\n' 'signer_grpc_address = "127.0.0.1:26669"' >"$fh/config/server_config.toml"
+beside=(--config /dev/null --roles validator,fibre --signer remote --fibre-enabled true --fibre-unit ci-active
+  --node-home "$home" --data-mounts / --head-wait 2)
+run sudo bash tools/doctor.sh "${beside[@]}"
+grep -Eq '^FAIL +17 +fibre signer +.*, but this node serves no privval gRPC \(priv_validator_grpc_laddr is empty in ' <<<"$out"
+serve 127.0.0.1 26669 "$RUNNER_TEMP/rpc" http://127.0.0.1:26669/status
+run sudo bash tools/doctor.sh "${beside[@]}"
+grep -Eq '^WARN +17 +fibre signer +signer_grpc_address in .* is 127\.0\.0\.1:26669, a plaintext signer without mTLS' <<<"$out"
+if grep -Eq '^FAIL +17 ' <<<"$out"; then echo "check 17 failed on a node that serves its default"; exit 1; fi
+sudo systemctl stop ci-active

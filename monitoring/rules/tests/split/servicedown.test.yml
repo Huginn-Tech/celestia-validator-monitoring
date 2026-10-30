@@ -280,3 +280,50 @@ tests:
               summary: "otelcol is unreachable on fibre-1"
               description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # The blackbox exporter on the monitor stops at 5m: every fibre_health target is down, and no rule
+  # would otherwise read Fibre's readiness. One message, on the monitor.
+  - name: The blackbox exporter down; a message after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          up{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              severity: message
+              unit: blackbox
+            exp_annotations:
+              summary: "celestia-mon-blackbox is unreachable on mon-1"
+              description: >-
+                Prometheus has not reached celestia-mon-blackbox for 3 minutes, so Fibre's readiness is not checked and
+                FibreNotServing not_ready cannot fire. Run journalctl -u celestia-mon-blackbox on the monitor.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # The exporter answers and only its probe of Fibre fails, as for a stopped standby: up stays 1.
+  - name: A failed probe of Fibre with the blackbox exporter up raises no ServiceDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          up{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          probe_success{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '1x4 0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServiceDown
+        exp_alerts: []

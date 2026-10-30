@@ -78,6 +78,30 @@ tests:
         alertname: FibreBothActive
         exp_alerts: []
 
+  # fibre-1 stops at 5m and the standby on val-1 holds active from 13m: 8 minutes without a Fibre.
+  - name: A failover that takes 8 minutes; no FibreDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.1:9910",host="val-1",role="validator"}
+        values: '1x30'
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 0x25'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.1:9910",host="val-1",role="validator",name="fibre.service",state="active",type="simple"}
+        values: '0x12 1x17'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+
   - name: Both Fibre units inactive; FibreDown pages after 10 minutes
     interval: 1m
     input_series:
@@ -111,8 +135,8 @@ tests:
             exp_annotations:
               summary: "Fibre is not running on any host"
               description: >-
-                For 10 minutes no Fibre host (fibre-1, val-1) has reported fibre.service as active: Fibre is stopped everywhere,
-                the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+                For 10 minutes no Fibre host (fibre-1, val-1) has kept fibre.service active for a whole minute: Fibre is stopped or
+                crash looping everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
       - eval_time: 15m
         alertname: ServiceDown

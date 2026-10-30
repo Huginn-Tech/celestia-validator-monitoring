@@ -110,6 +110,23 @@ printf '%s\n' '[grpc]' 'enable = true' 'address = "10.255.2.2:9090"' >"$nh/confi
 survey
 has 'Fibre reads the node on this box at 127.0.0.1:9090, but that node serves its app gRPC on 10.255.2.2:9090 ([grpc] address in'
 has 'to "10.255.2.2:9090", run "systemctl daemon-reload" if you changed the unit, then restart Fibre at a moment you choose'
+# Signer settings Fibre exits on: plaintext to another box, and only some of the three files.
+printf '%s\n' 'signer_grpc_address = "10.255.2.9:26669"' >"$fh1/config/server_config.toml"
+survey
+has 'Fibre signs through 10.255.2.9:26669 without mTLS and without signer_grpc_allow_insecure, so it exits when it starts'
+printf '%s\n' 'signer_grpc_address = "127.0.0.1:26669"' 'signer_grpc_ca_file = "ca.crt"' >"$fh1/config/server_config.toml"
+survey
+has 'Fibre sets only 1 of signer_grpc_ca_file, signer_grpc_cert_file and signer_grpc_key_file, so it exits when it starts'
+has 'signs through 127.0.0.1:26669 (1 of its 3 mTLS files)'
+# The namespace celestia works as cometbft does, as Prometheus renames its metrics at the scrape;
+# any other value still gets the step.
+printf '%s\n' 'priv_validator_laddr = ""' '[instrumentation]' 'prometheus = true' 'prometheus_listen_addr = ":26661"' \
+  'namespace = "celestia"' >"$nh/config/config.toml"
+survey
+if grep -qF 'Set namespace' <<<"$out"; then echo "the survey changes a namespace that works"; exit 1; fi
+sed -i 's/namespace = "celestia"/namespace = "ci"/' "$nh/config/config.toml"
+survey
+has 'Set namespace = "cometbft" under [instrumentation] in'
 drop ci-node ci-fibre
 
 echo "::group::a backup node under cosmovisor"

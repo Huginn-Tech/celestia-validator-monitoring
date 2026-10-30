@@ -19,6 +19,12 @@
 {% for h in fibre_hosts if hostvars[h].celestia_mon_private_ip | default('') %}
 {% set addresses.fibres = addresses.fibres + [h ~ '=' ~ hostvars[h].celestia_mon_private_ip] %}
 {% endfor %}
+{# NAME=unit of every Fibre host, with the default of the rules' unit() macro: another host's
+   hostvars carry no role defaults, and each host may set its own celestia_mon_units. #}
+{% set units = namespace(fibres=[]) %}
+{% for h in fibre_hosts %}
+{% set units.fibres = units.fibres + [h ~ '=' ~ ((hostvars[h].celestia_mon_units | default({'appd': 'celestia-appd', 'fibre': 'fibre', 'tmkms': 'tmkms'}))['fibre'] | default('fibre'))] %}
+{% endfor %}
 roles={{ ['validator', 'backup_node', 'fibre', 'kms', 'monitor'] | select('in', group_names) | join(',') }}
 inventory_host={{ inventory_hostname }}
 signer={{ celestia_mon_signer }}
@@ -54,6 +60,8 @@ blackbox_url=http://127.0.0.1:{{ celestia_mon_ports.blackbox }}
 api_user={{ celestia_mon_api_user }}
 api_password_file={{ celestia_mon_api_password_file }}
 node_hosts={{ node_hosts | join(',') }}
+{# Checks 13, 19 and 24 read each Fibre host under its own unit name. #}
+fibre_units={{ units.fibres | join(',') }}
 {# Whether GovVoteMissing pages, as the rules have it (celestia_mon_gov_page). #}
 gov_page={{ 'true' if celestia_mon_gov_page | bool else 'false' }}
 {% endif %}

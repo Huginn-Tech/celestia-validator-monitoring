@@ -64,3 +64,31 @@ grep -Eq '^OK +10 +md RAID +md3 raid0: no redundancy' <<<"$out"
 
 run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
 if grep -Eq ' md RAID ' <<<"$out"; then echo "an md RAID line without md arrays"; exit 1; fi
+
+# What node_exporter itself reads for the disks, as hidepid on /proc leaves it: its filesystem
+# collector failed, or a read-write disk read as read-only. Silent while both read the same.
+printf 'node_scrape_collector_success{collector="filesystem"} 0\n' >"$web/metrics"
+run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+grep -Eq '^FAIL +10 +disk metrics +node_exporter.s filesystem collector fails' <<<"$out"
+printf 'node_filesystem_readonly{device="/dev/sda1",device_error="",fstype="ext4",mountpoint="/"} 1\n' >"$web/metrics"
+run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+grep -Eq '^FAIL +10 +disk metrics +/ read-write here, but node_exporter reads read-only' <<<"$out"
+printf 'node_filesystem_readonly{device="/dev/sda1",device_error="",fstype="ext4",mountpoint="/"} 0\n' >"$web/metrics"
+run bash tools/doctor.sh --config /dev/null --data-mounts / --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+if grep -Eq ' disk metrics ' <<<"$out"; then echo "a disk metrics line for a disk both read the same"; exit 1; fi
+
+# A data mount that is not mounted: df answers for the filesystem that holds the path, whose free
+# space says nothing about the disk. A real mount passes, with a trailing slash too.
+plain="$RUNNER_TEMP/not-a-mount"
+mkdir -p "$plain"
+run bash tools/doctor.sh --config /dev/null --data-mounts "$plain" --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+grep -Eq '^FAIL +10 +disk space ' <<<"$out"
+says 10 "$plain is not mounted (the path is on "
+says 10 'for a disk that is not mounted, mount it'
+if grep -qF 'data mounts need' <<<"$out"; then echo "check 10 asks for free space on a disk that is not mounted"; exit 1; fi
+mnt="$RUNNER_TEMP/a-mount"
+mkdir -p "$mnt"
+sudo mount -t tmpfs -o size=1m ci-disk "$mnt"
+run bash tools/doctor.sh --config /dev/null --data-mounts "$mnt/" --mdstat "$RUNNER_TEMP/no-mdstat" --head-wait 2
+grep -Eq '^OK +10 +disk space ' <<<"$out"
+sudo umount "$mnt"

@@ -71,6 +71,9 @@ tests:
       - series: >-
           up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
         values: '1x10'
+      - series: >-
+          up{job="prometheus",instance="127.0.0.1:9912",host="node-1",role="validator"}
+        values: '1x10'
     alert_rule_test:
       - eval_time: 0m
         alertname: Watchdog

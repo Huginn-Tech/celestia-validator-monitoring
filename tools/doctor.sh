@@ -2,7 +2,8 @@
 # celestia-mon-doctor: read-only checks for the hosts of a Celestia validator.
 #
 # It changes nothing on the host. Each check prints a line (check 12 one per group; check 10
-# also one per md RAID array; check 23 a second one for the governance votes):
+# also one per md RAID array, and one more when node_exporter misreads the disks; check 23 a
+# second one for the governance votes):
 #   OK       the check passed
 #   NOT YET  metrics that appear only after an event; the line names the event
 #   FAIL     the check failed; the line ends with the fix to apply
@@ -69,6 +70,7 @@ declare -A C=(
   [fibre_port]=""
   [fibre_otel_endpoint]="http://127.0.0.1:9915"
   [fibre_hosts]=""
+  [fibre_units]=""
   [node_hosts]=""
   [node_addresses]=""
   [fibre_addresses]=""
@@ -137,6 +139,10 @@ when --config names it.
                          active or standby; with two or more, a stopped Fibre
                          unit is a standby (default: none; on the monitor, the
                          collector targets)
+  fibre_units            comma-separated NAME=unit, the Fibre unit of each Fibre
+                         host, on the monitor: checks 13, 19 and 24 read each
+                         host under its own name (default: none, each host
+                         under fibre_unit)
   node_hosts             comma-separated inventory names of the celestia-appd
                          nodes (validator and backup nodes), on the monitor
                          (default: the celestia-app targets)
@@ -364,6 +370,27 @@ flag_value() { # argv string, flag name -> value of "--name value" or "--name=va
     esac
   done
   return 1
+}
+
+# A boolean flag takes no value of its own: bare it is true, and "--name=value" is what Go's
+# strconv.ParseBool reads there; the last one wins. flag_value cannot read one, as it takes the
+# next word for the value.
+bool_flag() { # argv string, flag name -> true or false, failing when the flag is not there
+  local -a args
+  local i out=""
+  read -r -a args <<<"$1"
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    case ${args[i]} in
+      "--$2") out=true ;;
+      "--$2="*)
+        case ${args[i]#*=} in
+          1 | t | T | TRUE | true | True) out=true ;;
+          *) out=false ;;
+        esac
+        ;;
+    esac
+  done
+  [[ -n $out ]] && printf '%s' "$out"
 }
 
 listeners() { # port -> local addresses of the TCP sockets listening on it
@@ -1031,11 +1058,12 @@ check_signer() {
 # validator key to Fibre: only the Fibre hosts may reach it, always with mTLS (the three
 # priv_validator_grpc_*_file settings, all or none, or celestia-appd refuses to start). Without
 # mTLS every account of the host can ask it for signatures, loopback being no boundary between
-# them, and celestia-appd refuses it beyond loopback unless priv_validator_grpc_allow_insecure =
-# true. celestia-app v10 serves 127.0.0.1:26669 when config.toml lacks the key (a home made
-# before v10).
+# them, and celestia-appd refuses it beyond loopback unless priv_validator_grpc_allow_insecure is
+# true, set in config.toml or by the start flag --privval-grpc-allow-insecure, so a plaintext
+# listener beyond loopback shows that it is, however it was set. celestia-app v10 serves
+# 127.0.0.1:26669 when config.toml lacks the key (a home made on v8 or earlier).
 check_signer_binds() {
-  local name="signer binds" cfg laddr g gdef="" s sev n f v note="" why="" mtls
+  local name="signer binds" cfg laddr g gdef="" s sev n f v note="" why="" mtls insecure beyond
   local -a fails=() warns=() oks=() sets=() ufws=()
   if ! node_host; then report SKIP 20 "$name" "not a validator or backup node host"; return; fi
   cfg=$NODE_HOME/config/config.toml
@@ -1077,14 +1105,33 @@ check_signer_binds() {
       "\"<private address>:${g##*:}\" (the address Fibre dials, named in the server certificate)" "the Fibre hosts" "<Fibre host address>" "$v$gdef"
     sev=$LOCK_SEV
     mtls="in $cfg, serve priv_validator_grpc_laddr with mTLS: set priv_validator_grpc_cert_file (a certificate whose SAN names the address Fibre dials), priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file (the CA that issues each Fibre's client certificate), and give each Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in its ExecStart, or signer_grpc_* in its server_config.toml); if no Fibre signs through this node, empty it instead (priv_validator_grpc_laddr = \"\")"
+    # How priv_validator_grpc_allow_insecure is on, and whether plaintext reaches beyond loopback:
+    # where it is on, by the address it would listen on; where nothing says so, by a live socket.
+    insecure=""
+    beyond=false
+    if ((n == 0)); then
+      if [[ $(bool_flag "$(unit_argv "${C[appd_unit]}")" privval-grpc-allow-insecure) == true ]]; then
+        insecure="--privval-grpc-allow-insecure in ExecStart"
+      elif [[ $(toml_get "$cfg" "" priv_validator_grpc_allow_insecure) == true ]]; then
+        insecure="priv_validator_grpc_allow_insecure = true"
+      fi
+      if [[ -n $insecure && $(lock_class "$(addr_host "${g#*://}")") != loopback ]]; then beyond=true; fi
+      while read -r f; do
+        if [[ -n $f && $(lock_class "$(addr_host "$f")") != loopback ]]; then beyond=true; fi
+      done <<<"$(listeners "${g##*:}")"
+    fi
     if ((n == 1 || n == 2)); then
       sev=FAIL
       why+=" Only $n of priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file are set, and celestia-appd refuses to start with only some of them."
       sets+=("in $cfg, set all three")
-    elif ((n == 0)) && [[ $(toml_get "$cfg" "" priv_validator_grpc_allow_insecure) == true && $(lock_class "$(addr_host "${g#*://}")") != loopback ]]; then
+    elif [[ $beyond == true ]]; then
       sev=FAIL
-      why+=" With priv_validator_grpc_allow_insecure = true and no mTLS, whoever reaches priv_validator_grpc_laddr can ask for raw-bytes signatures with the validator key, no client certificate needed."
-      sets+=("$mtls, and set priv_validator_grpc_allow_insecure = false")
+      why+=" With ${insecure:-a listener beyond loopback} and no mTLS, whoever reaches priv_validator_grpc_laddr can ask for raw-bytes signatures with the validator key, no client certificate needed."
+      case $insecure in
+        --*) sets+=("$mtls, and take --privval-grpc-allow-insecure out of ExecStart in ${C[appd_unit]}.service (priv_validator_grpc_allow_insecure = false in config.toml does not undo it), run \"systemctl daemon-reload\"") ;;
+        "") sets+=("$mtls") ;;
+        *) sets+=("$mtls, and set priv_validator_grpc_allow_insecure = false") ;;
+      esac
     elif ((n == 0)); then
       if [[ $sev != FAIL ]]; then sev=WARN; fi
       why+=" Without mTLS, every account on this host can ask priv_validator_grpc_laddr for raw-bytes signatures with the validator key, no client certificate needed: loopback is no boundary between the accounts of a host."
@@ -1451,6 +1498,16 @@ fibre_setting() { # unit, argv, config file, flag, key, default -> FS_VAL and FS
   FS_VAL=${FS_VAL:-$6}
 }
 
+# Fibre's signer_grpc_allow_insecure: the start flag, a boolean, over the key in its config file.
+signer_insecure_on() { # argv, config file -> true when it is on
+  local v
+  if v=$(bool_flag "$1" signer-grpc-allow-insecure); then
+    [[ $v == true ]]
+  else
+    [[ -r $2 && $(toml_get "$2" "" signer_grpc_allow_insecure) == true ]]
+  fi
+}
+
 # With two or more Fibre hosts (fibre_hosts), one runs Fibre and the others keep a
 # stopped standby: an inactive unit with a closed port is then expected, and the
 # monitor (check 19) tells which host is active.
@@ -1518,11 +1575,12 @@ check_fibre_service() {
 # A standby's unit must point at the local collector too, so its metrics flow the
 # moment it is promoted; the advice then never restarts (starts) a stopped unit.
 check_fibre_otel() {
-  local name="fibre otlp" unit=${C[fibre_unit]} want=${C[fibre_otel_endpoint]%/} got src="" unread="" port gport detail
+  local name="fibre otlp" unit=${C[fibre_unit]} want=${C[fibre_otel_endpoint]%/} got src="" unread="" port gport detail state
   local apply="then \"systemctl restart $unit\" at a moment you choose" standby=""
   if fibre_skip 7 "$name"; then return; fi
   if ! unit_loaded "$unit"; then report SKIP 7 "$name" "$unit.service not found (check 6)"; return; fi
-  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then
+  state=$(unit_prop "$unit" ActiveState)
+  if fibre_standby_layout && [[ $state == inactive || $state == failed ]]; then
     apply="and leave the unit stopped: it uses the new value when it next starts"
     standby="; the unit is not active (standby), so its metrics flow there once it starts"
   fi
@@ -1573,8 +1631,12 @@ check_fibre_otel() {
 # (celestia-app fibre/server_config.go). Fibre resolves a host name at every dial, and
 # without mTLS it accepts only a loopback IP literal, not "localhost", so the address
 # must be an IP: the validator's private address, or 127.0.0.1 for a signer on this
-# host. Fibre uses mTLS only when all three signer_grpc_* files are set (a flag in
-# ExecStart over the config file), and plaintext otherwise.
+# host. Fibre uses mTLS with all three signer_grpc_* files set (a flag in ExecStart over
+# the config file) and plaintext with none. It exits when it starts on only some of them,
+# and on plaintext to anything but a loopback IP while signer_grpc_allow_insecure is off
+# (fibre/server_config.go), so both fail for an active Fibre and warn for a standby, the
+# stopped or failed unit check 6 counts as one; a unit systemd keeps restarting is an active
+# Fibre that exits. Doctor not root, with the config file unread, reports neither.
 #
 # celestia-appd has one privval gRPC listener (priv_validator_grpc_laddr), mTLS or
 # plaintext. On a host with a celestia-appd node, a Fibre signer on this host (loopback, or
@@ -1590,14 +1652,15 @@ check_fibre_otel() {
 # through, or the address is mistyped.
 check_fibre_signer() {
   local name="fibre signer" unit=${C[fibre_unit]} argv addr src cfg ip apply home f v kf tls=false ncfg g gh gp target problem=""
-  local mode when loop=false port ncert kind fix via="" unknown=false
-  local -a files=()
+  local mode when loop=false port ncert kind fix mfix via="" unknown=false state rc nset=0 unread=false
+  local -a files=() absent=()
   local re4='^([0-9]{1,3}(\.[0-9]{1,3}){3}):[0-9]+$' re6='^\[([0-9A-Fa-f:.]+)\]:[0-9]+$'
   if fibre_skip 17 "$name"; then return; fi
   if ! unit_loaded "$unit"; then report SKIP 17 "$name" "$unit.service not found (check 6)"; return; fi
   apply="then restart Fibre at a moment you choose"
   when="now"
-  if [[ $(unit_prop "$unit" ActiveState) != active ]]; then
+  state=$(unit_prop "$unit" ActiveState)
+  if fibre_standby_layout && [[ $state == inactive || $state == failed ]]; then
     apply="and leave the unit stopped: it uses the new value when it next starts"
     when="once it starts"
   fi
@@ -1630,19 +1693,36 @@ check_fibre_signer() {
     return
   fi
   for f in ca cert key; do
-    if v=$(flag_value "$argv" "signer-grpc-$f-file"); then
-      if unit_expand "$unit" "$v"; then v=$EXPANDED; fi
-    elif [[ -r $cfg ]]; then
-      v=$(toml_get "$cfg" "" "signer_grpc_${f}_file")
+    rc=0
+    fibre_setting "$unit" "$argv" "$cfg" "signer-grpc-$f-file" "signer_grpc_${f}_file" "" || rc=$?
+    files+=("$FS_VAL")
+    if ((rc == 2)); then
+      unread=true
+    elif [[ -n $FS_VAL ]]; then
+      nset=$((nset + 1))
+    else
+      absent+=("signer_grpc_${f}_file")
     fi
-    files+=("$v")
   done
-  if [[ -n ${files[0]} && -n ${files[1]} && -n ${files[2]} ]]; then tls=true; fi
+  if ((nset == 3)); then tls=true; fi
   if [[ $ip == 127.* || $ip == ::1 ]]; then loop=true; fi
   port=${addr##*:}
+  mfix="serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  v=""
+  if [[ $unread == false ]] && ((nset == 1 || nset == 2)); then
+    v="$src is $addr, but only $nset of signer_grpc_ca_file, signer_grpc_cert_file and signer_grpc_key_file are set (no $(join "${absent[@]}")): Fibre exits when it starts, as they \"must be set together\". Fix: set all three (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+  elif [[ $unread == false && $tls == false && $loop == false ]] && ! signer_insecure_on "$argv" "$cfg"; then
+    v="$src is $addr, a plaintext signer beyond loopback, with signer_grpc_allow_insecure off: Fibre exits when it starts, as that \"is not localhost\". Fix: $mfix"
+  fi
+  if [[ -n $v ]]; then
+    if [[ $when == now ]]; then report FAIL 17 "$name" "$v"; else report WARN 17 "$name" "standby: $v"; fi
+    return
+  fi
   if node_host && [[ -r $NODE_HOME/config/config.toml ]] && { [[ $loop == true ]] || { [[ $tls == true ]] && host_address "$ip"; }; }; then
     ncfg=$NODE_HOME/config/config.toml
     g=$(toml_get "$ncfg" "" priv_validator_grpc_laddr)
+    # Without the key the node serves celestia-app's default, as check 20 reads it.
+    if [[ -z $g ]] && ! toml_has "$ncfg" "" priv_validator_grpc_laddr && [[ -n $(listeners 26669) ]]; then g=127.0.0.1:26669; fi
     g=${g#tcp://}
     gp=${g##*:}
     gh=${g%:*}
@@ -1709,11 +1789,11 @@ check_fibre_signer() {
   fi
   if [[ -z ${C[node_addresses]} ]]; then unknown=false; fi
   if [[ $tls == false ]]; then
-    report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: serve the node's privval gRPC with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in its config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $cfg), run \"systemctl daemon-reload\" if you changed the unit, $apply"
+    report WARN 17 "$name" "$src is $addr, a plaintext signer without mTLS: the node's privval gRPC then serves raw-bytes signatures with the validator key to whoever reaches it, every account on its host included, no client certificate needed (check 20 on that node warns too). Fix: $mfix"
   elif [[ $unknown == true ]]; then
     # doctor knows each node by its celestia_mon_private_ip only, so another address of a node of
     # the inventory (its VLAN next to its Tailscale address) lands here too and needs nothing.
-    fix="set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group and run install.sh there"
+    fix="set it to the private address of the node tmkms serves (its priv_validator_grpc_laddr: check 20 there), run \"systemctl daemon-reload\" if you changed the unit, $apply; if that node is not in the inventory, put its host in the backup_node group, copy the inventory to every box and run install.sh on each, the monitor included"
     if [[ $loop == true ]] || host_address "$ip"; then
       report WARN 17 "$name" "$src is $addr with mTLS, but this host runs no celestia-appd node of the inventory (roles: ${C[roles]}): Fibre signs through a node celestia-mon does not watch, or the address is mistyped, which fails every signature of this Fibre. Fix: $fix"
     else
@@ -1824,7 +1904,7 @@ check_fibre_app() {
     nodes=$(node_list)
     l=$(listeners "$port")
     if [[ -n $l ]]; then
-      report WARN 27 "$name" "${standby}$src is $addr, and port $port listens here (${l//$'\n'/, }), but this host is in no node group of the inventory (roles: ${C[roles]}): if a celestia-appd node runs here, nothing watches it. Fix: put this host in the backup_node group and re-run install.sh on it; or $fix to the private address of the node Fibre reads${nodes:+ ($nodes)}, $reload"
+      report WARN 27 "$name" "${standby}$src is $addr, and port $port listens here (${l//$'\n'/, }), but this host is in no node group of the inventory (roles: ${C[roles]}): if a celestia-appd node runs here, nothing watches it. Fix: put this host in the backup_node group, copy the inventory to every box and re-run install.sh on each, the monitor included; or $fix to the private address of the node Fibre reads${nodes:+ ($nodes)}, $reload"
     else
       report "$sev" 27 "$name" "${standby}$src is $addr, but this host runs no celestia-appd node and nothing listens on port $port here: $why. Fix: $fix to the private address of the node it reads, \"<that address>:9090\"${nodes:+ (the nodes of the inventory: $nodes)}, $reload; on that node set [grpc] address = \"<its private address>:9090\" in app.toml, restart celestia-appd there at a moment you choose, and let only this host reach it: \"sudo ufw allow from $(own_address) to any port 9090 proto tcp\" (check 25 there shows who reaches it)"
     fi
@@ -1863,7 +1943,7 @@ check_fibre_app() {
   elif [[ -z ${C[node_addresses]} ]]; then
     report OK 27 "$name" "$src is $addr, a node on another host (with node_addresses, which install.sh writes, doctor names it)"
   elif [[ $h =~ ^[0-9.]+$ || $h == *:* ]]; then
-    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. If it is a node outside the inventory, nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing); a mistyped address keeps Fibre from starting (check 6). Fix: if $h is another private address of one of those nodes, nothing; else put that node's host in the inventory's backup_node group and run install.sh there, or $fix to the private address of a node of the inventory, $reload"
+    report WARN 27 "$name" "$src is $addr, but no celestia-appd node of the inventory has that address ($(node_list)); doctor knows each node by its celestia_mon_private_ip only. If it is a node outside the inventory, nothing watches the node this Fibre reads, so when it stops or falls behind only Fibre's own readiness shows it (FibreNotServing); a mistyped address keeps Fibre from starting (check 6). Fix: if $h is another private address of one of those nodes, nothing; else put that node's host in the inventory's backup_node group and re-run install.sh on every box, the monitor included, with the new inventory, or $fix to the private address of a node of the inventory, $reload"
   else
     report WARN 27 "$name" "$src is $addr, a host name that names no node of the inventory ($(node_list)), and doctor resolves no name, so it cannot tell which node Fibre reads. Fix: $fix to that node's private IP address and port, $reload"
   fi
@@ -1980,10 +2060,18 @@ check_time() {
 }
 
 disk_state() { # mount point, minimum free ratio ("" = none) -> "ok TEXT" or "bad TEXT"
-  local size="" avail="" target="" opts
+  local size="" avail="" target="" opts want
   read -r size avail target < <(df -P -B1 -- "$1" 2>/dev/null | awk 'NR == 2 { print $2, $4, $6 }')
   if [[ -z $size ]]; then
     echo "bad $1 not found"
+    return
+  fi
+  # For a path that is no mount point df answers for the filesystem that holds it, which is what
+  # a disk that did not mount leaves: an empty directory, with the parent's figures.
+  want=${1%/}
+  want=${want:-/}
+  if [[ $target != "$want" ]]; then
+    echo "bad $1 is not mounted (the path is on $target)"
     return
   fi
   opts=$(awk -v t="$target" '$2 == t { o = $4 } END { print o }' /proc/self/mounts)
@@ -1997,9 +2085,39 @@ disk_state() { # mount point, minimum free ratio ("" = none) -> "ok TEXT" or "ba
   }'
 }
 
+# What node_exporter reads for the disks above, which DiskLow acts on (as check_md compares the
+# arrays). It reads PID 1's mount table, which hidepid on /proc hides from its user:
+# hidepid=invisible (2) makes it fall back to its own mount namespace, where ProtectSystem=strict
+# shows every mount read-only, so DiskLow fires on healthy disks; hidepid=noaccess (1) or
+# ptraceable (4) fails the collector, so DiskLow sees no disk while up stays 1. It is silent while
+# the exporter does not answer or exports neither.
+check_disk_export() { # mount points
+  local name="disk metrics" addr metrics m opts fix
+  local -a wrong=()
+  unit_loaded celestia-mon-node-exporter || return 0
+  addr=$(flag_value "$(unit_argv celestia-mon-node-exporter)" web.listen-address) || addr=":9100"
+  case ${addr%:*} in "" | 0.0.0.0 | "[::]") addr="127.0.0.1:${addr##*:}" ;; esac
+  metrics=$(curl -fsS -g --max-time 5 "http://$addr/metrics" 2>/dev/null) || return 0
+  opts=$(awk '$2 == "/proc" && $3 == "proc" { o = $4 } END { print o }' /proc/self/mounts)
+  fix="Fix: node_exporter's user must be able to read /proc/1 (/proc is mounted $opts): add celestia-mon-node-exporter to the group of /proc's gid= option, or drop hidepid (hidepid=ptraceable ignores gid=), in /etc/fstab too, then restart celestia-mon-node-exporter"
+  if grep -qxF 'node_scrape_collector_success{collector="filesystem"} 0' <<<"$metrics"; then
+    report FAIL 10 "$name" "node_exporter's filesystem collector fails, so DiskLow sees no disk on this host while its target stays up. $fix"
+    return
+  fi
+  for m in "$@"; do
+    if [[ -n $(awk -v m="mountpoint=\"$m\"" 'index($0, "node_filesystem_readonly{") == 1 && index($0, m) && $NF == 1' <<<"$metrics") ]] &&
+      [[ $(disk_state "$m" "") != "bad $m is read-only" ]]; then
+      wrong+=("$m")
+    fi
+  done
+  if ((${#wrong[@]} > 0)); then
+    report FAIL 10 "$name" "$(join "${wrong[@]}") read-write here, but node_exporter reads read-only, so DiskLow fires on a healthy disk. $fix"
+  fi
+}
+
 check_disks() {
   local name="disk space" min=${C[disk_min_free_ratio]} m line detail
-  local -a mounts=() ok=() bad=()
+  local -a mounts=() ok=() bad=() fix=()
   IFS=', ' read -r -a mounts <<<"${C[data_mounts]}"
   for m in "${mounts[@]}"; do
     [[ -n $m ]] || continue
@@ -2014,12 +2132,21 @@ check_disks() {
   if ((${#ok[@]} + ${#bad[@]} == 0)); then
     report SKIP 10 "$name" "no data mounts configured (celestia_mon_data_mounts or --data-mounts)"
   elif ((${#bad[@]} > 0)); then
-    detail="$(join "${bad[@]}") (data mounts need $(awk -v r="$min" 'BEGIN { printf "%.0f", r * 100 }')% free)"
+    detail=$(join "${bad[@]}")
+    if [[ $detail == *"% free ("* ]]; then
+      detail+=" (data mounts need $(awk -v r="$min" 'BEGIN { printf "%.0f", r * 100 }')% free)"
+      fix+=("free space or grow the disk")
+    fi
+    if [[ $detail == *" is read-only"* ]]; then fix+=("for a read-only disk read \"dmesg\" for I/O errors before remounting it read-write"); fi
+    if [[ $detail == *" is not mounted "* || $detail == *" not found"* ]]; then
+      fix+=("for a disk that is not mounted, mount it and read /etc/fstab and \"journalctl -b\" for why it did not mount (what wrote to the path meanwhile sits on the disk that holds it now); for a mistyped path, correct it in the inventory")
+    fi
     if ((${#ok[@]} > 0)); then detail+="; ok: $(join "${ok[@]}")"; fi
-    report FAIL 10 "$name" "$detail. Fix: free space or grow the disk; for a read-only disk read \"dmesg\" for I/O errors before remounting it read-write"
+    report FAIL 10 "$name" "$detail. Fix: $(joins '; ' "${fix[@]}")"
   else
     report OK 10 "$name" "$(join "${ok[@]}")"
   fi
+  check_disk_export "${mounts[@]}" ${C[fibre_mount]:+"${C[fibre_mount]}"}
 }
 
 # The md software RAID arrays in mdstat, one line each: "device state level need active map
@@ -2191,6 +2318,7 @@ target_fix() { # scrape job -> what to check when its target is down
     prometheus | alertmanager) printf '%s' "$1: read \"journalctl -u celestia-mon-$1 -n 100\" on this host" ;;
     signal) printf '%s' "signal: read \"systemctl status celestia-mon-signal\" and \"journalctl -u celestia-mon-signal -n 50\" on this host" ;;
     fibre_health) printf '%s' "fibre_health: read \"systemctl status celestia-mon-blackbox\" and \"journalctl -u celestia-mon-blackbox -n 50\" on this host" ;;
+    tensile | announcements) printf '%s' "$1: read \"systemctl status celestia-mon-$1\" and \"journalctl -u celestia-mon-$1 -n 50\" on this host" ;;
     *) printf '%s' "$1: run celestia-mon-doctor on that host (checks 1 and 8 show what listens where)" ;;
   esac
 }
@@ -2315,6 +2443,8 @@ metric_source() {
     prometheus_*) echo prometheus ;;
     alertmanager_*) echo alertmanager ;;
     celestia_mon_signal_* | celestia_mon_upgrade_* | celestia_mon_gov_* | celestia_mon_app_version | celestia_mon_chain_*) echo signal ;;
+    celestia_mon_tensile_* | celestia_mon_fibre_*) echo tensile ;;
+    celestia_mon_announcements_*) echo announcements ;;
     probe_*) echo fibre_health ;;
   esac
 }
@@ -2342,6 +2472,7 @@ metric_event() {
     fibre_server_upload_shard_last_success_timestamp_seconds) echo "the first accepted upload" ;;
     fibre_server_upload_shard_duration_seconds*) echo "the first upload" ;;
     fibre_server_sign_duration_seconds*) echo "the first upload that passes its checks, which Fibre then signs" ;;
+    fibre_server_store_put_duration_seconds*) echo "the first upload Fibre stores" ;;
     fibre_server_upload_shard_rejected_total) echo "the first upload refused because the storage budget is full" ;;
     node_md_disks | node_md_disks_required) echo "node_exporter finds an md software RAID array in /proc/mdstat; a host without one, or behind a hardware RAID controller, has none" ;;
     alertmanager_notifications_failed_total) echo "Alertmanager starts with a receiver of that integration" ;;
@@ -2350,17 +2481,19 @@ metric_event() {
       echo "a governance proposal in its voting period (x/gov)" ;;
     celestia_mon_fibre_last_assigned_timestamp_seconds) echo "a blob Tensile records for the validator (from a Tensile without last_assigned_at, the first since celestia-mon-tensile started)" ;;
     celestia_mon_fibre_obligations_24h) echo "Tensile's first answer with the validator's obligations" ;;
+    celestia_mon_fibre_registered) echo "Tensile lists the validator in the active set" ;;
     ALERTS) echo "the first alert that is pending or firing" ;;
   esac
 }
 
 # Sorts every metric the rules read: present (OK); not expected for this install
-# type; missing because its source is broken (FAIL: its scrape target is down, or
-# Fibre does not push); missing until an event (NOT YET); or missing although its
-# source is up (WARN: most likely a renamed metric). One line per group.
+# type; missing because its source is broken (FAIL: its scrape target is down, Fibre
+# does not push, or a collector has read nothing since it started); missing until an
+# event (NOT YET); or missing although its source is up (WARN: most likely a renamed
+# metric). One line per group.
 check_rule_metrics() {
   local name="rule metrics" prom=${C[prometheus_url]%/} pairs names present m total nmiss=0 src why ev job state pushing=false line
-  local signal_read=false gov_read=false
+  local signal_read=false gov_read=false tensile_read=false registered
   local -a missing=() rules=() notyet=() broken=() notexp=()
   local -A jobs=()
   if ! has_role monitor; then report SKIP 12 "$name" "not the monitor host"; return; fi
@@ -2393,6 +2526,14 @@ check_rule_metrics() {
   if awk -v t="$(prom_value 'max(celestia_mon_gov_last_success_timestamp_seconds)')" 'BEGIN { exit !(t + 0 > 0) }'; then
     gov_read=true
   fi
+  # So does celestia-mon-tensile: before its first good read, only its last read time (0) and
+  # errors. A validator with no endpoint registered has no check of it, and one out of the active set
+  # no registration either; with an endpoint, a missing check stays a WARN, as it leaves FibreDown's
+  # outside branch blind.
+  if awk -v t="$(prom_value 'max(celestia_mon_tensile_last_success_timestamp_seconds)')" 'BEGIN { exit !(t + 0 > 0) }'; then
+    tensile_read=true
+  fi
+  registered=$(prom_value 'max(celestia_mon_fibre_registered)')
   while read -r m; do
     nmiss=$((nmiss + 1))
     if ! metric_expected "$m"; then
@@ -2411,8 +2552,18 @@ check_rule_metrics() {
       why="celestia-mon-signal has read no RPC since it started: check 23"
     elif [[ $m == celestia_mon_gov_* && $gov_read != true ]]; then
       why="celestia-mon-signal has read no governance proposals since it started: check 23"
+    elif [[ $src == tensile && $tensile_read != true ]]; then
+      why="celestia-mon-tensile has read no status from Tensile since it started: journalctl -u celestia-mon-tensile"
     fi
     ev=$(metric_event "$m")
+    if [[ $m == celestia_mon_fibre_reachable || $m == celestia_mon_fibre_last_check_timestamp_seconds ]]; then
+      # Out of the active set Tensile lists no host, and celestia-mon-tensile serves no registration.
+      if [[ $registered == 0 ]]; then
+        ev="a Fibre host registered on chain (x/valaddr)"
+      elif [[ -z $registered ]]; then
+        ev="Tensile lists the validator in the active set"
+      fi
+    fi
     if [[ -n $why ]]; then
       broken+=("$m ($why)")
     elif [[ -n $ev ]]; then
@@ -2448,13 +2599,23 @@ check_rule_metrics() {
 # the inventory: FIBRE_STATE[<host>] is active when the Fibre unit is active there, and
 # standby when it is not, or when node_exporter answers but lists no such unit (it lists
 # loaded units only, and systemd unloads a stopped unit that nothing references, such as a
-# disabled standby). Hosts whose node_exporter is down have no entry.
+# disabled standby). Hosts whose node_exporter is down have no entry. Each host is read under its
+# own unit name, from fibre_units, which install.sh writes on the monitor from each host's
+# celestia_mon_units (a host exports its own name only); without that list, every host under
+# fibre_unit.
 declare -A FIBRE_STATE=()
 fibre_states() {
-  local h v
+  local h u v
   local -A act=() up=()
   FIBRE_STATE=()
-  while read -r h v; do act[$h]=$v; done < <(prom_vector "max by (host) (node_systemd_unit_state{job=\"node\",name=\"${C[fibre_unit]}.service\",state=\"active\"})" host)
+  if [[ -n ${C[fibre_units]} ]]; then
+    while read -r h u; do
+      v=$(prom_value "max(node_systemd_unit_state{job=\"node\",host=\"$h\",name=\"$u.service\",state=\"active\"})")
+      if [[ -n $v ]]; then act[$h]=$v; fi
+    done < <(addr_pairs "${C[fibre_units]}")
+  else
+    while read -r h v; do act[$h]=$v; done < <(prom_vector "max by (host) (node_systemd_unit_state{job=\"node\",name=\"${C[fibre_unit]}.service\",state=\"active\"})" host)
+  fi
   while read -r h v; do up[$h]=$v; done < <(prom_vector 'max by (host) (up{job="node"})' host)
   for h in "${!act[@]}" "${!up[@]}"; do
     if [[ ${act[$h]:-} == 1 ]]; then
@@ -2464,16 +2625,52 @@ fibre_states() {
     fi
   done
 }
+fibre_unit_of() { # inventory host -> its Fibre unit without .service
+  local n u
+  while read -r n u; do
+    if [[ $n == "$1" ]]; then
+      printf '%s' "$u"
+      return
+    fi
+  done < <(addr_pairs "${C[fibre_units]}")
+  printf '%s' "${C[fibre_unit]}"
+}
+fibre_unit_word() { # hosts -> their one Fibre unit, for a command in a fix, or a placeholder where their names differ
+  local h u one=""
+  for h in "$@"; do
+    [[ -n $h ]] || continue
+    u=$(fibre_unit_of "$h")
+    if [[ -n $one && $u != "$one" ]]; then
+      printf '%s' "<that host's Fibre unit>"
+      return
+    fi
+    one=$u
+  done
+  printf '%s' "${one:-${C[fibre_unit]}}"
+}
+fibre_unit_names() { # hosts -> "unit.service", or "host: unit.service" for each where their names differ
+  local h w out=""
+  w=$(fibre_unit_word "$@")
+  if [[ $w != "<"* ]]; then
+    printf '%s.service' "$w"
+    return
+  fi
+  for h in "$@"; do
+    if [[ -n $h ]]; then out+="${out:+, }$h: $(fibre_unit_of "$h").service"; fi
+  done
+  printf '%s' "$out"
+}
 
-# Fibre's metrics end to end, on the monitor: from each Fibre host, Prometheus must
-# have a sample under 3 minutes old of both storage gauges, which Fibre reports from
-# its first push on. The collector takes OTLP only on 127.0.0.1 at
-# celestia_mon_ports.otelcol_otlp, so fresh series with host=<Fibre host> show that
-# Fibre on that host sends to that port, not just that the port is open. A standby
-# (its Fibre unit not active) sends nothing, but its collector must be up, so its
-# metrics flow the moment it is promoted.
+# Fibre's metrics end to end, on the monitor: from each Fibre host, Prometheus must have
+# both storage gauges, which Fibre reports from its first push on. The collector keeps a
+# series for 5 minutes after Fibre's last push, and each scrape stamps it as new, so the series
+# being there says that Fibre pushed in those 5 minutes, not how long ago. The collector takes
+# OTLP only on 127.0.0.1 at celestia_mon_ports.otelcol_otlp, so series with host=<Fibre host>
+# show that Fibre on that host sends to that port, not just that the port is open. A standby
+# (its Fibre unit not active) sends nothing, but its collector must be up, so its metrics flow
+# the moment it is promoted.
 check_fibre_pipeline() {
-  local name="fibre pipeline" ep=${C[fibre_otel_endpoint]%/} unit=${C[fibre_unit]} h v detail fix sb=""
+  local name="fibre pipeline" ep=${C[fibre_otel_endpoint]%/} h v detail fix sb="" unit
   local -a hosts=() ok=() bad=() nopush=() standby=()
   local -A ups=() budget=() occupancy=()
   if ! has_role monitor; then report SKIP 13 "$name" "not the monitor host"; return; fi
@@ -2500,7 +2697,7 @@ check_fibre_pipeline() {
       [[ $v =~ ^[0-9]+$ ]] || v=0
     fi
     if [[ -n $v ]] && ((v <= 180)); then
-      ok+=("$h (newest sample ${v}s old)")
+      ok+=("$h")
     elif [[ ${FIBRE_STATE[$h]:-} == standby ]]; then
       standby+=("$h")
     elif [[ -z $v ]]; then
@@ -2523,13 +2720,18 @@ check_fibre_pipeline() {
     fix="the step named with each host"
     if ((${#nopush[@]} > 0)); then
       ep=${ep:-http://127.0.0.1:<otlp port>}
-      fix="on $(join "${nopush[@]}"), add \"--otel-endpoint $ep\" to ExecStart in $unit.service (or Environment=FIBRE_OTEL_ENDPOINT=$ep), run \"systemctl daemon-reload\", then \"systemctl restart $unit\" at a moment you choose; celestia-mon-doctor on that host (check 7) shows what the unit sets now"
+      fix=""
+      for h in "${nopush[@]}"; do
+        unit=$(fibre_unit_of "$h")
+        fix+="${fix:+; }on $h, add \"--otel-endpoint $ep\" to ExecStart in $unit.service (or Environment=FIBRE_OTEL_ENDPOINT=$ep), run \"systemctl daemon-reload\", then \"systemctl restart $unit\" at a moment you choose"
+      done
+      fix+="; celestia-mon-doctor on that host (check 7) shows what the unit sets now"
     fi
     report FAIL 13 "$name" "$detail. Fix: $fix"
   elif ((${#ok[@]} == 0)); then
     report SKIP 13 "$name" "no Fibre unit is active, so no Fibre metrics are expected (check 19)$sb"
   else
-    report OK 13 "$name" "Prometheus has fresh Fibre metrics from $(join "${ok[@]}"); the collector takes OTLP only on 127.0.0.1:$(url_port "$ep"), so Fibre's endpoint matches it$sb"
+    report OK 13 "$name" "Prometheus has Fibre's series from $(join "${ok[@]}") through the collector; it takes OTLP only on 127.0.0.1:$(url_port "$ep"), so Fibre's endpoint matches it$sb"
   fi
 }
 
@@ -2600,7 +2802,7 @@ check_node_lag() {
 # must be. None active is what the FibreDown alert pages for; two break the
 # active-passive rule (two Fibre instances must never be live at the same time).
 check_fibre_active() {
-  local name="fibre active" unit=${C[fibre_unit]} h extra=""
+  local name="fibre active" unit h extra=""
   local -a hosts=() on=() off=() unknown=()
   if ! has_role monitor; then report SKIP 19 "$name" "not the monitor host"; return; fi
   if ! fibre_on; then report SKIP 19 "$name" "Fibre is disabled"; return; fi
@@ -2623,9 +2825,11 @@ check_fibre_active() {
   elif ((${#on[@]} + ${#off[@]} == 0)); then
     report FAIL 19 "$name" "cannot tell which Fibre host is active${extra}. Fix: apply check 11's fix for those node_exporter targets"
   elif ((${#on[@]} == 0)); then
-    report FAIL 19 "$name" "no Fibre unit ($unit.service) is active on any Fibre host${extra}; the FibreDown alert pages after 10 minutes. Fix: start Fibre on one Fibre host (read \"journalctl -u $unit -n 100\" there, then \"systemctl start $unit\"), and if x/valaddr registers another host, point it at the one you started: $(set_host_fix "<its public host:port>") (check 5 on the validator shows the registration)"
+    unit=$(fibre_unit_word "${hosts[@]}")
+    report FAIL 19 "$name" "no Fibre unit ($(fibre_unit_names "${hosts[@]}")) is active on any Fibre host${extra}; the FibreDown alert pages after 10 minutes. Fix: start Fibre on one Fibre host (read \"journalctl -u $unit -n 100\" there, then \"systemctl start $unit\"), and if x/valaddr registers another host, point it at the one you started: $(set_host_fix "<its public host:port>") (check 5 on the validator shows the registration)"
   elif ((${#on[@]} > 1)); then
-    report WARN 19 "$name" "Fibre is active on $(join "${on[@]}")${extra}: two Fibre instances must never be live at the same time. Fix: stop Fibre (\"systemctl stop $unit\") on every host but the one x/valaddr registers (check 5 on the validator shows it)"
+    unit=$(fibre_unit_word "${on[@]}")
+    report WARN 19 "$name" "Fibre is active on $(join "${on[@]}") ($(fibre_unit_names "${on[@]}"))${extra}: two Fibre instances must never be live at the same time. Fix: stop Fibre (\"systemctl stop $unit\") on every host but the one x/valaddr registers (check 5 on the validator shows it)"
   else
     report OK 19 "$name" "Fibre is active on ${on[0]}${extra}"
   fi
@@ -2736,27 +2940,29 @@ matcher_admits() { # operator, pattern, label value -> true when the matcher mat
 # matcher on alertname reads the rule's name, and one on a label the rule sets (severity, and a
 # reason or check where it has one) reads that label's value. An alert also carries the labels its
 # annotations read, whose values are not known here: it counts when the silence names alertname or
-# severity, and its matchers on those labels are not read. One that reads host comes from a host's
-# series and carries the other labels of its metrics too, so none of its matchers on a label the
-# rule does not set is read: a host silence for planned work is listed only when it runs long. Each
-# other matcher must match an absent label: a silence for one host does not hold back a page that
-# names no host, such as FibreDown's, whose alerts carry at most the endpoint. Each alert is listed
-# once, at its first rule held back.
+# a label the rule sets, and its matchers on those labels are not read. One that reads host comes
+# from a host's series and carries the other labels of its metrics too, so none of its matchers on
+# a label the rule does not set is read: a host silence for planned work is listed only when it
+# runs long. Each other matcher must match an absent label: a silence for one host does not hold
+# back a page that names no host, such as FibreDown's, whose alerts carry at most the endpoint.
+# Each alert is listed once, at its first rule held back.
 silence_pages() { # matchers as silences_active prints them -> page alert names, comma-separated
   local -a ms=() kv=()
   local -A lab=() reads=() listed=()
-  local r a l rd m n o v hit named=false out=""
+  local r a l rd m n o v hit named out=""
   IFS=$'\036' read -r -a ms <<<"$1"
-  for m in "${ms[@]}"; do
-    n=${m%%$'\037'*}
-    if [[ $n == alertname || $n == severity ]]; then named=true; fi
-  done
   for r in "${PAGE_RULES[@]}"; do
     IFS=$'\034' read -r a l rd <<<"$r"
-    if [[ -n ${listed[$a]+set} || (-n $rd && $named == false) ]]; then continue; fi
+    if [[ -n ${listed[$a]+set} ]]; then continue; fi
     lab=()
     IFS=$'\036' read -r -a kv <<<"$l"
     for m in "${kv[@]}"; do lab[${m%%$'\037'*}]=${m#*$'\037'}; done
+    named=false
+    for m in "${ms[@]}"; do
+      n=${m%%$'\037'*}
+      if [[ $n == alertname || -n ${lab[$n]+set} ]]; then named=true; fi
+    done
+    if [[ -n $rd && $named == false ]]; then continue; fi
     reads=()
     IFS=$'\036' read -r -a kv <<<"$rd"
     for m in "${kv[@]}"; do reads[$m]=1; done
@@ -2840,7 +3046,7 @@ check_silences() {
   elif ((${#other[@]} > 0)) && [[ -n $unread ]]; then
     report SKIP 21 "$name" "${#other[@]} active silences, none ending more than 4 hours from now; which page alerts they hold back is not known: $unread: $(join "${other[@]}")"
   elif ((${#other[@]} > 0)); then
-    report OK 21 "$name" "${#other[@]} active silences, none on a page alert or ending more than 4 hours from now: $(join "${other[@]}")"
+    report OK 21 "$name" "${#other[@]} active silences, none naming a page alert or ending more than 4 hours from now (a silence for one host counts by its length only): $(join "${other[@]}")"
   else
     report OK 21 "$name" "no active silence"
   fi
@@ -2853,19 +3059,19 @@ num() { awk -v v="$1" 'BEGIN { printf "%.0f", v }'; }
 # series at start). While the Watchdog fires, the dead-man receiver sends every 1-2 minutes,
 # so it must have sent in the last 10 minutes, and none of those sends may have failed.
 check_deadman() {
-  local name="dead-man" sent failed age
+  local name="dead-man" sent sendfails age
   if ! has_role monitor; then report SKIP 22 "$name" "not the monitor host"; return; fi
   if ((!PROM_OK)); then report SKIP 22 "$name" "Prometheus not answering (check 11)"; return; fi
   if [[ $(prom_value 'max(up{job="alertmanager"})') != 1 ]]; then
-    report SKIP 22 "$name" "Prometheus has no Alertmanager target that is up (check 11)"
+    report SKIP 22 "$name" "Prometheus has no Alertmanager target that is up (check 11), or has stored nothing for 5 minutes (a full or read-only disk: df -h /var/lib/celestia-mon/prometheus)"
     return
   fi
   sent=$(prom_value 'sum(increase(alertmanager_notifications_total{job="alertmanager",receiver_name="deadman"}[10m]))')
-  failed=$(prom_value 'sum(increase(alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"}[10m]))')
+  sendfails=$(prom_value 'sum(increase(alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"}[10m]))')
   if [[ -z $sent ]]; then
     report WARN 22 "$name" "Prometheus has no notification metrics of Alertmanager's dead-man receiver (alertmanager_notifications_total{receiver_name=\"deadman\"}), so doctor cannot tell whether heartbeats go out. Fix: re-run install.sh on this host: it writes the dead-man receiver from celestia_mon_deadman_webhook_url and starts Alertmanager with --enable-feature=receiver-name-in-metrics"
-  elif awk -v f="$failed" 'BEGIN { exit !(f + 0 > 0) }'; then
-    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$failed") of $(num "$sent"); DeadmanFailing sends a message too). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault and that this host reaches the service, then re-run install.sh on this host"
+  elif awk -v f="$sendfails" 'BEGIN { exit !(f + 0 > 0) }'; then
+    report FAIL 22 "$name" "heartbeats to the dead-man service failed in the last 10 minutes (about $(num "$sendfails") of $(num "$sent"); DeadmanFailing sends a message from the third in 15 minutes). Until one gets through, the dead-man service cannot tell you that monitoring is down. Fix: read the error in \"journalctl -u celestia-mon-alertmanager -n 100\", check celestia_mon_deadman_webhook_url in the monitor's secrets (sudo ./install.sh --edit-secrets) or its vault and that this host reaches the service, then re-run install.sh on this host"
   elif awk -v s="$sent" 'BEGIN { exit !(s + 0 > 0) }'; then
     report OK 22 "$name" "about $(num "$sent") heartbeats sent to the dead-man service in the last 10 minutes, none failed"
   else
@@ -2874,7 +3080,7 @@ check_deadman() {
     if [[ $age =~ ^[0-9]+$ ]] && ((age < 600)); then
       report "NOT YET" 22 "$name" "no heartbeat sent yet: Prometheus or Alertmanager started ${age}s ago; the first heartbeat follows the Watchdog's first evaluation, then one every 1-2 minutes"
     else
-      report WARN 22 "$name" "no heartbeat sent to the dead-man service in the last 10 minutes, so it alerts you once its period runs out: the Watchdog stops for an hour after a page or message notification failed (NotificationsFailing), or it does not reach the dead-man receiver. Fix: look for Watchdog and NotificationsFailing on Prometheus's alerts page (${C[prometheus_url]%/}/alerts, through an SSH tunnel), and read \"journalctl -u celestia-mon-alertmanager -n 100\""
+      report WARN 22 "$name" "no heartbeat sent to the dead-man service in the last 10 minutes, so it alerts you once its period runs out: the Watchdog stops for an hour after a page or message notification failed (NotificationsFailing), and when Prometheus cannot store what it scrapes (a full or read-only disk: df -h /var/lib/celestia-mon/prometheus), or it does not reach the dead-man receiver. Fix: look for Watchdog and NotificationsFailing on Prometheus's alerts page (${C[prometheus_url]%/}/alerts, through an SSH tunnel), and read \"journalctl -u celestia-mon-alertmanager -n 100\""
     fi
   fi
 }
@@ -2891,9 +3097,10 @@ signal_first_rpc() { # the first RPC in celestia-mon-signal's settings as the se
 # "signal", there only with celestia_mon_signal set). A full read takes the RPC's /abci_info, the
 # x/signal queries and the validator's entry in the signal store, and the service starts only
 # with an operator address that decodes to 20 bytes, so a recent read shows the whole path works.
-# WARN while validators signal the next version and this validator has not (UpgradeSignalMissing),
-# and while the reading comes from another RPC than the first one listed (a node of your own that
-# the monitor cannot reach leaves the page to a public RPC unnoticed).
+# WARN while validators signal the next version and this validator has not (UpgradeSignalMissing:
+# a message, then a page once more than 1/3 of the voting power has signalled it), and while the
+# reading comes from another RPC than the first one listed (a node of your own that the monitor
+# cannot reach leaves the page to a public RPC unnoticed).
 check_signal() {
   local name="upgrade signal" up last errs rpc first app next tally thr total own pend ver height eta line when warn=""
   if ! has_role monitor; then report SKIP 23 "$name" "not the monitor host"; return; fi
@@ -2950,7 +3157,7 @@ check_signal() {
     warn+=" The reading comes from $rpc, not from the first RPC listed, $first, so the upgrade alerts depend on a later one. Fix: \"journalctl -u celestia-mon-signal -n 50\" on this host names why $first fails: a node RPC that listens on 127.0.0.1 only (laddr in the [rpc] section of the node's config.toml), a firewall or tailnet policy between this host and that port, or a node that is down or catching up."
   fi
   if [[ $pend != 1 && ${own:-0} != "${next:-}" ]] && awk -v t="${tally:-0}" 'BEGIN { exit !(t + 0 > 0) }'; then
-    warn+=" Validators signal v$next and your validator has not signalled it (UpgradeSignalMissing pages after 10 minutes). Fix: upgrade celestia-appd on every node to a release that supports v$next, then celestia-appd tx signal signal $next --from <validator account key> (docs/alerts.md, UpgradeSignalMissing)."
+    warn+=" Validators signal v$next and your validator has not signalled it (UpgradeSignalMissing sends a message after 10 minutes, and pages 10 minutes after more than 1/3 of the voting power has signalled it). Fix: upgrade celestia-appd on every node to a release that supports v$next, then celestia-appd tx signal signal $next --from <validator account key> (docs/alerts.md, UpgradeSignalMissing)."
   fi
   if [[ -n $warn ]]; then
     report WARN 23 "$name" "$line.${warn%.}"
@@ -3037,7 +3244,7 @@ probe_metric() { # blackbox /probe reply, series as blackbox prints it -> its va
 # and a standby's port is closed. doctor asks celestia-mon-blackbox for each target of the scrape
 # job fibre_health, as Prometheus does, and reads the answer now.
 check_fibre_ready() {
-  local name="fibre ready" bburl=${C[blackbox_url]%/} unit=${C[fibre_unit]} h addr line code out st why fix detail
+  local name="fibre ready" bburl=${C[blackbox_url]%/} h addr line code out st why fix detail
   local re_host='"host":"([^"]*)"' re_instance='"instance":"([^"]*)"'
   local -a hosts=() ready=() notready=() noans=() notrep=() standby=() bberr=() parts=() nr=()
   local -A addr_of=()
@@ -3105,7 +3312,9 @@ check_fibre_ready() {
   detail=$(printf '%s; ' "${parts[@]}")
   detail=${detail%; }
   if ((${#notready[@]} > 0)); then
-    report FAIL 24 "$name" "$detail. Fix: on $(join "${nr[@]}"), \"journalctl -u $unit | grep 'health check failed' | tail -n 5\" names the failing check (app, fibre_module, signer, validator, registration or store) and what to do about it; Fibre turns Ready again by itself once that check passes"
+    fix=""
+    for h in "${nr[@]}"; do fix+="${fix:+; }on $h, \"journalctl -u $(fibre_unit_of "$h") | grep 'health check failed' | tail -n 5\""; done
+    report FAIL 24 "$name" "$detail. Fix: $fix names the failing check (app, fibre_module, signer, validator, registration or store) and what to do about it; Fibre turns Ready again by itself once that check passes"
   elif ((${#noans[@]} + ${#notrep[@]} > 0)); then
     fix=""
     if ((${#noans[@]} > 0)); then
@@ -3210,7 +3419,7 @@ mount_of() { # path -> the mount point that holds it (of its nearest existing pa
 survey() {
   local me appd fibre tmkms also cfg="" app="" laddr="" power role="" why="" prom mladdr mhost mport=26660 ns bind g
   local fargv fhome fcfg fstate="" fapply fport="" fmount="" aaddr="" ah aport saddr="" stls="without mTLS" otel want
-  local ip note kind ifc single=false m mon rc n f v where
+  local ip note kind ifc single=false m mon rc n f v where sfiles=0 sread=true mfix
   local -a cands=() mounts=() groups=() steps=() entry=() others=()
   SURVEY_UNITS=$(survey_units)
   appd=$(survey_pick appd "${C[appd_unit]}")
@@ -3274,13 +3483,14 @@ survey() {
     if fibre_setting "$fibre" "$fargv" "$fcfg" server-listen-address server_listen_address 0.0.0.0:7980; then fport=${FS_VAL##*:}; fi
     if fibre_setting "$fibre" "$fargv" "$fcfg" app-grpc-address app_grpc_address 127.0.0.1:9090; then aaddr=$FS_VAL; fi
     if fibre_setting "$fibre" "$fargv" "$fcfg" signer-grpc-address signer_grpc_address 127.0.0.1:26669; then saddr=$FS_VAL; fi
-    n=0
     for f in ca cert key; do
       rc=0
       fibre_setting "$fibre" "$fargv" "$fcfg" "signer-grpc-$f-file" "signer_grpc_${f}_file" "" || rc=$?
-      if ((rc < 2)) && [[ -n $FS_VAL ]]; then n=$((n + 1)); fi
+      if ((rc == 2)); then sread=false; fi
+      if ((rc < 2)) && [[ -n $FS_VAL ]]; then sfiles=$((sfiles + 1)); fi
     done
-    if ((n == 3)); then stls=mTLS; fi
+    if ((sfiles == 3)); then stls=mTLS; fi
+    if [[ $sread == true ]] && ((sfiles == 1 || sfiles == 2)); then stls="$sfiles of its 3 mTLS files"; fi
     want=${C[fibre_otel_endpoint]%/}
     otel=""
     if otel=$(flag_value "$fargv" otel-endpoint); then
@@ -3373,7 +3583,8 @@ survey() {
     elif [[ $mhost != "$ip" && ! ($mhost == localhost && $ip == 127.0.0.1) ]]; then
       steps+=("The node's metrics listen on $mhost, not on $ip, the address of this entry: set prometheus_listen_addr = \"$bind\" under [instrumentation] in $cfg (or celestia_mon_private_ip to $mhost, if the monitor reaches this box there), then restart celestia-appd at a moment you choose")
     fi
-    if [[ -n $ns && $ns != cometbft ]]; then
+    # Prometheus renames celestia_ metrics to cometbft_ at the scrape, so that namespace works too.
+    if [[ -n $ns && $ns != cometbft && $ns != celestia ]]; then
       steps+=("Set namespace = \"cometbft\" under [instrumentation] in $cfg (it is \"$ns\"), then restart celestia-appd at a moment you choose: the alerts read the cometbft_ metrics")
     fi
   fi
@@ -3404,8 +3615,16 @@ survey() {
       steps+=("Fibre reads the chain at $aaddr, a node on another box. On that box, [grpc] address in app.toml must be \"$(host_port "$ah" "$aport")\" (then restart celestia-appd there at a moment you choose), and only this box may reach that port: \"sudo ufw allow from $ip to any port $aport proto tcp\"")
     fi
   fi
-  if [[ -n $saddr && $stls != mTLS ]]; then
-    steps+=("Fibre signs through $saddr without mTLS, so the node's privval gRPC serves signatures with the validator key to whoever reaches it, every account on its box included: serve it with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in that node's config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $fcfg), $fapply")
+  if [[ -n $saddr ]]; then
+    mfix="serve it with mTLS (priv_validator_grpc_cert_file, priv_validator_grpc_key_file and priv_validator_grpc_client_ca_file in that node's config.toml, then restart celestia-appd at a moment you choose, with tmkms running) and give this Fibre a client certificate from that CA (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $fcfg), $fapply"
+    v=$(host_of "$saddr")
+    if [[ $sread == true ]] && ((sfiles == 1 || sfiles == 2)); then
+      steps+=("Fibre sets only $sfiles of signer_grpc_ca_file, signer_grpc_cert_file and signer_grpc_key_file, so it exits when it starts: they must be set together. Set all three (--signer-grpc-ca-file, --signer-grpc-cert-file and --signer-grpc-key-file in ExecStart, or signer_grpc_* in $fcfg), $fapply")
+    elif [[ $stls != mTLS && $sread == true && $v != 127.* && $v != ::1 ]] && ! signer_insecure_on "$fargv" "$fcfg"; then
+      steps+=("Fibre signs through $saddr without mTLS and without signer_grpc_allow_insecure, so it exits when it starts: plaintext goes to a loopback IP only. For that node's privval gRPC, $mfix")
+    elif [[ $stls != mTLS ]]; then
+      steps+=("Fibre signs through $saddr without mTLS, so the node's privval gRPC serves signatures with the validator key to whoever reaches it, every account on its box included: $mfix")
+    fi
   fi
   # A node without a Fibre of its own may be the one a Fibre on another box reads.
   if [[ -n $appd && -z $fibre && -r $app && $ip != 127.0.0.1 && $(toml_get "$app" grpc enable) != false ]]; then

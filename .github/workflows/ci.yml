@@ -382,16 +382,19 @@ jobs:
           jq -e '.signal_enabled and (.gov_enabled | not) and (.gov_page | not)' build/nogov/dashboard-config.json
           python tools/ci/check_render.py votes build/mocha/rules/celestia-mon.rules.yml build/nogov/rules/celestia-mon.rules.yml
       # The split example rendered once more with celestia_mon_signer_multi_node (tmkms signs through
-      # several nodes on purpose) into build/multi: no ValidatorSigningTwice, which pages without it.
-      # doctor's check 21 counts the page rules Prometheus has loaded, so the rules decide that alone.
-      - name: No ValidatorSigningTwice where tmkms signs through several nodes
+      # several nodes on purpose) into tests/multi, whose rule tests run there, and build/multi: no
+      # ValidatorSigningTwice, which pages without it, and RemoteSignerProblem reports failed proposals
+      # only when no node got one signed in 6 hours (tests/multi). doctor's check 21 counts the page
+      # rules Prometheus has loaded, so the rules decide that alone.
+      - name: The rules where tmkms signs through several nodes
         id: multi-node
         run: |
           set -euo pipefail
           ansible-playbook -i ansible/inventory/example-split tools/ci/render.yml -e celestia_mon_ci_scenario=split \
-            -e "celestia_mon_ci_tests=$PWD/build/multi/tests" -e "celestia_mon_ci_build=$PWD/build/multi" \
+            -e "celestia_mon_ci_tests=$PWD/monitoring/rules/tests/multi" -e "celestia_mon_ci_build=$PWD/build/multi" \
             -e celestia_mon_signer_multi_node=true
           promtool check rules --lint=none build/multi/rules/celestia-mon.rules.yml
+          promtool test rules monitoring/rules/tests/multi/*.test.yml
           jq -e '.signer_multi_node' build/multi/dashboard-config.json
           python tools/ci/check_render.py twice monitoring/rules/tests/split/celestia-mon.rules.yml build/multi/rules/celestia-mon.rules.yml
       # Unit names of a host's own (celestia_mon_units in its inventory entry): the fibre-apart example
@@ -504,8 +507,8 @@ jobs:
       # (page -> PagerDuty and every other receiver, message -> every receiver but PagerDuty,
       # DeadmanFailing and SignaturesMissed -> message, NodePeersLow by its severity, Watchdog ->
       # deadman, UpgradeScheduled and UpgradeSoon -> message on a route of their own that sends each
-      # once, UpgradeSignalMissing -> page, GovVoteMissing by its severity on a route of its own that
-      # sends each once per proposal), the inhibitions of one cause, and checks that the receiver
+      # once, UpgradeSignalMissing by its severity, GovVoteMissing by its severity on a route of its own
+      # that sends each once per proposal), the inhibitions of one cause, and checks that the receiver
       # check refuses a PagerDuty-only list and the old page/message lists.
       - name: amtool accepts every receiver type, and routing follows the type
         id: routing
@@ -537,6 +540,7 @@ jobs:
           amtool config routes test --config.file="$am" --verify.receivers=announcement-message \
             alertname=CelestiaAnnouncement severity=message host=mon-1 source=ci announcement=1
           amtool config routes test --config.file="$am" --verify.receivers=page alertname=UpgradeSignalMissing severity=page
+          amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeSignalMissing severity=message
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeScheduled severity=message
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=UpgradeSoon severity=message
           amtool config routes test --config.file="$am" --verify.receivers=message alertname=SignalUnreadable severity=message host=mon-1
@@ -739,10 +743,11 @@ jobs:
       - name: Panels match the switches
         id: panels-switches
         run: bash tools/ci/dashboard/panels.sh
-      # SignaturesMissed is max(A > on (host) R * B): A the blocks each node counted as missed in the last
-      # hour, B the blocks it committed in that hour, R the share. The Validator tile holds the whole
-      # comparison, and Missed blocks (the fact and the chart) draws A over B with its level at R, so
-      # neither side can change alone.
+      # SignaturesMissed is max(A > on (host) R * B unless on (host) C): A the blocks each node counted as
+      # missed in the last hour, B the blocks it committed in that hour, R the share, C the nodes more than
+      # node_behind_blocks behind the highest. The Validator tile holds the whole comparison, and Missed
+      # blocks (the fact and the chart) draws A over B, leaving out C, with its level at R, so neither side
+      # can change alone.
       - name: Missed blocks read the SignaturesMissed rule
         id: missed-blocks
         run: python tools/ci/check_dashboard.py missed-blocks
@@ -778,6 +783,13 @@ jobs:
       - name: Restarts draw the crash-loop rule
         id: restarts
         run: python tools/ci/check_dashboard.py restarts
+      # The first screen repeats rules and inhibitions that nothing else ties to it: the Fibre tile reads
+      # the crash loop ahead of the reasons it holds back, the Servers tile and History's server lines read
+      # red before amber, the Status cell folds a page only into a firing cause, and the wrong_host gate and
+      # UpgradeSignalMissing's two rules show on their tiles, so neither side can change alone.
+      - name: The first screen mirrors the rules and the inhibitions
+        id: first-screen
+        run: python tools/ci/check_dashboard.py first-screen
       - name: Wait for Prometheus
         run: curl -fsS --retry 30 --retry-connrefused --retry-delay 2 http://127.0.0.1:9090/-/ready
       # The stub series, served on loopback; the check waits until a minute step of Prometheus holds
@@ -825,13 +837,20 @@ jobs:
   # points at a static metrics file served on 127.0.0.1:19910. An array missing a disk fails, one
   # rebuilding warns, a check or a delayed resync is fine, an old half mirror started read-only fails
   # with its own fix, an array node_exporter does not export fails, an inactive one is INFO, and a
-  # host without md arrays gets no md line.
+  # host without md arrays gets no md line. The same stand-in reads the disks wrongly (a failed
+  # filesystem collector, a read-write disk read as read-only: FAIL 10), and a data mount that is
+  # not mounted fails too, where a tmpfs passes.
   # signer: doctor's signing-path checks on the runner, with stand-ins: an enabled standby Fibre unit
   # (WARN 6) whose plaintext signer warns even on loopback (WARN 17), a standby whose plaintext
   # loopback signer cannot reach the validator node's mTLS privval gRPC on a private address
   # (WARN 17) next to a privval port on every interface with no firewall active (FAIL 20), and a
   # backup node whose /status (a static file served on 127.0.0.1:26657) gives its local key
-  # voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points.
+  # voting power (FAIL 2) or none (INFO 2), read where its [rpc] laddr points. Then a plaintext privval
+  # gRPC beyond loopback (the start flag anywhere in ExecStart, the setting in config.toml, a listener
+  # doctor sees: FAIL 20; on loopback WARN 20), the signer settings Fibre exits on (some of the three
+  # files; plaintext to another host with signer_grpc_allow_insecure off, the flag over the file:
+  # FAIL 17, WARN on a standby), and a config.toml without priv_validator_grpc_laddr, whose default
+  # check 17 reads while something listens there.
   # ports: doctor's port checks on the runner (1, 20, 25 and 26), which read where each port listens and
   # ufw's rules and never connect to the ports. python http.server stands in where a node would
   # listen: its metrics and the app gRPC on every interface, priv_validator_laddr on a private
@@ -850,11 +869,13 @@ jobs:
   # node's [grpc] address must take the dial (OK 27; FAIL 27 on another address or with enable =
   # false). Check 17 names the node Fibre signs through and warns on an address that is none, and
   # check 25 names, in its ufw command for the app gRPC, the Fibre hosts without a node of their own.
+  # A unit that systemd keeps restarting is no standby for checks 7 and 17 either.
   # survey: doctor --survey on stand-ins, one after the other: a Fibre host that reads a node on
   # another host (a dummy interface, and a WireGuard one where the runner has the module), one box
   # with a node and Fibre on loopback, a backup node under cosmovisor, the KMS host, and a host that
   # runs none of them, not as root. It finds each unit by its binary and prints the groups, the entry
-  # for hosts.yml and the steps on the Celestia side, exits 0 and writes no file.
+  # for hosts.yml and the steps on the Celestia side, exits 0 and writes no file. The one box also
+  # shows the signer settings Fibre exits on, and that the namespace celestia needs no step.
   doctor:
     name: ${{ matrix.job }}
     strategy:
@@ -892,6 +913,9 @@ jobs:
   # /etc/celestia-mon/api-password, so doctor sends none (the install job covers the login).
   # Check 21 takes the page alerts from the rules Prometheus has loaded: page rules that never
   # fire and read no metric stand in for an install's, one set per doctor run, swapped by a reload.
+  # A silence on a label a rule sets counts as naming it. The closed job then gives way to static
+  # files behind the stand-in: failed heartbeats (FAIL 22, the exit code 1), and celestia-mon-tensile
+  # down, up with nothing read, with no endpoint registered and with one but no check (check 12).
   doctor-monitor:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -915,7 +939,8 @@ jobs:
   # (tools/ci/grpc_health_stub.py: Ready, Not ready, a Fibre without readiness) and a closed port,
   # then Prometheus at the pinned version with the install's scrape job and relabelling, and doctor
   # check 24 on it. A static file stands in for node_exporter's unit states: fibre-d's Fibre unit is
-  # active (its closed port is Not checked), fibre-e's is not (a standby).
+  # active (its closed port is Not checked), fibre-e's is not (a standby). Then each host under a
+  # unit name of its own (fibre_units), with collector targets, for checks 13, 19 and 24.
   doctor-readiness:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -1049,8 +1074,8 @@ jobs:
           sudo ufw --force enable
           sudo ufw status verbose
       # Each gate stops install.sh before any change: a placeholder dead-man URL, a firewall
-      # source wider than its private block, a shared setting of the wrong kind, a data mount that
-      # is not a mount point, a unit name systemd has not loaded, a vault.yml in plain text,
+      # source wider than its private block, a shared setting of the wrong kind, a data or Fibre mount
+      # that is not a mount point, a unit name systemd has not loaded, a vault.yml in plain text,
       # readable by others, of the monitor on another host, or with no terminal to ask its
       # password on. A failed check shows as its message, never as Ansible's raw result.
       - name: The install refuses unsafe settings
@@ -1091,6 +1116,14 @@ jobs:
           # A data mount inside the root filesystem: the stop names the mount point that holds it.
           refused "$(gate mounts 's#celestia_mon_data_mounts: \[/\]#celestia_mon_data_mounts: [/, /usr]#')" \
             '/usr is on /. Set celestia_mon_data_mounts of ci to [/]'
+          # The Fibre store's mount the same way, and one left unset.
+          refused "$(gate fibre-mount 's#celestia_mon_fibre_mount: /#celestia_mon_fibre_mount: /usr#')" \
+            'celestia_mon_fibre_mount of ci is /usr, which is on /'
+          refused "$(gate fibre-unset '/celestia_mon_fibre_mount:/d')" \
+            'celestia_mon_fibre_mount of ci is not set'
+          # NodePeersLow's page holds back the signing alerts, so its limit stays at no peers.
+          refused "$(gate peers "s#$at#\\1\\n    celestia_mon_thresholds: {peers_page_below: 3}#")" \
+            'celestia_mon_thresholds.peers_page_below is 3: keep it at 1.'
           # This host's own celestia_mon_units names a unit systemd does not have: the stop names the
           # loaded unit that runs celestia-appd (a stand-in, never started) and the whole map to set.
           printf '%s\n' '[Unit]' 'Description=celestia-appd stand-in for CI' '[Service]' 'ExecStart=/opt/ci/bin/celestia-appd start' |
@@ -1556,6 +1589,8 @@ jobs:
           grep -Eq '^FAIL +12 +rule metrics .*cometbft_consensus_height \(celestia-app target not up: check 11\)' <<<"$out"
           grep -Eq '^FAIL +12 +rule metrics .*fibre_server_upload_shard_budget_bytes \(Fibre is not pushing metrics: check 13\)' <<<"$out"
           grep -Eq '^FAIL +13 +fibre pipeline +ci: Fibre is not pushing metrics ' <<<"$out"
+          # The monitor's list of each Fibre host's own unit, here the one stand-in.
+          sudo grep -qx 'fibre_units=ci=systemd-logind' /etc/celestia-mon/doctor.conf
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-prometheus [0-9]+ MiB' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-announcements 127\.0\.0\.1:9916' <<<"$out"
           grep -Eq '^(OK|WARN) +14 +unit memory +.*celestia-mon-announcements [0-9]+ MiB' <<<"$out"
@@ -1810,13 +1845,11 @@ jobs:
   # On a pull request, the dashboard of every scenario of the dashboard job made by the base branch's
   # generator and by this branch's, from the same settings, and the values that differ in the job
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
-  # text changes named after it: this branch's FibreNotServing (uploads failing) counts failed
-  # signatures and full-budget refusals, not every failed upload, so the Uploads failing chart (its
-  # query and text), and the texts of Upload success and Uploads, say so. A scenario the base branch
-  # does not have is reported as new. A pull request that changes the dashboard on purpose names its
-  # text changes after --same (old new, in pairs), or leaves --same out to report only. Then the alert
-  # rules and the dashboard settings of each example
-  # inventory, rendered by both branches.
+  # text changes named after it. A scenario the base branch does not have is reported as new. A pull
+  # request that changes the dashboard on purpose names its text changes after --same (old new, in
+  # pairs), or leaves --same out to report only, as this branch does: it changes queries in tiles,
+  # Status, History and the table in every scenario, not only texts. Then the alert rules and the
+  # dashboard settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1842,39 +1875,21 @@ jobs:
             fi
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same \
-            'increase(fibre_server_upload_shard_duration_seconds_count{success="false"}[300s]))' \
-            'increase(fibre_server_sign_duration_seconds_count{success="false"}[300s]) or increase(fibre_server_upload_shard_rejected_total[300s]))' \
-            'increase(fibre_server_upload_shard_duration_seconds_count[300s]))' \
-            'increase(fibre_server_sign_duration_seconds_count[300s]) or increase(fibre_server_upload_shard_rejected_total[300s]))' \
-            "Share of upload requests that failed, over " \
-            "Share of the uploads that passed their checks and then failed here, over " \
-            " windows; an empty chart is good. FibreNotServing (uploads failing)" \
-            " windows: not signed, or refused while the storage budget was full; an empty chart is good. FibreNotServing (uploads failing)" \
-            "Clients' invalid payment promises make small rises;" \
-            "Uploads a client gets wrong, such as an invalid payment promise, fail at their checks and are left out, so" \
-            "a quiet network leaves the chart empty. Blobs" \
-            "a quiet network leaves the chart empty, as does one such client sending again. Blobs" \
-            "promises and uploads refused" "promises, which are not this setup's fault, and uploads refused" \
-            "budget is full, so a few are not this setup's fault. Every upload failing for " \
-            "budget is full. No upload accepted for " \
-            "Failed uploads and none accepted for " "No upload accepted for " \
-            " is FibreNotServing (uploads failing)." \
-            " while signatures fail or the budget is full is FibreNotServing (uploads failing)."
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)"
       # The alert rules and the dashboard settings of each example inventory, rendered by the base branch
       # from its checkout (its templates, inventories, roles and render.yml) and by this branch: single,
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: every example with Fibre, whose
-      # FibreNotServing (uploads failing) rule counts failed signatures and full-budget refusals. The base
-      # branch's renders first get the text changes in renames (sed expressions), which this branch makes in
-      # every render: none. The differences are in the job summary.
+      # scenarios in changed, whose renders this branch changes on purpose: every example, since its alert
+      # fixes reach rules that every render has (Watchdog, DeadmanFailing, ClockNotSynced, NodeNotAdvancing).
+      # The base branch's renders first get the text changes in renames (sed expressions), which this
+      # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch
         id: rules-base
         run: |
           set -euo pipefail
-          changed="split mainnet mocha nogov multi fibre-apart"
+          changed="single split mainnet mocha nogov multi fibre-apart"
           renames=()
           out="$RUNNER_TEMP/renders"
           mkdir -p "$out"

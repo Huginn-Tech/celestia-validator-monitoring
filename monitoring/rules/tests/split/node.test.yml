@@ -53,6 +53,61 @@ tests:
               description: >-
                 No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
                 Check status.celestia.org or an explorer first: the whole chain may have halted.
+                If the chain moves, check journalctl -u tmkms on the KMS host: a node without its signer commits a block only every few minutes.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+      - eval_time: 30m
+        alertname: ValidatorNotSigning
+        exp_alerts: []
+
+  # tmkms stops at 10m on this install of one node: the node waits for its signer and commits a block
+  # every 5 minutes, at 16m, 21m and 26m. Each block would resolve the page (the window shows a
+  # change); keep_firing_for holds it through them. ValidatorNotSigning, 4 blocks behind at 30m, is
+  # far off.
+  - name: The signer stops and the only node crawls; NodeNotAdvancing fires through the slow blocks
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x10 1100x4 1101x4 1102x4 1103x4'
+      - series: >-
+          cometbft_consensus_validator_last_signed_height{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '999+10x10 1099x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: NodeNotAdvancing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No node is advancing"
+              description: >-
+                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
+                Check status.celestia.org or an explorer first: the whole chain may have halted.
+                If the chain moves, check journalctl -u tmkms on the KMS host: a node without its signer commits a block only every few minutes.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+      - eval_time: 16m
+        alertname: NodeNotAdvancing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No node is advancing"
+              description: >-
+                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
+                Check status.celestia.org or an explorer first: the whole chain may have halted.
+                If the chain moves, check journalctl -u tmkms on the KMS host: a node without its signer commits a block only every few minutes.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
+      - eval_time: 28m
+        alertname: NodeNotAdvancing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "No node is advancing"
+              description: >-
+                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
+                Check status.celestia.org or an explorer first: the whole chain may have halted.
+                If the chain moves, check journalctl -u tmkms on the KMS host: a node without its signer commits a block only every few minutes.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning

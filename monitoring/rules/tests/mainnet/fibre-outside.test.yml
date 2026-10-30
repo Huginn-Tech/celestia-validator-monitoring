@@ -37,7 +37,7 @@ tests:
               summary: Fibre at fibre.example.org:7980 is unreachable from outside
               description: >-
                 For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
-                endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
+                endpoint registered on chain (TCP and TLS), so clients cannot fetch
                 from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
                 the last check.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
@@ -91,6 +91,8 @@ tests:
         values: '0x30'
       - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
         values: '0+60x30'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x30'
     alert_rule_test:
       - eval_time: 15m
         alertname: FibreDown
@@ -103,7 +105,7 @@ tests:
               summary: Fibre at fibre.example.org:7980 is unreachable from outside
               description: >-
                 For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
-                endpoint registered on chain (TCP, TLS and the validator's identity), so clients cannot fetch
+                endpoint registered on chain (TCP and TLS), so clients cannot fetch
                 from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
                 the last check.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
@@ -120,6 +122,121 @@ tests:
                 (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
                 val.example.org:7980 --from <validator account key>.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+
+  # val-1 starts while the chain still names fibre-1, a move done make-before-break: clients reach a
+  # running Fibre. FibreBothActive reports the two, and wrong_host waits until one is left.
+  - name: Two Fibres run and the chain names fibre-1; FibreBothActive, no FibreDown
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x40'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x4 1x35'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreBothActive
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: Fibre is active on more than one host
+              description: >-
+                For 5 minutes fibre.service has been active on fibre-1, val-1.
+                Fibre runs on one host at a time: stop the one that should be the standby.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrebothactive
+
+  # The same, until fibre-1 stops at 20m with the chain still on it: now clients dial a host where
+  # Fibre does not run, and the 10 minutes start.
+  - name: One of two Fibres stops with the chain still on it; wrong_host 10 minutes later
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x19 0x20'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x4 1x35'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 29m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+              check: registration
+              reason: wrong_host
+              endpoint: fibre.example.org:7980
+            exp_annotations:
+              summary: The chain points to fibre.example.org:7980, but Fibre runs on val-1
+              description: >-
+                For 10 minutes Fibre has been active on val-1, whose public endpoint is val.example.org:7980,
+                while the chain registers another endpoint, so clients dial a host where this Fibre does not run
+                (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
+                val.example.org:7980 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
+
+  # set-host went out, and the old box came back with its unit enabled. The fix is to stop fibre-1,
+  # not to set the host back to it.
+  - name: Two Fibres run and the chain names val-1; no FibreDown
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x40'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x4 1x35'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="val.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_reachable{job="tensile",host="mon-1",endpoint="val.example.org:7980"}'
+        values: '1x40'
+      - series: 'celestia_mon_fibre_last_check_timestamp_seconds{job="tensile",host="mon-1",endpoint="val.example.org:7980"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+
+  # celestia-mon-tensile last read Tensile at 10m, and a correct failover to val-1 happens then:
+  # set-host went out, which the frozen reading cannot show. A reading over 9 minutes old does not
+  # count, so wrong_host goes pending at 10m and ends at 19m, before its 10 minutes.
+  - name: Tensile is not read during a failover; no wrong_host from the old reading
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x9 0x40'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x9 1x40'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x50'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x10 600x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
 
   - name: No Fibre host registered on chain; FibreDown after 10 minutes
     interval: 1m
@@ -185,9 +302,87 @@ tests:
               description: >-
                 For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has
                 settled 10m 0s after Fibre last accepted an upload (or started, if it has accepted none since):
-                the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
-                validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
-                first that the chain registers this host and that its port answers from outside.
+                the network sends blobs and this Fibre did not take that one. The reference client keeps sending
+                to every validator after 2/3 have signed, best effort, but Fibre refuses an upload it reads after
+                the blob settled. Fibre's log names the cause; check first that the chain registers this host and
+                that its port answers from outside.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
+
+  # A publisher settles at 16m a blob whose upload Fibre accepted at 10m: 6 minutes, which a promise
+  # allows for an hour. The blob carries the validator's signature, so Fibre took that upload.
+  - name: A blob with the validator's signature settles late; no missed_uploads
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x40'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x40'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="fibre-1",name="fibre.service"}'
+        values: '60x40'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="val-1",name="fibre.service"}'
+        values: '0x40'
+      - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
+        values: '1000000000000x40'
+      - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
+        values: '600x40'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '590x15 960x24'
+      - series: 'celestia_mon_fibre_last_endorsed_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '590x15 960x24'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: FibreNotServing
+        exp_alerts: []
+    promql_expr_test:
+      - expr: count_over_time(ALERTS{alertname="FibreNotServing"}[40m])
+        eval_time: 40m
+        exp_samples: []
+
+  # The same blob without the validator's signature: nothing shows that Fibre took it. Tensile's side
+  # is read a minute late, so the condition starts at 17m and the message goes out at 22m.
+  - name: The newest blob settles late without the validator's signature; missed_uploads after 5 minutes
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x40'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x40'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="fibre-1",name="fibre.service"}'
+        values: '60x40'
+      - series: 'node_systemd_unit_start_time_seconds{job="node",host="val-1",name="fibre.service"}'
+        values: '0x40'
+      - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
+        values: '1000000000000x40'
+      - series: 'fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",host="fibre-1"}'
+        values: '600x40'
+      - series: 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '0+60x40'
+      - series: 'celestia_mon_fibre_last_assigned_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '590x15 960x24'
+      - series: 'celestia_mon_fibre_last_endorsed_timestamp_seconds{job="tensile",host="mon-1"}'
+        values: '590x39'
+    alert_rule_test:
+      - eval_time: 21m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 22m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: missed_uploads
+              severity: message
+            exp_annotations:
+              summary: Fibre on fibre-1 missed uploads of blobs sent to the validator
+              description: >-
+                For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has
+                settled 6m 0s after Fibre last accepted an upload (or started, if it has accepted none since):
+                the network sends blobs and this Fibre did not take that one. The reference client keeps sending
+                to every validator after 2/3 have signed, best effort, but Fibre refuses an upload it reads after
+                the blob settled. Fibre's log names the cause; check first that the chain registers this host and
+                that its port answers from outside.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # The network sends no blob for five hours after the last one, which Fibre accepted: nothing is missed.
@@ -215,9 +410,9 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
 
-  # The blob settles at 20m and Fibre accepts its upload 30 s later, from a publisher that keeps
-  # sending after the 2/3 quorum; Fibre's report of it arrives at 21m. Tensile's side is read a
-  # minute late, so the two reports never cross: not even a pending alert.
+  # The blob settles at 20m and, 30 s later, Fibre finishes an upload it began checking before the
+  # blob settled; Fibre's report of it arrives at 21m. Tensile's side is read a minute late, so the
+  # two reports never cross: not even a pending alert.
   - name: Upload accepted 30 s after the blob settled; no FibreNotServing
     interval: 1m
     input_series:
@@ -362,9 +557,10 @@ tests:
               description: >-
                 For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has
                 settled 10m 0s after Fibre last accepted an upload (or started, if it has accepted none since):
-                the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
-                validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
-                first that the chain registers this host and that its port answers from outside.
+                the network sends blobs and this Fibre did not take that one. The reference client keeps sending
+                to every validator after 2/3 have signed, best effort, but Fibre refuses an upload it reads after
+                the blob settled. Fibre's log names the cause; check first that the chain registers this host and
+                that its port answers from outside.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 45m
         alertname: TensileUnreadable
@@ -396,9 +592,10 @@ tests:
               description: >-
                 For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has
                 settled 10m 0s after Fibre last accepted an upload (or started, if it has accepted none since):
-                the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
-                validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
-                first that the chain registers this host and that its port answers from outside.
+                the network sends blobs and this Fibre did not take that one. The reference client keeps sending
+                to every validator after 2/3 have signed, best effort, but Fibre refuses an upload it reads after
+                the blob settled. Fibre's log names the cause; check first that the chain registers this host and
+                that its port answers from outside.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Fibre restarts at 30m and accepts nothing since: its last-success gauge, kept in Fibre's memory,
@@ -438,9 +635,10 @@ tests:
               description: >-
                 For 5 minutes the newest blob that assigned rows to the validator, in Tensile's record, has
                 settled 10m 0s after Fibre last accepted an upload (or started, if it has accepted none since):
-                the network sends blobs and this Fibre did not take that one. Publishers send every blob to every
-                validator it assigns rows to, also after 2/3 have signed. Fibre's log names the cause; check
-                first that the chain registers this host and that its port answers from outside.
+                the network sends blobs and this Fibre did not take that one. The reference client keeps sending
+                to every validator after 2/3 have signed, best effort, but Fibre refuses an upload it reads after
+                the blob settled. Fibre's log names the cause; check first that the chain registers this host and
+                that its port answers from outside.
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Fibre restarts at 30m (start time 1800 s); a blob settled at 29m50s (1790 s), while it was down,
@@ -568,6 +766,56 @@ tests:
       - expr: count_over_time(ALERTS{alertname="FibreNotServing"}[35m])
         eval_time: 120m
         exp_samples: []
+
+  # The move at 30m: the chain names val-1 from then on, and fibre-1's blobs are read at val-1, which
+  # does not hold them. Their failed reads rise from 61m to 70m and once more at 270m, all of them
+  # held back. The old endpoint's last reading (29m) leaves the 5h15m at 344m, so the rise at 350m,
+  # a read of a blob val-1 did take, sends the message for val-1.
+  - name: Failed reads after the registration moved; no not_served for 5h15m
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{job="node",host="fibre-1",name="fibre.service",state="active"}'
+        values: '1x29 0x400'
+      - series: 'node_systemd_unit_state{job="node",host="val-1",name="fibre.service",state="active"}'
+        values: '0x29 1x400'
+      - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="fibre-1"}'
+        values: '1000000000000x29 stale'
+      - series: 'fibre_server_upload_shard_budget_bytes{job="otelcol",host="val-1"}'
+        values: '_x30 1000000000000x400'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="fibre.example.org:7980"}'
+        values: '1x29 stale'
+      - series: 'celestia_mon_fibre_registered{job="tensile",host="mon-1",endpoint="val.example.org:7980"}'
+        values: '_x30 1x400'
+      - series: 'celestia_mon_fibre_obligations_24h{job="tensile",host="mon-1",outcome="broken"}'
+        values: '0x59 1+1x10 11x198 12x79 13x80'
+    alert_rule_test:
+      - eval_time: 80m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 270m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 329m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 349m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 350m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: val-1
+              reason: not_served
+              severity: message
+            exp_annotations:
+              summary: Fibre on val-1 did not serve rows the validator signed for
+              description: >-
+                In the last hour Tensile could not read rows of a blob the validator signed for, within the time
+                Fibre must keep them, so clients could not fetch the validator's share of it; that makes 13 failed
+                reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
+                (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Two failed reads in the same minute (0 to 2) fire at once too.
   - name: Two failed reads at once; not_served

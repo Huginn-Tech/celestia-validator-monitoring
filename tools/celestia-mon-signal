@@ -21,13 +21,14 @@ current state is read. One that serves another network, whose node is catching u
 block for MAX_BLOCK_AGE seconds, or that answers /abci_info at an older height than /status, is
 skipped, and so is one whose store does not hold the height /abci_info gave. While no RPC can be
 read, the last good reading stays and only its time ages; while the block time cannot be
-measured, the one measured last stays. The proposals are read on their own, at the /abci_info
-height of the first RPC that answers for chain_id with a current state and gives them, which is
-mostly the one that gave the x/signal reading but need not be; while none gives them, the
-proposals read last stay, and the x/signal reading goes on. Only the Python standard library is
-used; it sends no transaction and needs no key. An http URL must name this host or an address of
-the private network (PLAIN_HTTP); any other RPC is reached over https. No redirect is followed,
-and no answer larger than MAX_BODY is read.
+measured, the one measured last stays, and until one is measured the ETA of a scheduled upgrade
+uses ASSUMED_BLOCK_TIME. The proposals are read on their own, at the /abci_info height of the
+first RPC that answers for chain_id with a current state and gives them, which is mostly the one
+that gave the x/signal reading but need not be; while none gives them, the proposals read last
+stay, and the x/signal reading goes on. Only the Python standard library is used; it sends no
+transaction and needs no key. An http URL must name this host or an address of the private network
+(PLAIN_HTTP); any other RPC is reached over https. No redirect is followed, and no answer larger
+than MAX_BODY is read.
 """
 
 import argparse
@@ -69,6 +70,9 @@ TITLE_CHARS = 80
 SQUARE_TO_ROUND = str.maketrans("[]", "()")
 # The blocks the block time is measured over.
 BLOCK_SPAN = 1000
+# The block time for the ETA until one is measured: celestia-app's figure for its upgrade delays
+# (pkg/appconsts/app_consts.go, "a block interval of ~2.6 seconds").
+ASSUMED_BLOCK_TIME = 2.6
 # A node whose last block is older than this (in seconds; some 40 blocks) has stalled or halted,
 # and its x/signal state is old.
 MAX_BLOCK_AGE = 120
@@ -594,10 +598,12 @@ class State:
             if "block_time" in r:
                 gauge("celestia_mon_chain_block_time_seconds", f"Average block time over the last {BLOCK_SPAN} blocks.",
                       round(r["block_time"], 4))
-                if pending:
-                    eta = max(0, r["upgrade_height"] - r["height"]) * r["block_time"]
-                    gauge("celestia_mon_upgrade_eta_seconds", "Time until the scheduled upgrade at the measured block time.",
-                          round(eta))
+            if pending:
+                eta = max(0, r["upgrade_height"] - r["height"]) * r.get("block_time", ASSUMED_BLOCK_TIME)
+                gauge("celestia_mon_upgrade_eta_seconds",
+                      "Time until the scheduled upgrade at the measured block time, "
+                      f"or {ASSUMED_BLOCK_TIME} s per block before one is measured.",
+                      round(eta))
             gauge("celestia_mon_signal_rpc_info", "1 for the RPC the last full read came from.", 1, f'{{rpc="{esc(r["rpc"])}"}}')
             return "\n".join(out) + "\n"
 
@@ -655,7 +661,8 @@ def read(cfg, operator, voter, state):
                 state.error("format")
                 log(f"cannot read the answer of {shown(rpc)}: {e!r}")
             else:
-                # The block time feeds only the ETA: without it the reading stands, with the one measured last.
+                # The block time feeds only the ETA: without it the reading stands, with the one measured
+                # last, or ASSUMED_BLOCK_TIME before one is measured.
                 try:
                     reading["block_time"] = block_time(rpc, sync)
                 except ReadError as e:

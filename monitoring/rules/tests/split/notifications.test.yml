@@ -13,6 +13,9 @@ tests:
     interval: 1m
     input_series:
       - series: >-
+          up{job="prometheus",instance="127.0.0.1:9912",host="mon-1",role="monitor"}
+        values: '1x90'
+      - series: >-
           alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="discord",receiver_name="message",reason="serverError"}
         values: '0x9 1x80'
       - series: >-

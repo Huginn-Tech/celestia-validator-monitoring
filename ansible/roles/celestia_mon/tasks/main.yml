@@ -59,6 +59,14 @@
       text: >-
         celestia_mon_fibre_enabled is true, and the inventory has no fibre group: list every host with a Fibre install there,
         active or standby, or set celestia_mon_fibre_enabled to false.
+    # NodePeersLow's page holds back ValidatorNotSigning and the other signing alerts because a node
+    # with no peers receives nothing. Above 1 it would hold them back for a node that follows the chain.
+    - setting: celestia_mon_thresholds.peers_page_below
+      ok: "{{ (celestia_mon_thresholds.peers_page_below | default(1) | int) == 1 }}"
+      text: >-
+        celestia_mon_thresholds.peers_page_below is {{ celestia_mon_thresholds.peers_page_below | default(1) }}: keep it at 1.
+        The page at no peers holds back ValidatorNotSigning, NodeNotAdvancing and SignaturesMissed, which is right only for a
+        node that receives nothing: above 1 they stay held for a node that still follows the chain, and at 0 it never pages.
   loop_control:
     label: "{{ item.setting }}"
 
