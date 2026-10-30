@@ -6,7 +6,9 @@ that follow Celestia's announcement channels) and posts each new message to Aler
 one CelestiaAnnouncement alert, so it reaches the receivers like any other page or message
 alert. The first read of a channel only notes its newest message: nothing older is sent.
 Messages are posted one by one, oldest first; one that cannot be read, or that Alertmanager
-refuses as invalid, is logged and passed over, so it cannot hold back the ones after it. No
+refuses as invalid, is logged and passed over, so it cannot hold back the ones after it. Each
+posted announcement is posted again, unchanged, at every read until it ends: Alertmanager keeps
+active alerts in memory only, and a restart before the notification went out would lose it. No
 redirect is followed, and no answer larger than MAX_BODY is read.
 
   celestia-mon-announcements --config FILE [--once]
@@ -38,6 +40,9 @@ CROSSPOST = 2
 # The largest answer read, in bytes: 50 messages take far less, and a larger one is refused
 # rather than read into memory.
 MAX_BODY = 1 << 20
+# The state file's list of announcements posted and not ended, beside each channel's place (channel
+# IDs are numbers).
+POSTED = "posted"
 
 
 def log(msg):
@@ -282,6 +287,9 @@ def load_state(path):
     if not isinstance(state, dict):
         log(f"{path} is not a JSON object: starting over (no older messages are sent)")
         return {}
+    posted = state.get(POSTED)
+    state[POSTED] = ([a for a in posted if isinstance(a, dict) and isinstance(a.get("endsAt"), str)]
+                     if isinstance(posted, list) else [])
     return state
 
 
@@ -308,10 +316,31 @@ def crossposted(msg):
     return isinstance(flags, int) and bool(flags & CROSSPOST)
 
 
-def forward(cfg, password, channel, guild, msg, metrics):
-    """Posts one announcement to Alertmanager: "sent"; "passed" when it cannot be read or
-    Alertmanager refuses it as invalid (400), so it cannot hold back the ones after it; "wait"
-    when Alertmanager cannot take it now, so it and the ones after it are sent at a later read."""
+def post_again(cfg, password, state):
+    """Posts the announcements that have not ended again, unchanged. A 200 only says Alertmanager
+    took an alert, and it keeps active alerts in memory only, so one it lost in a restart comes
+    back here. One it still holds, or has sent, changes nothing: the same labels are the same
+    alert, and its notification log, kept on disk, holds back a second notification. One whose
+    time is up leaves the state file, so it can never fire late."""
+    now = iso(time.time())
+    posted = state.get(POSTED, [])
+    active = [a for a in posted if a["endsAt"] > now]
+    if len(active) != len(posted):
+        state[POSTED] = active
+        save_state(cfg["state_file"], state)
+    if not active:
+        return
+    try:
+        post_alerts(cfg, password, active)
+    except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError) as e:
+        log(f"Alertmanager did not take {len(active)} announcement(s) posted before, retrying: {e}")
+
+
+def forward(cfg, password, channel, guild, msg, state, metrics):
+    """Posts one announcement to Alertmanager: "sent", and it joins the posted ones in state;
+    "passed" when it cannot be read or Alertmanager refuses it as invalid (400), so it cannot hold
+    back the ones after it; "wait" when Alertmanager cannot take it now, so it and the ones after
+    it are sent at a later read."""
     cid = channel["id"]
     try:
         posted = alert(cfg, channel, guild, msg)
@@ -332,12 +361,14 @@ def forward(cfg, password, channel, guild, msg, metrics):
         metrics.error(cid, "alertmanager")
         log(f"channel {cid}: Alertmanager did not take announcement {msg['id']}, retrying: {e}")
         return "wait"
+    state.setdefault(POSTED, []).append(posted)
     return "sent"
 
 
 def poll(cfg, token, password, state, guilds, metrics):
     """One read of every channel. Returns the seconds Discord asks to wait, if any."""
     wait = 0
+    post_again(cfg, password, state)
     for channel in cfg["channels"]:
         cid = channel["id"]
         try:
@@ -365,7 +396,7 @@ def poll(cfg, token, password, state, guilds, metrics):
                 if not crossposted(m):
                     other += 1
                 else:
-                    outcome = forward(cfg, password, channel, guilds[cid], m, metrics)
+                    outcome = forward(cfg, password, channel, guilds[cid], m, state, metrics)
                     if outcome == "wait":
                         break
                     if outcome == "sent":

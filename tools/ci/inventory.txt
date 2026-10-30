@@ -33,7 +33,8 @@ rules/mainnet-targets            | tools/ci/check_render.py targets             
 rules/own-ports                  | ci.yml, tools/ci/check_render.py ports       | A host's own ports never become another host's
 rules/slack-pagerduty-text       | tools/ci/check_render.py, check_messages.py  | Slack and PagerDuty messages read as text
 rules/routing                    | ci.yml, tools/ci/check_render.py routing     | amtool accepts every receiver type, and routing follows the type
-announcements/run                | tools/ci/announcements.sh                    | celestia-mon-announcements reads, posts once and reports errors
+announcements/run                | tools/ci/announcements.sh                    | celestia-mon-announcements reads, posts and reports errors
+announcements/restart            | tools/ci/announcements_restart.sh            | An announcement a real Alertmanager lost in a restart comes back and reaches the receiver once
 tensile/run                      | tools/ci/tensile.sh                          | celestia-mon-tensile serves Tensile's verdict as metrics
 signal/run                       | tools/ci/signal.sh                           | celestia-mon-signal serves x/signal as metrics
 dashboard/render                 | tools/ci/dashboard_configs.sh                | Render the dashboard settings for the example inventories

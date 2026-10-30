@@ -70,8 +70,10 @@ route:
       repeat_interval: 1m
       continue: false
     # Celestia's announcements (celestia-mon-announcements): one notification per announcement,
-    # sent at once and once only. The chat channels and webhooks get no "resolved" message for it;
-    # PagerDuty does, so its incident closes when the announcement ends (active_minutes, 30).
+    # sent at once. The service posts each again until it ends, so a restart here cannot lose it;
+    # the notification log, kept on disk, holds back a second notification. The chat channels and
+    # webhooks get no "resolved" message for it; PagerDuty does, so its incident closes when the
+    # announcement ends (active_minutes, 30).
     - matchers:
         - 'alertname="CelestiaAnnouncement"'
       group_by: ['...']
@@ -190,14 +192,14 @@ inhibit_rules:
       - 'severity="message"'
     equal: [host]
   # A collector that is down explains missing Fibre metrics, not what reaches the monitor without
-  # it: Fibre's own health check, which the monitor asks Fibre directly, and the failed reads Tensile
-  # reports.
+  # it: Fibre's own health check, which the monitor asks Fibre directly, its answer or the lack of
+  # one, and the failed reads Tensile reports.
   - source_matchers:
       - 'alertname="ServiceDown"'
       - 'unit="otelcol"'
     target_matchers:
       - 'alertname="FibreNotServing"'
-      - 'reason!~"not_ready|not_served"'
+      - 'reason!~"not_ready|no_answer|not_served"'
     equal: [host]
   # Above 1/3 of the voting power the page stands in for the message of the same signalling round,
   # so the chat repeat comes once.

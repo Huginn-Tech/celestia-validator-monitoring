@@ -22,14 +22,17 @@ grep -q '^channel 111111111111111111: reading from now on' "$d/log"
 grep -q '^channel 222222222222222222: Discord answered 403 Missing Access' "$d/log"
 once
 once
-test "$(wc -l <"$d/posts.jsonl")" = 2
+once
+# One request for each announcement, then one for both: each read posts again what has not ended.
+test "$(wc -l <"$d/posts.jsonl")" = 3
 # ...103 is an alert a webhook posted into the channel, not an announcement.
 grep -q '^channel 111111111111111111: passed over 1 message(s) not posted by a followed channel' "$d/log"
 python3 - "$d/posts.jsonl" <<'EOF'
 import json, re, sys
 alerts = [a for line in open(sys.argv[1]) for a in json.loads(line)]
-assert [a["labels"]["announcement"] for a in alerts] == ["1300000000000000101", "1300000000000000102"], alerts
-first, second = alerts
+assert [a["labels"]["announcement"] for a in alerts] == ["1300000000000000101", "1300000000000000102"] * 2, alerts
+assert alerts[:2] == alerts[2:], alerts
+first, second = alerts[:2]
 assert first["labels"] == {"alertname": "CelestiaAnnouncement", "severity": "page", "host": "mon-1",
                            "source": "Celestia #mocha-announcements", "announcement": "1300000000000000101"}, first
 text = first["annotations"]["description"]
@@ -52,7 +55,7 @@ odd() { CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announceme
 odd
 odd
 cat "$d/odd.log"
-test "$(wc -l <"$d/posts.jsonl")" = 4
+test "$(wc -l <"$d/posts.jsonl")" = 5
 tail -n 2 "$d/posts.jsonl" | jq -se '[.[][] | .labels.announcement] == ["1300000000000000201", "1300000000000000204"]'
 tail -n 2 "$d/posts.jsonl" | jq -se '.[0][0].annotations.description == "Far off: <t:99999999999999999999:F>"'
 grep -q '^channel 666666666666666666: message 1300000000000000202 cannot be read, passed over' "$d/odd.log"
@@ -62,8 +65,16 @@ jq -e '."666666666666666666" == "1300000000000000204"' "$d/odd-state.json"
 grep -q '^channel 777777777777777777: Discord answered 302 Found, a redirect, which is not followed' "$d/odd.log"
 test ! -e "$d/posts.jsonl.followed"
 grep -qF "channel 888888888888888888: Discord's answer to /channels/888888888888888888 is not readable: the answer is larger than" "$d/odd.log"
+# The next read posts nothing new, only those two again.
 odd
-test "$(wc -l <"$d/posts.jsonl")" = 4
+test "$(wc -l <"$d/posts.jsonl")" = 6
+tail -n 1 "$d/posts.jsonl" | jq -e '[.[].labels.announcement] == ["1300000000000000201", "1300000000000000204"]'
+# Past its end an announcement is not posted again and leaves the state file.
+jq '.posted[].endsAt = "2000-01-01T00:00:00Z"' "$d/odd-state.json" >"$d/odd-state.new"
+mv "$d/odd-state.new" "$d/odd-state.json"
+odd
+test "$(wc -l <"$d/posts.jsonl")" = 6
+jq -e '.posted == []' "$d/odd-state.json"
 CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" 2>>"$d/log" &
 pid=$!
 for _ in $(seq 30); do
