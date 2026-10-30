@@ -1847,9 +1847,9 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only, as this branch does: it changes queries in tiles,
-  # Status, History and the table in every scenario, not only texts. Then the alert rules and the
-  # dashboard settings of each example inventory, rendered by both branches.
+  # pairs), or leaves --same out to report only, as this branch does: its new ServiceDown word changes
+  # queries in the Status and the Servers tile, not only texts. Then the alert rules and the dashboard
+  # settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1881,8 +1881,8 @@ jobs:
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: every example, since its alert
-      # fixes reach rules that every render has (Watchdog, DeadmanFailing, ClockNotSynced, NodeNotAdvancing).
+      # scenarios in changed, whose renders this branch changes on purpose: every example, since each
+      # render gets the new ServiceDown rule for node_exporter's filesystem collector.
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch

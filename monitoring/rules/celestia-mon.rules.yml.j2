@@ -151,7 +151,8 @@ groups:
   - name: celestia_mon
     rules:
       # ServiceDown: celestia-appd, tmkms, a collector or the blackbox exporter is down or not loaded,
-      # or a Celestia service is crash looping. Always a message: the pages come from the alerts below,
+      # node_exporter cannot read the disks, or a Celestia service is crash looping. Always a message:
+      # the pages come from the alerts below,
       # which follow the roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a
       # standby is stopped); FibreDown pages when no Fibre unit is active anywhere. When none of a
       # host's targets answers, MonitorCannotReach names the host once instead of the first three
@@ -214,6 +215,18 @@ groups:
           description: "Prometheus has not reached celestia-mon-blackbox for 3 minutes, so Fibre's readiness is not checked and FibreNotServing not_ready cannot fire. Run journalctl -u celestia-mon-blackbox on the monitor."
           runbook: "{{ docs }}#servicedown"
 {% endif %}
+      # node_exporter answers while its filesystem collector fails, as with hidepid on /proc: up stays
+      # 1, the disk series go, and every DiskLow of the host is empty.
+      - alert: ServiceDown
+        expr: node_scrape_collector_success{job="node",collector="filesystem"} == 0
+        for: 3m
+        labels:
+          severity: message
+          unit: filesystem_collector
+        annotations:
+          summary: "{% raw %}node_exporter cannot read the disks on {{ $labels.host }}{% endraw %}"
+          description: "For 3 minutes node_exporter's filesystem collector has failed while node_exporter answers, so DiskLow sees no disk on this host. sudo celestia-mon-doctor (check 10) on it gives the fix."
+          runbook: "{{ docs }}#servicedown"
 {% for key, names, hosts in units %}
 {% if key != 'fibre' %}
       - alert: ServiceDown

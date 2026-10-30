@@ -14,7 +14,7 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 
 | Alert | Severity | Catches |
 |---|---|---|
-| [ServiceDown](#servicedown) | message | celestia-appd, tmkms or a collector down or not loaded, celestia-mon-blackbox down, or a Celestia service crash looping |
+| [ServiceDown](#servicedown) | message | celestia-appd, tmkms or a collector down or not loaded, celestia-mon-blackbox down, node_exporter unable to read the disks, or a Celestia service crash looping |
 | [NodeNotAdvancing](#nodenotadvancing) | page | No node committed a new block for 3 minutes, or no node reports a height: nodes stuck, out of sync or without peers, celestia-appd down, tmkms down with no other node following the chain, or the chain halted |
 | [NodeBehind](#nodebehind) | message | One node lags the others: a backup node that could not take over signing, or the node tmkms left |
 | [NodePeersLow](#nodepeerslow) | message; page for the node the validator signs through | A node with fewer than 2 peers for 5 minutes; the node the validator signs through with none for 1 minute: it receives no blocks or votes, and the validator misses every block |
@@ -124,6 +124,7 @@ $amtool $am silence expire $($amtool $am silence query -q host=<host>)   # ends 
 | The celestia-appd unit (validator or backup node) or the tmkms unit is not active | 2 min |
 | node_exporter or the OpenTelemetry collector is unreachable | 3 min |
 | celestia-mon-blackbox on the monitor is unreachable, so nothing reads Fibre's readiness (the alert names the monitor; the dashboard reads "Probe stopped") | 3 min |
+| node_exporter answers but its filesystem collector fails, so DiskLow sees no disk on that host (the dashboard reads "No disk data"; `doctor` check 10 gives the fix) | 3 min |
 | systemd restarted celestia-appd, Fibre or tmkms more than 2 times in 30 minutes (crash loop; for Fibre, not in the 40 minutes after its host booted) | at once |
 | The celestia-appd unit (validator or backup node) or the tmkms unit is not loaded at all | 2 min |
 
@@ -353,7 +354,7 @@ The Fibre store has no percentage rule while a budget is set: Fibre keeps its oc
 **Check first.**
 
 1. Read-only: `journalctl -k` or `dmesg` for I/O or filesystem errors. The disk may be failing; find out why before you remount it read-write.
-2. Every mount of a host read-only while `findmnt` shows `rw`: node_exporter cannot read `/proc/1` (hidepid on `/proc`). `sudo celestia-mon-doctor` (check 10) gives the fix. The same cause can stop node_exporter's filesystem collector: DiskLow then sees no disk on that host, no alert says so, and only check 10 reports it.
+2. Every mount of a host read-only while `findmnt` shows `rw`: node_exporter cannot read `/proc/1` (hidepid on `/proc`). `sudo celestia-mon-doctor` (check 10) gives the fix. The same cause can stop node_exporter's filesystem collector: DiskLow then sees no disk on that host, and [ServiceDown](#servicedown) sends a message after 3 minutes.
 3. Free space: `du -xh --max-depth=2 <mount> | sort -h | tail` shows what grew. On the node, check pruning in `app.toml` and blockstore compaction in `config.toml`.
 4. Fibre store: the "Fibre disk and budget" panel shows the free space on the store of the Fibre that runs against what Fibre may still write under its storage budget, the room the budget still needs. Grow the disk or move other data off it. Celestia recommends separate disks for Fibre and celestia-app data.
 

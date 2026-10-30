@@ -349,6 +349,7 @@ TITLES = [
     ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "No signer", P_SIGNER, "tmkms"),
     ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
     ("ServiceDown:message:blackbox:::([^:]*)", "Fibre health check not read on $1", "Probe stopped", P_FIBRE, "fibre"),
+    ("ServiceDown:message:filesystem_collector:::([^:]*)", "Disks not read on $1", "No disk data", P_SERVERS, None),
     ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
     ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
     ("RaidDegraded:.*:([^:]*)", "RAID degraded on $1", "RAID degraded", P_SERVERS, None),
@@ -1922,8 +1923,9 @@ def upgrade_tile(s):
     return 16, upgrade_title(s), desc + more(alerts, [PANEL_GUIDE]), expr, words
 
 
-# ServiceDown's rules for a metrics endpoint (up == 0); the others watch a systemd unit.
-ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol", "blackbox")
+# ServiceDown's rules for a metrics endpoint (up == 0, or a collector behind it that fails); the others
+# watch a systemd unit.
+ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol", "blackbox", "filesystem_collector")
 
 
 def service_down(s):
