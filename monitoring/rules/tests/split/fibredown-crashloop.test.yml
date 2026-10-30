@@ -1,0 +1,66 @@
+# FibreDown's unit branch at the real scrape and evaluation interval, 15 s, on the example-split
+# inventory (Fibre on fibre-1, monitor on mon-1). A unit counts as running only if it held active
+# for the last minute, so a Fibre that exits right after each start, and is active in one scrape
+# now and then, still pages after 10 minutes. A file of its own: evaluation_interval is per file.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 15s
+
+tests:
+  # Active in one scrape of six: no minute is held, and the 10 minutes run from the first zero, 15 s.
+  - name: Fibre crash loops, active a few seconds at a time; a page after 10 minutes
+    interval: 15s
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x70'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4 1 0x4'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: FibreDown
+        exp_alerts: []
+      - eval_time: 10m30s
+        alertname: FibreDown
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Fibre is not running on any host"
+              description: >-
+                For 10 minutes no Fibre host (fibre-1) has kept fibre.service active for a whole minute: Fibre is stopped or
+                crash looping everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
+
+  # Eight scrapes active, one not: 2 minutes of work at a time, which ends the wait every time.
+  # Fibre serves most of the time, and the crash loop message reports the restarts.
+  - name: Fibre restarts every 2 minutes and holds active in between; no page
+    interval: 15s
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x130'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0 1x7 0'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+
+  # Stopped at 5m, back at 13m: the unit holds active again 45 s later, so the wait ended after
+  # 8 minutes 45 seconds.
+  - name: Fibre stopped for 8 minutes comes back; no page
+    interval: 15s
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x130'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x19 0x31 1x80'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []

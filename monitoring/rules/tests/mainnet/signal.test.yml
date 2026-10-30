@@ -2,12 +2,91 @@
 # it): celestia-mon-signal on mon-1 serves x/signal as read through an RPC. gov is on there (the
 # default), so SignalUnreadable names the votes too (gov.test.yml). The numbers are
 # mainnet's: the v10 round of October 2026, with 396393243 of 463776854 voting power signalled
-# (85.47%) and the upgrade at height 15116658, 2.87 s per block.
+# (85.47%) and the upgrade at height 15116658, 2.87 s per block. UpgradeSignalMissing is a message
+# from the first signal and a page above 1/3, each after 10 minutes, so at 85.47% both fire;
+# Alertmanager then holds the message back (check_render.py).
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
+  # One early signaller holds 1% of the voting power: the message after 10 minutes, no page. At 20m
+  # the share passes 1/3 at 40%, and the page follows 10 minutes later.
+  - name: A lone early signaller sends a message; the page waits for more than 1/3 of the voting power
+    interval: 1m
+    input_series:
+      - series: 'celestia_mon_signal_next_version{job="signal",host="mon-1"}'
+        values: '11x40'
+      - series: 'celestia_mon_signal_tally_power{job="signal",host="mon-1"}'
+        values: '4637768x19 185510741x20'
+      - series: 'celestia_mon_signal_total_power{job="signal",host="mon-1"}'
+        values: '463776854x40'
+      - series: 'celestia_mon_signal_validator_version{job="signal",host="mon-1"}'
+        values: '0x40'
+      - series: 'celestia_mon_upgrade_pending{job="signal",host="mon-1"}'
+        values: '0x40'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: UpgradeSignalMissing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                1% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+      - eval_time: 29m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                40% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+      - eval_time: 31m
+        alertname: UpgradeSignalMissing
+        exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                40% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                40% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. Once 5/6 of the voting power has signalled, anyone can schedule the upgrade,
+                and from then on no more signals are accepted. Upgrade celestia-appd on every node to a release
+                that supports v11, then signal from the validator's account: celestia-appd tx signal signal 11
+                --from <validator account key>. If this alert resolves before you signal, the upgrade was
+                scheduled: see UpgradeScheduled.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+
   - name: A round for v11 opens and the validator has not signalled; the page resolves once it has
     interval: 1m
     input_series:
@@ -35,6 +114,18 @@ tests:
       - eval_time: 21m
         alertname: UpgradeSignalMissing
         exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
           - exp_labels:
               severity: page
             exp_annotations:
@@ -71,6 +162,18 @@ tests:
       - eval_time: 15m
         alertname: UpgradeSignalMissing
         exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                signalled v12 instead. No rush yet: a validator can signal before a release exists, and this
+                pages once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule
+                the upgrade, and from then on no more signals are accepted. When a release that supports v11
+                is out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
           - exp_labels:
               severity: page
             exp_annotations:
@@ -112,6 +215,18 @@ tests:
       - eval_time: 15m
         alertname: UpgradeSignalMissing
         exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
           - exp_labels:
               severity: page
             exp_annotations:
@@ -271,6 +386,18 @@ tests:
         alertname: UpgradeSignalMissing
         exp_alerts:
           - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
+          - exp_labels:
               severity: page
             exp_annotations:
               summary: The validator has not signalled v11
@@ -406,6 +533,18 @@ tests:
       - eval_time: 40m
         alertname: UpgradeSignalMissing
         exp_alerts:
+          - exp_labels:
+              severity: message
+            exp_annotations:
+              summary: The validator has not signalled v11
+              description: >-
+                85.47% of the voting power has signalled app version 11, the next one, and the validator has
+                not signalled it. No rush yet: a validator can signal before a release exists, and this pages
+                once more than 1/3 of the voting power has signalled. Once 5/6 has, anyone can schedule the
+                upgrade, and from then on no more signals are accepted. When a release that supports v11 is
+                out, upgrade celestia-appd on every node, then signal from the validator's account:
+                celestia-appd tx signal signal 11 --from <validator account key>.
+              runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradesignalmissing
           - exp_labels:
               severity: page
             exp_annotations:

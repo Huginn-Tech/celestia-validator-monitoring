@@ -89,8 +89,8 @@ tests:
             exp_annotations:
               summary: "Fibre is not running on any host"
               description: >-
-                For 10 minutes no Fibre host (fibre-1) has reported fibre.service as active: Fibre is stopped everywhere,
-                the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+                For 10 minutes no Fibre host (fibre-1) has kept fibre.service active for a whole minute: Fibre is stopped or
+                crash looping everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   - name: Idle network; Fibre runs for hours without any upload and stays quiet
@@ -180,9 +180,10 @@ tests:
               summary: "Fibre on fibre-1 fails every upload"
               description: >-
                 For 15 minutes Fibre has accepted no upload, so it signs nothing: every signature it tried failed,
-                or its storage budget was full. Failed signatures: Fibre's log says failed to sign payment promise;
+                its storage budget was full, or it could not store them. Failed signatures: Fibre's log says failed to sign payment promise;
                 the signer behind its signer_grpc_address gives the validator's key but does not sign,
                 so check tmkms's log and that it signs raw bytes. A full budget: the dashboard's Storage budget used and Failed clean-ups.
+                Failed stores: Fibre's log says failed to store upload data; check the store's inodes, and the owner and permissions of its directories.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   # From 11m the storage budget is full: Fibre refuses every upload that passes its checks before
@@ -227,10 +228,129 @@ tests:
               summary: "Fibre on fibre-1 fails every upload"
               description: >-
                 For 15 minutes Fibre has accepted no upload, so it signs nothing: every signature it tried failed,
-                or its storage budget was full. Failed signatures: Fibre's log says failed to sign payment promise;
+                its storage budget was full, or it could not store them. Failed signatures: Fibre's log says failed to sign payment promise;
                 the signer behind its signer_grpc_address gives the validator's key but does not sign,
                 so check tmkms's log and that it signs raw bytes. A full budget: the dashboard's Storage budget used and Failed clean-ups.
+                Failed stores: Fibre's log says failed to store upload data; check the store's inodes, and the owner and permissions of its directories.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # From 11m the store fails (its inodes ran out, or its directories lost their owner after a
+  # restore): every upload fails at the store, after the budget and before any signature, so no
+  # failed signature and no refusal is counted. Only fibre.server.store.put.duration{success=false}
+  # moves, and its series stands beside the sum in the rule. The message goes out at 24m, as above.
+  - name: The store fails and no upload is accepted; uploads_failing after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_last_success_timestamp_seconds{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '_ 60+60x9 600x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x10 330x30'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_store_put_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 23m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: uploads_failing
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 fails every upload"
+              description: >-
+                For 15 minutes Fibre has accepted no upload, so it signs nothing: every signature it tried failed,
+                its storage budget was full, or it could not store them. Failed signatures: Fibre's log says failed to sign payment promise;
+                the signer behind its signer_grpc_address gives the validator's key but does not sign,
+                so check tmkms's log and that it signs raw bytes. A full budget: the dashboard's Storage budget used and Failed clean-ups.
+                Failed stores: Fibre's log says failed to store upload data; check the store's inodes, and the owner and permissions of its directories.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # A failed sign series that stands still sits beside the rising failed stores: after increase()
+  # the two have the same labels, so an or inside the sum would drop the stores and stay silent.
+  - name: Failed stores beside an old failed signature; uploads_failing still fires
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x10 330x30'
+      - series: >-
+          fibre_server_sign_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '1x40'
+      - series: >-
+          fibre_server_store_put_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 23m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: uploads_failing
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 fails every upload"
+              description: >-
+                For 15 minutes Fibre has accepted no upload, so it signs nothing: every signature it tried failed,
+                its storage budget was full, or it could not store them. Failed signatures: Fibre's log says failed to sign payment promise;
+                the signer behind its signer_grpc_address gives the validator's key but does not sign,
+                so check tmkms's log and that it signs raw bytes. A full budget: the dashboard's Storage budget used and Failed clean-ups.
+                Failed stores: Fibre's log says failed to store upload data; check the store's inodes, and the owner and permissions of its directories.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  # Stores fail for some uploads, others are accepted: the failed stores are one client that gave
+  # up, or a passing fault, and Fibre takes uploads.
+  - name: Some stores fail while others are accepted; no uploads_failing
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          node_systemd_unit_start_time_seconds{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '60x40'
+      - series: >-
+          fibre_server_upload_shard_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="true"}
+        values: '30+30x40'
+      - series: >-
+          fibre_server_store_put_duration_seconds_count{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre",success="false"}
+        values: '_x11 30+30x29'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreNotServing
+        exp_alerts: []
 
   # From 11m a client whose escrow is too low sends its blob again every few seconds and no other
   # client sends one: every upload fails at its payment promise, before any signature, so nothing

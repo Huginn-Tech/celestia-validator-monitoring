@@ -312,6 +312,47 @@ tests:
               description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
+  # Fibre stops at 6m on a store more than 90% full, and with it the budget it reports: the rule for a
+  # store without a budget applies, 10 minutes later. A standby that once ran can hold such a store.
+  - name: Fibre stops on a store more than 90% full; the no-budget message after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '4000000000000x30'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '150000000000x30'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",device="/dev/nvme1n1",fstype="ext4",mountpoint="/var/lib/fibre"}
+        values: '0x30'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x5 stale'
+      - series: >-
+          fibre_server_upload_shard_occupancy_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '990000000000x5 stale'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DiskLow
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9910
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme1n1
+              fstype: ext4
+              mountpoint: /var/lib/fibre
+              severity: message
+            exp_annotations:
+              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+
   - name: Fibre budget 0 and the store turns read-only; the read-only message replaces the low-space message
     interval: 1m
     input_series:

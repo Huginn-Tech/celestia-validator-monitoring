@@ -8,6 +8,7 @@
   fibre-behind DASHBOARD RULES  Fibre behind the network draws the missed_uploads rule (the mainnet example)
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
+  first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
 
 Each fails with an assertion. Run from the repo root; Python 3 and PyYAML.
 """
@@ -16,6 +17,11 @@ import re
 import sys
 
 import yaml
+
+# The word colours of the tiles (named) and of History (its hex values).
+RED, AMBER = ("red", "#F2495C"), ("orange", "#FF9830")
+# The clause of ServiceDown's crash-loop rule for Fibre, which Servers now's Restarts repeats.
+BOOT_GUARD = ' unless on (host) (time() - node_boot_time_seconds{job="node"} < 2400)'
 
 
 def walk(path):
@@ -29,6 +35,52 @@ def walk(path):
     return panels
 
 
+def rendered(scenario, alert):
+    """The rules of alert in a scenario's rendered rules file."""
+    path = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if scenario == "five" else scenario)
+    return [r for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if r.get("alert") == alert]
+
+
+def branches(expr):
+    """The branches of a chain, first to last: expr split at its 'or's outside every parenthesis and
+    quoted string."""
+    masked = re.sub(r'"(?:[^"\\]|\\.)*"', lambda m: " " * len(m.group(0)), expr)
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(masked):
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if depth == 0 and masked.startswith(" or ", i):
+            parts.append(expr[start:i])
+            start = i + 4
+    return parts + [expr[start:]]
+
+
+def code(branch):
+    """The code a chain's branch gives, from its '* 0 + 3' or '* 0 - 1' at the end; None without one."""
+    m = re.search(r"\* 0 ([+-]) (\d+)\)*$", branch)
+    return float(m.group(1) + m.group(2)) if m else None
+
+
+def words(panel, ref):
+    """{code: (word, colour)} of query ref: the value mappings of its override, else the panel's."""
+    fc = panel["fieldConfig"]
+    own = [p["value"] for o in fc["overrides"] if o["matcher"] == {"id": "byFrameRefID", "options": ref}
+           for p in o["properties"] if p["id"] == "mappings"]
+    found = {}
+    for m in own[0] if own else fc["defaults"].get("mappings", []):
+        if m["type"] == "value":
+            found.update({float(k): (v["text"], v.get("color")) for k, v in m["options"].items()})
+    return found
+
+
+def worst_first(name, panel, target):
+    """Every branch of target's chain that shows a red word comes before any that shows an amber one."""
+    shown = words(panel, target["refId"])
+    colours = [shown.get(code(b), (None, None))[1] for b in branches(target["expr"])]
+    reds = [i for i, c in enumerate(colours) if c in RED]
+    ambers = [i for i, c in enumerate(colours) if c in AMBER]
+    assert reds and ambers and max(reds) < min(ambers), "%s: an amber word comes first: %s" % (name, colours)
+
+
 def missed_blocks(args):
     """The Validator tile holds SignaturesMissed's comparison; Missed blocks draws its two sides at its share."""
     for s in ("single", "split", "mainnet", "five"):
@@ -38,15 +90,16 @@ def missed_blocks(args):
         assert len(rule) == 1, "%s: one SignaturesMissed rule, not %d" % (s, len(rule))
         expr = " ".join(rule[0]["expr"].split())
         m = re.fullmatch(r"max\((max by \(host\) \(.+\)) > on \(host\) ([0-9.]+) \* "
-                         r"(max by \(host\) \(delta\(cometbft_consensus_height\{[^}]*\}\[1h\]\)\))\)", expr)
+                         r"(max by \(host\) \(delta\(cometbft_consensus_height\{[^}]*\}\[1h\]\)\)) "
+                         r"(unless on \(host\) \(.+ > \d+\))\)", expr)
         assert m, expr
-        a, r, b = m.groups()
+        a, r, b, lag = m.groups()
         panels = walk("build/%s/dashboard.json" % s)
         text = lambda i: [" ".join(t["expr"].split()) for t in panels[i]["targets"]]
         assert any(expr in t for t in text(11)), "%s: tile 11 lacks %s" % (s, expr)
         for i in (117, 111):
-            shares = [t for t in text(i) if a in t and b in t]
-            assert shares, "%s: %d draws no %s over %s" % (s, i, a, b)
+            shares = [t for t in text(i) if a in t and b in t and lag in t]
+            assert shares, "%s: %d draws no %s over %s, %s" % (s, i, a, b, lag)
             level = panels[i]["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
             assert level == float(r), "%s: %d's level %s, the rule's %s" % (s, i, level, r)
         print("%s: tile 11, 117 and 111 read %s over %s at %s" % (s, a[:60] + "...", b, r))
@@ -79,7 +132,8 @@ def fibre_behind(args):
     rules = [r for g in yaml.safe_load(open(args[1]))["groups"] for r in g["rules"]
              if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
     assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
-    m = re.fullmatch(r"(.*) > (\d+) (and on .*)", " ".join(rules[0]["expr"].split()))
+    # The chart draws the gap also when the blob carries the validator's signature (the rule's unless).
+    m = re.fullmatch(r"(.*) > (\d+) (and on .*?)(?: unless on .*)?", " ".join(rules[0]["expr"].split()))
     assert m, rules[0]["expr"]
     chart = next(p for p in dash["panels"] if p.get("id") == 210)
     drawn = " ".join(chart["targets"][0]["expr"].split())
@@ -98,7 +152,8 @@ def clock(args):
         found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
                  if r.get("alert") == "ClockNotSynced"]
         assert len(found) == 1, "%s: one ClockNotSynced rule, not %d" % (s, len(found))
-        m = re.fullmatch(r"(node_timex_maxerror_seconds)\{[^}]*\} >= (\d+)", " ".join(found[0]["expr"].split()))
+        m = re.fullmatch(r"min_over_time\((node_timex_maxerror_seconds)\{[^}]*\}\[3m\]\) >= (\d+)",
+                         " ".join(found[0]["expr"].split()))
         assert m, found[0]["expr"]
         panels = walk("build/%s/dashboard.json" % s)
         chart = panels[490]
@@ -110,16 +165,18 @@ def clock(args):
 
 
 def restarts(args):
-    """Restarts draw the value the crash-loop rule compares, its line and title at the rule's number."""
+    """Restarts draw the value the crash-loop rule compares, its line and title at the rule's number. Only
+    Fibre's rule leaves out a host that just booted, and Servers now's Restarts does the same for Fibre."""
     for s in ("single", "split", "mainnet", "five"):
-        rules = "build/%s/rules/celestia-mon.rules.yml" % ("mainnet" if s == "five" else s)
-        exprs = [" ".join(r["expr"].split()) for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
-                 if r.get("alert") == "ServiceDown" and "node_systemd_service_restart_total" in r["expr"]]
-        found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)", e)
-                 for e in exprs]
+        crash = [r for r in rendered(s, "ServiceDown") if "node_systemd_service_restart_total" in r["expr"]]
+        exprs = [" ".join(r["expr"].split()) for r in crash]
+        found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)(%s)?"
+                              % re.escape(BOOT_GUARD), e) for e in exprs]
         assert found and all(found), "%s: the crash-loop rules %s" % (s, exprs)
         levels = {int(m.group(1)) for m in found}
         assert len(levels) == 1, "%s: crash-loop levels %s" % (s, levels)
+        guarded = {r["labels"]["unit"] for r, m in zip(crash, found) if m.group(2)}
+        assert guarded == {r["labels"]["unit"] for r in crash} & {"fibre"}, "%s: the boot guard on %s" % (s, guarded)
         n = levels.pop()
         panels = walk("build/%s/dashboard.json" % s)
         chart = panels[480]
@@ -129,10 +186,89 @@ def restarts(args):
         assert level == n, "%s: 480's line at %s, the rule's %s" % (s, level, n)
         assert chart["title"] == "Restarts (alert above %d in 30 min)" % n, "%s: 480 is titled %r" % (s, chart["title"])
         print("%s: 480 draws %d series, its line at %s" % (s, len(chart["targets"]), level))
+    table = [t["expr"] for t in walk("build/table/dashboard.json")[26]["targets"] if BOOT_GUARD in t["expr"]]
+    assert len(table) == 1 and table[0].count(BOOT_GUARD) == 1, table
+    print("table: Servers now leaves out a host that just booted, for Fibre only")
+
+
+def first_screen(args):
+    """What the first screen repeats of the rules and the inhibitions, where nothing else ties the two."""
+    for s in ("split", "mainnet", "five"):
+        panels = walk("build/%s/dashboard.json" % s)
+        # The Fibre tile reads the crash loop, ahead of the reasons it holds back as messages.
+        tile = branches(panels[14]["targets"][0]["expr"])
+        crash = next(b for b in tile if 'alertname="ServiceDown",unit="fibre",alertstate="firing"' in b)
+        reasons = [i for i, b in enumerate(tile) if 'alertname="FibreNotServing",reason=' in b and "severity=" not in b]
+        assert reasons and tile.index(crash) < min(reasons), "%s: 14 reads %s after a reason" % (s, crash)
+        assert words(panels[14], "A")[code(crash)] == ("Fibre crash", "orange"), crash
+        # Grafana's lastNotNull turns NaN into no value, so a word mapped from NaN never shows.
+        for p in panels.values():
+            if p.get("type") == "stat" and "lastNotNull" in p["options"]["reduceOptions"]["calcs"]:
+                d = p["fieldConfig"]["defaults"]
+                for m in d.get("mappings", []):
+                    if m["type"] == "special" and m["options"]["match"] == "nan":
+                        assert m["options"]["result"]["text"] == d.get("noValue"), "%s: %d maps NaN" % (s, p["id"])
+        for i, word in ((3, "Stalled"), (205, "No uploads")):
+            last = branches(panels[i]["targets"][0]["expr"])[-1]
+            assert code(last) == -1 and words(panels[i], "A")[-1][0] == word, "%s: %d: %s" % (s, i, last)
+        print("%s: 14 reads the crash loop; 3 and 205 say their words from a code" % s)
+    for s in ("mainnet", "five"):
+        panels = walk("build/%s/dashboard.json" % s)
+        worst_first("%s: tile 17" % s, panels[17], panels[17]["targets"][0])
+    for s in ("single", "split", "mainnet", "five"):
+        panels = walk("build/%s/dashboard.json" % s)
+        lines = [t for t in panels[20]["targets"] if t["refId"].startswith("S")]
+        assert lines, "%s: History has no server line" % s
+        for t in lines:
+            worst_first("%s: History's %s" % (s, t["legendFormat"]), panels[20], t)
+        # A long block keeps a page apart from a stall at another moment of it.
+        vns, nna = 'alertname="ValidatorNotSigning"', 'alertname="NodeNotAdvancing"'
+        fired = '(ALERTS{alertstate="firing",%s} unless on () ALERTS{alertstate="firing",%s})' % (vns, nna)
+        line = next(t["expr"] for t in panels[20]["targets"] if t["refId"] == "B")
+        band = next(t["expr"] for t in panels[25]["targets"] if t["refId"] == "A")
+        assert fired in line and "(ALERTS{%s} unless on () ALERTS{%s})" % (vns, nna) in line, line
+        assert fired in band, band
+        print("%s: the server lines read red first; a page stays apart from a stall, minute by minute" % s)
+    for s in ("split", "mainnet"):
+        panels = walk("build/%s/dashboard.json" % s)
+        # Alertmanager holds an alert back only while its cause fires, and a message never holds a page.
+        status = next(t["expr"] for t in panels[10]["targets"] if "* 0 + 3 unless on (alertname) (" in t["expr"])
+        start = status.index("* 0 + 3 unless on (alertname) (")
+        end = status.index('alertstate="pending",severity="page"', start)
+        held = re.findall(r"ALERTS\{[^}]*\}", status[start:end])
+        causes = [a for a in held if 'alertname="FibreNotServing"' not in a]
+        assert causes and all('alertstate="firing"' in a for a in causes), causes
+        assert not any('unit="fibre"' in a or "FibreBothActive" in a for a in causes), causes
+        assert 'ALERTS{alertname="ServiceDown",unit="fibre"}' in status[end:], "%s: 10 lacks the crash loop's hold" % s
+        assert 'ALERTS{alertname="FibreBothActive"}' in status[end:], "%s: 10 lacks FibreBothActive's hold" % s
+        assert 'reason!~"not_ready|not_served"' in status and 'reason!="not_ready"' not in status, s
+        # The card goes red for the page that went out, ahead of the crash loop.
+        page = 'ALERTS{alertname="FibreNotServing",reason="not_ready",severity="page",alertstate="firing"}'
+        loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'
+        cards = [t["expr"] for p in panels.values() for t in p.get("targets", []) if loop in t.get("expr", "")]
+        assert cards and all(page in e and e.index(page) < e.index(loop) for e in cards), "%s: %s" % (s, cards)
+        print("%s: firing pages fold into firing causes only; %d cards read Not ready first" % (s, len(cards)))
+    panels = walk("build/mainnet/dashboard.json")
+    # wrong_host: a fresh reading of Tensile, and not while two Fibres run.
+    gate = "time() - celestia_mon_tensile_last_success_timestamp_seconds < 540"
+    wrong = [" ".join(r["expr"].split()) for r in rendered("mainnet", "FibreDown") if r["labels"].get("reason") == "wrong_host"]
+    assert wrong and all(gate in e and "unless on () count(" in e for e in wrong), wrong
+    tile = panels[15]["targets"][0]["expr"]
+    assert tile.count(gate) == len(wrong) and "unless on () (count(" in tile, tile
+    # UpgradeSignalMissing: a message, then a page at 1/3 on the same conditions; only the page is red.
+    signal = sorted(rendered("mainnet", "UpgradeSignalMissing"), key=lambda r: r["labels"]["severity"])
+    assert [(r["labels"]["severity"], r["for"]) for r in signal] == [("message", "10m"), ("page", "10m")], signal
+    message, page = (" ".join(r["expr"].split()) for r in signal)
+    assert " > 0 and " in message and message.replace(" > 0 and ", " > 1/3 and ", 1) == page, (message, page)
+    asks = [b for b in branches(panels[16]["targets"][0]["expr"]) if 'alertname="UpgradeSignalMissing"' in b]
+    shown = [words(panels[16], "A")[code(b)] for b in asks]
+    assert shown == [("Not signalled", "red"), ("Not signalled", "orange")], asks
+    assert 'severity="page"' in asks[0] and "severity" not in asks[1], asks
+    print("mainnet: 15 reads %d wrong_host rules; 16 is red for the page alone" % len(wrong))
 
 
 CHECKS = {"missed-blocks": missed_blocks, "upload-readiness": upload_readiness, "fibre-behind": fibre_behind,
-          "clock": clock, "restarts": restarts}
+          "clock": clock, "restarts": restarts, "first-screen": first_screen}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CHECKS:

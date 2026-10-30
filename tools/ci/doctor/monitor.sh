@@ -209,3 +209,162 @@ for want in '{severity="page"} by op until 2099-01-01T00:00:00.000Z (ID 00000000
             '; which page alerts they hold back is not known: Prometheus not answering (check 11). '; do
   grep -qF -- "$want" <<<"$line" || { echo "check 21 without Prometheus: missing $want"; exit 1; }
 done
+# A silence that names a page alert only by a label its rule sets holds it back like one on
+# alertname: check with FibreDown's reachability rule loaded (pages-3.yml), reason with
+# FibreNotServing's not_ready rule (pages-2.yml), whose summaries read other labels.
+cat > am/api/v2/silences <<EOF
+[{"id":"00000000-0000-0000-0000-000000000010","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"ci","createdBy":"op","endsAt":"$soon",
+  "matchers":[{"isEqual":true,"isRegex":false,"name":"check","value":"reachability"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+ {"id":"00000000-0000-0000-0000-000000000011","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"ci","createdBy":"op","endsAt":"$soon",
+  "matchers":[{"isEqual":true,"isRegex":false,"name":"reason","value":"not_ready"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+EOF
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
+want='(ID 00000000-0000-0000-0000-000000000010: holds back FibreDown); the others: {reason="not_ready"} by op'
+grep -qF -- "$want" <<<"$line" || { echo "check 21 missed a silence on a rule's check label: $want"; exit 1; }
+pages pages-2.yml 9
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^WARN +21 +silences +1 of 2 active silences ' <<<"$out" || true)
+want='(ID 00000000-0000-0000-0000-000000000011: holds back FibreNotServing); the others: {check="reachability"} by op'
+grep -qF -- "$want" <<<"$line" || { echo "check 21 missed a silence on a rule's reason label: $want"; exit 1; }
+# A short silence for one host names no page alert, which the line says of its length.
+cat > am/api/v2/silences <<EOF
+[{"id":"00000000-0000-0000-0000-000000000012","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
+  "comment":"planned","createdBy":"op","endsAt":"$soon",
+  "matchers":[{"isEqual":true,"isRegex":false,"name":"host","value":"val-1"}],"startsAt":"2026-10-17T10:00:00.000Z"}]
+EOF
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+want='1 active silences, none naming a page alert or ending more than 4 hours from now (a silence for one host counts by its length only): {host="val-1"} by op'
+line=$(grep -E '^OK +21 +silences ' <<<"$out" || true)
+grep -qF -- "$want" <<<"$line" || { echo "check 21 did not count a host silence by its length: $want"; exit 1; }
+
+# The jobs after the prometheus one: scrape JOBS writes them and Prometheus reloads; the stand-in
+# Alertmanager on 9913 serves their metrics from am/.
+base=$(sed '/job_name: closed/,$d' prometheus.yml)
+scrape() {
+  printf '%s\n%s\n' "$base" "$1" >prometheus.yml
+  curl -fsS -X POST http://127.0.0.1:9912/-/reload
+}
+wait_for() { # PromQL that must have a result
+  for _ in $(seq 60); do
+    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query | grep -q '"value":'; then return 0; fi
+    sleep 1
+  done
+  echo "Prometheus has no result for $1"
+  exit 1
+}
+
+# A failed heartbeat is the one FAIL of this run (check 9 reads the runner's clock), and it must
+# reach the exit code: report sets the global failed, which no check may shadow.
+printf '%s\n' '[]' >am/api/v2/silences
+pages pages-3.yml 7
+printf '%s\n' 'alertmanager_notifications_total{receiver_name="deadman"} 10' \
+  'alertmanager_notifications_failed_total{receiver_name="deadman"} 1' >am/am.txt
+scrape '  - job_name: alertmanager
+    metrics_path: /am.txt
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["127.0.0.1:9913"]'
+wait_for 'alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"} == 1'
+printf '%s\n' 'alertmanager_notifications_total{receiver_name="deadman"} 12' \
+  'alertmanager_notifications_failed_total{receiver_name="deadman"} 5' >am/am.txt
+wait_for 'alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"} == 5'
+rc=0
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled false 2>/dev/null) || rc=$?
+printf '%s\n' "$out"
+grep -Eq '^FAIL +22 +dead-man +heartbeats to the dead-man service failed in the last 10 minutes' <<<"$out" ||
+  { echo "check 22 did not fail on failed heartbeats"; exit 1; }
+others=$(grep -E '^FAIL ' <<<"$out" | grep -Ev '^FAIL +(9|22) ' || true)
+if [ -n "$others" ]; then echo "this run should fail on check 22 alone: $others"; exit 1; fi
+if [ "$rc" -ne 1 ]; then echo "doctor exited $rc on a FAIL of check 22"; exit 1; fi
+grep -qF 'Some checks failed.' <<<"$out" || { echo "doctor did not close with its failure line"; exit 1; }
+
+# Check 12 on the metrics of celestia-mon-tensile: a target down, a service that has read nothing,
+# a validator with no endpoint registered (no check of it yet), one with an endpoint but no check,
+# and one out of the active set.
+cat > pages-4.yml <<'EOF'
+groups:
+  - name: pages
+    rules:
+      - {alert: NodeNotAdvancing, expr: vector(1) == 0, labels: {severity: page}}
+      - alert: CiTensile
+        expr: >-
+          celestia_mon_fibre_reachable == 0 or celestia_mon_fibre_last_check_timestamp_seconds == 0
+          or celestia_mon_fibre_registered == 0 or celestia_mon_tensile_last_success_timestamp_seconds == 0
+EOF
+pages pages-4.yml 1
+tensile_job() { # the target of the job tensile
+  printf '%s\n' '  - job_name: tensile' '    metrics_path: /tensile.txt' '    fallback_scrape_protocol: PrometheusText0.0.4' \
+    '    static_configs:' "      - targets: [\"$1\"]"
+}
+scrape "$(tensile_job 127.0.0.1:9)"
+wait_for 'up{job="tensile"} == 0'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^FAIL +12 ' <<<"$out" || true)
+grep -qF 'celestia_mon_fibre_reachable (tensile target not up: check 11)' <<<"$line" ||
+  { echo "check 12 did not fail on the down tensile target"; exit 1; }
+says 11 '"journalctl -u celestia-mon-tensile -n 50" on this host'
+echo 'celestia_mon_tensile_last_success_timestamp_seconds 0' >am/tensile.txt
+scrape "$(tensile_job 127.0.0.1:9913)"
+wait_for 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile"} == 0'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^FAIL +12 ' <<<"$out" || true)
+want='celestia_mon_fibre_registered (celestia-mon-tensile has read no status from Tensile since it started'
+grep -qF -- "$want" <<<"$line" || { echo "check 12 did not fail on a service that has read nothing"; exit 1; }
+printf '%s\n' 'celestia_mon_tensile_last_success_timestamp_seconds 1700000000' 'celestia_mon_fibre_registered{endpoint=""} 0' >am/tensile.txt
+wait_for 'max(celestia_mon_fibre_registered) == 0'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)
+for want in 'celestia_mon_fibre_reachable (after a Fibre host registered on chain (x/valaddr))' \
+            'celestia_mon_fibre_last_check_timestamp_seconds (after a Fibre host registered on chain (x/valaddr))'; do
+  grep -qF -- "$want" <<<"$line" || { echo "check 12 does not wait for a registration: $want"; exit 1; }
+done
+if grep -E '^(WARN|FAIL) +12 ' <<<"$out" | grep -qF celestia_mon_fibre_reachable; then
+  echo "check 12 reports the check from outside before a Fibre host is registered"
+  exit 1
+fi
+printf '%s\n' 'celestia_mon_tensile_last_success_timestamp_seconds 1700000000' \
+  'celestia_mon_fibre_registered{endpoint="fibre.example.invalid:7980"} 1' >am/tensile.txt
+wait_for 'max(celestia_mon_fibre_registered) == 1'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^WARN +12 ' <<<"$out" || true)
+grep -qF ' celestia_mon_fibre_reachable (CiTensile)' <<<"$line" ||
+  { echo "check 12 does not warn of a registered endpoint with no check from outside"; exit 1; }
+# Out of the active set the service reads Tensile and serves no registration: none of the three is a
+# renamed metric.
+echo 'celestia_mon_tensile_last_success_timestamp_seconds 1700000000' >am/tensile.txt
+wait_for 'absent(celestia_mon_fibre_registered)'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)
+for want in 'celestia_mon_fibre_registered (after Tensile lists the validator in the active set)' \
+            'celestia_mon_fibre_reachable (after Tensile lists the validator in the active set)' \
+            'celestia_mon_fibre_last_check_timestamp_seconds (after Tensile lists the validator in the active set)'; do
+  grep -qF -- "$want" <<<"$line" || { echo "check 12 does not wait for the active set: $want"; exit 1; }
+done
+if grep -E '^(WARN|FAIL) +12 ' <<<"$out" | grep -qF celestia_mon_fibre_; then
+  echo "check 12 reports a validator out of the active set as a missing metric"
+  exit 1
+fi
+
+# The store's histogram has no series until Fibre stores an upload, while Fibre pushes the rest.
+cat > pages-5.yml <<'EOF'
+groups:
+  - name: pages
+    rules:
+      - {alert: NodeNotAdvancing, expr: vector(1) == 0, labels: {severity: page}}
+      - {alert: CiStore, expr: fibre_server_store_put_duration_seconds_count == 0 or fibre_server_upload_shard_budget_bytes == 0}
+EOF
+pages pages-5.yml 1
+echo 'fibre_server_upload_shard_budget_bytes 1' >am/otel.txt
+scrape '  - job_name: otelcol
+    metrics_path: /otel.txt
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - targets: ["127.0.0.1:9913"]'
+wait_for 'fibre_server_upload_shard_budget_bytes{job="otelcol"} == 1'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>/dev/null) || true
+line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)
+grep -qF 'fibre_server_store_put_duration_seconds_count (after the first upload Fibre stores)' <<<"$line" ||
+  { echo "check 12 does not wait for the first upload Fibre stores"; exit 1; }

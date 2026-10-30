@@ -166,27 +166,47 @@ inhibit_rules:
     target_matchers:
       - 'alertname="FibreNotServing"'
       - 'reason="not_ready"'
-  # No Fibre unit active anywhere explains FibreNotServing. FibreDown names no host.
+  # Any FibreDown, from the unit or from outside, holds back every FibreNotServing, not_ready too.
+  # FibreDown names no host.
   - source_matchers:
       - 'alertname="FibreDown"'
     target_matchers:
       - 'alertname="FibreNotServing"'
-  # A crash-looping Fibre explains the same host's FibreNotServing.
+  # Two Fibres run: only the one the chain names gets uploads, so the other misses every blob.
+  # FibreBothActive fires first and names both.
+  - source_matchers:
+      - 'alertname="FibreBothActive"'
+    target_matchers:
+      - 'alertname="FibreNotServing"'
+      - 'reason="missed_uploads"'
+  # A crash-looping Fibre explains the same host's FibreNotServing messages. Not its pages: a message
+  # never holds a page, and the crash loop alert outlasts the loop by up to 30 minutes, while a
+  # Fibre that has answered NOT_SERVING for 10 minutes is running.
   - source_matchers:
       - 'alertname="ServiceDown"'
       - 'unit="fibre"'
     target_matchers:
       - 'alertname="FibreNotServing"'
+      - 'severity="message"'
     equal: [host]
-  # A collector that is down explains missing Fibre metrics, not Fibre's own health check, which
-  # the monitor asks Fibre directly.
+  # A collector that is down explains missing Fibre metrics, not what reaches the monitor without
+  # it: Fibre's own health check, which the monitor asks Fibre directly, and the failed reads Tensile
+  # reports.
   - source_matchers:
       - 'alertname="ServiceDown"'
       - 'unit="otelcol"'
     target_matchers:
       - 'alertname="FibreNotServing"'
-      - 'reason!="not_ready"'
+      - 'reason!~"not_ready|not_served"'
     equal: [host]
+  # Above 1/3 of the voting power the page stands in for the message of the same signalling round,
+  # so the chat repeat comes once.
+  - source_matchers:
+      - 'alertname="UpgradeSignalMissing"'
+      - 'severity="page"'
+    target_matchers:
+      - 'alertname="UpgradeSignalMissing"'
+      - 'severity="message"'
 
 receivers:
   # page: PagerDuty (when set) plus every chat channel and webhook.

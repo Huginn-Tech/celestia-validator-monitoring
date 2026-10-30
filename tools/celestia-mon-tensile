@@ -6,17 +6,20 @@ endpoint, the host registered on chain in x/valaddr, from outside the validator'
 records every settled blob: the validators it assigned rows to, the endorsements it carries, and
 whether each validator later returned the rows it signed for. This service reads the validator's
 status from Tensile's API every interval and serves it as Prometheus metrics: the registered
-endpoint, whether Tensile reached it (TCP, TLS and the validator's identity) at its last check,
-and when that check ran, which FibreDown uses; and the blobs the network assigned to the
-validator, which FibreNotServing compares with Fibre's own uploads.
+endpoint, whether Tensile reached it (TCP and TLS) at its last check, and when that check ran,
+which FibreDown uses; and the blobs the network assigned to the validator, which FibreNotServing
+compares with Fibre's own uploads.
 
-A Tensile that does not send signing.last_assigned_at gives only the number of blobs assigned in
-its last 24 hours. The time of the newest one is then the time of Tensile's newest block (/tip) at
-the read at which that number rose: the blob settled in a block after the one of the read before,
-so that time is late by at most the time between two reads. A rise counts only when Tensile's record
-reached the chain's head at that read and at the one before, so a Tensile catching up after its own
-outage cannot look like new blobs. The time is absent after a start until the first rise: nothing
-is kept on disk.
+A Tensile that does not send signing.last_assigned_at, as Tensile does not yet, gives only the
+number of blobs assigned in its last 24 hours. The time of the newest one is then the time of the
+newest block in Tensile's /tip at the read at which that number rose. The number comes from a
+snapshot up to about a minute old, so that time is up to about 2 minutes late. A rise counts only
+when the read before it worked and /tip was current at both: a read that fails drops the number,
+so a blob that settled while Tensile was not read does not look new. /tip is the head as Tensile's
+node or scanner sees it, not how far its record reached, so a record catching up while its node
+runs can still look like new blobs. A rise is missed when as many blobs leave the 24 hours as
+arrive between two reads. The time is absent after a start until the first rise: nothing is kept
+on disk.
 
   celestia-mon-tensile --config FILE [--once]
 
@@ -97,8 +100,8 @@ class State:
         self.errors = {}
         self.status = None
         # Without Tensile's last_assigned_at: the number of assigned blobs at the previous read, None
-        # when that read's record was not current, and the time of Tensile's newest block at the last
-        # read at which it rose.
+        # when that read failed or its /tip was not current, and the time of the newest block in /tip
+        # at the last read at which it rose.
         self.assigned = None
         self.assigned_at = None
 
@@ -112,10 +115,12 @@ class State:
             self.errors[reason] = self.errors.get(reason, 0) + 1
 
     def count_assigned(self, assigned, tip):
-        """tip: the time of Tensile's newest block when its record is current, else None. The newest
-        assigned blob settled at the latest by that block when the number of assigned blobs rose since
-        the previous read and the record was current at both reads. A rise can be missed, when as
-        many assignments leave Tensile's 24 hours as arrive between two reads, but never invented."""
+        """tip: the time of the newest block in Tensile's /tip when that block is current, else None.
+        The newest assigned blob takes that time when the number of assigned blobs rose since the
+        previous read and /tip was current at both reads. None drops the number, so the next read only
+        notes its own: a read that fails calls this with (0, None). A rise can be missed, when as many
+        assignments leave Tensile's 24 hours as arrive between two reads, and a record catching up
+        while Tensile's node runs can look like one (see the top of this file)."""
         with self.lock:
             if tip is not None and self.assigned is not None and assigned > self.assigned:
                 self.assigned_at = tip
@@ -135,14 +140,18 @@ class State:
             if s is None:
                 return "\n".join(out) + "\n"
             endpoint = esc(s.get("host") or "")
-            out += [
-                "# HELP celestia_mon_fibre_registered 1 when the validator has a Fibre host registered on chain (endpoint), 0 when none.",
-                "# TYPE celestia_mon_fibre_registered gauge",
-                f'celestia_mon_fibre_registered{{endpoint="{endpoint}"}} {1 if endpoint else 0}',
-            ]
+            # Tensile's host comes from the chain's bonded provider list; a validator out of the active
+            # set leaves it and keeps its registration, so no reading is served.
+            out_of_set = s.get("jailed") is True or s.get("bond_status") not in (None, "", "BOND_STATUS_BONDED")
+            if endpoint or not out_of_set:
+                out += [
+                    "# HELP celestia_mon_fibre_registered 1 when the validator has a Fibre host registered on chain (endpoint), 0 when none.",
+                    "# TYPE celestia_mon_fibre_registered gauge",
+                    f'celestia_mon_fibre_registered{{endpoint="{endpoint}"}} {1 if endpoint else 0}',
+                ]
             if endpoint and s.get("reachable") is not None:
                 out += [
-                    "# HELP celestia_mon_fibre_reachable 1 when Tensile completed TCP, TLS and the identity check at its last check.",
+                    "# HELP celestia_mon_fibre_reachable 1 when Tensile completed TCP and TLS at its last check.",
                     "# TYPE celestia_mon_fibre_reachable gauge",
                     f'celestia_mon_fibre_reachable{{endpoint="{endpoint}"}} {1 if s["reachable"] else 0}',
                 ]
@@ -237,8 +246,9 @@ def get(url):
 
 
 def current(api, state):
-    """The time of Tensile's newest block (/tip) when its record reaches the chain's head: that block is
-    less than 2 minutes older than Tensile's clock. None when it does not, or the tip cannot be read."""
+    """The time of the newest block in Tensile's /tip when that block is current: less than 2 minutes
+    older than Tensile's clock. None when it is older, or the tip cannot be read. The block is the
+    node's when Tensile asks one, so a current block does not show that Tensile's record reached it."""
     try:
         tip = get(api + "/tip")
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
@@ -254,9 +264,12 @@ def current(api, state):
 def read(cfg, state):
     api = cfg["api"].rstrip("/")
     url = api + "/validators/" + urllib.parse.quote(cfg["validator"]) + "/status"
+    # A read that fails drops the number of assigned blobs before it counts the error: what the next
+    # good read finds may have settled during the gap.
     try:
         status = get(url)
     except urllib.error.HTTPError as e:
+        state.count_assigned(0, None)
         state.error("not_found" if e.code == 404 else "http")
         hint = ": check celestia_mon_tensile.validator and the network of celestia_mon_tensile.api" if e.code == 404 else ""
         if 300 <= e.code < 400:
@@ -264,10 +277,12 @@ def read(cfg, state):
         log(f"Tensile answered {e.code} for {url}{hint}")
         return
     except (urllib.error.URLError, http.client.HTTPException, TimeoutError, OSError, ValueError) as e:
+        state.count_assigned(0, None)
         state.error("network")
         log(f"cannot read Tensile at {url}: {e}")
         return
     if not isinstance(status, dict) or "host" not in status:
+        state.count_assigned(0, None)
         state.error("format")
         log(f"Tensile's answer for {url} has no host field")
         return

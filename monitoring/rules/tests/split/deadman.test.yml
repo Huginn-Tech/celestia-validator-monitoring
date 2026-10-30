@@ -1,22 +1,23 @@
-# DeadmanFailing on the example-split inventory (monitor mon-1): a heartbeat to the dead-man
-# service failed in the last 15 minutes. Only the dead-man receiver's failures count
-# (receiver_name="deadman"); a failing webhook receiver is NotificationsFailing.
+# DeadmanFailing on the example-split inventory (monitor mon-1): at least three heartbeats to the
+# dead-man service failed in the last 15 minutes. One costs nothing, as the next follows within
+# 2 minutes. Only the dead-man receiver's failures count (receiver_name="deadman"); a failing webhook
+# receiver is NotificationsFailing.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
 
 tests:
-  - name: A heartbeat fails at 10m; a message for 15 minutes
+  - name: Heartbeats fail at 10m, 11m and 12m; a message from the third on
     interval: 1m
     input_series:
       - series: >-
           alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
-        values: '0x9 1x40'
+        values: '0x9 1+1x2 3x40'
     alert_rule_test:
-      - eval_time: 9m
+      - eval_time: 11m
         alertname: DeadmanFailing
         exp_alerts: []
-      - eval_time: 10m
+      - eval_time: 12m
         alertname: DeadmanFailing
         exp_alerts:
           - exp_labels:
@@ -25,8 +26,8 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot reach the dead-man service"
               description: >-
-                A heartbeat to the dead-man service failed in the last 15 minutes.
-                Until it gets through, the dead-man service cannot tell you that monitoring is down.
+                At least three heartbeats to the dead-man service failed in the last 15 minutes.
+                Until they get through, the dead-man service cannot tell you that monitoring is down.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
       # the 0 at 9m is the one at 23m.
@@ -39,10 +40,24 @@ tests:
             exp_annotations:
               summary: "Alertmanager on mon-1 cannot reach the dead-man service"
               description: >-
-                A heartbeat to the dead-man service failed in the last 15 minutes.
-                Until it gets through, the dead-man service cannot tell you that monitoring is down.
+                At least three heartbeats to the dead-man service failed in the last 15 minutes.
+                Until they get through, the dead-man service cannot tell you that monitoring is down.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       - eval_time: 24m
+        alertname: DeadmanFailing
+        exp_alerts: []
+
+  - name: One failed heartbeat sends nothing
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_notifications_failed_total{job="alertmanager",instance="127.0.0.1:9913",host="mon-1",role="monitor",integration="webhook",receiver_name="deadman",reason="other"}
+        values: '0x9 1x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: DeadmanFailing
+        exp_alerts: []
+      - eval_time: 20m
         alertname: DeadmanFailing
         exp_alerts: []
 

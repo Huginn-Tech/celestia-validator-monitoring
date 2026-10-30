@@ -95,3 +95,63 @@ for want in 'Fibre reports that at least one of its own checks fails, so uploads
             "Fix: on fibre-b, \"journalctl -u fibre | grep 'health check failed' | tail -n 5\""; do
   grep -qF -- "$want" <<<"$line" || { echo "check 24 does not say: $want"; exit 1; }
 done
+
+# Each Fibre host under a unit name of its own, as a host's celestia_mon_units has it and its
+# node_exporter exports it, with a collector target each: checks 13, 19 and 24 follow fibre_units.
+for h in a b c d e; do
+  v=1
+  if [ "$h" = e ]; then v=0; fi
+  printf 'node_systemd_unit_state{host="fibre-%s",name="fibre-%s.service",state="active"} %s\n' "$h" "$h" "$v"
+done >node/metrics.txt
+echo 'ci_collector_up 1' >node/otel.txt
+cat >> prometheus.yml <<'EOF'
+  - job_name: otelcol
+    metrics_path: /otel.txt
+    fallback_scrape_protocol: PrometheusText0.0.4
+    static_configs:
+      - {targets: ["127.0.0.1:9100"], labels: {host: fibre-a, role: fibre}}
+      - {targets: ["127.0.0.1:9100"], labels: {host: fibre-b, role: fibre}}
+      - {targets: ["127.0.0.1:9100"], labels: {host: fibre-c, role: fibre}}
+      - {targets: ["127.0.0.1:9100"], labels: {host: fibre-d, role: fibre}}
+      - {targets: ["127.0.0.1:9100"], labels: {host: fibre-e, role: fibre}}
+EOF
+pkill -HUP -x prometheus
+wait_for() { # PromQL, the value it must reach
+  for _ in $(seq 60); do
+    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query | grep -q "\"value\":[[0-9.]*,\"$2\"]"; then return 0; fi
+    sleep 1
+  done
+  echo "Prometheus did not reach $2 for $1"
+  exit 1
+}
+wait_for 'count(up{job="otelcol"} == 1) + count(node_systemd_unit_state{name=~"fibre-.*",state="active"})' 10
+own=(--config /dev/null --roles monitor --fibre-enabled true --fibre-hosts "fibre-a,fibre-b,fibre-c,fibre-d,fibre-e"
+  --fibre-units "fibre-a=fibre-a,fibre-b=fibre-b,fibre-c=fibre-c,fibre-d=fibre-d,fibre-e=fibre-e")
+run bash "$GITHUB_WORKSPACE/tools/doctor.sh" "${own[@]}"
+line=$(grep -E '^WARN +19 +fibre active +Fibre is active on fibre-a, fibre-b, fibre-c, fibre-d \(fibre-a: fibre-a\.service, ' <<<"$out")
+grep -qF '; standby: fibre-e: two Fibre instances must never be live' <<<"$line"
+line=$(grep -E '^FAIL +13 +fibre pipeline +fibre-a: Fibre is not pushing metrics' <<<"$out")
+for want in 'in fibre-a.service (or Environment=' '"systemctl restart fibre-d" at a moment you choose' \
+            'standby (Fibre unit not active, collector up, no Fibre metrics expected): fibre-e'; do
+  grep -qF -- "$want" <<<"$line" || { echo "check 13 does not say: $want"; exit 1; }
+done
+line=$(grep -E '^FAIL +24 +fibre ready +Not ready: fibre-b ' <<<"$out")
+for want in 'standby (Fibre unit not active, port closed): fibre-e.' \
+            "Fix: on fibre-b, \"journalctl -u fibre-b | grep 'health check failed' | tail -n 5\""; do
+  grep -qF -- "$want" <<<"$line" || { echo "check 24 does not say: $want"; exit 1; }
+done
+# With every unit stopped, check 19 names each host's unit and leaves the command to that host's.
+for h in a b c d e; do
+  printf 'node_systemd_unit_state{host="fibre-%s",name="fibre-%s.service",state="active"} 0\n' "$h" "$h"
+done >node/metrics.txt
+wait_for 'count(node_systemd_unit_state{name=~"fibre-.*",state="active"} == 0)' 5
+run bash "$GITHUB_WORKSPACE/tools/doctor.sh" "${own[@]}"
+grep -Eq '^FAIL +19 +fibre active +no Fibre unit \(fibre-a: fibre-a\.service, fibre-b: fibre-b\.service, ' <<<"$out"
+says 19 "then \"systemctl start <that host's Fibre unit>\""
+# Series through the collector: check 13 says they are there. Each scrape stamps them as new for the 5
+# minutes the collector keeps them, so their age says nothing of Fibre's last push.
+printf '%s\n' 'fibre_server_upload_shard_budget_bytes 1' 'fibre_server_upload_shard_occupancy_bytes 1' >node/otel.txt
+wait_for 'count(fibre_server_upload_shard_occupancy_bytes)' 5
+run bash "$GITHUB_WORKSPACE/tools/doctor.sh" "${own[@]}"
+grep -Eq "^OK +13 +fibre pipeline +Prometheus has Fibre's series from fibre-a, fibre-b, .* through the collector; it takes OTLP only on " <<<"$out"
+if grep -E '^OK +13 ' <<<"$out" | grep -qF 'old)'; then echo "check 13 claims an age for the series"; exit 1; fi

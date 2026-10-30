@@ -1,0 +1,55 @@
+# RemoteSignerProblem with celestia_mon_signer_multi_node: the example-split inventory rendered with
+# that variable (CI passes it). tmkms signs through several nodes on purpose: every node asks for
+# each proposal and tmkms signs the first, so the others get a refusal on a healthy setup. Only when
+# no node got a proposal signed in 6 hours is a refusal a fault.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  # val-1 wins the race for each proposal, val-2 gets the refusal.
+  - name: A refused proposal on one node while another gets them signed; no RemoteSignerProblem
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_failures_total{chain_id="celestia",job="celestia-app",instance="10.10.0.2:26660",host="val-2",role="validator",message_type="proposal",reason="remote_error"}
+        values: '1+1x120'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator",message_type="proposal"}
+        values: '1+1x120'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: RemoteSignerProblem
+        exp_alerts: []
+
+  # No proposal is signed after 10m. That last rise, from 10 at 9m to 11 at 10m, leaves the left-open
+  # 6 hours at 6h9m: the window then holds only a flat count, and the refusals alone remain.
+  - name: Refused proposals and no node gets one signed for 6 hours; RemoteSignerProblem
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_privval_signing_failures_total{chain_id="celestia",job="celestia-app",instance="10.10.0.2:26660",host="val-2",role="validator",message_type="proposal",reason="remote_error"}
+        values: '1+1x430'
+      - series: >-
+          cometbft_privval_signing_latency_seconds_count{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator",message_type="proposal"}
+        values: '1+1x10 11x420'
+    alert_rule_test:
+      - eval_time: 6h8m
+        alertname: RemoteSignerProblem
+        exp_alerts: []
+      - eval_time: 6h9m
+        alertname: RemoteSignerProblem
+        exp_alerts:
+          - exp_labels:
+              chain_id: celestia
+              job: celestia-app
+              instance: 10.10.0.2:26660
+              host: val-2
+              role: validator
+              message_type: proposal
+              reason: remote_error
+              severity: message
+            exp_annotations:
+              summary: "Remote signer on val-2 fails to sign proposals"
+              description: "Proposal signing failed with reason remote_error in the last 6 hours; votes may still succeed."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"

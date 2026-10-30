@@ -265,7 +265,6 @@ NOTIFY_SENT = 'prometheus_notifications_sent_total{job="prometheus"}'
 AM_DISCOVERED = 'prometheus_notifications_alertmanagers_discovered{job="prometheus"}'
 # When each rule group last ran: the alert rules run while this moves.
 RULES_RUN = 'prometheus_rule_group_last_evaluation_timestamp_seconds{job="prometheus"}'
-NNA = 'max(ALERTS{alertname="NodeNotAdvancing"})'
 # NodePeersLow's page: the node the validator signs through has no peers.
 PEERS_PAGE = 'alertname="NodePeersLow",severity="page"'
 # 10 while the page alert fires, else 0: added to a code, it turns the amber word red.
@@ -273,6 +272,9 @@ VNS10 = '(max(ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}) * 10 
 NNA10 = '(max(ALERTS{alertname="NodeNotAdvancing",alertstate="firing"}) * 10 or vector(0))'
 NE_UP = '(max by (host) (up{job="node"}) == 1)'
 UP_LOST = 'or on () (max(up{job="prometheus"}) * 0 - 1)'
+# ServiceDown's crash-loop rule for Fibre leaves out a host that booted in the last 40 minutes: Fibre exits
+# until its node answers, and those restarts stay in the rule's 30-minute window (CI checks the rule's text).
+BOOTED = 'time() - node_boot_time_seconds{job="node"} < 2400'
 
 # A status bar covers the time block that starts at its timestamp, so the newest bar is the block
 # that runs now: W reads that block, WS reads it as a subquery of 1-minute steps.
@@ -346,6 +348,7 @@ TITLES = [
      "tmkms"),
     ("ServiceDown:message:tmkms:not_loaded::([^:]*)", "Signer service missing on $1", "No signer", P_SIGNER, "tmkms"),
     ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
+    ("ServiceDown:message:blackbox:::([^:]*)", "Fibre health check not read on $1", "Probe stopped", P_FIBRE, "fibre"),
     ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
     ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
     ("RaidDegraded:.*:([^:]*)", "RAID degraded on $1", "RAID degraded", P_SERVERS, None),
@@ -935,11 +938,13 @@ def fibre_lost(s):
 
 def wrong_host(s):
     """The registration names another endpoint than the active Fibre host's public endpoint: FibreDown's
-    registration rule, one term per Fibre host with an endpoint."""
-    return "(%s)" % " or ".join(
+    registration rule, one term per Fibre host with an endpoint, from a read of Tensile under 9 minutes
+    old, and not while two Fibres run."""
+    return "((%s) unless on () (count(%s) > 1))" % (" or ".join(
         "(max by (endpoint) (celestia_mon_fibre_registered{endpoint!=%s} == 1) and on () "
-        '(max(node_systemd_unit_state{host=%s,name=%s,state="active"}) == 1))' % (q(e), q(h), q(s.unit(h, "fibre")))
-        for h, e in s.fibre_endpoints)
+        '(max(node_systemd_unit_state{host=%s,name=%s,state="active"}) == 1) and on () '
+        "(time() - celestia_mon_tensile_last_success_timestamp_seconds < 540))" % (q(e), q(h), q(s.unit(h, "fibre")))
+        for h, e in s.fibre_endpoints), fibre_active(s))
 
 
 def last(s, metric):
@@ -987,6 +992,15 @@ def firing(sel):
     return "(max(%s))" % in_block("max_over_time", 'ALERTS{alertstate="firing",%s}' % sel)
 
 
+def fired_apart(sel, other):
+    """An alert matching sel fired at a minute of the bar's time block in which none matching other did.
+    It reads 1-minute steps, so firing() still shows a page shorter than a step; this keeps a page apart
+    from an alert that fired at another moment of a long block."""
+    return "(max(%s))" % in_block(
+        "max_over_time", '(ALERTS{alertstate="firing",%s} unless on () ALERTS{alertstate="firing",%s})' % (sel, other),
+        sub=True)
+
+
 def prom_started():
     """Prometheus started in the bar's time block."""
     return "(max(%s) > time())" % in_block("max_over_time", 'process_start_time_seconds{job="prometheus"}')
@@ -997,6 +1011,13 @@ def active(sel):
     block in which Prometheus started: its first evaluations there can leave a short pending with no
     fault behind it (a firing alert still shows, through firing())."""
     return "(max(%s) unless on () %s)" % (in_block("max_over_time", "ALERTS{%s}" % sel), prom_started())
+
+
+def active_apart(sel, other):
+    """An alert matching sel was pending or firing at a minute of the bar's time block in which none
+    matching other was, except the block in which Prometheus started, as active()."""
+    return "(max(%s) unless on () %s)" % (
+        in_block("max_over_time", "(ALERTS{%s} unless on () ALERTS{%s})" % (sel, other), sub=True), prom_started())
 
 
 def seen(selector):
@@ -1353,30 +1374,49 @@ def alert_items(s):
     # or go missing, no node advancing where no other node does, and that host's lag and its message
     # about few peers, are its follow-on alerts.
     peers = "ALERTS{%s}" % PEERS_PAGE
-    drop = " or ".join("(%s and on () %s)" % (label("vector(1)", "alertname", a), cond) for a, cond in [
-        ("NodeNotAdvancing", "max(%s)" % peers),
-        ("SignaturesMissed", 'max(ALERTS{alertname=~"NodeNotAdvancing|ValidatorNotSigning"} or %s)' % peers),
-        ("RemoteSignerProblem", NNA),
-        ("NodeBehind", NNA),
-        ("FibreNotServing", 'max(ALERTS{alertname=~"NodeNotAdvancing|FibreDown"})')])
-    # FibreNotServing on one host: a crash-looping Fibre holds back every reason, a collector that is
-    # down every reason but not_ready (Fibre's own health check, which the monitor asks Fibre directly),
-    # and ValidatorNotSigning holds back not_ready, as the inhibitions do.
-    fibre_held = ("unless on (alertname, host) %s unless on (alertname, host, reason) (max by (alertname, host, reason) "
-                  '(ALERTS{alertname="FibreNotServing",reason!="not_ready"}) and on (host) max by (host) '
-                  '(ALERTS{alertname="ServiceDown",unit="otelcol"})) unless on (alertname, reason) (max by (alertname, '
-                  'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
-                  'max(ALERTS{alertname="ValidatorNotSigning"}))'
-                  % label('max by (host) (ALERTS{alertname="ServiceDown",unit="fibre"})', "alertname", "FibreNotServing"))
+    # Alertmanager holds an alert back only while its cause fires, so a page that fires folds only into a
+    # cause read as firing (fires): a pending cause holds nothing, and the page has gone out. A pending
+    # page and a message fold into a cause in either state ("").
+    fires = ',alertstate="firing"'
+
+    def drop(state):
+        """The alerts that fold into a cause in state, as series labelled alertname."""
+        cause = "ALERTS{%s%s}" % (PEERS_PAGE, state)
+        stalled = 'max(ALERTS{alertname="NodeNotAdvancing"%s})' % state
+        return " or ".join("(%s and on () %s)" % (label("vector(1)", "alertname", a), cond) for a, cond in [
+            ("ValidatorNotSigning", "(%s or max(%s))" % (stalled, cause)),
+            ("NodeNotAdvancing", "max(%s)" % cause),
+            ("SignaturesMissed", 'max(ALERTS{alertname=~"NodeNotAdvancing|ValidatorNotSigning"%s} or %s)' % (state, cause)),
+            ("RemoteSignerProblem", stalled),
+            ("NodeBehind", stalled),
+            ("FibreNotServing", 'max(ALERTS{alertname=~"NodeNotAdvancing|FibreDown"%s})' % state)])
+
+    def fibre_held(state):
+        """FibreNotServing held back by a cause in state, as the inhibitions do: a collector that is down
+        holds back that host's every reason but not_ready (Fibre's own health check, which the monitor asks
+        Fibre directly) and not_served (the failed reads Tensile reports), and ValidatorNotSigning not_ready."""
+        return ("unless on (alertname, host, reason) (max by (alertname, host, reason) "
+                '(ALERTS{alertname="FibreNotServing",reason!~"not_ready|not_served"}) and on (host) max by (host) '
+                '(ALERTS{alertname="ServiceDown",unit="otelcol"%s})) unless on (alertname, reason) (max by (alertname, '
+                'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
+                'max(ALERTS{alertname="ValidatorNotSigning"%s}))' % (state, state))
+    # Held back as messages only, as the inhibitions do: a crash-looping Fibre holds its host's every
+    # FibreNotServing message and no page (the crash loop alert outlasts the loop, and a Fibre that has
+    # answered NOT_SERVING for 10 minutes runs), and two Fibres hold missed_uploads: only the one the
+    # chain names gets uploads.
+    fibre_messages = ("unless on (alertname, host) %s unless on (alertname, reason) (max by (alertname, reason) "
+                      '(ALERTS{alertname="FibreNotServing",reason="missed_uploads"}) and on () '
+                      'max(ALERTS{alertname="FibreBothActive"}))'
+                      % label('max by (host) (ALERTS{alertname="ServiceDown",unit="fibre"})', "alertname",
+                              "FibreNotServing"))
     peers_held = "unless on (alertname, host) (%s)" % " or ".join(
         label("max by (host) (%s)" % peers, "alertname", a) for a in ("NodeBehind", "NodePeersLow"))
-    pages = ("(%s * 0 + 3 or %s * 0 + 2.5) unless on (alertname) ((%s and on () (%s or max(%s))) or %s) %s"
-             % (by_alert('ALERTS{alertstate="firing",severity="page"}'),
-                by_alert('ALERTS{alertstate="pending",severity="page"}'),
-                label("vector(1)", "alertname", "ValidatorNotSigning"), NNA, peers, drop, fibre_held))
-    messages = ("%s unless on (alertname) (%s) %s %s"
-                % (message('severity="message",alertname!~"UpgradeScheduled|ServiceDown|DiskLow"', restarting(s)), drop,
-                   fibre_held, peers_held))
+    pages = ("(%s * 0 + 3 unless on (alertname) (%s) %s) or (%s * 0 + 2.5 unless on (alertname) (%s) %s)"
+             % (by_alert('ALERTS{alertstate="firing",severity="page"}'), drop(fires), fibre_held(fires),
+                by_alert('ALERTS{alertstate="pending",severity="page"}'), drop(""), fibre_held("")))
+    messages = ("%s unless on (alertname) (%s) %s %s %s"
+                % (message('severity="message",alertname!~"UpgradeScheduled|ServiceDown|DiskLow"', restarting(s)),
+                   drop(""), fibre_held(""), fibre_messages, peers_held))
     # A host whose node_exporter does not answer shows once; a stopped celestia-appd not also as lost metrics.
     reporting = message('alertname="ServiceDown",unit="node_exporter"')
     service = ("%s or ((%s unless on (host) %s) unless on (host, unit) %s)"
@@ -1622,11 +1662,11 @@ def intro(s):
         (3, "Block time",
          "Average time between blocks over the last 5 minutes, from the blocks' own timestamps. Celestia is designed "
          "for about 2.6 s; about 2.9 s is normal on mainnet and Mocha today. Slower blocks affect every validator, "
-         "not only this one.",
+         "not only this one. Stalled: no block arrived in those 5 minutes.",
          'max(rate(cometbft_consensus_block_interval_seconds_sum{job="celestia-app"}[5m]) / '
-         'rate(cometbft_consensus_block_interval_seconds_count{job="celestia-app"}[5m]))',
+         '(rate(cometbft_consensus_block_interval_seconds_count{job="celestia-app"}[5m]) > 0)) or (%s * 0 - 1)' % STALL,
          dict(unit="s", decimals=2, color_mode="value", no_value="No data",
-              mappings=special_map("nan", "Stalled", "orange"))),
+              mappings=mapping((-1, "Stalled", "orange")))),
         (4, "Voting power",
          "This validator's share of all voting power in the active set. It sets how often the validator proposes "
          "blocks and how much Fibre data it stores. A drop means delegations left or the validator was slashed. "
@@ -1679,8 +1719,9 @@ def validator_tile(s):
         "(%s * 0 + 5) + on () %s" % (STALL, NNA10),
         '((((%s > %s) * 0 + 6 and on () (min(up{job="celestia-app"}) == 0)) or ((max(%s) * 0 + 4) unless on () %s) '
         "or (%s > %s) * 0 + 3) + on () %s)" % (BLOCKS_SINCE, n, POWER, IN_SET_OR_NEW, BLOCKS_SINCE, n, VNS10),
-        "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])))) * 0 + 2"
-        % (MISSED_1H, num(s.R), H),
+        "(max(max by (host) (%s) > on (host) %s * max by (host) (delta(%s[1h])) "
+        "unless on (host) (max(%s) - on () group_right %s > %s))) * 0 + 2"
+        % (MISSED_1H, num(s.R), H, H, H, num(s.NB)),
         "max(%s) * 0 + 1" % H)
     words = [(1, "Signing", FINE), (2, "Missed blocks", "orange"),
              (3, "Not signing", "orange"), (13, "Not signing", "red"),
@@ -1756,8 +1797,10 @@ NOT_READY_AT = [r for r, _, _ in NOT_SERVING].index("not_ready")
 
 def fibre_tile(s):
     """(id, title, description, query, words) of the Fibre tile. Serving needs no recent upload: a quiet
-    network sends none for hours, and Fibre is fine meanwhile. FibreNotServing shows by its reason while it
-    is pending or firing, as the Status cell does; the outside check by FibreDown's own states."""
+    network sends none for hours, and Fibre is fine meanwhile. ServiceDown's crash loop reads Fibre crash,
+    as the Status cell and the cards, ahead of the reasons it holds back; FibreNotServing shows by its
+    reason while it is pending or firing, as the Status cell does; the outside check by FibreDown's own
+    states."""
     seen_f = fibre_seen(s)
     lost = fibre_lost(s)
     outside = 'max(ALERTS{alertname="FibreDown",%s%s})'
@@ -1775,13 +1818,15 @@ def fibre_tile(s):
         + ['max(ALERTS{%s,alertstate="firing"}) * 0 + %d' % (NOT_READY_PAGE, 41 + NOT_READY_AT)]
         + ['((count(%s) > 0) and on () max(ALERTS{alertname="FibreDown",check=""})) * 0 + 9' % lost,
            '(((count(%s) or vector(0)) == 0) * 0 + 5 and on () (count(%s == 1) > 0))' % (seen_f, s.node_up),
-           "(count(%s) > 1) * 0 + 3" % seen_f]
+           "(count(%s) > 1) * 0 + 3" % seen_f,
+           'max(ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"}) * 0 + 6']
         + ['max(ALERTS{alertname="FibreNotServing",reason=%s}) * 0 + %d' % (q(r), 31 + i)
            for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
         + (check("", 10) if s.tensile else [])
         + ["count(%s) * 0 + 1" % seen_f]))
     words = [(1, "Serving", FINE), (3, "Two Fibres", "orange"), (5, "Not running", "orange"),
-             (15, "Not running", "red"), (9, "Not seen", "orange"), (19, "Not seen", "red")]
+             (15, "Not running", "red"), (9, "Not seen", "orange"), (19, "Not seen", "red"),
+             (6, "Fibre crash", "orange")]
     words += [(31 + i, w, "orange") for i, (_, w, need) in enumerate(NOT_SERVING) if s.has(need)]
     words += [(41 + NOT_READY_AT, "Not ready", "red")]
     if s.tensile:
@@ -1790,11 +1835,11 @@ def fibre_tile(s):
     desc = ("Is Fibre, the service that stores and serves this validator's share of blob data, running and taking "
             "uploads? Serving: one Fibre runs and no Fibre alert is due; a quiet network sends no blob for hours, "
             "and that is fine. Amber: FibreNotServing by its reason (Not ready: Fibre's own health check fails), Two "
-            "Fibres (FibreBothActive) or Not running; red once FibreDown or Not ready pages. Not seen: a Fibre host "
-            "is not reporting, so its Fibre may still run. Which server runs it: the cards below. Every word: the "
-            "panel guide.")
-    return 14, "Fibre", desc + more(["FibreDown", "FibreNotServing", "FibreBothActive"], [PANEL_GUIDE, FIBRE_DASHBOARD]), \
-        expr, words
+            "Fibres (FibreBothActive), Fibre crash (ServiceDown's crash loop) or Not running; red once FibreDown or "
+            "Not ready pages. Not seen: a Fibre host is not reporting, so its Fibre may still run. Which server runs "
+            "it: the cards below. Every word: the panel guide.")
+    return 14, "Fibre", desc + more(["FibreDown", "FibreNotServing", "FibreBothActive", "ServiceDown"],
+                                    [PANEL_GUIDE, FIBRE_DASHBOARD]), expr, words
 
 
 def outside_tile(s):
@@ -1818,8 +1863,9 @@ def outside_tile(s):
              (3, "Wrong host", "orange"), (13, "Wrong host", "red"), (4, "Not registered", "orange"),
              (14, "Not registered", "red"), (10, "Check stopped", "orange"), (0, "Not checked", GREY),
              (9, "Check pending", GREY)]
-    desc = ("Can the internet reach your Fibre at the address registered on chain? Tensile checks it every minute. "
-            "Reachable: the last check, under 15 minutes old, completed TCP, TLS and the validator's identity. "
+    desc = ("Can the internet reach your Fibre at the address registered on chain? Tensile checks it about every 5 "
+            "minutes; this reads the result every minute. Reachable: the last check, under 15 minutes old, completed "
+            "TCP and TLS; a wrong validator identity still reads Reachable and shows as Uploads missed. "
             "Unreachable, Wrong host, Not registered: FibreDown's outside checks, red once it pages (after %s); after "
             "a failover, send set-host. Check stopped: TensileUnreadable. Every word: the panel guide."
             % s.hold("FibreDown"))
@@ -1835,7 +1881,7 @@ def upgrade_tile(s):
     unvoted = ("(count((%s == 0) and on (proposal_id) (%s - time() > 0)) > 0) * 0 + 7"
                % (gov(s, "celestia_mon_gov_validator_voted"), gov(s, "celestia_mon_gov_voting_end_timestamp_seconds")))
     expr = chain(
-        'max(ALERTS{alertname="UpgradeSignalMissing",alertstate="firing"}) * 0 + 13',
+        'max(ALERTS{alertname="UpgradeSignalMissing",severity="page",alertstate="firing"}) * 0 + 13',
         'max(ALERTS{alertname="GovVoteMissing",severity="page",alertstate="firing"}) * 0 + 16' if s.gov_page else None,
         'max(ALERTS{alertname="UpgradeSoon",alertstate="firing"}) * 0 + 5',
         'max(ALERTS{alertname="GovVoteMissing"}) * 0 + 6' if s.gov else None,
@@ -1846,6 +1892,7 @@ def upgrade_tile(s):
         "(time() - max(celestia_mon_gov_last_success_timestamp_seconds) > 900) * 0" if s.gov else None,
         "((max(celestia_mon_upgrade_pending) == 1) * 0 + 5 and on () (max(celestia_mon_upgrade_eta_seconds) < 86400))",
         "(max(celestia_mon_upgrade_pending) == 1) * 0 + 4",
+        'max(ALERTS{alertname="UpgradeSignalMissing"}) * 0 + 3',
         "((max(celestia_mon_signal_tally_power) > 0) * 0 + 3 unless on () "
         "(max(celestia_mon_signal_validator_version) == on () max(celestia_mon_signal_next_version)))",
         unvoted if s.gov else None,
@@ -1860,8 +1907,8 @@ def upgrade_tile(s):
         words += [(16, "Vote missing", "red")]
     desc = ("Is a network upgrade coming, and has this validator signalled for it? None pending and Signal sent are "
             "fine. Not signalled: a round is open and this validator has not signalled; red once UpgradeSignalMissing "
-            "pages (after %s). Signal only once every node runs a release that supports the new version. "
-            % s.hold("UpgradeSignalMissing"))
+            "pages (more than 1/3 of the voting power signalled, for %s). Signal only once every node runs a release "
+            "that supports the new version. " % s.hold("UpgradeSignalMissing"))
     if s.gov:
         desc += ("Vote open: a governance proposal is in its voting period and the validator account has not voted; "
                  "vote, abstain if you have no view. Vote missing: less than 2 days of the vote are left (less than "
@@ -1876,7 +1923,7 @@ def upgrade_tile(s):
 
 
 # ServiceDown's rules for a metrics endpoint (up == 0); the others watch a systemd unit.
-ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol")
+ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol", "blackbox")
 
 
 def service_down(s):
@@ -1922,10 +1969,9 @@ def servers_tile(s):
     unreached = (['max(ALERTS{alertstate="firing",%s}) * 0 + 5' % UNREACHED_PAGE] if s.mon_only else []) + (
         ['%s * 0 + 4' % alert('alertname="MonitorCannotReach"')] if s.reached else [])
     expr = chain(*(
-        ["%s * 0 + 3" % alert(DISK_PAGE)] + unreached
+        ["%s * 0 + 3" % alert(DISK_PAGE), "%s * 0 + 8" % alert(PEERS_PAGE)] + unreached
         + ["%s * 0 + %d" % (alert(m), 30 + i) for i, (m, _) in enumerate(down)]
-        + ["%s * 0 + 8" % alert(PEERS_PAGE),
-           "%s * 0 + 6" % alert('alertname="DiskLow"'),
+        + ["%s * 0 + 6" % alert('alertname="DiskLow"'),
            "%s * 0 + 9" % alert('alertname="NodePeersLow"'),
            "%s * 0 + 7" % alert('alertname="NodeBehind"'),
            "%s * 0 + 10" % alert('alertname="RaidDegraded"'),
@@ -2046,6 +2092,7 @@ def check_lanes(s):
     twice_red = "%s * 0 + 6" % firing('alertname="ValidatorSigningTwice"') if s.twice else None
     twice_amber = "%s * 0 + 7" % active('alertname="ValidatorSigningTwice"') if s.twice else None
     twice_words = [(6, "Two signers", ALERT), (7, "Two signers", WARN)] if s.twice else []
+    vns, nna = 'alertname="ValidatorNotSigning"', 'alertname="NodeNotAdvancing"'
     lanes = [
         # The nodes advance and none lags: NodeNotAdvancing, and NodeBehind for any node.
         ("A", "Node in sync",
@@ -2058,15 +2105,14 @@ def check_lanes(s):
                 % (H, behind, PROM, PROM)),
          [(1, "In sync", OK), (2, "Nodes stalled", WARN), (3, "Nodes stalled", ALERT), (4, "Node behind", WARN),
           (0, "No data", NODATA)]),
-        # While the nodes are stalled, ValidatorNotSigning is inhibited: grey, not a second red line for one cause.
+        # While the nodes are stalled, ValidatorNotSigning is inhibited: grey, not a second red line for one
+        # cause. A long block can hold both at different moments: minute by minute it stays red.
         ("B", "Validator signing",
          chain(twice_red,
-               "(%s unless on () %s) * 0 + 3" % (firing('alertname="ValidatorNotSigning"'),
-                                                firing('alertname="NodeNotAdvancing"')),
+               "((%s unless on () %s) or %s) * 0 + 3" % (firing(vns), firing(nna), fired_apart(vns, nna)),
                twice_amber,
-               "(%s unless on () %s) * 0 + 2" % (active('alertname="ValidatorNotSigning"'),
-                                                active('alertname="NodeNotAdvancing"')),
-               "%s * 0 + 5" % firing('alertname="NodeNotAdvancing"'),
+               "((%s unless on () %s) or %s) * 0 + 2" % (active(vns), active(nna), active_apart(vns, nna)),
+               "%s * 0 + 5" % firing(nna),
                "%s * 0 + 4" % firing('alertname="SignaturesMissed"'),
                "(%s and on () %s) * 0 + 1" % (seen(H), gate),
                nodata()),
@@ -2183,10 +2229,10 @@ def server_lanes(s):
         mine = h == s.monitor
         lanes.append((
             "S%d" % (i + 1), h,
-            chain(*(["%s * 0 + 3" % firing("%s,%s" % (sel, DISK_PAGE))] + unreached
+            chain(*(["%s * 0 + 3" % firing("%s,%s" % (sel, DISK_PAGE)), "%s * 0 + 8" % firing("%s,%s" % (sel, PEERS_PAGE))]
+                    + unreached
                     + ["%s * 0 + %d" % (firing("%s,%s" % (sel, m)), 30 + j) for j, (m, _) in enumerate(services)]
-                    + ["%s * 0 + 8" % firing("%s,%s" % (sel, PEERS_PAGE)),
-                       "%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
+                    + ["%s * 0 + 6" % firing('%s,alertname="DiskLow"' % sel),
                        "%s * 0 + 9" % firing('%s,alertname="NodePeersLow"' % sel),
                        "%s * 0 + 7" % firing('%s,alertname="NodeBehind"' % sel),
                        "%s * 0 + 10" % firing('%s,alertname="RaidDegraded"' % sel),
@@ -2274,10 +2320,10 @@ def role_lanes(s):
         return "((%s) and on () %s) or %s * 0 - 99" % (expr, evaluated(), seen('up{job="prometheus"}'))
 
     no_data = [(-99, "No data", NODATA)]
+    vns, nna = 'alertname="ValidatorNotSigning"', 'alertname="NodeNotAdvancing"'
     lanes = [("A", "Validator signs through", gated(chain(
         "%s * 0 - 6" % firing('alertname="ValidatorSigningTwice"') if s.twice else None,
-        "(%s unless on () %s) * 0 - 4" % (firing('alertname="ValidatorNotSigning"'),
-                                          firing('alertname="NodeNotAdvancing"')),
+        "((%s unless on () %s) or %s) * 0 - 4" % (firing(vns), firing(nna), fired_apart(vns, nna)),
         "(max(%s) == 1) * 0 - 3" % in_block("max_over_time", "((changes(max(%s)[2m:]) == bool 0) and on () %s)"
                                             % (H, STALL_SEEN), sub=True),
         # Out of the set at some step of the block, as the board reads every line: never from one reading.
@@ -2465,9 +2511,15 @@ def servers_table(s):
         "max by (host) (ALERTS{%s,alertstate=\"firing\"}) * 0 - 11" % PEERS_PAGE,
         'max by (host) (ALERTS{alertname="NodePeersLow"}) * 0 - 12',
         'max by (host) (cometbft_p2p_peers{job="celestia-app"})'), lookup(s.nodes), na)
+    # RemoteSignerProblem's proposal failures. With tmkms signing through several nodes every node asks for
+    # each proposal and tmkms refuses all but the first: a fault only while no node got one signed, as the rule.
+    bad = ('(max by (host) (increase(cometbft_privval_signing_failures_total{job="celestia-app",message_type="proposal",'
+           'reason!~"timeout|no_connection"}[6h])) > 0)')
+    if s.multi:
+        bad = ('(%s unless on () (sum(increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",'
+               'message_type="proposal"}[6h])) > 0))' % bad)
     signer = "%s %s" % (chain(
-        '(max by (host) (increase(cometbft_privval_signing_failures_total{job="celestia-app",message_type="proposal",'
-        'reason!~"timeout|no_connection"}[6h])) > 0) * 0 - 5',
+        "%s * 0 - 5" % bad,
         "(%s and on (host) %s)" % (MEDIAN, sig),
         "(%s > %s) * 0 - 6" % (MEDIAN, num(s.S)),
         "((%s * 0 - 7) and on () ((count(%s) or vector(0)) == 0) and on () %s)" % (lookup(s.nodes), sig, IN_SET)), na)
@@ -2492,8 +2544,9 @@ def servers_table(s):
                + ([("tmkms", "Signer crash")] if s.kms_hosts else []))
     units = [u for k, _ in crashes for u in s.names(k)]
     restart_sel = "{name=~%s}" % q("|".join(re2(u) for u in units))
-    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{%s}[30m]))) > %s) * 0 - %d"
-                        % (s.is_unit(k), num(s.CL), 10 + i) for i, (k, _) in enumerate(crashes))
+    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{%s}[30m]))) > %s%s) * 0 - %d"
+                        % (s.is_unit(k), num(s.CL), " unless on (host) (%s)" % BOOTED if k == "fibre" else "", 10 + i)
+                        for i, (k, _) in enumerate(crashes))
     restarts = ("(%s or floor(sum by (host) (increase(node_systemd_service_restart_total%s[24h])))) and on (host) %s %s"
                 % (crash, restart_sel, NE_UP, nodata_all))
 
@@ -2758,7 +2811,7 @@ def fibre_part(s):
     """What each Fibre host does now, one series per host, as a code of fibre_words(s). A standby stopped
     by design is plain text; it turns amber only where it could not take over (its collector is down).
     FibreNotServing shows by its reason while pending or firing, as the Status cell and the Fibre tile; Not
-    ready is red once it pages."""
+    ready is red once it pages, ahead of a crash loop, which holds back no page."""
     seen_f = fibre_seen(s)
     loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'
     collector = '(max by (host) (up{job="otelcol"}) == 1)'
@@ -2767,7 +2820,7 @@ def fibre_part(s):
                for i, (r, _, need) in enumerate(NOT_SERVING) if s.has(need)]
     not_ready = 'max by (host) (ALERTS{%s,alertstate="firing"}) * 0 + %d' % (NOT_READY_PAGE, 31 + NOT_READY_AT)
     return chain(*(
-        ["%s * 0 + 11" % loop, not_ready, "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f)] + reasons
+        [not_ready, "%s * 0 + 11" % loop, "(%s and on () (count(%s) > 1)) * 0 + 7" % (seen_f, seen_f)] + reasons
         + ["%s * 0 + 1" % seen_f,
            "(((%s * 0 + 8) unless on () count(%s)) + on () group_left () %s)" % (NE_UP, seen_f, down10),
            "(%s unless on (host) %s) * 0 + 9" % (NE_UP, collector),
@@ -3346,9 +3399,10 @@ def validator_row(s):
     own = ('label_replace(max by (validator_address) (%s), "proposer_address", "$1", "validator_address", "(.+)")'
            % POWER)
     # SignaturesMissed's own expression: per node, the blocks of the last hour without the validator's
-    # signature over the blocks of that hour; a node that has missed none since its start reads 0.
-    share = ("max((max by (host) (%s) or max by (host) (%s) * 0) / (max by (host) (delta(%s[1h])) > 0))"
-             % (MISSED_1H, LSH, H))
+    # signature over the blocks of that hour; a node that has missed none since its start reads 0, and a
+    # node more than node_behind_blocks behind the highest does not count.
+    share = ("max(((max by (host) (%s) or max by (host) (%s) * 0) / (max by (host) (delta(%s[1h])) > 0)) "
+             "unless on (host) (max(%s) - on () group_right %s > %s))" % (MISSED_1H, LSH, H, H, H, num(s.NB)))
     # The blocks of the last 24 hours: the height 24 hours ago, or the lowest one Prometheus has.
     day = "(max(%s) - (max(%s offset 24h) or max(min_over_time(%s[24h]))))" % (H, H, H)
     # A count of the last 24 hours reads "No data" when no node answered in that time, not 0.
@@ -3719,9 +3773,10 @@ def fibre_row(s):
         "payment promise and the rows, writing the shard to disk and signing it through the validator's signer; "
         "Fibre's own dashboard splits it by step. Failed uploads are left out, so quick rejections cannot hide "
         "slowness. No uploads: none in 24 hours." + more(pages=[FIBRE_DASHBOARD]),
-        one('sum(rate(fibre_server_upload_shard_duration_seconds_sum{success="true"}[24h])) / sum(rate(%s[24h]))'
-            % ok),
-        unit="s", decimals=None, mappings=special_map("nan", "No uploads"), no_value="No Fibre data")
+        one(chain('sum(rate(fibre_server_upload_shard_duration_seconds_sum{success="true"}[24h])) '
+                  "/ (sum(rate(%s[24h])) > 0)" % ok,
+                  "(count(fibre_server_upload_shard_budget_bytes) * 0 - 1)")),
+        unit="s", decimals=None, mappings=mapping((-1, "No uploads", None)), no_value="No Fibre data")
     # '> 0' leaves out an unlimited budget and one never derived because the validator was out of the
     # active set when Fibre started: -1 names them "No limit".
     budget = cell(
@@ -3764,8 +3819,9 @@ def fibre_row(s):
                     "Of Tensile's reads of rows the validator signed for, those that got the rows back; equal is "
                     "good. Tensile reads each blob once, late in the 4 hours Fibre must keep it, for blobs settled "
                     "in the last 24 hours. From %d failed reads in 24 hours the text is amber, the level at which "
-                    "FibreNotServing (rows not served) fires; Fibre's log names the error. No rows read: none in 24 "
-                    "hours, as on a quiet network. Not checked: no Tensile reading." % unserved
+                    "FibreNotServing (rows not served) fires, not in the 5 h 15 min after the registration moved; "
+                    "Fibre's log names the error. No rows read: none in 24 hours, as on a quiet network. Not checked: "
+                    "no Tensile reading." % unserved
                     + more(["FibreNotServing"], [TENSILE]),
                     'max(celestia_mon_fibre_obligations_24h{outcome="served"})',
                     'sum(max by (outcome) (celestia_mon_fibre_obligations_24h{outcome=~"served|broken"}))',
@@ -3780,8 +3836,9 @@ def fibre_row(s):
                 203, "Upload success, 24 h",
                 "Share of upload requests Fibre accepted in the last 24 hours; near 100%% is good. Failures "
                 "include clients' invalid payment promises, which are not this setup's fault, and uploads "
-                "refused while the storage budget is full. No upload accepted for %s while signatures fail or "
-                "the budget is full is FibreNotServing (uploads failing). No uploads: none in 24 hours." % failing
+                "refused while the storage budget is full. No upload accepted for %s while signatures fail, the "
+                "store fails or the budget is full is FibreNotServing (uploads failing). No uploads: none in 24 "
+                "hours." % failing
                 + more(["FibreNotServing"], [FIBRE_DASHBOARD]),
                 one(chain("(sum(rate(%s[24h])) or on () vector(0)) / (sum(rate(%s[24h])) > 0)" % (ok, count),
                           "(count(fibre_server_upload_shard_budget_bytes) * 0 - 1)")),
@@ -3836,7 +3893,8 @@ def fibre_row(s):
         first_chart = timeseries(
             210, "Fibre behind the network",
             "How far Fibre's last accepted upload trails the newest blob sent to the validator; a line on 0 is good. "
-            "FibreNotServing (uploads missed) sends a message when the line stays above the dashed line at %s for %s. "
+            "FibreNotServing (uploads missed) sends a message when the line stays above the dashed line at %s for %s, "
+            "unless that blob carries the validator's signature. "
             "A gap up to %s, the normal time from an upload to its blob settling, draws as 0; so does a quiet "
             "network. Not checked: no Tensile reading, or no Fibre that runs and reports."
             % (minutes_text(level), s.hold("FibreNotServing missed_uploads"), minutes_text(SETTLE_SECONDS))
@@ -3847,7 +3905,9 @@ def fibre_row(s):
     else:
         # The uploads_failing rule: uploads that passed their checks failing here (a failed signature, or
         # a refusal for a full budget) and none accepted in its window, on the active Fibre. Each accepted
-        # upload is a signature that worked, so the share failing is 100% (full) exactly then.
+        # upload is a signature that worked, so the share failing is 100% (full) exactly then. Failed
+        # stores fire the rule too and stay out of the chart: they stand beside the sum there, since their
+        # series share their labels with the failed signatures and an 'or' would drop them.
         window = "%ds" % UPLOAD_WINDOW
         full = 1
         sign = "fibre_server_sign_duration_seconds_count"
@@ -3862,7 +3922,9 @@ def fibre_row(s):
             "failing) sends a message once the share has stayed at the dashed %g%% line, no upload accepted, "
             "for %s. Uploads a client gets wrong, such as an invalid payment promise, fail at their checks and "
             "are left out, so a quiet network leaves the chart empty, as does one such client sending again. "
-            "Blobs that never reached Fibre show only with the outside check (celestia_mon_tensile)."
+            "Uploads Fibre could not store also send that message, and do not show here: Fibre's log says failed "
+            "to store upload data. Blobs that never reached Fibre show only with the outside check "
+            "(celestia_mon_tensile)."
             % (minutes_text(UPLOAD_WINDOW).replace(" minutes", "-minute"), full * 100,
                s.hold("FibreNotServing uploads_failing"))
             + red_band % "lines" + more(["FibreNotServing", "FibreDown"], [TENSILE]),
@@ -3930,8 +3992,9 @@ def fibre_row(s):
         211, "Uploads",
         "Upload requests Fibre received in each 30-minute block (about 3 hours on 7 days); bars in the server's "
         "colour are good. Grey: failed, as when a client's payment promise is invalid. Outlined: refused while "
-        "the storage budget was full. No upload accepted for %s while signatures fail or the budget is full is "
-        "FibreNotServing (uploads failing)." % failing + red_band % "bars" + more(["FibreNotServing", "FibreDown"]),
+        "the storage budget was full. No upload accepted for %s while signatures fail, the store fails or the "
+        "budget is full is FibreNotServing (uploads failing)." % failing + red_band % "bars"
+        + more(["FibreNotServing", "FibreDown"]),
         [("round(sum by (host) (increase(%s[$__interval]))) > 0" % ok, "{{host}} accepted"),
          ('round(clamp_min(sum(increase(%s{success="false"}[$__interval])) - (sum(increase(%s[$__interval])) '
           "or on () vector(0)), 0)) > 0" % (count, rejected), "Failed"),
@@ -3994,8 +4057,8 @@ def upgrade_row(s):
         106, "Signalled version",
         "The version the validator signalled for the next upgrade. None: no signal for the next version yet, which is "
         "fine until a round opens; then the next version is good. A round opens when any voting power signals the "
-        "next version; while the validator has not, the %s tile turns amber, then red."
-        % upgrade_title(s) + more(["UpgradeSignalMissing"]),
+        "next version; while the validator has not, the %s tile turns amber, and red once more than 1/3 has "
+        "signalled." % upgrade_title(s) + more(["UpgradeSignalMissing"]),
         one(checked("(%s >= on () %s) or on () (%s * 0)"
                     % (signalled, last(s, "celestia_mon_signal_next_version"), signalled))),
         unit="prefix:v", color_mode="value", mappings=mapping((0, "None", "text"), unread))
@@ -4021,7 +4084,8 @@ def upgrade_row(s):
     upgrade = cell(
         107, None,
         "The scheduled upgrade's height and the time until it; None pending is normal between upgrades. The time "
-        "uses the block time of the last 1000 blocks. Amber under 24 hours: every node must run a release that "
+        "uses the block time of the last 1000 blocks, or 2.6 s per block until one is measured. Amber under 24 "
+        "hours: every node must run a release that "
         "supports the new version by then, or it stops at that height. UpgradeSoon stays once sent even if slower "
         "blocks move this back above 24 hours." + more(["UpgradeScheduled", "UpgradeSoon"]),
         [target("A", "(%s) * on () group_left (height) %s" % (eta, at), "Upgrade at {{height}}", instant=True),
@@ -4384,8 +4448,9 @@ def restarts_chart(s, pid):
     """Automatic restarts of every service ServiceDown watches, on every server, as bars in the server's
     colour (its second service in a darker shade). Each bar is the value the crash-loop rule compares, the
     restarts of the last 30 minutes, at its highest within the bar's time block (at least 30 minutes), so a
-    bar above the dashed line means the rule's condition held, on every range. A block without a restart
-    draws nothing, and a range without any says so in words."""
+    bar above the dashed line means the rule's condition held, on every range, but for Fibre's rule's 40
+    minutes after a boot, which the bars do not leave out (BOOTED). A block without a restart draws nothing,
+    and a range without any says so in words."""
     targets, overrides = [], []
     for h in s.servers:
         kinds = ((["appd"] if h in s.nodes else []) + (["fibre"] if h in s.fibre_hosts else [])
@@ -4403,13 +4468,15 @@ def restarts_chart(s, pid):
     p["fieldConfig"]["defaults"]["custom"].update({"barAlignment": -1, "lineWidth": 0})
     # "automatic": the start markers on each server's charts show starts by hand, which this chart does not count.
     p["fieldConfig"]["defaults"]["noValue"] = "No automatic restarts in this time"
+    booted = (", except for a Fibre in the 40 minutes after its host booted, which exits until its node answers"
+              if s.fibre else "")
     p["description"] = ("Times systemd restarted a service by itself, per server and service. Each bar is the most "
                         "restarts within any 30 minutes that end in its time block (30 minutes on 24 hours, longer on "
                         "long ranges): the value ServiceDown's crash-loop check compares, so a bar above the dashed "
-                        "line, more than %g, means ServiceDown reported a crash loop. A single restart lifts the bars "
+                        "line, more than %g, means ServiceDown reported a crash loop%s. A single restart lifts the bars "
                         "of the 30 minutes after it, so at most two bars show it. Bars at one time can overlap: the "
                         "tooltip lists each. A start by hand is not counted here; it shows as a grey marker on its "
-                        "server's charts." % s.CL + more(["ServiceDown"]))
+                        "server's charts." % (s.CL, booted) + more(["ServiceDown"]))
     return p
 
 
@@ -4419,7 +4486,7 @@ def clock_chart(s, pid):
     never hands the kernel an offset to slew; the maximum error is set by chrony and systemd-timesyncd alike,
     and the kernel adds 0.5 ms a second until the next update. A linear axis from 0 to a quarter above the
     level, so a healthy clock lies on the floor, well clear of the line, and a stopped sync climbs to it."""
-    level = rule_number("ClockNotSynced", None, r"node_timex_maxerror_seconds\{[^}]*\} >= (\d+)\s*$")
+    level = rule_number("ClockNotSynced", None, r"node_timex_maxerror_seconds\{[^}]*\}\[3m\]\) >= (\d+)\s*$")
     top = level * 1.25
     targets = refs([("max(node_timex_maxerror_seconds{host=%s})" % q(h), h) for h in s.servers])
     overrides = [override("byFrameRefID", t["refId"], color=fixed(server_hue(s, h)))

@@ -107,13 +107,14 @@ state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 14999500
 m=$(run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_chain_block_time_seconds 2.87' <<<"$m"
 grep -qxF 'celestia_mon_upgrade_eta_seconds 334808' <<<"$m"
-# A node that refuses /blockchain: the reading stands, without a block time and so without an ETA.
+# A node that refuses /blockchain: the reading stands, without a block time, and the ETA uses 2.6 s per block.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
 m=$(run "$addr" http://127.0.0.1:8767)
 grep -Eq '^celestia_mon_signal_last_success_timestamp_seconds [1-9]' <<<"$m"
 grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
 grep -qxF 'celestia_mon_signal_errors_total{reason="block_time"} 1' <<<"$m"
-if grep -q '^celestia_mon_\(chain_block_time_seconds\|upgrade_eta_seconds\)' <<<"$m"; then echo "a block time from a node that refused it"; exit 1; fi
+grep -qxF 'celestia_mon_upgrade_eta_seconds 303311' <<<"$m"
+if grep -q '^celestia_mon_chain_block_time_seconds' <<<"$m"; then echo "a block time from a node that refused it"; exit 1; fi
 
 # Only unreachable RPCs, one with a key in its URL: no reading, and the key does not show.
 m=$(run "$addr" http://127.0.0.1:9/ci-secret-key http://127.0.0.1:10)

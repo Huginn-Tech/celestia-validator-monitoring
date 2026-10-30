@@ -140,6 +140,77 @@ tests:
               description: "systemd restarted the unit more than 2 times in 30 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
+  # The host booted at 0. Fibre exits until its node answers, six restarts in the first 4 minutes,
+  # and then runs. At 31m three of them are still in the 30 minutes: a boot guard of only 30 minutes
+  # would send the message then.
+  - name: Fibre restarts until its node answers after a boot; no crash loop message
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x60'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x60'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '0 1 3 5 6 6x60'
+      - series: >-
+          node_boot_time_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 41m
+        alertname: ServiceDown
+        exp_alerts: []
+
+  # Fibre keeps restarting after the 40 minutes of the boot: the message comes at 40m.
+  - name: Fibre still crash looping 40 minutes after a boot sends a message
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '1x80'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x80'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x80'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",name="fibre.service"}
+        values: '0+1x80'
+      - series: >-
+          node_boot_time_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '0x80'
+    alert_rule_test:
+      - eval_time: 39m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              name: fibre.service
+              severity: message
+              unit: fibre
+            exp_annotations:
+              summary: "fibre.service is crash looping on fibre-1"
+              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
   - name: Wrong appd unit name for the backup node; node_exporter is up but has no such unit
     interval: 1m
     input_series:

@@ -7,7 +7,9 @@ celestia_mon_signer: local
 # With a remote signer: true when tmkms is set up to sign through several nodes at once (several
 # [[validator]] entries in tmkms.toml). Two nodes signing is then normal: the dashboard reads
 # "Two nodes" instead of the amber "Two signers" it shows when two nodes sign for 3 minutes, and
-# the page alert ValidatorSigningTwice is left out.
+# the page alert ValidatorSigningTwice is left out. RemoteSignerProblem then reports failed proposals
+# only when no node got a proposal signed in the last 6 hours: tmkms signs each proposal for the first
+# node that asks and refuses the others.
 celestia_mon_signer_multi_node: false
 
 # The validator's name at the top of the dashboard (for example its moniker): up to 13 characters

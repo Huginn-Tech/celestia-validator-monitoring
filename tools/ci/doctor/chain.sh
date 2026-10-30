@@ -112,6 +112,36 @@ run sudo bash tools/doctor.sh "${args[@]}" "${node[@]}"
 echo "::endgroup::"
 grep -Eq '^FAIL +27 +fibre app node +.*, but it serves no app gRPC \(\[grpc\] enable = false in ' <<<"$out"
 
+# A Fibre that exits on a signer its node does not serve waits for its restart: activating is no
+# standby, with one Fibre host or two, as for check 27 above.
+echo "::group::a Fibre that exits and waits for its restart, next to its node"
+printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" 'ExecStart=/bin/false' 'Restart=always' 'RestartSec=600' \
+  | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl stop ci-fibre
+sudo systemctl start --no-block ci-fibre
+for _ in $(seq 50); do
+  if [ "$(systemctl show -P SubState ci-fibre)" = auto-restart ]; then break; fi
+  sleep 0.2
+done
+test "$(systemctl show -P ActiveState ci-fibre)" = activating
+printf '%s\n' 'signer_grpc_address = "127.0.0.1:26669"' "$tls" >"$cfg"
+echo 'priv_validator_grpc_laddr = "127.0.0.1:26670"' >"$nh/config/config.toml"
+run sudo bash tools/doctor.sh "${args[@]}" "${node[@]}"
+line=$(grep -E '^FAIL +17 +fibre signer ' <<<"$out")
+if grep -qF 'standby:' <<<"$line"; then echo "check 17 calls a Fibre that restarts a standby"; exit 1; fi
+run sudo bash tools/doctor.sh "${args[@]}" "${node[@]}" --fibre-hosts fibre-1,val-1
+echo "::endgroup::"
+line=$(grep -E '^FAIL +17 +fibre signer ' <<<"$out")
+if grep -qF 'standby:' <<<"$line"; then echo "check 17 calls a Fibre that restarts a standby, with two Fibre hosts"; exit 1; fi
+says 17 'then restart Fibre at a moment you choose'
+says 7 'then "systemctl restart ci-fibre" at a moment you choose'
+printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" 'ExecStart=/bin/sleep infinity' \
+  | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl restart ci-fibre
+echo 'priv_validator_laddr = ""' >"$nh/config/config.toml"
+
 echo "::group::check 25 names the Fibre hosts without a node of their own"
 printf '%s\n' '[grpc]' 'enable = true' 'address = "0.0.0.0:9090"' >"$nh/config/app.toml"
 run sudo bash tools/doctor.sh "${args[@]}" --fibre-enabled false --roles validator --node-home "$nh" --inventory-host val-1 \

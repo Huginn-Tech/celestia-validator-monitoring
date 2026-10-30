@@ -135,10 +135,13 @@ files:
         'Float64Histogram\("fibre\.server\.prune\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
       fibre_server_sign_duration_seconds:
         'Float64Histogram\("fibre\.server\.sign\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
+      fibre_server_store_put_duration_seconds:
+        'Float64Histogram\("fibre\.server\.store\.put\.duration",\s+metric\.WithDescription\("[^"]*"\),\s+metric\.WithUnit\("s"\)'
     # The attributes otelcol sums away (upload_size, shard_size) or keeps (success).
     find: ['attribute\.Bool\("success", err == nil\)', 'attribute\.Int64\("upload_size", uploadSize\)',
            'attribute\.Int64\("shard_size", shardSize\)', 'pruneDuration\.Record\([^\n]*attribute\.Bool\("success"',
-           'signDuration\.Record\([^\n]*attribute\.Bool\("success", success\)']
+           'signDuration\.Record\([^\n]*attribute\.Bool\("success", success\)',
+           'func \(m \*serverMetrics\) observeStoreOp\([^\n]*\n\s*h\.Record\([^\n]*attribute\.Bool\("success", success\)']
   - repo: app
     file: fibre/cmd/metrics.go  # Go runtime metrics: go_memory_used_bytes, the dashboard's Fibre memory
     find: ['runtime\.Start\(']
@@ -164,14 +167,15 @@ files:
            '"Register a Fibre provider host for validator %s with MsgSetFibreProviderInfo\."',
            '"The registered provider host %q is not a valid host:port\. Register it again\."',
            '"The store failed a small write and read\. Check free disk space and permissions of the store directory\."']
-  # Fibre's settings doctor reads (checks 6, 7, 17 and 27, and the survey), and the health-check
-  # defaults the docs and FibreNotServing name.
+  # Fibre's settings doctor reads (checks 6, 7, 17 and 27, and the survey), the errors check 17 quotes
+  # when Fibre exits, and the health-check defaults the docs and FibreNotServing name.
   - repo: app
     file: fibre/server_config.go
     find: ['DefaultConfigFileName = "server_config\.toml"', 'filepath\.Join\(home, "config", DefaultConfigFileName\)',
            'EnvHome = "FIBRE_HOME"', 'DefaultHomeDir = "\.celestia-fibre"',
            'toml:"app_grpc_address"', 'toml:"server_listen_address"', 'toml:"signer_grpc_address"',
            'toml:"signer_grpc_ca_file"', 'toml:"signer_grpc_cert_file"', 'toml:"signer_grpc_key_file"',
+           'toml:"signer_grpc_allow_insecure"', 'must be set together', 'is not localhost',
            'AppGRPCAddress:\s+"127\.0\.0\.1:9090",',
            'ServerListenAddress:\s+"0\.0\.0\.0:7980",', 'SignerGRPCAddress:\s+"127\.0\.0\.1:26669",',
            'toml:"health"', 'toml:"max_block_age"', 'CheckInterval: "10s", ProbeTimeout: "3s", MaxBlockAge: "2m"']
@@ -179,19 +183,25 @@ files:
   - repo: app
     file: fibre/cmd/start_cmd.go
     find: ['= "app-grpc-address"', '= "server-listen-address"', '= "signer-grpc-address"',
-           '= "signer-grpc-ca-file"', '= "signer-grpc-cert-file"', '= "signer-grpc-key-file"']
+           '= "signer-grpc-ca-file"', '= "signer-grpc-cert-file"', '= "signer-grpc-key-file"',
+           '= "signer-grpc-allow-insecure"']
   - repo: app
     file: fibre/cmd/tracing.go
     find: ['flagOTelEndpoint\s*=\s*"otel-endpoint"', 'envOTelEndpoint\s*=\s*"FIBRE_OTEL_ENDPOINT"']
   # Log lines and errors the docs and notifications tell operators to look for.
-  - {repo: app, file: fibre/server_upload.go, find: ['"payment promise verification failed", "error", err']}
+  - repo: app
+    file: fibre/server_upload.go
+    find: ['"payment promise verification failed", "error", err', '"failed to store upload data", "error", err',
+           'observeStoreOp\(ctx, s\.metrics\.storePutDuration, storePutStart, false\)']
   - {repo: app, file: fibre/server_download.go, find: ['"failed to retrieve blob shard"']}
   - repo: app
     file: x/fibre/keeper/keeper.go
     find: ['"payment promise height %d is too far in the future', '"payment promise has already been processed"',
            '"payment promise expired: ', '"insufficient balance in escrow account\. ', '"escrow account not found for signer ']
-  # The node's privval gRPC address when config.toml has none (doctor check 20).
+  # The node's privval gRPC address when config.toml has none, and the start flag that allows it
+  # plaintext beyond loopback (doctor check 20).
   - {repo: app, file: app/default_overrides.go, find: ['PrivValidatorGRPCListenAddr = "127\.0\.0\.1:26669"']}
+  - {repo: app, file: cmd/celestia-appd/cmd/root.go, find: ['FlagPrivValGRPCAllowInsecure\s*=\s*"privval-grpc-allow-insecure"']}
 
   # x/signal, which celestia-mon-signal reads (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon)
   # and the docs and notifications name.
@@ -212,6 +222,7 @@ files:
     find: ['store\.Set\(valAddress, VersionToBytes\(version\)\)', 'binary\.BigEndian\.AppendUint64\(nil, version\)']
   - {repo: app, file: x/signal/cli/tx.go, find: ['Use:\s+"signal version"']}  # tx signal signal
   - {repo: app, file: x/signal/cli/query.go, find: ['Use:\s+"tally version"']}  # query signal tally
+  - {repo: app, file: pkg/appconsts/app_consts.go, find: ['interval of ~2\.6 seconds']}  # the block time until one is measured
   - repo: app
     file: app/params/config.go  # the account and operator address prefixes celestia-mon-signal uses
     find: ['Bech32PrefixAccAddr = "celestia"',

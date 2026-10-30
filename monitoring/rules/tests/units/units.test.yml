@@ -36,9 +36,9 @@ tests:
             exp_annotations:
               summary: "Fibre is not running on any host"
               description: >-
-                For 10 minutes no Fibre host (fibre-1: fibre.service, val-1: fibre-standby.service) has reported its Fibre unit
-                as active: Fibre is stopped everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names
-                the wrong unit.
+                For 10 minutes no Fibre host (fibre-1: fibre.service, val-1: fibre-standby.service) has kept its Fibre unit
+                active for a whole minute: Fibre is stopped or crash looping everywhere, the host of the active Fibre is down,
+                or celestia_mon_units.fibre names the wrong unit.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   # The standby on val-1 starts at 5m: a failover, under its own unit name, stops FibreDown.

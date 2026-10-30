@@ -1,8 +1,10 @@
 # SignaturesMissed on the example-mainnet inventory: val-1 is the validator node, fibre-1 a backup
 # node that tmkms can be pointed at. Each node that knows the validator's key counts the blocks
 # committed without its signature; a node that tmkms left keeps the key it last read and keeps
-# counting from the chain's commits. The rule takes the highest share of all nodes and names no host.
-# The chain makes 10 blocks per minute; samples are one minute apart.
+# counting from the chain's commits, at its own slow pace: without a signer it commits a block only
+# every few minutes. The rule takes the highest share of the nodes that are not more than 20 blocks
+# behind the highest, and names no host. The chain makes 10 blocks per minute; samples are one
+# minute apart.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -23,16 +25,18 @@ tests:
         exp_alerts: []
 
   # The validator misses every other block from the start. tmkms is pointed at fibre-1 at 20m while
-  # val-1 keeps running: both nodes count the same misses from then on. One alert, no host.
+  # val-1 keeps running: val-1 now commits a block every 5 minutes, and from 23m it is more than 20
+  # blocks behind and stops counting. fibre-1's own count passes 5% of its hour at 24m, so the hold
+  # restarts at the handover: one alert, no host, firing again at 34m.
   - name: Misses every other block, tmkms pointed at the backup node while val-1 runs; one SignaturesMissed
     interval: 1m
     input_series:
       - series: >-
           cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
-        values: '1000+10x40'
+        values: '1000+10x20 1200x4 1201x4 1202x4 1203x4'
       - series: >-
           cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
-        values: '1+5x40'
+        values: '1+5x20 102x4 103x4 104x4 105x4'
       - series: >-
           cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
         values: '1000+10x40'
@@ -123,6 +127,27 @@ tests:
                 For 10 minutes more than 5% of the blocks of the last hour have been committed
                 without a signature from the validator.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
+
+  # tmkms is pointed at fibre-1 at 20m and signs every block from then on. val-1 commits a block every
+  # 5 minutes, the first ones those the repoint left without a signature: at 85m its count shows 4
+  # misses in the hour over 11 blocks, which is no share of the chain's blocks. val-1 is far behind
+  # the highest node, so it does not count.
+  - name: A node tmkms left reads the repoint's misses over its few blocks; no SignaturesMissed
+    interval: 1m
+    input_series:
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x20 1200x4 1201x4 1202x4 1203x4 1204x4 1205x4 1206x4 1207x4 1208x4 1209x4 1210x4 1211x4 1212x4 1213x4'
+      - series: >-
+          cometbft_consensus_validator_missed_blocks{chain_id="celestia",job="celestia-app",instance="10.20.0.1:26660",host="val-1",role="validator",validator_address="0123456789ABCDEF0123456789ABCDEF01234567"}
+        values: '1x24 2x4 3x4 4x4 5x4 6x45'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.20.0.2:26660",host="fibre-1",role="backup_node"}
+        values: '1000+10x90'
+    alert_rule_test:
+      - eval_time: 85m
+        alertname: SignaturesMissed
+        exp_alerts: []
 
   # The misses stop at 20m (tmkms fixed). val-1's count stays at 101: 100 misses in the hour up to
   # 20m. They leave the hour window step by step, and the share drops to 5% at about 74m.

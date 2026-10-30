@@ -172,6 +172,35 @@
       node_exporter reports each disk by the mount point that holds it.
     quiet: true
 
+# The same for the Fibre store, on a standby too: DiskLow's store and budget rules and the dashboard
+# match celestia_mon_fibre_mount exactly, so any other path leaves the store unwatched without a sign.
+- name: Read the mount point that holds celestia_mon_fibre_mount
+  ansible.builtin.command:
+    argv: [findmnt, --noheadings, --first-only, --output, TARGET, --target, "{{ celestia_mon_fibre_mount | string }}"]
+  register: celestia_mon_preflight_fibre_mount
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when:
+    - celestia_mon_fibre_enabled
+    - inventory_hostname in groups.get('fibre', [])
+    - celestia_mon_fibre_mount | default('') | string | length > 0
+
+- name: Check that celestia_mon_fibre_mount is a mount point
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_fibre_mount | default('') | string | length > 0
+      - celestia_mon_preflight_fibre_mount.stdout | default('') == celestia_mon_fibre_mount | string
+    fail_msg: >-
+      celestia_mon_fibre_mount of {{ inventory_hostname }} is {{ (celestia_mon_fibre_mount | default('') | string) or 'not set' }}{{
+      (', which is on ' ~ celestia_mon_preflight_fibre_mount.stdout) if celestia_mon_preflight_fibre_mount.stdout | default('') else '' }}:
+      set it to the mount point of the Fibre store, on a standby too (install.sh --survey prints it).
+      node_exporter reports each disk by the mount point that holds it, so any other path leaves the store unwatched.
+    quiet: true
+  when:
+    - celestia_mon_fibre_enabled
+    - inventory_hostname in groups.get('fibre', [])
+
 # celestia-mon reloads systemd when one of its unit files changes, which would also load staged
 # edits to the Celestia services' units on this host. Stop first, so the operator reloads them.
 - name: Check that systemd has loaded the Celestia services' unit files
