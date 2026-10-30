@@ -614,10 +614,10 @@ groups:
           runbook: "{{ docs }}#fibrebothactive"
 
       # FibreNotServing: Fibre runs but does not do its job: it misses blobs sent to the validator,
-      # fails every upload, does not serve rows it signed for, reports itself not ready, or sends no
-      # metrics. A network that sends no blobs never fires it. Only the host whose Fibre unit is
-      # active can match: a stopped unit reports a start time of 0, and a standby sends no Fibre
-      # metrics and does not answer the health check.
+      # fails every upload, does not serve rows it signed for, reports itself not ready, does not
+      # answer the monitor, or sends no metrics. A network that sends no blobs never fires it. Only
+      # the host whose Fibre unit is active can match: a stopped unit reports a start time of 0, and
+      # a standby sends no Fibre metrics and does not answer the health check.
 {% if tensile_on %}
       # Uploads missed: blobs came for the validator, but Fibre accepted none of them. Tensile records
       # each settled blob that assigned rows to the validator. The reference client (celestia-app
@@ -749,6 +749,29 @@ groups:
           summary: "{% raw %}Fibre on {{ $labels.host }} is not ready for uploads{% endraw %}"
           description: "For 10 minutes{{ not_ready_text }}"
           runbook: "{{ docs }}#fibrenotserving"
+      # No answer: the Fibre unit is active, and the monitor's health check gets neither SERVING nor
+      # NOT_SERVING nor the Unimplemented of a Fibre older than v10.5.0. A firewall change on Fibre's
+      # port, another bind address or a process that hangs do that. It says the check is lost, not
+      # that Fibre is broken, as publishers may still reach a Fibre the monitor cannot: a message.
+      # A stopped standby does not match (its unit is not active), nor does a host the monitor
+      # cannot scrape or a blackbox exporter that is down (no series: MonitorCannotReach and
+      # ServiceDown report those). A Fibre at an IPv6 address has no such rule: the probe cannot
+      # reach it. Any answer starts the 10 minutes again, so a restart passes.
+{% for h in fibres if ':' not in hostvars[h].celestia_mon_private_ip | string %}
+      - alert: FibreNotServing
+        expr: >-
+          max by (host) (probe_grpc_healthcheck_response{job="fibre_health",host="{{ h }}",serving_status=~"SERVING|NOT_SERVING"}) == 0
+          unless on (host) probe_grpc_status_code{job="fibre_health",host="{{ h }}"} == 12
+          and on (host) max by (host) (node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, 'fibre') }}.service",state="active"}) == 1
+        for: 10m
+        labels:
+          severity: message
+          reason: no_answer
+        annotations:
+          summary: "{% raw %}Fibre on {{ $labels.host }} does not answer the monitor{% endraw %}"
+          description: "For 10 minutes the Fibre unit has been active, but its health check has not answered the monitor, so the monitor cannot tell whether Fibre is ready. Publishers may still reach it. On the monitor, sudo celestia-mon-doctor (check 24) names the error: no connection points at a firewall or the address Fibre listens on, no answer in time at a Fibre that hangs."
+          runbook: "{{ docs }}#fibrenotserving"
+{% endfor %}
 {% for h in fibres %}
       - alert: FibreNotServing
         expr: >-

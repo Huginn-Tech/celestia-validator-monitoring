@@ -165,14 +165,14 @@ def routing(args):
                                                                      ("message", ['severity="message"'])], r
     assert not r.get("continue", False), r
     # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
-    # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready and
-    # not_served; a crash loop holds back that host's messages, never a page; two Fibres running hold
-    # back missed_uploads; the signalling page holds back the message of the same round.
+    # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready,
+    # no_answer and not_served; a crash loop holds back that host's messages, never a page; two Fibres
+    # running hold back missed_uploads; the signalling page holds back the message of the same round.
     inhibit = config["inhibit_rules"]
     assert {"source_matchers": ['alertname="ValidatorNotSigning"'],
             "target_matchers": ['alertname="FibreNotServing"', 'reason="not_ready"']} in inhibit, inhibit
     assert {"source_matchers": ['alertname="ServiceDown"', 'unit="otelcol"'],
-            "target_matchers": ['alertname="FibreNotServing"', 'reason!~"not_ready|not_served"'], "equal": ["host"]} in inhibit, inhibit
+            "target_matchers": ['alertname="FibreNotServing"', 'reason!~"not_ready|no_answer|not_served"'], "equal": ["host"]} in inhibit, inhibit
     assert {"source_matchers": ['alertname="ServiceDown"', 'unit="fibre"'],
             "target_matchers": ['alertname="FibreNotServing"', 'severity="message"'], "equal": ["host"]} in inhibit, inhibit
     assert {"source_matchers": ['alertname="FibreBothActive"'],

@@ -215,7 +215,7 @@ Nothing is installed with apt or pip. `install.sh` downloads the [uv](https://gi
 
 ### Releases
 
-Each release on the repository's Releases page carries two files: `celestia-validator-monitoring-<tag>.tar.gz`, the tagged commit as `git archive` makes it, which unpacks to `celestia-validator-monitoring-<tag>/`, and `SHA256SUMS`. GitHub Actions builds both from the tag (`.github/workflows/release.yml`). [Quickstart step 2](quickstart.md#2-get-the-package-on-each-box) downloads them.
+Each release on the repository's Releases page carries two files: `celestia-validator-monitoring-<tag>.tar.gz`, the tagged commit as `git archive` makes it, which unpacks to `celestia-validator-monitoring-<tag>/`, and `SHA256SUMS`. GitHub Actions builds both from the tag (`.github/workflows/release.yml`), and only for a commit of `main` whose CI passed. [Quickstart step 2](quickstart.md#2-get-the-package-on-each-box) downloads them.
 
 ### Install from a copy you pack yourself
 
@@ -273,7 +273,7 @@ The dashboard is **Celestia validator** in the **Celestia validator** folder. [p
 
 Fibre v10.5.0 and newer runs checks of its own (its app node, the Fibre module, its signer, whether the validator is active, its registration and its store) and reports the result on its own port through the standard gRPC health check: Ready when all of them pass, Not ready when one fails. With Fibre on, the monitor asks each Fibre box for it every 15 seconds through celestia-mon-blackbox, at the box's private address and `celestia_mon_fibre_port` (7980 by default), so Fibre must listen there (it listens on every address by default) and the network between the boxes must let the monitor reach that port.
 
-Not ready means Fibre reports that at least one of its own checks fails; uploads to it may fail. Fibre's log names the failing check and what to do about it: `journalctl -u <fibre unit> | grep "health check failed"`. Fibre logs a check only when its result changes, so read the newest lines; it logs "health check passed" when that check passes again, and turns Ready by itself once all of them pass. A Fibre older than v10.5.0 reports no readiness (Not reported): upgrade Fibre to get it. A stopped standby does not answer, as expected. `doctor` check 24 on the monitor shows each Fibre box's readiness now. The probe reaches IPv4 addresses only: for a Fibre box whose `celestia_mon_private_ip` is an IPv6 address, readiness is not checked.
+Not ready means Fibre reports that at least one of its own checks fails; uploads to it may fail. Fibre's log names the failing check and what to do about it: `journalctl -u <fibre unit> | grep "health check failed"`. Fibre logs a check only when its result changes, so read the newest lines; it logs "health check passed" when that check passes again, and turns Ready by itself once all of them pass. A Fibre older than v10.5.0 reports no readiness (Not reported): upgrade Fibre to get it. A stopped standby does not answer, as expected. `doctor` check 24 on the monitor shows each Fibre box's readiness now. The probe reaches IPv4 addresses only: for a Fibre box whose `celestia_mon_private_ip` is an IPv6 address, readiness is not checked, and FibreNotServing (no answer) stays quiet.
 
 ## Optional alerts
 

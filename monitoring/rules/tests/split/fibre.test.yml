@@ -557,6 +557,124 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
 
+  # The unit stays active and the health check stops answering at 5m (status code 4, every
+  # serving_status 0), as behind a firewall change or from a Fibre that hangs. The blackbox exporter
+  # answers throughout: the message goes out at 15m.
+  - name: An active Fibre stops answering the health check; no_answer message after 10 minutes
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x30'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x30'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 0x26'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x30'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x4 4x26'
+      - series: >-
+          up{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: no_answer
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 does not answer the monitor"
+              description: >-
+                For 10 minutes the Fibre unit has been active, but its health check has not answered the monitor,
+                so the monitor cannot tell whether Fibre is ready. Publishers may still reach it. On the monitor,
+                sudo celestia-mon-doctor (check 24) names the error: no connection points at a firewall or the
+                address Fibre listens on, no answer in time at a Fibre that hangs.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
+
+  - name: A stopped standby does not answer; no no_answer
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x60'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '14x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: FibreNotServing
+        exp_alerts: []
+
+  # Two stretches of 9 minutes without an answer, one answer between them: each starts the 10 minutes again.
+  - name: Timeouts under 10 minutes with an answer between them; no no_answer
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x40'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x40'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 0x8 1 0x8 1x16'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x40'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x4 4x8 0 4x8 0x16'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 24m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: FibreNotServing
+        exp_alerts: []
+
+  # The blackbox exporter stops at 5m: no probe series is left, and ServiceDown reports that.
+  - name: Probe series gone with the blackbox exporter; no no_answer
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x25'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x25'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x4 stale'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x4 stale'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre"}
+        values: '0x4 stale'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: FibreNotServing
+        exp_alerts: []
+
   # A restart: Fibre answers NOT_SERVING while it shuts down (10m), does not answer for a minute
   # (status code 14, every serving_status 0), then answers NOT_SERVING from its start until its
   # checks have passed (12m to 14m) and SERVING from 15m. Each stretch is under 3 minutes: no alert.

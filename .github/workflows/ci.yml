@@ -400,9 +400,11 @@ jobs:
       # Unit names of a host's own (celestia_mon_units in its inventory entry): the fibre-apart example
       # names node-1's celestia-appd unit celestia.service (its rule tests run above), and
       # tools/ci/units.yml on top of it also val-1's standby Fibre fibre-standby.service and kms-1's
-      # tmkms tmkms-signer.service, with kms-1 scraped and no data mounts set. That render goes into
-      # tests/units, whose rule tests run there: each rule matches a unit under every name the hosts
-      # of its role use, each text names the unit of the host it is about, and DiskLow watches / on kms-1.
+      # tmkms tmkms-signer.service, with kms-1 scraped and no data mounts set, and puts val-1 at an IPv6
+      # address. That render goes into tests/units, whose rule tests run there: each rule matches a unit
+      # under every name the hosts of its role use, each text names the unit of the host it is about,
+      # DiskLow watches / on kms-1, and FibreNotServing's no_answer leaves out val-1, which the probe
+      # cannot reach.
       - name: Each host's own unit names
         id: own-units
         run: |
@@ -578,18 +580,23 @@ jobs:
   # celestia-mon-announcements against tools/ci/discord_stub.py, which stands in for Discord and
   # for Alertmanager's alerts API: the first read only notes the newest message, the next posts
   # the two new announcements, one request each, with clean text and links to the originals, a
-  # third posts nothing; a channel the bot may not read and a wrong token are reported, not fatal;
-  # odd messages and answers (a time too far off, a message that cannot be read, one Alertmanager
-  # refuses, a redirect, an answer over 1 MiB) hold back nothing; and the metrics Prometheus
-  # scrapes are served.
+  # third posts both again unchanged, until they end; a channel the bot may not read and a wrong
+  # token are reported, not fatal; odd messages and answers (a time too far off, a message that
+  # cannot be read, one Alertmanager refuses, a redirect, an answer over 1 MiB) hold back nothing;
+  # and the metrics Prometheus scrapes are served. Then against a real Alertmanager, whose receiver
+  # fails until a restart has lost the announcements: they come back, and reach the receiver once.
   announcements:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
-      - name: celestia-mon-announcements reads, posts once and reports errors
+      - uses: ./.github/actions/setup
+      - name: celestia-mon-announcements reads, posts and reports errors
         id: run
         run: bash tools/ci/announcements.sh
+      - name: An announcement a real Alertmanager lost in a restart comes back and reaches the receiver once
+        id: restart
+        run: bash tools/ci/announcements_restart.sh
       - uses: ./.github/actions/marks
         if: always()
         with:
@@ -1847,9 +1854,9 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only, as this branch does: its new ServiceDown word changes
-  # queries in the Status and the Servers tile, not only texts. Then the alert rules and the dashboard
-  # settings of each example inventory, rendered by both branches.
+  # pairs), or leaves --same out to report only, as this branch does: FibreNotServing's new reason
+  # changes queries in the Status, the Fibre tile, History and the cards, not only texts. Then the
+  # alert rules and the dashboard settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1881,8 +1888,8 @@ jobs:
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: every example, since each
-      # render gets the new ServiceDown rule for node_exporter's filesystem collector.
+      # scenarios in changed, whose renders this branch changes on purpose: every example with Fibre,
+      # since each render gets FibreNotServing's new no_answer rule.
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch

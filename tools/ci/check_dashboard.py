@@ -241,7 +241,7 @@ def first_screen(args):
         assert not any('unit="fibre"' in a or "FibreBothActive" in a for a in causes), causes
         assert 'ALERTS{alertname="ServiceDown",unit="fibre"}' in status[end:], "%s: 10 lacks the crash loop's hold" % s
         assert 'ALERTS{alertname="FibreBothActive"}' in status[end:], "%s: 10 lacks FibreBothActive's hold" % s
-        assert 'reason!~"not_ready|not_served"' in status and 'reason!="not_ready"' not in status, s
+        assert 'reason!~"not_ready|no_answer|not_served"' in status and 'reason!="not_ready"' not in status, s
         # The card goes red for the page that went out, ahead of the crash loop.
         page = 'ALERTS{alertname="FibreNotServing",reason="not_ready",severity="page",alertstate="firing"}'
         loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'

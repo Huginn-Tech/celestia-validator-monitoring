@@ -337,6 +337,7 @@ TITLES = [
     ("FibreNotServing:message::no_telemetry::([^:]*)", "No Fibre metrics on $1", "No Fibre data", P_FIBRE, "fibre"),
     # Fibre's own health check: a message after 3 minutes, a page after 10, one sentence for both.
     ("FibreNotServing:[a-z]+::not_ready::([^:]*)", "Fibre not ready on $1", "Not ready", P_FIBRE, "fibre"),
+    ("FibreNotServing:message::no_answer::([^:]*)", "Fibre does not answer on $1", "No answer", P_FIBRE, "fibre"),
     ("ServiceDown:message:node_exporter:::([^:]*)", "$1 not reporting", "Not reporting", P_SERVERS, None),
     ("ServiceDown:message:celestia_app:::([^:]*)", "Node metrics lost on $1", "No node data", P_SERVERS, None),
     ("ServiceDown:message:otelcol:::([^:]*)", "Fibre metrics lost on $1", "No Fibre data", P_FIBRE, "fibre"),
@@ -1394,10 +1395,11 @@ def alert_items(s):
 
     def fibre_held(state):
         """FibreNotServing held back by a cause in state, as the inhibitions do: a collector that is down
-        holds back that host's every reason but not_ready (Fibre's own health check, which the monitor asks
-        Fibre directly) and not_served (the failed reads Tensile reports), and ValidatorNotSigning not_ready."""
+        holds back that host's every reason but not_ready and no_answer (Fibre's own health check, which the
+        monitor asks Fibre directly) and not_served (the failed reads Tensile reports), and ValidatorNotSigning
+        not_ready."""
         return ("unless on (alertname, host, reason) (max by (alertname, host, reason) "
-                '(ALERTS{alertname="FibreNotServing",reason!~"not_ready|not_served"}) and on (host) max by (host) '
+                '(ALERTS{alertname="FibreNotServing",reason!~"not_ready|no_answer|not_served"}) and on (host) max by (host) '
                 '(ALERTS{alertname="ServiceDown",unit="otelcol"%s})) unless on (alertname, reason) (max by (alertname, '
                 'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
                 'max(ALERTS{alertname="ValidatorNotSigning"%s}))' % (state, state))
@@ -1789,7 +1791,7 @@ def signing_tile(s):
 # The surfaces read them in this order: what failed first, then Fibre's own health check, then no metrics.
 NOT_SERVING = [("missed_uploads", "Uploads missed", "tensile"), ("not_served", "Rows not served", "tensile"),
                ("uploads_failing", "Uploads failing", "fibre"), ("not_ready", "Not ready", "fibre"),
-               ("no_telemetry", "No Fibre data", "fibre")]
+               ("no_answer", "No answer", "fibre"), ("no_telemetry", "No Fibre data", "fibre")]
 # FibreNotServing (not_ready) once it pages: red on the Fibre tile, the History line and the cards.
 NOT_READY_PAGE = 'alertname="FibreNotServing",reason="not_ready",severity="page"'
 # Its place in NOT_SERVING: the amber code of each surface plus 10 is its red code.
@@ -1835,7 +1837,8 @@ def fibre_tile(s):
                   (22, "Wrong host", "red"), (13, "Not registered", "orange"), (23, "Not registered", "red")]
     desc = ("Is Fibre, the service that stores and serves this validator's share of blob data, running and taking "
             "uploads? Serving: one Fibre runs and no Fibre alert is due; a quiet network sends no blob for hours, "
-            "and that is fine. Amber: FibreNotServing by its reason (Not ready: Fibre's own health check fails), Two "
+            "and that is fine. Amber: FibreNotServing by its reason (Not ready: Fibre's own health check fails; No "
+            "answer: the check gets none), Two "
             "Fibres (FibreBothActive), Fibre crash (ServiceDown's crash loop) or Not running; red once FibreDown or "
             "Not ready pages. Not seen: a Fibre host is not reporting, so its Fibre may still run. Which server runs "
             "it: the cards below. Every word: the panel guide.")
@@ -3719,9 +3722,11 @@ def readiness_band(s, axis):
             "Ready all along is good. Fibre is ready while six checks pass: app node, Fibre module, signer, validator "
             "in the active set, provider registration and store. Not ready: one fails, or Fibre is starting or "
             "stopping; FibreNotServing sends a message after %s, red once it pages after %s. Fibre's log names the "
-            "check. Not reported: Fibre older than v10.5.0. Not checked: no answer. A stopped standby is left out. "
+            "check. Not reported: Fibre older than v10.5.0. Not checked: no answer; on a Fibre that runs, "
+            "FibreNotServing sends a message after %s. A stopped standby is left out. "
             "On the right: the share of the time Fibre answered Ready, of the time it answered at all."
-            % (s.hold("FibreNotServing not_ready message"), s.hold("FibreNotServing not_ready page"))
+            % (s.hold("FibreNotServing not_ready message"), s.hold("FibreNotServing not_ready page"),
+               s.hold("FibreNotServing no_answer"))
             + more(["FibreNotServing"], [PANEL_GUIDE]))
     height = grid_rows(LANE_PX + PLOT_INSET, CHROME_UNTITLED)
 

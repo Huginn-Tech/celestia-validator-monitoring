@@ -17,6 +17,7 @@
     "FibreNotServing no_telemetry": {"alert": "FibreNotServing", "labels": {"reason": "no_telemetry"}, "for": "30m"},
     "FibreNotServing not_ready message": {"alert": "FibreNotServing", "labels": {"reason": "not_ready", "severity": "message"}, "for": "3m"},
     "FibreNotServing not_ready page": {"alert": "FibreNotServing", "labels": {"reason": "not_ready", "severity": "page"}, "for": "10m"},
+    "FibreNotServing no_answer": {"alert": "FibreNotServing", "labels": {"reason": "no_answer"}, "for": "10m"},
     "DiskLow low space": {"alert": "DiskLow", "labels": {"severity": "message"}, "expr": "node_filesystem_size_bytes", "for": "10m"},
     "DiskLow budget": {"alert": "DiskLow", "expr": "fibre_server_upload_shard_occupancy_bytes", "for": "30m"},
     "RaidDegraded": {"alert": "RaidDegraded", "for": "5m"},

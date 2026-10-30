@@ -4,7 +4,9 @@ name: release
 # tag: celestia-validator-monitoring-<tag>.tar.gz is git archive of the tagged commit (everything
 # the repository tracks, install.sh executable), unpacking to celestia-validator-monitoring-<tag>/.
 # On each host: download both, check the tarball with sha256sum -c SHA256SUMS, unpack it. Nothing
-# here creates or pushes a tag: whoever releases does (git tag -a <tag>, git push origin <tag>).
+# here creates or pushes a tag: whoever releases does (git tag -a <tag>, git push origin <tag>),
+# once CI has passed on that commit of main. Anything else stops before the build; a tag pushed
+# while CI still runs is released by running this workflow again after CI has passed.
 on:
   push:
     tags:
@@ -17,9 +19,10 @@ jobs:
   release:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
-    # Creating the release and attaching its files.
+    # Creating the release and attaching its files, and reading CI's result for the tagged commit.
     permissions:
       contents: write
+      actions: read
     defaults:
       run:
         shell: bash
@@ -27,6 +30,19 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
+          fetch-depth: 0
+      # CI's run of the push to main: a run of a pull request's commit says nothing about main.
+      - name: The tagged commit is on main and its CI passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha=$(git rev-parse HEAD)
+          git merge-base --is-ancestor "$sha" origin/main || { echo "$sha is not on main: tag a commit of main"; exit 1; }
+          runs="repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$sha&branch=main&event=push&per_page=1"
+          conclusion=$(gh api "$runs" --jq '.workflow_runs[0].conclusion // "no result yet"')
+          [[ $conclusion == success ]] || { echo "CI of $sha on main: $conclusion. Run this workflow again once CI has passed."; exit 1; }
+          echo "$sha is on main and its CI passed"
       # Files 0644 and 0755 (tar.umask 022), owned by root in the archive.
       - name: Build the tarball and SHA256SUMS
         env:
