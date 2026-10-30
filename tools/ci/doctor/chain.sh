@@ -118,7 +118,8 @@ echo "::group::a Fibre that exits and waits for its restart, next to its node"
 printf '%s\n' '[Service]' "Environment=FIBRE_HOME=$fh" 'ExecStart=/bin/false' 'Restart=always' 'RestartSec=600' \
   | sudo tee /etc/systemd/system/ci-fibre.service >/dev/null
 sudo systemctl daemon-reload
-sudo systemctl restart ci-fibre
+sudo systemctl stop ci-fibre
+sudo systemctl start --no-block ci-fibre
 for _ in $(seq 50); do
   if [ "$(systemctl show -P SubState ci-fibre)" = auto-restart ]; then break; fi
   sleep 0.2

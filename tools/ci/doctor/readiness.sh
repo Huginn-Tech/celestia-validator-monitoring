@@ -125,8 +125,8 @@ wait_for() { # PromQL, the value it must reach
   exit 1
 }
 wait_for 'count(up{job="otelcol"} == 1) + count(node_systemd_unit_state{name=~"fibre-.*",state="active"})' 10
-own=(--config /dev/null --roles monitor --fibre-enabled true --fibre-hosts fibre-a,fibre-b,fibre-c,fibre-d,fibre-e
-  --fibre-units fibre-a=fibre-a,fibre-b=fibre-b,fibre-c=fibre-c,fibre-d=fibre-d,fibre-e=fibre-e)
+own=(--config /dev/null --roles monitor --fibre-enabled true --fibre-hosts "fibre-a,fibre-b,fibre-c,fibre-d,fibre-e"
+  --fibre-units "fibre-a=fibre-a,fibre-b=fibre-b,fibre-c=fibre-c,fibre-d=fibre-d,fibre-e=fibre-e")
 run bash "$GITHUB_WORKSPACE/tools/doctor.sh" "${own[@]}"
 line=$(grep -E '^WARN +19 +fibre active +Fibre is active on fibre-a, fibre-b, fibre-c, fibre-d \(fibre-a: fibre-a\.service, ' <<<"$out")
 grep -qF '; standby: fibre-e: two Fibre instances must never be live' <<<"$line"

@@ -173,7 +173,7 @@ home="$RUNNER_TEMP/val-old"
 mkdir -p "$home/config"
 echo 'priv_validator_laddr = ""' >"$home/config/config.toml"
 printf '%s\n' 'signer_grpc_address = "127.0.0.1:26669"' >"$fh/config/server_config.toml"
-beside=(--config /dev/null --roles validator,fibre --signer remote --fibre-enabled true --fibre-unit ci-active
+beside=(--config /dev/null --roles "validator,fibre" --signer remote --fibre-enabled true --fibre-unit ci-active
   --node-home "$home" --data-mounts / --head-wait 2)
 run sudo bash tools/doctor.sh "${beside[@]}"
 grep -Eq '^FAIL +17 +fibre signer +.*, but this node serves no privval gRPC \(priv_validator_grpc_laddr is empty in ' <<<"$out"
