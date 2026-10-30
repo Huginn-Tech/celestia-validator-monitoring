@@ -327,3 +327,54 @@ tests:
       - eval_time: 20m
         alertname: ServiceDown
         exp_alerts: []
+
+  # node_exporter answers and its filesystem collector fails from 5m: up stays 1 and the disk series
+  # are gone, so no DiskLow can fire. One message, for that collector only.
+  - name: The filesystem collector fails while node_exporter answers; a message after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          node_scrape_collector_success{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",collector="filesystem"}
+        values: '1x4 0x20'
+      - series: >-
+          node_scrape_collector_success{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",collector="mdadm"}
+        values: '0x24'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.3:9910
+              host: fibre-1
+              role: fibre
+              collector: filesystem
+              severity: message
+              unit: filesystem_collector
+            exp_annotations:
+              summary: "node_exporter cannot read the disks on fibre-1"
+              description: >-
+                For 3 minutes node_exporter's filesystem collector has failed while node_exporter answers, so
+                DiskLow sees no disk on this host. sudo celestia-mon-doctor (check 10) on it gives the fix.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # The collector recovers before the 3 minutes end.
+  - name: A filesystem collector that fails for 2 minutes raises nothing
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x24'
+      - series: >-
+          node_scrape_collector_success{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",collector="filesystem"}
+        values: '1x4 0x1 1x18'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ServiceDown
+        exp_alerts: []
