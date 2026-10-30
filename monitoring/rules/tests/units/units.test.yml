@@ -1,9 +1,9 @@
 # Unit names that differ between hosts: the example-fibre-apart inventory with tools/ci/units.yml on
 # top (the rules job's own-units step renders it here). celestia-appd runs as celestia-appd.service on
 # val-1 and celestia.service on node-1, Fibre as fibre.service on fibre-1 and fibre-standby.service
-# on val-1 (the standby), and tmkms as tmkms-signer.service on kms-1, which is scraped here and sets
-# no data mounts. The rules match a unit under every name the hosts of its role use, and each text
-# that names a unit names that host's own.
+# on val-1 (the standby, at an IPv6 address here), and tmkms as tmkms-signer.service on kms-1, which is
+# scraped here and sets no data mounts. The rules match a unit under every name the hosts of its role
+# use, and each text that names a unit names that host's own.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -256,3 +256,58 @@ tests:
               summary: "/ on kms-1 is read-only or almost full"
               description: "The filesystem is read-only or has less than 5% free space."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+
+  # val-1 sits at an IPv6 address, which the probe cannot reach, so it never answers there and has no
+  # no_answer rule; fibre-1, under its own unit name, has one.
+  - name: Neither Fibre answers the health check; no_answer names fibre-1, not val-1 at its IPv6 address
+    interval: 1m
+    input_series:
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.30.0.2:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="[fd00:30::1]:9910",host="val-1",role="validator",name="fibre-standby.service",state="active",type="simple"}
+        values: '1x20'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="10.30.0.2:9911",host="fibre-1",role="fibre"}
+        values: '1000000000000x20'
+      - series: >-
+          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="[fd00:30::1]:9911",host="val-1",role="validator"}
+        values: '1000000000000x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '0x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x20'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="10.30.0.2:7980",host="fibre-1",role="fibre"}
+        values: '14x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="[fd00:30::1]:7980",host="val-1",role="fibre",serving_status="SERVING"}
+        values: '0x20'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="[fd00:30::1]:7980",host="val-1",role="fibre",serving_status="NOT_SERVING"}
+        values: '0x20'
+      - series: >-
+          probe_grpc_status_code{job="fibre_health",instance="[fd00:30::1]:7980",host="val-1",role="fibre"}
+        values: '14x20'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: FibreNotServing
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: FibreNotServing
+        exp_alerts:
+          - exp_labels:
+              host: fibre-1
+              reason: no_answer
+              severity: message
+            exp_annotations:
+              summary: "Fibre on fibre-1 does not answer the monitor"
+              description: >-
+                For 10 minutes the Fibre unit has been active, but its health check has not answered the monitor,
+                so the monitor cannot tell whether Fibre is ready. Publishers may still reach it. On the monitor,
+                sudo celestia-mon-doctor (check 24) names the error: no connection points at a firewall or the
+                address Fibre listens on, no answer in time at a Fibre that hangs.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"

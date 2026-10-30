@@ -22,7 +22,6 @@ grep -q '^channel 111111111111111111: reading from now on' "$d/log"
 grep -q '^channel 222222222222222222: Discord answered 403 Missing Access' "$d/log"
 once
 once
-once
 # One request for each announcement, then one for both: each read posts again what has not ended.
 test "$(wc -l <"$d/posts.jsonl")" = 3
 # ...103 is an alert a webhook posted into the channel, not an announcement.

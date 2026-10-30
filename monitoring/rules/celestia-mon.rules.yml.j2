@@ -755,13 +755,14 @@ groups:
       # that Fibre is broken, as publishers may still reach a Fibre the monitor cannot: a message.
       # A stopped standby does not match (its unit is not active), nor does a host the monitor
       # cannot scrape or a blackbox exporter that is down (no series: MonitorCannotReach and
-      # ServiceDown report those), nor a Fibre at an IPv6 address, which the probe cannot reach.
-      # Any answer starts the 10 minutes again, so a restart passes.
+      # ServiceDown report those). A Fibre at an IPv6 address has no such rule: the probe cannot
+      # reach it. Any answer starts the 10 minutes again, so a restart passes.
+{% for h in fibres if ':' not in hostvars[h].celestia_mon_private_ip | string %}
       - alert: FibreNotServing
         expr: >-
-          max by (host) (probe_grpc_healthcheck_response{job="fibre_health",instance!~"\\[.*",serving_status=~"SERVING|NOT_SERVING"}) == 0
-          unless on (host) probe_grpc_status_code{job="fibre_health"} == 12
-          and on (host) max by (host) (node_systemd_unit_state{name{{ fibre_is }},state="active"}) == 1
+          max by (host) (probe_grpc_healthcheck_response{job="fibre_health",host="{{ h }}",serving_status=~"SERVING|NOT_SERVING"}) == 0
+          unless on (host) probe_grpc_status_code{job="fibre_health",host="{{ h }}"} == 12
+          and on (host) max by (host) (node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, 'fibre') }}.service",state="active"}) == 1
         for: 10m
         labels:
           severity: message
@@ -770,6 +771,7 @@ groups:
           summary: "{% raw %}Fibre on {{ $labels.host }} does not answer the monitor{% endraw %}"
           description: "For 10 minutes the Fibre unit has been active, but its health check has not answered the monitor, so the monitor cannot tell whether Fibre is ready. Publishers may still reach it. On the monitor, sudo celestia-mon-doctor (check 24) names the error: no connection points at a firewall or the address Fibre listens on, no answer in time at a Fibre that hangs."
           runbook: "{{ docs }}#fibrenotserving"
+{% endfor %}
 {% for h in fibres %}
       - alert: FibreNotServing
         expr: >-

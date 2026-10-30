@@ -400,9 +400,11 @@ jobs:
       # Unit names of a host's own (celestia_mon_units in its inventory entry): the fibre-apart example
       # names node-1's celestia-appd unit celestia.service (its rule tests run above), and
       # tools/ci/units.yml on top of it also val-1's standby Fibre fibre-standby.service and kms-1's
-      # tmkms tmkms-signer.service, with kms-1 scraped and no data mounts set. That render goes into
-      # tests/units, whose rule tests run there: each rule matches a unit under every name the hosts
-      # of its role use, each text names the unit of the host it is about, and DiskLow watches / on kms-1.
+      # tmkms tmkms-signer.service, with kms-1 scraped and no data mounts set, and puts val-1 at an IPv6
+      # address. That render goes into tests/units, whose rule tests run there: each rule matches a unit
+      # under every name the hosts of its role use, each text names the unit of the host it is about,
+      # DiskLow watches / on kms-1, and FibreNotServing's no_answer leaves out val-1, which the probe
+      # cannot reach.
       - name: Each host's own unit names
         id: own-units
         run: |

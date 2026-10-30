@@ -675,30 +675,6 @@ tests:
         alertname: FibreNotServing
         exp_alerts: []
 
-  # The probe cannot reach an IPv6 address, so the check never answers there.
-  - name: A Fibre at an IPv6 address; no no_answer
-    interval: 1m
-    input_series:
-      - series: >-
-          node_systemd_unit_state{job="node",instance="[2001:db8::3]:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
-        values: '1x25'
-      - series: >-
-          fibre_server_upload_shard_budget_bytes{job="otelcol",instance="[2001:db8::3]:9911",host="fibre-1",role="fibre"}
-        values: '1000000000000x25'
-      - series: >-
-          probe_grpc_healthcheck_response{job="fibre_health",instance="[2001:db8::3]:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
-        values: '0x25'
-      - series: >-
-          probe_grpc_healthcheck_response{job="fibre_health",instance="[2001:db8::3]:7980",host="fibre-1",role="fibre",serving_status="NOT_SERVING"}
-        values: '0x25'
-      - series: >-
-          probe_grpc_status_code{job="fibre_health",instance="[2001:db8::3]:7980",host="fibre-1",role="fibre"}
-        values: '14x25'
-    alert_rule_test:
-      - eval_time: 25m
-        alertname: FibreNotServing
-        exp_alerts: []
-
   # A restart: Fibre answers NOT_SERVING while it shuts down (10m), does not answer for a minute
   # (status code 14, every serving_status 0), then answers NOT_SERVING from its start until its
   # checks have passed (12m to 14m) and SERVING from 15m. Each stretch is under 3 minutes: no alert.
