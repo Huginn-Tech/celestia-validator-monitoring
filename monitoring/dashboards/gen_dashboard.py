@@ -1074,7 +1074,10 @@ def signed_share(s, rng, step, cap):
     with more than cap blocks is a node catching up after an outage, and counts as unsigned too,
     unless the step before had no fresh height while some node ran through the gap (the same
     process start time): then it was a scrape or Prometheus gap, and the node kept counting its own
-    misses. Steps in which Prometheus did not scrape itself leave both sums."""
+    misses. Steps in which Prometheus did not scrape itself leave both sums, and so do steps in which
+    no node that answers reports the key while a node runs unread: its metrics cannot be read, its
+    server answers and its unit stayed active through the step, so it may be signing unseen. A node
+    that stopped or crash loops, or a server that does not answer, still counts as unsigned."""
     blk = "clamp_min(max(%s) - max(%s offset %s), 0)" % (H, H, step)
     miss = "(max(clamp_min(%s - %s offset %s, 0)) or on () vector(0))" % (MISSED, MISSED, step)
     start = 'process_start_time_seconds{job="celestia-app"}'
@@ -1083,8 +1086,12 @@ def signed_share(s, rng, step, cap):
     signed = ("((clamp_min(%s - %s, 0) unless on () (%s > %s) unless on () ((%s > %s) unless on () %s)) "
               "or on () (%s * 0))" % (blk, miss, BLOCKS_SINCE, num(s.N), blk, num(cap), bridged, blk))
     promok = '(count_over_time(up{job="prometheus"}[%s]) > 0)' % step
-    return ("(sum_over_time((%s and on () %s)[%s:%s]) / sum_over_time((%s and on () %s)[%s:%s]))"
-            % (signed, promok, rng, step, blk, promok, rng, step))
+    active = 'min_over_time(node_systemd_unit_state{%s,state="active"}[%s])' % (s.is_unit("appd"), step)
+    unread = ('(max by (host) (up{job="celestia-app"}) == 0) and on (host) %s and on (host) (max by (host) (%s) == 1)'
+              % (NE_UP, active))
+    read = "and on () %s unless on () (absent(%s) and on () (count(%s) > 0))" % (promok, LSH, unread)
+    return ("(sum_over_time((%s %s)[%s:%s]) / sum_over_time((%s %s)[%s:%s]))"
+            % (signed, read, rng, step, blk, read, rng, step))
 
 
 # The alert sentences: the Status cell and the alert list group ALERTS series the same way.
@@ -1683,7 +1690,8 @@ def intro(s):
         (5, signed,
          "Share of the blocks committed over the last %d days that carry this validator's signature. Blocks committed "
          "while it was not signing at all (jailed, out of the set, signer or node down) count as unsigned; time without "
-         "monitoring data is left out. On a young install, or when Prometheus's size limit holds less, it covers the "
+         "monitoring data is left out, and so is time when no node reports the validator's key while a node runs but "
+         "its metrics cannot be read. On a young install, or when Prometheus's size limit holds less, it covers the "
          "days Prometheus has. Nil votes count as missed. Explorers show uptime over the chain's slashing window "
          "(about 10,000 blocks), so their number can differ." % s.days,
          signed_share(s, "%dd" % s.days, "5m", 300),
