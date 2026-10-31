@@ -9,6 +9,7 @@
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
   first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
+  signed-share DASHBOARD OUT  writes the promtool test of the signed share, which the job then runs
 
 Each fails with an assertion. Run from the repo root; Python 3 and PyYAML.
 """
@@ -267,8 +268,56 @@ def first_screen(args):
     print("mainnet: 15 reads %d wrong_host rules; 16 is red for the page alone" % len(wrong))
 
 
+def signed_share(args):
+    """A promtool test of the signed share on one dashboard's two queries, for each story of an hour in
+    three. The share stays whole only where the node with the key runs unread."""
+    path, out = args
+    lsh = 'cometbft_consensus_validator_last_signed_height{job="celestia-app"}'
+    exprs = [t["expr"] for p in walk(path).values() for t in p.get("targets", [])
+             if "sum_over_time(" in t.get("expr", "") and "absent(%s)" % lsh in t["expr"]]
+    assert len(exprs) == 2, exprs
+    unit = re.search(r'node_systemd_unit_state\{name="([^"]+)",state="active"\}', exprs[0]).group(1)
+    exprs = [e.replace("$__range", "3h").replace("[30d:", "[3h:") for e in exprs]
+
+    whole, hour = "1x180", "1x59 0x59 1x60"
+    climbs, gap = "1000+20x180", "1000+20x59 stale _x59 3400+20x60"
+    frozen = "1000+20x59 2180x120"
+    loops = "1x59 %s 1x60" % " ".join(["0", "1"] * 30)
+
+    def series(app=hour, app2=whole, height=gap, height2=climbs, key=gap, node=whole, active=whole):
+        """A minute's samples over 3 hours: val-1 holds the key, fibre-1 is the backup node."""
+        rows = [('up{job="prometheus",host="mon-1"}', whole),
+                ('up{job="celestia-app",host="val-1"}', app),
+                ('up{job="celestia-app",host="fibre-1"}', app2),
+                ('up{job="node",host="val-1"}', node),
+                ('up{job="node",host="fibre-1"}', whole),
+                ('cometbft_consensus_height{job="celestia-app",host="val-1"}', height),
+                ('cometbft_consensus_height{job="celestia-app",host="fibre-1"}', height2),
+                (lsh.replace("}", ',host="val-1"}'), key),
+                ('node_systemd_unit_state{host="val-1",name="%s",state="active"}' % unit, active),
+                ('node_systemd_unit_state{host="fibre-1",name="%s",state="active"}' % unit, whole)]
+        return [{"series": name, "values": values} for name, values in rows]
+
+    stories = [
+        ("the node runs unread: its hour leaves the share", series(), "> bool 0.99"),
+        ("the node stopped: unsigned", series(active=hour), "< bool 0.9"),
+        ("the node crash loops: unsigned", series(active=loops), "< bool 0.9"),
+        ("the server does not answer: unsigned", series(node=hour, active="1x59 stale _x59 1x60"), "< bool 0.9"),
+        ("the node answers and does not sign: unsigned", series(app=whole, height=climbs, key=frozen), "< bool 0.9"),
+        ("the backup node runs unread and the validator does not sign: unsigned",
+         series(app=whole, app2=hour, height=climbs, height2=gap, key=frozen), "< bool 0.9"),
+    ]
+    tests = [{"name": name, "interval": "1m", "input_series": rows,
+              "promql_expr_test": [{"expr": "%s %s" % (e, want), "eval_time": "3h",
+                                    "exp_samples": [{"labels": "{}", "value": 1}]} for e in exprs]}
+             for name, rows, want in stories]
+    with open(out, "w") as f:
+        yaml.safe_dump({"rule_files": [], "evaluation_interval": "1m", "tests": tests}, f)
+    print("%s: %d stories, %d queries" % (out, len(stories), len(exprs)))
+
+
 CHECKS = {"missed-blocks": missed_blocks, "upload-readiness": upload_readiness, "fibre-behind": fibre_behind,
-          "clock": clock, "restarts": restarts, "first-screen": first_screen}
+          "clock": clock, "restarts": restarts, "first-screen": first_screen, "signed-share": signed_share}
 
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in CHECKS:
