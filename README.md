@@ -2,7 +2,9 @@
 
 Ready-made monitoring for Celestia validators running Fibre.
 
-<img width="1883" height="797" alt="image" src="https://github.com/user-attachments/assets/c12e5225-8943-4b55-861d-e00affcbdb4a" />
+<img width="1897" height="865" alt="image_2026-10-31_08-07-21" src="https://github.com/user-attachments/assets/493ffd76-e7bc-40cf-b21d-1fb2242c99ea" />
+
+<img width="1899" height="756" alt="image_2026-10-31_08-06-48" src="https://github.com/user-attachments/assets/23b00421-449c-4449-a842-b5e8ccc6bbe7" />
 
 
 It watches a consensus validator, its Fibre server and its remote signer (tmkms), on one host or split across validator, KMS, Fibre and monitor hosts, with optional backup nodes and a standby Fibre; when tmkms moves to a backup node or a standby Fibre takes over, the alerts and the dashboard follow. It ships:
