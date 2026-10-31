@@ -2,7 +2,7 @@
 
 Ready-made monitoring for Celestia validators running Fibre.
 
-<img width="1897" height="865" alt="image_2026-10-31_08-07-21" src="https://github.com/user-attachments/assets/493ffd76-e7bc-40cf-b21d-1fb2242c99ea" />
+<img width="1899" height="861" alt="image" src="https://github.com/user-attachments/assets/0c11cfb3-dea8-44e6-815b-51f9f219b8bf" />
 
 <img width="1899" height="756" alt="image_2026-10-31_08-06-48" src="https://github.com/user-attachments/assets/23b00421-449c-4449-a842-b5e8ccc6bbe7" />
 
