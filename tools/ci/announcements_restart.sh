@@ -20,7 +20,7 @@ curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127
 cat >"$d/config.json" <<EOF
 {"host": "mon-1", "alertmanager_url": "http://127.0.0.1:9913", "api_user": "celestia-mon",
  "listen": "127.0.0.1:9916", "discord_api": "http://127.0.0.1:8766/api/v10", "interval_seconds": 1,
- "active_minutes": 30, "state_file": "$d/state.json",
+ "active_minutes": 30, "state_file": "$d/state.json", "servers": ["638338779505229824"],
  "channels": [{"id": "111111111111111111", "severity": "page"}]}
 EOF
 # The announcements' route of monitoring/alertmanager.yml.j2.

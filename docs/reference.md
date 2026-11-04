@@ -58,7 +58,7 @@ Their defaults are in `ansible/roles/celestia_mon/defaults/main.yml`:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `celestia_mon_ports` | 9910 to 9919 | celestia-validator-monitoring's ports ([table](#ports)). |
+| `celestia_mon_ports` | 9910 to 9918, and 912, 913 and 919 | celestia-validator-monitoring's ports ([table](#ports)). |
 | `celestia_mon_thresholds` | see [alerts.md](alerts.md) | Alert thresholds. |
 | `celestia_mon_nice`, `celestia_mon_cpu_weight`, `celestia_mon_io_weight` | 10, 20, 20 | CPU and disk priority of every unit. |
 | `celestia_mon_memory` | [table](#disk-and-memory) | `high` and `max` per service (`node_exporter`, `otelcol`, `prometheus`, `alertmanager`, `grafana`, `announcements`, `tensile`, `signal`, `blackbox`). |
@@ -103,15 +103,15 @@ Each receiver is one of these types; list any number, several of one type if you
 |---|---|---|
 | node_exporter | validator, backup_node, fibre, kms if opted in, monitor | 9910 on the private address |
 | OpenTelemetry collector | fibre, active and standby | 9911 on the private address (metrics), 9915 on 127.0.0.1 (from Fibre) |
-| Prometheus | monitor | 9912 on 127.0.0.1 |
-| Alertmanager | monitor | 9913 on 127.0.0.1 |
+| Prometheus | monitor | 912 on 127.0.0.1 |
+| Alertmanager | monitor | 913 on 127.0.0.1 |
 | Grafana | monitor | 9914 on 127.0.0.1 (or `celestia_mon_grafana_listen`) |
 | celestia-mon-announcements, with Celestia's announcements on | monitor | 9916 on 127.0.0.1 |
 | celestia-mon-tensile, with the outside check on | monitor | 9917 on 127.0.0.1 |
 | celestia-mon-signal, with upgrade signalling on | monitor | 9918 on 127.0.0.1 |
-| celestia-mon-blackbox, with Fibre on | monitor | 9919 on 127.0.0.1 |
+| celestia-mon-blackbox, with Fibre on | monitor | 919 on 127.0.0.1 |
 
-The install fails if one of its services listens on a public address. Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator and on each backup node, and with Fibre on it asks each Fibre box's own port (7980 by default, on its private address) for Fibre's [upload readiness](#upload-readiness) through celestia-mon-blackbox. Prometheus, Alertmanager and celestia-mon-blackbox listen on loopback only and ask for a login on every request: user `celestia-mon` and a password the install generates on the monitor, in `/etc/celestia-mon/api-password` (readable by root and Prometheus only), so no other account on the monitor can read them or silence alerts. doctor and amtool use it, and so does celestia-mon-announcements, with Celestia's announcements on, to post each announcement to Alertmanager. Grafana reads Prometheus with a login of its own (user `grafana`, `/etc/celestia-mon/grafana-api-password`), which Alertmanager refuses. Grafana listens on loopback too by default, and you reach Grafana, Prometheus and Alertmanager through an SSH tunnel ([Grafana access](#grafana-access)). The ports are a block that common tools do not use; to move them, set `celestia_mon_ports`.
+The install fails if one of its services listens on a public address. Prometheus also scrapes celestia-appd's own metrics port (26660 by default) on the validator and on each backup node, and with Fibre on it asks each Fibre box's own port (7980 by default, on its private address) for Fibre's [upload readiness](#upload-readiness) through celestia-mon-blackbox. Prometheus, Alertmanager and celestia-mon-blackbox listen on loopback only and ask for a login on every request: user `celestia-mon` and a password the install generates on the monitor, in `/etc/celestia-mon/api-password` (readable by root and Prometheus only), so no other account on the monitor can read them or silence alerts. doctor and amtool use it, and so does celestia-mon-announcements, with Celestia's announcements on, to post each announcement to Alertmanager. Grafana reads Prometheus with a login of its own (user `grafana`, `/etc/celestia-mon/grafana-api-password`), which Alertmanager refuses. Their ports sit below 1024, where only root may listen, and only their units hold the capability to listen there (`CAP_NET_BIND_SERVICE`): Prometheus, doctor and celestia-mon-announcements send the password with every request, so no other account on the monitor may take one of these ports while its service restarts, to read the password. Grafana listens on loopback too by default, and you reach Grafana, Prometheus and Alertmanager through an SSH tunnel ([Grafana access](#grafana-access)). The ports are ones that common tools do not use; to move them, set `celestia_mon_ports`. The install stops when Prometheus's, Alertmanager's or celestia-mon-blackbox's port is 1024 or above, and when another process listens on one of celestia-mon's ports at the end of the install.
 
 ### Firewall rules
 
@@ -257,10 +257,10 @@ ssh -N -L 9914:127.0.0.1:9914 <user>@<monitor>
 Then open `http://localhost:9914` and log in as `admin`. Grafana reads its admin password only on its first start; change it later in Grafana (Profile, Change password). The same tunnel can carry Prometheus and Alertmanager, which listen on the monitor's loopback only:
 
 ```sh
-ssh -N -L 9914:127.0.0.1:9914 -L 9912:127.0.0.1:9912 -L 9913:127.0.0.1:9913 <user>@<monitor>
+ssh -N -L 9914:127.0.0.1:9914 -L 9912:127.0.0.1:912 -L 9913:127.0.0.1:913 <user>@<monitor>
 ```
 
-Then also `http://localhost:9912/alerts` (Prometheus) and `http://localhost:9913` (Alertmanager), as user `celestia-mon` with the password from `sudo cat /etc/celestia-mon/api-password` on the monitor; your browser asks for it. Forward 9912 and 9913 only while you use them: while the tunnel is open and the browser remembers the login, other web pages in that browser can send requests to them too.
+Then also `http://localhost:9912/alerts` (Prometheus) and `http://localhost:9913` (Alertmanager), as user `celestia-mon` with the password from `sudo cat /etc/celestia-mon/api-password` on the monitor; your browser asks for it. The tunnel takes them to 9912 and 9913 on your machine, because there too only root may listen below 1024. Forward them only while you use them: while the tunnel is open and the browser remembers the login, other web pages in that browser can send requests to them too.
 
 Two optional alternatives:
 

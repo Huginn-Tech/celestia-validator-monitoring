@@ -279,8 +279,8 @@ jobs:
           server=$!
           for _ in $(seq 30); do curl -sf -o /dev/null http://127.0.0.1:9920/ && break; sleep 1; done
           cat > "$CI_DIR/taken.json" <<'EOF'
-          {"celestia_mon_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 9912,
-                          "alertmanager": 9913, "grafana": 9914, "otelcol_otlp": 9915}}
+          {"celestia_mon_ports": {"node_exporter": 9920, "otelcol_prometheus": 9911, "prometheus": 912,
+                          "alertmanager": 913, "grafana": 9914, "otelcol_otlp": 9915}}
           EOF
           if ansible-playbook -i "$CI_DIR/hosts.yml" -e @versions.yml -e @"$CI_DIR/taken.json" "$CI_DIR/site.yml" >"$CI_DIR/taken.log"; then
             cat "$CI_DIR/taken.log"
@@ -922,7 +922,7 @@ jobs:
   # loaded with rules that use every PromQL form the metric parser has to handle (strings
   # with escaped quotes and braces, on/ignoring/group_left/by/without lists, bool, offset,
   # @ start(), subqueries, recording-rule names with colons, +Inf, 1e6). A python
-  # http.server stands in for Alertmanager's /-/ready on 127.0.0.1:9913. The parser must
+  # http.server stands in for Alertmanager's /-/ready on 127.0.0.1:913. The parser must
   # find exactly 8 names: up, prometheus_ready and prometheus_build_info have series; the
   # 5 ci_* names do not. A second scrape job points at a closed port, so check 11 must
   # report it down with its error. This Prometheus asks for no login, and the runner has no
@@ -1354,6 +1354,10 @@ jobs:
           test "$(sudo stat -c '%U:%G %a' "$f")" = "root:root 600"
           test "$(sudo cat "$f" | wc -c)" = 32
           sudo cmp "$f" /etc/celestia-mon/grafana/admin-password
+          # The copy is root's only too: at each start root copies it into Grafana's runtime directory.
+          test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/grafana/admin-password)" = "root:root 600"
+          test "$(sudo stat -c '%U:%G %a' /run/celestia-mon-grafana/admin-password)" = "celestia-mon-grafana:celestia-mon-grafana 400"
+          test "$(sudo stat -c '%U %a' /run/celestia-mon-grafana)" = "celestia-mon-grafana 700"
           admin() { sudo sh -c 'printf "user = \"admin:%s\"\n" "$(cat /etc/celestia-mon/grafana-admin-password)"'; }
           test "$(admin | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9914/api/user)" = 200
           sudo mv "$f" "$f.ci"
@@ -1423,20 +1427,34 @@ jobs:
           set -euo pipefail
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/api-password)" = "root:celestia-mon-prometheus 640"
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/alertmanager/amtool-http.yml)" = "root:root 600"
-          for url in http://127.0.0.1:9912/-/ready http://127.0.0.1:9912/metrics http://127.0.0.1:9912/api/v1/rules \
-                     http://127.0.0.1:9913/-/ready http://127.0.0.1:9913/metrics http://127.0.0.1:9913/api/v2/silences; do
+          for url in http://127.0.0.1:912/-/ready http://127.0.0.1:912/metrics http://127.0.0.1:912/api/v1/rules \
+                     http://127.0.0.1:913/-/ready http://127.0.0.1:913/metrics http://127.0.0.1:913/api/v2/silences; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
             if [ "$code" != 401 ]; then echo "$url answered $code without the password, expected 401"; exit 1; fi
             # curl reads the login from stdin (-K -), so the password never shows in its arguments.
             sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"' | curl -fsS -o /dev/null -K - "$url"
           done
           amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
-          sudo "$amtool" --alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence query
+          sudo "$amtool" --alertmanager.url=http://127.0.0.1:913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence query
           # Grafana's own login is root-only; Prometheus takes it, Alertmanager refuses it.
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/grafana-api-password)" = "root:root 600"
           grafana_login() { sudo sh -c 'printf "user = \"grafana:%s\"\n" "$(cat /etc/celestia-mon/grafana-api-password)"'; }
-          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9912/api/v1/status/buildinfo)" = 200
-          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9913/api/v2/silences)" = 401
+          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:912/api/v1/status/buildinfo)" = 200
+          test "$(grafana_login | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:913/api/v2/silences)" = 401
+          # Their ports are below 1024: no account but root may listen there, also while a service restarts,
+          # so none can stand in for one and read the password its clients send. Only a refusal passes.
+          cat > "$RUNNER_TEMP/bind.py" <<'EOF'
+          import socket, sys
+          try:
+              socket.socket().bind(("127.0.0.1", int(sys.argv[1])))
+          except PermissionError:
+              sys.exit(0)
+          sys.exit(1)
+          EOF
+          for port in 912 913 919; do
+            sudo -u nobody python3 -I - "$port" <"$RUNNER_TEMP/bind.py" ||
+              { echo "an account other than root could listen on 127.0.0.1:$port"; exit 1; }
+          done
       # The rules for 10.255.255.2 on the other scraped ports (the collector's, celestia-appd's)
       # are added and recorded; only its rule for 9910, there before the install, is not.
       # The first read only notes the newest message; the stand-in then shows two new ones, which
@@ -1450,7 +1468,7 @@ jobs:
           curl -fsS http://127.0.0.1:9917/metrics | grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980"} 1'
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
           for _ in $(seq 30); do
-            if login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="tensile"}' |
+            if login | curl -fsS -g -K - 'http://127.0.0.1:912/api/v1/query?query=up{job="tensile"}' |
               jq -e '.data.result[0].value[1] == "1"' >/dev/null; then exit 0; fi
             sleep 2
           done
@@ -1475,7 +1493,7 @@ jobs:
           grep -qx 'celestia_mon_gov_validator_voted{proposal_id="8"} 1' <<<"$m"
           grep -qx 'celestia_mon_gov_proposal_info{proposal_id="7",title="CI proposal"} 1' <<<"$m"
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
-          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
+          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:912/api/v1/query; }
           poll() { # PromQL, jq test its reply must pass
             for _ in $(seq 60); do
               if jq -e "$2" >/dev/null <<<"$(query "$1")"; then return 0; fi
@@ -1488,7 +1506,7 @@ jobs:
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="UpgradeSignalMissing"}')"
           poll 'celestia_mon_gov_validator_voted{job="signal",proposal_id="7"}' '.data.result[0].value[1] == "0"'
           jq -e '.data.result | length == 0' <<<"$(query 'ALERTS{alertname="GovVoteMissing"}')"
-          login | curl -fsS -K - http://127.0.0.1:9912/api/v1/rules |
+          login | curl -fsS -K - http://127.0.0.1:912/api/v1/rules |
             jq -e '[.data.groups[].rules[] | select(.name == "GovVoteMissing") | .labels.severity] | sort == ["message", "page"]'
       # node_exporter and the collector exchange traffic only with loopback, this host's and the
       # monitor's address (127.0.0.1 here) and the ufw sources. The monitor's collectors never reach
@@ -1534,8 +1552,8 @@ jobs:
           systemctl show celestia-mon-blackbox -p IPAddressDeny -p IPAddressAllow -p LogFilterPatterns
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/blackbox/web.yml)" = "root:celestia-mon-blackbox 640"
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
-          probe='http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:7980'
-          for url in "$probe" http://127.0.0.1:9919/metrics http://127.0.0.1:9919/-/healthy; do
+          probe='http://127.0.0.1:919/probe?module=fibre_health&target=127.0.0.1:7980'
+          for url in "$probe" http://127.0.0.1:919/metrics http://127.0.0.1:919/-/healthy; do
             code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
             if [ "$code" != 401 ]; then echo "$url answered $code without the password, expected 401"; exit 1; fi
             login | curl -fsS -o /dev/null -K - "$url"
@@ -1544,7 +1562,7 @@ jobs:
           test "$(sudo sh -c 'printf "user = \"grafana:%s\"\n" "$(cat /etc/celestia-mon/grafana-api-password)"' |
             curl -s -o /dev/null -w '%{http_code}' -K - "$probe")" = 401
           login | curl -fsS -K - "$probe" | grep -qx 'probe_grpc_status_code 14'
-          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query; }
+          query() { login | curl -fsS -K - -G --data-urlencode "query=$1" http://127.0.0.1:912/api/v1/query; }
           ok=0
           for _ in $(seq 30); do
             if jq -e '.data.result[0].value[1] == "14"' >/dev/null \
@@ -1564,14 +1582,14 @@ jobs:
           login() { sudo sh -c 'printf "user = \"celestia-mon:%s\"\n" "$(cat /etc/celestia-mon/api-password)"'; }
           n=0
           for _ in $(seq 60); do
-            n=$(login | curl -fsS -g -K - 'http://127.0.0.1:9913/api/v2/alerts?filter=alertname="CelestiaAnnouncement"' | jq length)
+            n=$(login | curl -fsS -g -K - 'http://127.0.0.1:913/api/v2/alerts?filter=alertname="CelestiaAnnouncement"' | jq length)
             if [ "$n" = 2 ]; then break; fi
             sleep 2
           done
           if [ "$n" != 2 ]; then sudo journalctl -u celestia-mon-announcements --no-pager | tail -n 30; exit 1; fi
           curl -fsS http://127.0.0.1:9916/metrics |
             grep -Eq '^celestia_mon_announcements_last_success_timestamp_seconds\{channel="111111111111111111"\} [1-9]'
-          login | curl -fsS -g -K - 'http://127.0.0.1:9912/api/v1/query?query=up{job="announcements"}' | jq -e '.data.result[0].value[1] == "1"'
+          login | curl -fsS -g -K - 'http://127.0.0.1:912/api/v1/query?query=up{job="announcements"}' | jq -e '.data.result[0].value[1] == "1"'
       - name: The units run with the resource caps, and the ufw rules carry the comment and are recorded
         id: caps-ufw
         run: |
@@ -1615,7 +1633,7 @@ jobs:
           grep -Eq '^(OK|WARN|FAIL|SKIP) +17 +fibre signer ' <<<"$out"
           grep -Eq '^OK +21 +silences +no active silence' <<<"$out"
           grep -Eq '^OK +8 +private binds +.*celestia-mon-signal 127\.0\.0\.1:9918' <<<"$out"
-          grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:9919' <<<"$out"
+          grep -Eq '^OK +8 +private binds +.*celestia-mon-blackbox 127\.0\.0\.1:919' <<<"$out"
           # systemd-logind stands in for an active Fibre, and nothing listens on 127.0.0.1:7980.
           grep -Eq "^WARN +24 +fibre ready +Not checked: ci: the monitor cannot reach Fibre's port at 127\.0\.0\.1:7980 \(no connection\)" <<<"$out"
           line=$(grep -E '^OK +23 +upgrade signal +read through http://10\.255\.0\.3:8767 ' <<<"$out")
@@ -1637,7 +1655,7 @@ jobs:
           # back each page alert of this install (local signer, Fibre with Tensile, signalling on mainnet), in
           # the order of the rules file.
           amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
-          am=(--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml)
+          am=(--alertmanager.url=http://127.0.0.1:913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml)
           id=$(sudo "$amtool" "${am[@]}" silence add severity=page --duration=10m --author=ci --comment=ci)
           out=$(sudo celestia-mon-doctor || true)
           sudo "$amtool" "${am[@]}" silence expire "$id"
@@ -1863,8 +1881,8 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only, as this branch does: the signed share's new clause
-  # changes the queries of Blocks signed and History, not only texts. Then the alert rules and the
+  # pairs), or leaves --same out to report only, as this branch does: AlertsSilenced joins the queries
+  # of the Status cell, the Monitoring answer and History, not only texts. Then the alert rules and the
   # dashboard settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
@@ -1897,14 +1915,15 @@ jobs:
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: none.
+      # scenarios in changed, whose renders this branch changes on purpose: all of them, as their rules gain
+      # AlertsSilenced.
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch
         id: rules-base
         run: |
           set -euo pipefail
-          changed=""
+          changed="single split mainnet mocha nogov multi fibre-apart"
           renames=()
           out="$RUNNER_TEMP/renders"
           mkdir -p "$out"

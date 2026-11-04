@@ -51,8 +51,11 @@ celestia_mon_node_rpc_port: 26657
 celestia_mon_default_fibre_port: 7980
 celestia_mon_fibre_port: "{{ celestia_mon_default_fibre_port }}"
 
-# Ports of the services celestia-mon installs: one block that common tools do not use, so
-# celestia-mon runs next to an existing node_exporter, Prometheus, Grafana or collector.
+# Ports of the services celestia-mon installs, ones that common tools do not use, so celestia-mon
+# runs next to an existing node_exporter, Prometheus, Grafana or collector. prometheus,
+# alertmanager and blackbox stay below 1024 (the install stops otherwise): their clients send the
+# API password with every request, and only root may listen below 1024, so no other account on the
+# monitor can take one of these ports while its service restarts and read the password.
 # node_exporter and otelcol_prometheus listen on celestia_mon_private_ip, grafana on
 # celestia_mon_grafana_listen; the others listen on 127.0.0.1 only. otelcol_otlp is the
 # collector's OTLP/HTTP receiver, where Fibre pushes its metrics (--otel-endpoint
@@ -63,15 +66,15 @@ celestia_mon_ports: "{{ celestia_mon_default_ports }}"
 celestia_mon_default_ports:
   node_exporter: 9910
   otelcol_prometheus: 9911
-  prometheus: 9912
-  alertmanager: 9913
+  prometheus: 912
+  alertmanager: 913
   grafana: 9914
   otelcol_otlp: 9915
   announcements: 9916
   tensile: 9917
   signal: 9918
   # celestia-mon-blackbox on the monitor host, with Fibre on: asks each Fibre host for its readiness.
-  blackbox: 9919
+  blackbox: 919
 
 # The address Grafana listens on, on the monitor host. The default, 127.0.0.1, keeps it off
 # every network: reach it through an SSH tunnel from your machine

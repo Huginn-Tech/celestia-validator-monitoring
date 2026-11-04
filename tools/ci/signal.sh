@@ -216,11 +216,15 @@ for broken in end voted; do
   if [ "$broken" = end ]; then want="proposal 101's voting end time is missing"; else want='proposal 99 has a vote'; fi
   grep -qF "$want" "$d/err" || { echo "the log does not say: $want"; exit 1; }
 done
-# A title in Markdown: its square brackets become round ones, so Discord shows no link under other words.
+# A title in Markdown: its square brackets become round ones, so Discord shows no link under other words,
+# and each link becomes "link removed": one with a scheme, and a bare domain name, which Telegram and
+# Slack show as a link. A version number stays.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
-  '"gov": [{"id": 103, "start": 1792000000, "end": 1792604800, "title": "[Vote here](https://phish.example)"}]'
+  '"gov": [{"id": 103, "start": 1792000000, "end": 1792604800, "title": "[Vote here](https://phish.example)"},
+           {"id": 104, "start": 1792000000, "end": 1792604800, "title": "Upgrade to v10.5.0: patch at evil-site.example/fix now"}]'
 m=$(run "$addr" http://127.0.0.1:8767)
-grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(https://phish.example)"} 1' <<<"$m"
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(link removed)"} 1' <<<"$m"
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="104",title="Upgrade to v10.5.0: patch at link removed now"} 1' <<<"$m"
 # gov false: no proposal is read and no gov metric is served; gov must be true or false.
 m=$(cfg='"gov": false' run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"

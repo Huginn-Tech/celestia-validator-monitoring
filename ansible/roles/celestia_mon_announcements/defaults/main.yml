@@ -6,3 +6,8 @@ celestia_mon_announcements_discord_api: https://discord.com/api/v10
 # It is sent once either way: the announcement receivers send no "resolved" message.
 celestia_mon_announcements_interval_seconds: 60
 celestia_mon_announcements_active_minutes: 30
+# The Discord servers (by server ID) whose announcement channels count: Celestia's, the server of
+# the Mainnet Beta and Mocha announcement channels that docs.celestia.org links. A message that a
+# followed channel of any other server posted is passed over, so a follow added to the channel
+# by mistake, or by someone else on your server, sends no alert.
+celestia_mon_announcements_servers: ["638338779505229824"]

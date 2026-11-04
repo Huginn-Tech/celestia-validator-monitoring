@@ -83,18 +83,47 @@ mkdir -p "$v/celestiavalcons1big"
 m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1big)
 grep -qx 'celestia_mon_tensile_last_success_timestamp_seconds 0.0' <<<"$m"
 grep -q 'the answer is larger than 1048576 bytes' "$d/err"
-# Times that cannot exist (30 February, month 13, a number), counts that are no numbers and a
-# lone surrogate in the host are left out or shown plainly, never a failed scrape.
+# A host that is not host:port is a format error, and an outcome that is not one word is left out:
+# no other text from outside becomes a label value. A name and an IPv6 address in brackets are hosts.
+bad() {
+  mkdir -p "$v/celestiavalcons1$1"
+  printf '{"host": %s, "reachable": true, "identity_status": "verified", "last_endpoint_check": {"at": "2026-10-18T06:25:11Z", "outcome": %s}}' \
+    "$2" "$3" >"$v/celestiavalcons1$1/status"
+  m=$(run http://127.0.0.1:8766/api/v1 "celestiavalcons1$1")
+}
+for host in '"203.0.113.7:7980\ud800"' '"<b>fibre</b>:7980"' '"see https://example.com/x now"' '"203.0.113.7"' '"a:7980\n"' 7980; do
+  bad badhost "$host" '"REACHABLE"'
+  grep -qx 'celestia_mon_tensile_errors_total{reason="format"} 1' <<<"$m" ||
+    { printf '%s\n' "$m"; echo "the host $host read as host:port"; exit 1; }
+  grep -q 'has a host that is not host:port' "$d/err"
+  if grep -q '^celestia_mon_fibre_' <<<"$m"; then echo "the host $host was served"; exit 1; fi
+done
+for outcome in '"REACHABLE <a href=\"https://example.com\">now</a>"' '"two words"' '["REACHABLE"]'; do
+  bad badoutcome '"203.0.113.7:7980"' "$outcome"
+  grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980"} 1' <<<"$m" ||
+    { printf '%s\n' "$m"; echo "an outcome that is not one word stopped the reading"; exit 1; }
+  grep -q 'has an outcome that is not one word, left out' "$d/err"
+  if grep -q '^celestia_mon_fibre_last_check_info\|^celestia_mon_tensile_errors_total' <<<"$m"; then
+    echo "the outcome $outcome was served, or counted as an error"; exit 1
+  fi
+done
+for host in fibre-1.example.com:7980 '[2001:db8::7]:7980'; do
+  bad goodhost "\"$host\"" '"REACHABLE"'
+  grep -qxF "celestia_mon_fibre_last_check_info{endpoint=\"$host\",outcome=\"REACHABLE\"} 1" <<<"$m" ||
+    { printf '%s\n' "$m"; echo "the host $host not read"; exit 1; }
+done
+# Times that cannot exist (30 February, month 13, a number) and counts that are no numbers are
+# left out or shown plainly, never a failed scrape.
 mkdir -p "$v/celestiavalcons1odd"
 cat >"$v/celestiavalcons1odd/status" <<'EOF'
-{"host": "203.0.113.7:7980\ud800", "reachable": true, "identity_status": "verified",
+{"host": "203.0.113.7:7980", "reachable": true, "identity_status": "verified",
  "last_endpoint_check": {"at": "2026-02-30T06:25:11Z", "outcome": "REACHABLE"},
  "obligations": {"served": 3, "broken": "many"},
  "signing": {"assigned": 4, "signed": "x", "last_endorsed_at": "2026-13-01T00:00:00Z", "last_assigned_at": 7}}
 EOF
 m=$(run http://127.0.0.1:8766/api/v1 celestiavalcons1odd)
 printf '%s\n' "$m"
-grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980?"} 1' <<<"$m"
+grep -qx 'celestia_mon_fibre_reachable{endpoint="203.0.113.7:7980"} 1' <<<"$m"
 grep -qx 'celestia_mon_fibre_blobs_endorsed_24h 0' <<<"$m"
 grep -qx 'celestia_mon_fibre_obligations_24h{outcome="broken"} 0' <<<"$m"
 if grep -Eq '^celestia_mon_fibre_(last_check_timestamp|last_assigned_timestamp|last_endorsed_timestamp)' <<<"$m"; then

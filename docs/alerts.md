@@ -36,6 +36,7 @@ The validator role can move to a backup node (tmkms pointed at it), and the Fibr
 | [MonitoringBroken](#monitoringbroken) | message | Prometheus failing to evaluate alert rules |
 | [NotificationsFailing](#notificationsfailing) | message | Alertmanager unable to deliver through one of your receivers |
 | [DeadmanFailing](#deadmanfailing) | message | Alertmanager unable to deliver the heartbeat to your dead-man service |
+| [AlertsSilenced](#alertssilenced) | message | A silence in Alertmanager active for 4 hours, which keeps the alerts it matches from every receiver |
 | [TensileUnreadable](#tensileunreadable) | message | The outside check of the Fibre endpoint stopped (only with the outside check on) |
 | [SignalUnreadable](#signalunreadable) | message | Upgrade signalling or the governance votes no longer read (only with upgrade signalling on) |
 | [AnnouncementsUnreadable](#announcementsunreadable) | message | Celestia's announcements no longer read (only with [CelestiaAnnouncement](#celestiaannouncement) on) |
@@ -83,7 +84,7 @@ celestia_mon_receivers:
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
 | `crashloop_restarts` | 2 | ServiceDown (crash loop) |
 
-To see what is firing now, open Prometheus (`http://127.0.0.1:9912/alerts`) or Alertmanager (`http://127.0.0.1:9913`). Both listen on the monitor's loopback only: use them on the monitor, or through an SSH tunnel from your machine (`ssh -N -L 9912:127.0.0.1:9912 -L 9913:127.0.0.1:9913 <user>@<monitor>`, then the same URLs with `localhost`). Both ask for a login, which your browser prompts for: user `celestia-mon` and the password the install generated on the monitor (`sudo cat /etc/celestia-mon/api-password`). Open the tunnel only while you use it: while it is open and the browser remembers the login, other web pages in that browser can send requests to these ports too.
+To see what is firing now, open Prometheus (`http://127.0.0.1:912/alerts`) or Alertmanager (`http://127.0.0.1:913`). Both listen on the monitor's loopback only: use them on the monitor, or through an SSH tunnel from your machine (`ssh -N -L 9912:127.0.0.1:912 -L 9913:127.0.0.1:913 <user>@<monitor>`, then `http://localhost:9912/alerts` and `http://localhost:9913`). Both ask for a login, which your browser prompts for: user `celestia-mon` and the password the install generated on the monitor (`sudo cat /etc/celestia-mon/api-password`). Open the tunnel only while you use it: while it is open and the browser remembers the login, other web pages in that browser can send requests to these ports too.
 
 ## Before planned restarts and upgrades
 
@@ -91,7 +92,7 @@ Silence the host on the monitor first, so a planned restart pages nobody. `amtoo
 
 ```sh
 amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
-am="--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
+am="--alertmanager.url=http://127.0.0.1:913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
 $amtool $am silence add host=<host> --duration=30m --comment="planned restart of <host>"
 ```
 
@@ -274,7 +275,7 @@ Only with `celestia_mon_tensile` set and Fibre on.
 
 **Severity.** message.
 
-**Check first.** On the monitor, `journalctl -u celestia-mon-tensile -n 50`: a 404 means the validator address or the API's network is wrong in `celestia_mon_tensile`; a network error means the monitor cannot reach Tensile. If the service reads Tensile but its last check is old, Tensile itself is behind: look at its [status page](https://tensile.huginn.tech).
+**Check first.** On the monitor, `journalctl -u celestia-mon-tensile -n 50`: a 404 means the validator address or the API's network is wrong in `celestia_mon_tensile`; a network error means the monitor cannot reach Tensile; "a host that is not host:port" means Tensile's answer holds other text there, which celestia-mon-tensile does not put in a label, alert or panel. If the service reads Tensile but its last check is old, Tensile itself is behind: look at its [status page](https://tensile.huginn.tech).
 
 ## FibreBothActive
 
@@ -454,7 +455,7 @@ Only with `celestia_mon_signal` set, unless it sets `gov: false`.
 
 **What it means.** A governance proposal (x/gov) is in its voting period, less than 2 days are left until its end (on a vote shorter than 4 days, less than half of it), and the validator account has no vote on it. The validator account is `celestia1...` with the same bytes as the operator address `celestiavaloper1...`: the tally counts that account's vote as the validator's. A vote from another wallet, or from a multisig that is not that account, does not count; a vote sent through an authz grant from the validator account does, because the vote is then the validator account's. Nothing is sent when a vote opens, and nothing at all for a validator that votes before these limits. One alert per proposal; it names the proposal, its title and the time left, and no host.
 
-celestia-mon-signal on the monitor reads the proposals with x/signal, every minute through the same RPCs: the proposals in their voting period, and those with a vote from the validator account, both at one height. For each it serves the start and end of the voting period, whether the validator account voted, and the title, which whoever submitted the proposal wrote: at most 80 characters of it on one line, square brackets made round, so no chat channel shows a link under other words. While the RPCs fail the Proposals query, the service keeps serving the proposals it read last, so the alert goes on from that reading: it still comes on time for a proposal already read, but a vote cast meanwhile does not resolve it, and a proposal opened meanwhile is not seen. The rules read each proposal's last value of the past hour, so a short outage of the service or of its scrape neither resolves the alert nor sends it again; after an hour without the service, the alert resolves. [SignalUnreadable](#signalunreadable) reports either outage.
+celestia-mon-signal on the monitor reads the proposals with x/signal, every minute through the same RPCs: the proposals in their voting period, and those with a vote from the validator account, both at one height. For each it serves the start and end of the voting period, whether the validator account voted, and the title, which whoever submitted the proposal wrote: at most 80 characters of it on one line, square brackets made round, so no chat channel shows a link under other words, and each link, with a scheme or a bare domain name, replaced by the words "link removed", so the title sends no one to a site from your alerts. While the RPCs fail the Proposals query, the service keeps serving the proposals it read last, so the alert goes on from that reading: it still comes on time for a proposal already read, but a vote cast meanwhile does not resolve it, and a proposal opened meanwhile is not seen. The rules read each proposal's last value of the past hour, so a short outage of the service or of its scrape neither resolves the alert nor sends it again; after an hour without the service, the alert resolves. [SignalUnreadable](#signalunreadable) reports either outage.
 
 **Severity.** message once less than 2 days are left, and a page once less than 1 day is left, where the page is on: by default with `chain_id: celestia` (mainnet), and not on other networks, where the message is all ([upgrade signalling](reference.md#upgrade-signalling) has `gov_page` to change it). Neither comes before half the vote has passed: a 3-day vote gets the message 36 hours before its end, and a vote of 2 days or less gets both at half its length, a 24-hour vote (an expedited proposal, or a testnet's short voting period) 12 hours before its end; where the page is on, such a vote gets the page alone, and so does a longer one first read with less than a day left (`gov` turned on then, or the readings back after more than an hour). GovVoteMissing has its own route: each notification is sent once and comes again only after 4 days, longer than the alert can last, with a "resolved" one at the end.
 
@@ -487,7 +488,7 @@ Only with `celestia_mon_signal` set.
 **Check first.**
 
 1. On the monitor, `journalctl -u celestia-mon-prometheus -n 100`: each "Evaluating rule failed" line names the rule and the error.
-2. Prometheus's rules page on the monitor (`http://127.0.0.1:9912/rules`, through an SSH tunnel from your machine, as user `celestia-mon` with the password in `/etc/celestia-mon/api-password`) shows the failing rule and its last error.
+2. Prometheus's rules page on the monitor (`http://127.0.0.1:912/rules`, or `http://localhost:9912/rules` through an SSH tunnel from your machine, as user `celestia-mon` with the password in `/etc/celestia-mon/api-password`) shows the failing rule and its last error.
 3. Free space for Prometheus's data (`df -h /var/lib/celestia-mon/prometheus`), and `sudo celestia-mon-doctor` on the monitor: checks 11 and 12 show whether Prometheus answers and which rule metrics have no series. Prometheus needs retention size x 1.5 + 2 GiB on that disk, which every `install.sh` run on the monitor checks.
 
 ## NotificationsFailing
@@ -514,11 +515,23 @@ Only with `celestia_mon_signal` set.
 2. Compare `celestia_mon_deadman_webhook_url` in the monitor's secrets (`sudo ./install.sh --edit-secrets` there) or its vault with the ping URL your dead-man service shows, fix it, and run `install.sh` on the monitor again.
 3. Outbound HTTPS from the monitor to the dead-man service.
 
+## AlertsSilenced
+
+**What it means.** Alertmanager has held a silence for 4 hours: one silence, or several one after another with no moment between them without one. A silence keeps every alert it matches from every receiver, pages included, while the Watchdog keeps sending the heartbeat, so the dead-man service stays green. A silence that was forgotten after planned work, or set wider than meant (a whole host, every page), hides a real fault for as long as it lasts, and nothing else tells you. It fires 4 hours after the first silence began and clears when no silence is active. The alert names the monitor host, so a silence of that host holds it back too.
+
+**Severity.** message.
+
+**Check first.**
+
+1. On the monitor, as root, list the active silences with amtool (the commands in [Before planned restarts and upgrades](#before-planned-restarts-and-upgrades)): `$amtool $am silence query` shows each one with its matchers, its end, its author and its comment.
+2. Expire each one that no planned work needs any more: `$amtool $am silence expire <ID>`. For planned work, silence for as long as the work takes and no longer.
+3. `sudo celestia-mon-doctor` on the monitor (check 21) warns about a silence that holds back a page alert or ends more than 4 hours from now.
+
 ## CelestiaAnnouncement
 
 **What it means.** Celestia posted a new message in one of its announcement channels on Discord: usually a network upgrade with its height and time, or an incident. In Telegram and Discord the notification is the announcement itself: the channel it came from (for example `Celestia #mainnet-announcements`) as its title, then the message as text, role pings and Discord markup removed (up to 3500 characters). PagerDuty and webhooks also get a link to the original. Each announcement is sent once, as soon as it is read (within a minute). celestia-mon-announcements posts it to Alertmanager again at every read until it ends, 30 minutes later, so an Alertmanager restart does not lose it; Alertmanager's notification log, kept on disk, holds back a second notification, so only a crash of Alertmanager can send one twice. The chat channels get no "resolved" message for it; the PagerDuty incident closes by itself 30 minutes later.
 
-It is optional. celestia-mon-announcements, a small service on the monitor host, reads one or more channels on your own Discord server that follow Celestia's announcement channels ("Follow" on the channel in Celestia's Discord), with a bot of yours, and posts each new message to Alertmanager. Only what a followed channel posted counts: messages that people, bots or webhooks write into that channel are passed over. The first read of a channel only notes its newest message, so nothing older is sent. Set it up on the monitor:
+It is optional. celestia-mon-announcements, a small service on the monitor host, reads one or more channels on your own Discord server that follow Celestia's announcement channels ("Follow" on the channel in Celestia's Discord), with a bot of yours, and posts each new message to Alertmanager. Only what a followed channel of Celestia's Discord server posted counts: messages that people, bots or webhooks write into that channel are passed over, and so is what a followed channel of any other server posts, so a follow added by mistake or by someone else on your server sends nothing (`celestia_mon_announcements_servers` holds the server IDs that count, Celestia's by default). The first read of a channel only notes its newest message, so nothing older is sent. Set it up on the monitor:
 
 1. On your Discord server, create a channel and make it follow Celestia's mainnet and testnet announcement channels (one channel can follow several). Keep your alert receivers out of it: a `discord` receiver posts into a channel of its own.
 2. Create a bot in the [Discord Developer Portal](https://discord.com/developers/applications) (or reuse one): turn on **Message Content Intent**, invite it to your server, and give it **View Channel** and **Read Message History** in that channel. Copy its token.

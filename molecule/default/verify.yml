@@ -48,11 +48,11 @@
     celestia_mon_verify_ports:
       node_exporter: 9910
       otelcol_prometheus: 9911
-      prometheus: 9912
-      alertmanager: 9913
+      prometheus: 912
+      alertmanager: 913
       grafana: 9914
       otelcol_otlp: 9915
-      blackbox: 9919
+      blackbox: 919
     # Services the monitor reaches on the private address.
     celestia_mon_verify_private_ports:
       - node_exporter
@@ -314,7 +314,7 @@
       until: >-
         celestia_mon_verify_probe_target.json.data.activeTargets | default([])
         | selectattr('labels.job', 'equalto', 'fibre_health') | selectattr('health', 'equalto', 'up')
-        | selectattr('scrapeUrl', 'match', 'http://127.0.0.1:9919/probe')
+        | selectattr('scrapeUrl', 'match', 'http://127.0.0.1:919/probe')
         | list | length == 1
       retries: 12
       delay: 5

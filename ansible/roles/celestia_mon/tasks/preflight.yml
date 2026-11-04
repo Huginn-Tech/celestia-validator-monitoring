@@ -312,6 +312,18 @@
            if (celestia_mon_units.tmkms | default('') ~ '.service') in celestia_mon_preflight_unloaded
            else celestia_mon_units.tmkms | default('') }}
 
+- name: Check that the ports that take the API password are below 1024
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_ports[item] | int < 1024
+    fail_msg: >-
+      celestia_mon_ports.{{ item }} is {{ celestia_mon_ports[item] }}. Its clients send the API password with every
+      request, so the port must be below 1024, where only root may listen: on a higher port another account on
+      this host could listen there while the service restarts and read the password. Set a free port below 1024,
+      or leave the default, {{ celestia_mon_default_ports[item] }}.
+    quiet: true
+  loop: "{{ celestia_mon_password_ports | select('in', celestia_mon_host_services) | list }}"
+
 - name: Check that celestia-mon's ports are free or held by its own services
   ansible.builtin.include_tasks: port_check.yml
   vars:

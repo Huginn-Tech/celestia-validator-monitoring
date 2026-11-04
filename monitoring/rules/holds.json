@@ -26,6 +26,7 @@
     "SignalUnreadable": {"alert": "SignalUnreadable", "for": "10m"},
     "UpgradeSignalMissing": {"alert": "UpgradeSignalMissing", "for": "10m"},
     "GovVoteMissing message": {"alert": "GovVoteMissing", "labels": {"severity": "message"}, "for": "10m"},
-    "GovVoteMissing page": {"alert": "GovVoteMissing", "labels": {"severity": "page"}, "for": "10m"}
+    "GovVoteMissing page": {"alert": "GovVoteMissing", "labels": {"severity": "page"}, "for": "10m"},
+    "AlertsSilenced": {"alert": "AlertsSilenced", "for": "4h"}
   }
 }

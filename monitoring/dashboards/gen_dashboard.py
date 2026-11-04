@@ -360,6 +360,7 @@ TITLES = [
     ("MonitoringBroken:.*", "Alert rules failing", "Rules failing", P_MON, None),
     ("NotificationsFailing:.*", "Alerts not delivered", "Alerts unsent", P_MON, None),
     ("DeadmanFailing:.*", "Dead-man service not reached", "No heartbeat", P_MON, None),
+    ("AlertsSilenced:.*", "Alerts silenced for hours", "Silenced", P_MON, None),
     ("TensileUnreadable:.*", "Outside check stopped", "Check stopped", P_FIBRE, "tensile"),
     ("AnnouncementsUnreadable:.*", "Announcements not read", "Feed stopped", P_MON, "announcements"),
     ("UpgradeSignalMissing:.*", "Upgrade signal needed", "Not signalled", P_UPGRADE, "signal"),
@@ -379,8 +380,8 @@ SHORT_FALLBACK = "See alerts"
 # monitor's line in their own words), not the generic warning of a server's line (and of the Servers
 # tile).
 SERVER_OTHERS = ("RemoteSignerProblem|FibreNotServing|MonitoringBroken|NotificationsFailing|DeadmanFailing|"
-                 "TensileUnreadable|AnnouncementsUnreadable|SignalUnreadable|UpgradeSignalMissing|UpgradeScheduled|"
-                 "UpgradeSoon|GovVoteMissing")
+                 "AlertsSilenced|TensileUnreadable|AnnouncementsUnreadable|SignalUnreadable|UpgradeSignalMissing|"
+                 "UpgradeScheduled|UpgradeSoon|GovVoteMissing")
 # The heartbeat goes to the dead-man service only and is never shown as an alert.
 UNTITLED = {"Watchdog"}
 # The Status cell's panel id.
@@ -2024,13 +2025,14 @@ def monitoring_now(s):
         # A failed notification stops the heartbeat for an hour (synth_items' "No heartbeat").
         'max(ALERTS{alertname="DeadmanFailing",alertstate="firing"}) * 0 + 6',
         '((count(ALERTS{alertname="Watchdog",alertstate="firing"}) or vector(0)) == 0) * 0 + 6',
+        'max(ALERTS{alertname="AlertsSilenced",alertstate="firing"}) * 0 + 8',
         'max(ALERTS{alertname="AnnouncementsUnreadable",alertstate="firing"}) * 0 + 7' if s.announcements else None,
         'max(up{job="prometheus"}) * 0 + 1')
 
 
 MONITOR_WORDS = [(1, "Working", "text"), (2, "Rules failing", "orange"), (3, "Alerting down", "orange"),
                  (4, "Alerts unsent", "orange"), (5, "Rules stopped", "orange"), (6, "No heartbeat", "orange"),
-                 (7, "Feed stopped", "orange")]
+                 (7, "Feed stopped", "orange"), (8, "Silenced", "orange")]
 
 
 def monitoring_tile(s):
@@ -2039,13 +2041,16 @@ def monitoring_tile(s):
     desc = ("Is the monitoring itself working, so every other answer is current and alerts reach you? Working: the "
             "alert rules ran in the last 2 minutes and none failed, Alertmanager is up and reached, and the heartbeat "
             "goes to your dead-man service. Otherwise the word names what failed: Rules stopped, Rules failing "
-            "(MonitoringBroken), Alerting down, Alerts unsent (NotificationsFailing) or No heartbeat "
-            "(DeadmanFailing)%s. The history: the line of %s, the monitor's server, in History."
-            % (", or Feed stopped: the Celestia announcements are not read (AnnouncementsUnreadable)"
+            "(MonitoringBroken), Alerting down, Alerts unsent (NotificationsFailing), No heartbeat "
+            "(DeadmanFailing) or Silenced (AlertsSilenced: a silence in Alertmanager has been active for %s)%s. "
+            "The history: the line of %s, the monitor's server, in History."
+            % (s.hold("AlertsSilenced"),
+               ", or Feed stopped: the Celestia announcements are not read (AnnouncementsUnreadable)"
                if s.announcements else "", s.monitor))
     # Working in green, as every answer's healthy word; the cards' Monitoring rows keep the text colour.
     words = [(c, w, FINE if c == 1 else colour) for c, w, colour in MONITOR_WORDS]
-    return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]
+    return 18, "Monitoring", desc + more(["MonitoringBroken", "NotificationsFailing", "DeadmanFailing",
+                                          "AlertsSilenced"]
                                          + (["AnnouncementsUnreadable"] if s.announcements else [])), \
         monitoring_now(s), words
 
@@ -2224,7 +2229,7 @@ def server_lanes(s):
     # layout, so this line shows the heartbeat also where no Monitoring tile or card row does (the
     # Servers now table, a monitor on a KMS host); check_surfaces reads its selector left of 'and' only.
     watching = ([("MonitoringBroken", "Rules failing"), ("NotificationsFailing", "Alerts unsent"),
-                 ("DeadmanFailing", "No heartbeat")]
+                 ("DeadmanFailing", "No heartbeat"), ("AlertsSilenced", "Silenced")]
                 + ([("AnnouncementsUnreadable", "Feed stopped")] if s.announcements else []))
     heartbeat = seen('ALERTS{alertname="Watchdog",alertstate="firing"}')
     own = (["%s * 0 + %d" % (firing("alertname=%s" % q(a)), 11 + j) for j, (a, _) in enumerate(watching)]
@@ -3149,7 +3154,8 @@ def card_desc(s, kind, rows):
                      "reasons.")
         if watched:
             failed = (["'Rules stopped'", "'Rules failing' (MonitoringBroken)", "'Alerting down'",
-                       "'Alerts unsent' (NotificationsFailing)", "'No heartbeat' (DeadmanFailing)"]
+                       "'Alerts unsent' (NotificationsFailing)", "'No heartbeat' (DeadmanFailing)",
+                       "'Silenced' (AlertsSilenced)"]
                       + (["'Feed stopped' (AnnouncementsUnreadable)"] if s.announcements else []))
             desc += (" Monitoring, on %s, the monitor: Working while the alert rules run and alerts go out, else "
                      "what failed, in amber: %s or %s." % (s.monitor, ", ".join(failed[:-1]), failed[-1]))
@@ -3160,7 +3166,7 @@ def card_desc(s, kind, rows):
              if node else [])
             + (["FibreDown", "FibreBothActive", "FibreNotServing"] if fibre else [])
             + (["ServiceDown"] if node or fibre else [])
-            + (["MonitoringBroken", "NotificationsFailing", "DeadmanFailing"]
+            + (["MonitoringBroken", "NotificationsFailing", "DeadmanFailing", "AlertsSilenced"]
                + (["AnnouncementsUnreadable"] if s.announcements else []) if watched else []), [PANEL_GUIDE])
     desc = ("Where the remote signer signs now: the node the validator's signatures go through")
     if s.fibre:

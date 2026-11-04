@@ -41,6 +41,12 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 USER_AGENT = "celestia-mon-tensile (https://github.com/Huginn-Tech/celestia-validator-monitoring)"
+# What the host and the outcome from Tensile may hold before they become label values: the host as
+# host:port (a name or an IPv4 address, or an IPv6 address in brackets), the outcome as one word,
+# so no other text from outside (spaces, markup, a link) reaches an alert or the dashboard. An
+# answer with another host is a format error; another outcome is left out.
+HOST_PORT = re.compile(r"(?:[A-Za-z0-9.-]{1,253}|\[[0-9A-Fa-f:.]{2,45}\]):[0-9]{1,5}")
+OUTCOME = re.compile(r"[A-Za-z0-9_-]{1,64}")
 # The largest answer read, in bytes: a validator's status takes a few KiB, and a larger one is
 # refused rather than read into memory.
 MAX_BODY = 1 << 20
@@ -81,6 +87,12 @@ def esc(value):
     # Tensile's text is JSON, which can hold what UTF-8 cannot (a lone surrogate): "?" instead.
     text = str(value).encode("utf-8", "replace").decode("utf-8")
     return text.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+
+def one_word(outcome):
+    """True when Tensile's check outcome may be a label value: absent, empty or one word. Another one
+    is left out, with no error: no alert reads it."""
+    return outcome in (None, "") or (isinstance(outcome, str) and OUTCOME.fullmatch(outcome) is not None)
 
 
 def number(value):
@@ -168,6 +180,9 @@ class State:
                     "# HELP celestia_mon_fibre_last_check_timestamp_seconds Unix time of Tensile's last check of the endpoint.",
                     "# TYPE celestia_mon_fibre_last_check_timestamp_seconds gauge",
                     f'celestia_mon_fibre_last_check_timestamp_seconds{{endpoint="{endpoint}"}} {at}',
+                ]
+            if endpoint and at is not None and one_word(check.get("outcome")):
+                out += [
                     "# HELP celestia_mon_fibre_last_check_info The outcome of Tensile's last check of the endpoint.",
                     "# TYPE celestia_mon_fibre_last_check_info gauge",
                     f'celestia_mon_fibre_last_check_info{{endpoint="{endpoint}",outcome="{esc(check.get("outcome") or "")}"}} 1',
@@ -286,6 +301,15 @@ def read(cfg, state):
         state.error("format")
         log(f"Tensile's answer for {url} has no host field")
         return
+    host = status["host"]
+    if host not in (None, "") and not (isinstance(host, str) and HOST_PORT.fullmatch(host)):
+        state.count_assigned(0, None)
+        state.error("format")
+        log(f"Tensile's answer for {url} has a host that is not host:port")
+        return
+    check = status.get("last_endpoint_check")
+    if not one_word(check.get("outcome") if isinstance(check, dict) else None):
+        log(f"Tensile's answer for {url} has an outcome that is not one word, left out")
     sig = status.get("signing")
     if isinstance(sig, dict) and "last_assigned_at" not in sig and isinstance(sig.get("assigned"), int):
         state.count_assigned(sig["assigned"], current(api, state))

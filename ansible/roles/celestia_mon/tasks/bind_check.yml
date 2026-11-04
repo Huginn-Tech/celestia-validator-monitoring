@@ -43,3 +43,40 @@
         # Local address without the port, IPv6 brackets or %interface suffix.
         celestia_mon_bind_check_address: >-
           {{ item.split()[3] | regex_replace(':[^:]*$', '') | replace('[', '') | replace(']', '') | regex_replace('%.*$', '') }}
+
+    # A port of celestia-mon's that another process holds: the service that owns it could not
+    # listen, and on Prometheus's, Alertmanager's or blackbox's port that process would read the API
+    # password their clients send. The check before the install stops on a port taken then; this one
+    # runs once the services listen: each socket on one of this host's celestia-mon ports must belong
+    # to the main process of the unit that owns the port.
+    - name: Check that each celestia-mon port is held by its own service
+      ansible.builtin.assert:
+        that:
+          - ('pid=' ~ celestia_mon_bind_check_pid_of[celestia_mon_bind_check_port_unit] | default('0') ~ ',') in item
+        fail_msg: >-
+          {{ item | regex_findall('[(]"([^"]+)",pid=') | unique | join(', ') }} listens on {{ item.split()[3] }},
+          the port of {{ celestia_mon_bind_check_port_unit }}, which does not hold it. Stop that process, or set
+          celestia_mon_ports to free ports, and run the install again.
+        quiet: true
+      loop: >-
+        {{ celestia_mon_bind_check_sockets.stdout_lines
+           | select('search', '^\S+\s+\S+\s+\S+\s+\S+:(' ~ celestia_mon_bind_check_own_ports | join('|') ~ ')\s')
+           | list }}
+      loop_control:
+        label: "{{ item.split()[3] }}"
+      vars:
+        celestia_mon_bind_check_pid_of: >-
+          {{ dict(celestia_mon_bind_check_units.results | map(attribute='item')
+                  | zip(celestia_mon_bind_check_units.results | map(attribute='status.MainPID', default='0') | map('string'))) }}
+        # This host's celestia-mon ports, as text.
+        celestia_mon_bind_check_own_ports: >-
+          {{ celestia_mon_host_services | map('extract', celestia_mon_services, 'ports') | flatten
+             | map('extract', celestia_mon_ports) | map('string') | list }}
+        celestia_mon_bind_check_port: "{{ item.split()[3] | regex_replace('^.*:', '') }}"
+        # The unit whose port that is.
+        celestia_mon_bind_check_port_unit: >-
+          {%- for s in celestia_mon_host_services -%}
+          {%- for k in celestia_mon_services[s].ports if celestia_mon_ports[k] | string == celestia_mon_bind_check_port -%}
+          {{ celestia_mon_services[s].unit }}
+          {%- endfor -%}
+          {%- endfor -%}

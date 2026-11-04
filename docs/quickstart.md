@@ -167,7 +167,7 @@ Then open `http://localhost:9914` and log in as `admin`, with the password from 
 
 ```sh
 amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
-am="--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
+am="--alertmanager.url=http://127.0.0.1:913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
 $amtool $am alert add alertname=CelestiaMonTest severity=page host=test --annotation=summary='celestia-validator-monitoring test'
 $amtool $am alert add alertname=CelestiaMonTest severity=message host=test --annotation=summary='celestia-validator-monitoring test'
 ```
@@ -182,7 +182,7 @@ $amtool $am alert add alertname=CelestiaMonTest severity=message host=test --ann
 
 ```sh
 amtool=$(ls /opt/celestia-mon/alertmanager-*/amtool)
-am="--alertmanager.url=http://127.0.0.1:9913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
+am="--alertmanager.url=http://127.0.0.1:913 --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml"
 $amtool $am silence add host=<box> --duration=30m --comment="planned upgrade of <box>"
 ```
 

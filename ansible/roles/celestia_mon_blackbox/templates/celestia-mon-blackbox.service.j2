@@ -31,9 +31,11 @@ PrivateTmp=true
 PrivateDevices=true
 SystemCallArchitectures=native
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# No capabilities, no kernel or cgroup changes, no new namespaces, and only the system calls
+# Only the capability to listen below 1024 (its port, so that no other account can take it),
+# no kernel or cgroup changes, no new namespaces, and only the system calls
 # of an ordinary service (a call outside the set fails with EPERM).
-CapabilityBoundingSet=
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true

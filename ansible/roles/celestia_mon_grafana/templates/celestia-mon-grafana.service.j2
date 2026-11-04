@@ -15,6 +15,13 @@ After=network-online.target
 [Service]
 User=celestia-mon-grafana
 Group=celestia-mon-grafana
+# The admin password, which only root can read on disk: at each start root ("+") copies it into the
+# service's runtime directory, in memory and removed when the service stops, where grafana.ini
+# reads it.
+RuntimeDirectory={{ celestia_mon_grafana_runtime_dir | basename }}
+RuntimeDirectoryMode=0700
+ExecStartPre=+/usr/bin/install -m 0400 -o celestia-mon-grafana -g celestia-mon-grafana \
+  {{ celestia_mon_grafana_admin_password_file }} {{ celestia_mon_grafana_admin_credential }}
 WorkingDirectory={{ celestia_mon_grafana_home }}
 ExecStart={{ celestia_mon_grafana_home }}/bin/grafana server \
   --homepath {{ celestia_mon_grafana_home }} \
