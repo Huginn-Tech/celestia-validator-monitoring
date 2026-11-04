@@ -68,6 +68,13 @@ VOTING_PERIOD = 2  # PROPOSAL_STATUS_VOTING_PERIOD
 # The characters of a proposal's title the metrics keep.
 TITLE_CHARS = 80
 SQUARE_TO_ROUND = str.maketrans("[]", "()")
+# A link in a title: a URL with a scheme, one that starts with www., or a bare domain name, which Telegram
+# and Slack show as a link (a name of labels joined by dots that ends in letters, or an IDN's xn--). A
+# title is written by whoever submitted the proposal, and it reaches every receiver through GovVoteMissing,
+# so it carries no link to a site. Version numbers (v10.5.0) and other dotted numbers stay.
+LINKISH = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9+.-]*://|\bwww\.)[^\s()<>\"']*"
+                     r"|(?:[\w-]+\.)+(?:[^\W\d_]{2,63}|xn--[\w-]+)\b(?:[/:?#][^\s()<>\"']*)?", re.IGNORECASE)
+LINK_REMOVED = "link removed"
 # The blocks the block time is measured over.
 BLOCK_SPAN = 1000
 # The block time for the ETA until one is measured: celestia-app's figure for its upgrade delays
@@ -456,10 +463,12 @@ def title_text(raw):
     submitted the proposal: line breaks, tabs and other spaces become one space, control and
     format characters (zero-width ones, direction overrides) are dropped, square brackets become
     round ones, so no chat channel that reads Markdown (Discord) shows a link under other words
-    ([text](url)) in an alert, and it keeps at most TITLE_CHARS characters."""
+    ([text](url)) in an alert, each link (LINKISH) becomes the words "link removed", and it keeps at
+    most TITLE_CHARS characters."""
     text = raw.decode("utf-8", errors="replace").translate(SQUARE_TO_ROUND)
     text = "".join(" " if c.isspace() else c if c.isprintable() else "" for c in text)
     text = " ".join(text.split())
+    text = LINKISH.sub(LINK_REMOVED, text)
     return text if len(text) <= TITLE_CHARS else text[: TITLE_CHARS - 1].rstrip() + "…"
 
 

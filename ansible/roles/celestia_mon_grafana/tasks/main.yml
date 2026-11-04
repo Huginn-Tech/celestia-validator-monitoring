@@ -252,8 +252,8 @@
          if celestia_mon_grafana_generated_password.content is defined else 'generated-by-the-first-real-run' }}
     dest: "{{ celestia_mon_grafana_admin_password_file }}"
     owner: root
-    group: celestia-mon-grafana
-    mode: "0640"
+    group: root
+    mode: "0600"
   no_log: true
 
 - name: Write the Grafana settings

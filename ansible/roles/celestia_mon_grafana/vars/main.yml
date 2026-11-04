@@ -15,7 +15,10 @@ celestia_mon_grafana_home: "/opt/celestia-mon/grafana-{{ celestia_mon_grafana_ve
 celestia_mon_grafana_config_dir: /etc/celestia-mon/grafana
 celestia_mon_grafana_data_dir: /var/lib/celestia-mon/grafana
 celestia_mon_grafana_dashboard_dir: "{{ celestia_mon_grafana_config_dir }}/dashboards"
+# The admin password, root's only (0600). systemd hands Grafana a copy at its start (LoadCredential),
+# at celestia_mon_grafana_admin_credential, where grafana.ini reads it.
 celestia_mon_grafana_admin_password_file: "{{ celestia_mon_grafana_config_dir }}/admin-password"
+celestia_mon_grafana_admin_credential: /run/credentials/celestia-mon-grafana.service/admin-password
 # Holds the password Grafana sends to Prometheus (celestia_mon_api_grafana_password_file).
 celestia_mon_grafana_datasource_file: "{{ celestia_mon_grafana_config_dir }}/provisioning/datasources/celestia-mon.yml"
 

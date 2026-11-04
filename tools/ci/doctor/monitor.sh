@@ -16,7 +16,7 @@ rule_files:
 scrape_configs:
   - job_name: prometheus
     static_configs:
-      - targets: ["127.0.0.1:9912"]
+      - targets: ["127.0.0.1:912"]
   - job_name: closed
     static_configs:
       - targets: ["127.0.0.1:9"]
@@ -83,8 +83,8 @@ EOF
 # pages FILE N: Prometheus runs FILE's page rules in place of the last ones, N of them with severity page.
 pages() {
   cp "$1" pages.yml
-  curl -fsS -X POST http://127.0.0.1:9912/-/reload
-  curl -fsS 'http://127.0.0.1:9912/api/v1/rules?type=alert' |
+  curl -fsS -X POST http://127.0.0.1:912/-/reload
+  curl -fsS 'http://127.0.0.1:912/api/v1/rules?type=alert' |
     jq -e --argjson n "$2" '[.data.groups[].rules[] | select(.labels.severity == "page")] | length == $n' >/dev/null ||
     { echo "Prometheus did not load the $2 page rules of $1"; exit 1; }
 }
@@ -92,7 +92,7 @@ cp pages-1.yml pages.yml
 start_prometheus --web.enable-lifecycle
 # /-/ready answers before the first scrape: wait until both targets have been scraped once.
 for _ in $(seq 60); do
-  if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up)' | grep -q '"value":[[0-9.]*,"2"]'; then break; fi
+  if curl -fsS 'http://127.0.0.1:912/api/v1/query?query=count(up)' | grep -q '"value":[[0-9.]*,"2"]'; then break; fi
   sleep 1
 done
 # Check 21 reads these through doctor's JSON reader: escaped quotes and braces, a regex
@@ -241,15 +241,15 @@ line=$(grep -E '^OK +21 +silences ' <<<"$out" || true)
 grep -qF -- "$want" <<<"$line" || { echo "check 21 did not count a host silence by its length: $want"; exit 1; }
 
 # The jobs after the prometheus one: scrape JOBS writes them and Prometheus reloads; the stand-in
-# Alertmanager on 9913 serves their metrics from am/.
+# Alertmanager on 913 serves their metrics from am/.
 base=$(sed '/job_name: closed/,$d' prometheus.yml)
 scrape() {
   printf '%s\n%s\n' "$base" "$1" >prometheus.yml
-  curl -fsS -X POST http://127.0.0.1:9912/-/reload
+  curl -fsS -X POST http://127.0.0.1:912/-/reload
 }
 wait_for() { # PromQL that must have a result
   for _ in $(seq 60); do
-    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query | grep -q '"value":'; then return 0; fi
+    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:912/api/v1/query | grep -q '"value":'; then return 0; fi
     sleep 1
   done
   echo "Prometheus has no result for $1"
@@ -266,7 +266,7 @@ scrape '  - job_name: alertmanager
     metrics_path: /am.txt
     fallback_scrape_protocol: PrometheusText0.0.4
     static_configs:
-      - targets: ["127.0.0.1:9913"]'
+      - targets: ["127.0.0.1:913"]'
 wait_for 'alertmanager_notifications_failed_total{job="alertmanager",receiver_name="deadman"} == 1'
 printf '%s\n' 'alertmanager_notifications_total{receiver_name="deadman"} 12' \
   'alertmanager_notifications_failed_total{receiver_name="deadman"} 5' >am/am.txt
@@ -307,7 +307,7 @@ grep -qF 'celestia_mon_fibre_reachable (tensile target not up: check 11)' <<<"$l
   { echo "check 12 did not fail on the down tensile target"; exit 1; }
 says 11 '"journalctl -u celestia-mon-tensile -n 50" on this host'
 echo 'celestia_mon_tensile_last_success_timestamp_seconds 0' >am/tensile.txt
-scrape "$(tensile_job 127.0.0.1:9913)"
+scrape "$(tensile_job 127.0.0.1:913)"
 wait_for 'celestia_mon_tensile_last_success_timestamp_seconds{job="tensile"} == 0'
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
 line=$(grep -E '^FAIL +12 ' <<<"$out" || true)
@@ -362,7 +362,7 @@ scrape '  - job_name: otelcol
     metrics_path: /otel.txt
     fallback_scrape_protocol: PrometheusText0.0.4
     static_configs:
-      - targets: ["127.0.0.1:9913"]'
+      - targets: ["127.0.0.1:913"]'
 wait_for 'fibre_server_upload_shard_budget_bytes{job="otelcol"} == 1'
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>/dev/null) || true
 line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)

@@ -89,6 +89,11 @@ celestia_mon_services:
 # Ports that listen on 127.0.0.1; grafana listens on celestia_mon_grafana_listen, the others
 # on celestia_mon_private_ip.
 celestia_mon_loopback_ports: [otelcol_otlp, prometheus, alertmanager, announcements, tensile, signal, blackbox]
+# The ports whose clients send the API password with every request (Prometheus, doctor, amtool and
+# celestia-mon-announcements): they stay below 1024, where only root may listen, so no other account
+# on the monitor can listen there while the service restarts and read the password. Only the three
+# units hold the capability to listen there (CAP_NET_BIND_SERVICE).
+celestia_mon_password_ports: [prometheus, alertmanager, blackbox]
 
 # HTTP basic auth of Prometheus's and Alertmanager's APIs on the monitor host (tasks/api_password.yml),
 # and of celestia-mon-blackbox there, with Fibre on.

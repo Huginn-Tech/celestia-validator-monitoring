@@ -74,9 +74,9 @@ declare -A C=(
   [node_hosts]=""
   [node_addresses]=""
   [fibre_addresses]=""
-  [prometheus_url]="http://127.0.0.1:9912"
-  [alertmanager_url]="http://127.0.0.1:9913"
-  [blackbox_url]="http://127.0.0.1:9919"
+  [prometheus_url]="http://127.0.0.1:912"
+  [alertmanager_url]="http://127.0.0.1:913"
+  [blackbox_url]="http://127.0.0.1:919"
   [api_user]="celestia-mon"
   [api_password_file]="/etc/celestia-mon/api-password"
   [gov_page]=""
@@ -154,12 +154,12 @@ when --config names it.
                          without a node of their own in its ufw command for
                          the app gRPC (default: none)
   prometheus_url         celestia-mon's Prometheus, on the monitor host
-                         (default http://127.0.0.1:9912)
+                         (default http://127.0.0.1:912)
   alertmanager_url       celestia-mon's Alertmanager, on the monitor host
-                         (default http://127.0.0.1:9913)
+                         (default http://127.0.0.1:913)
   blackbox_url           celestia-mon-blackbox, which asks the Fibre hosts for
                          their readiness, on the monitor host (default
-                         http://127.0.0.1:9919)
+                         http://127.0.0.1:919)
   api_user, api_password_file  HTTP basic auth for those three (default
                          celestia-mon and /etc/celestia-mon/api-password,
                          readable by root; none when the file is missing)

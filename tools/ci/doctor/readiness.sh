@@ -9,16 +9,17 @@ openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 
   -keyout key.pem -out cert.pem 2>/dev/null
 python "$GITHUB_WORKSPACE/tools/ci/grpc_health_stub.py" cert.pem key.pem >stub.log 2>&1 &
 fetch_release blackbox_exporter "$BLACKBOX_EXPORTER_VERSION" "$BLACKBOX_EXPORTER_SHA256" blackbox_exporter
+allow_low_ports
 # The template holds no variable: it is the file the install writes.
 cp "$GITHUB_WORKSPACE/ansible/roles/celestia_mon_blackbox/templates/blackbox.yml.j2" blackbox.yml
 ./blackbox_exporter --config.check --config.file=blackbox.yml
-./blackbox_exporter --config.file=blackbox.yml --web.listen-address=127.0.0.1:9919 >blackbox.log 2>&1 &
-curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9919/-/healthy
+./blackbox_exporter --config.file=blackbox.yml --web.listen-address=127.0.0.1:919 >blackbox.log 2>&1 &
+curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:919/-/healthy
 for _ in $(seq 30); do grep -qx ready stub.log && break; sleep 1; done
 grep -qx ready stub.log || { cat stub.log; exit 1; }
 
 # The four states, as the alert rules and the dashboard read them.
-probe() { curl -fsS "http://127.0.0.1:9919/probe?module=fibre_health&target=127.0.0.1:$1"; }
+probe() { curl -fsS "http://127.0.0.1:919/probe?module=fibre_health&target=127.0.0.1:$1"; }
 out=$(probe 7981)
 printf '%s\n' "$out"
 grep -qx 'probe_success 1' <<<"$out"
@@ -68,12 +69,12 @@ scrape_configs:
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
-        replacement: "127.0.0.1:9919"
+        replacement: "127.0.0.1:919"
 EOF
 # shellcheck disable=SC2119 # no extra Prometheus flags here
 start_prometheus
 for _ in $(seq 60); do
-  if curl -fsS 'http://127.0.0.1:9912/api/v1/query?query=count(up==1)' | grep -q '"value":[[0-9.]*,"6"]'; then break; fi
+  if curl -fsS 'http://127.0.0.1:912/api/v1/query?query=count(up==1)' | grep -q '"value":[[0-9.]*,"6"]'; then break; fi
   sleep 1
 done
 
@@ -118,7 +119,7 @@ EOF
 pkill -HUP -x prometheus
 wait_for() { # PromQL, the value it must reach
   for _ in $(seq 60); do
-    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:9912/api/v1/query | grep -q "\"value\":[[0-9.]*,\"$2\"]"; then return 0; fi
+    if curl -fsS -G --data-urlencode "query=$1" http://127.0.0.1:912/api/v1/query | grep -q "\"value\":[[0-9.]*,\"$2\"]"; then return 0; fi
     sleep 1
   done
   echo "Prometheus did not reach $2 for $1"

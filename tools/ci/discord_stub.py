@@ -2,9 +2,10 @@
 
   STUB_TOKEN=<bot token> python3 tools/ci/discord_stub.py PORT POSTS_FILE
 
-Channel 111111111111111111 follows two announcement channels: message ...100 was there before;
-...101 and ...102 (and ...103, an alert a webhook posted there) appear once the newest message has
-been asked for (the reader's first look).
+Channel 111111111111111111 follows two of Celestia's announcement channels: message ...100 was
+there before; ...101 and ...102 (and ...103, an alert a webhook posted there, and ...104, from an
+announcement channel of another server it also follows) appear once the newest message has been
+asked for (the reader's first look).
 Channel 666666666666666666 does the same with odd messages: ...201 holds a time too far off to
 show, ...202 cannot be read (its embeds are no list), Alertmanager refuses ...203 as invalid (400),
 and ...204 is a plain announcement after them.
@@ -32,13 +33,13 @@ CELESTIA_GUILD = "638338779505229824"
 REFUSED = "Alertmanager refuses this one"
 
 
-def crosspost(n, author, source_channel, **fields):
+def crosspost(n, author, source_channel, guild=CELESTIA_GUILD, **fields):
     return {
         "id": str(1300000000000000000 + n),
         "content": "",
         "author": {"username": author, "bot": True},
         "flags": 2,
-        "message_reference": {"guild_id": CELESTIA_GUILD, "channel_id": source_channel, "message_id": str(5000 + n)},
+        "message_reference": {"guild_id": guild, "channel_id": source_channel, "message_id": str(5000 + n)},
         **fields,
     }
 
@@ -54,7 +55,10 @@ MESSAGES = {
                   embeds=[{"title": "Mainnet notice", "description": "Read <#555555555555555555> before the upgrade @everyone"}]),
         # An alert that a Discord receiver posted into the same channel: not an announcement.
         {"id": "1300000000000000103", "content": "", "author": {"username": "Spidey Bot", "bot": True},
-         "webhook_id": "777777777777777777", "flags": 0, "embeds": [{"title": "[FIRING:1] NotificationTest mfnode"}]},
+         "webhook_id": "777777777777777777", "flags": 0, "embeds": [{"title": "[FIRING:1] NotificationTest fibre-1"}]},
+        # An announcement channel of another server that the channel also follows: not Celestia's.
+        crosspost(104, "Other #announcements", "121212121212121212", guild="343434343434343434",
+                  content="Not from Celestia"),
     ],
     ODD: [
         crosspost(200, "Celestia #mocha-announcements", "333333333333333333", content="An older announcement"),

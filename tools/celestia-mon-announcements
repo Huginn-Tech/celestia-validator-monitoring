@@ -4,7 +4,8 @@
 Reads the Discord channels named in the configuration (channels on the operator's own server
 that follow Celestia's announcement channels) and posts each new message to Alertmanager as
 one CelestiaAnnouncement alert, so it reaches the receivers like any other page or message
-alert. The first read of a channel only notes its newest message: nothing older is sent.
+alert. Only what a followed channel of a server in the configuration (Celestia's) posted counts.
+The first read of a channel only notes its newest message: nothing older is sent.
 Messages are posted one by one, oldest first; one that cannot be read, or that Alertmanager
 refuses as invalid, is logged and passed over, so it cannot hold back the ones after it. Each
 posted announcement is posted again, unchanged, at every read until it ends: Alertmanager keeps
@@ -316,6 +317,14 @@ def crossposted(msg):
     return isinstance(flags, int) and bool(flags & CROSSPOST)
 
 
+def source_server(msg):
+    """The ID of the Discord server whose followed channel posted the message, None when the message
+    does not say."""
+    ref = msg.get("message_reference")
+    guild = ref.get("guild_id") if isinstance(ref, dict) else None
+    return str(guild) if guild else None
+
+
 def post_again(cfg, password, state):
     """Posts the announcements that have not ended again, unchanged. A 200 only says Alertmanager
     took an alert, and it keeps active alerts in memory only, so one it lost in a restart comes
@@ -368,6 +377,7 @@ def forward(cfg, password, channel, guild, msg, state, metrics):
 def poll(cfg, token, password, state, guilds, metrics):
     """One read of every channel. Returns the seconds Discord asks to wait, if any."""
     wait = 0
+    servers = {str(s) for s in cfg["servers"]}
     post_again(cfg, password, state)
     for channel in cfg["channels"]:
         cid = channel["id"]
@@ -387,14 +397,17 @@ def poll(cfg, token, password, state, guilds, metrics):
                 continue
             msgs = messages(discord_get(cfg["discord_api"], token, f"/channels/{cid}/messages?after={last}&limit=50"))
             # One by one, oldest first, and the channel's place moves past each message dealt with.
-            # Only what a followed channel posted is an announcement. Anything else in the channel
-            # (people, bots, a webhook, such as an alert receiver that posts there) is passed over,
-            # or alerts posted to this channel would come back as announcements.
-            sent = other = 0
+            # Only what a followed channel of one of the configured servers (Celestia's) posted is an
+            # announcement. Anything else in the channel (people, bots, a webhook, such as an alert
+            # receiver that posts there) is passed over, or alerts posted to this channel would come
+            # back as announcements, and so is what a followed channel of any other server posted.
+            sent = other = foreign = 0
             outcome = "sent"
             for m in msgs:
                 if not crossposted(m):
                     other += 1
+                elif source_server(m) not in servers:
+                    foreign += 1
                 else:
                     outcome = forward(cfg, password, channel, guilds[cid], m, state, metrics)
                     if outcome == "wait":
@@ -406,6 +419,9 @@ def poll(cfg, token, password, state, guilds, metrics):
                 log(f"channel {cid}: sent {sent} announcement(s) to Alertmanager")
             if other:
                 log(f"channel {cid}: passed over {other} message(s) not posted by a followed channel")
+            if foreign:
+                log(f"channel {cid}: passed over {foreign} message(s) posted by a followed channel of a server"
+                    " not in celestia_mon_announcements_servers")
             if state[cid] != last:
                 save_state(cfg["state_file"], state)
             metrics.forward(cid, sent)

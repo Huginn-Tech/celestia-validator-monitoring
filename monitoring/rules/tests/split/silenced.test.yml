@@ -1,0 +1,100 @@
+# AlertsSilenced on the example-split inventory (monitor mon-1): Alertmanager has held a silence for
+# 4 hours, one silence or several one after another, so a message goes out. A reading without an
+# active silence starts the 4 hours again; expired and pending silences do not count.
+rule_files:
+  - celestia-mon.rules.yml
+evaluation_interval: 1m
+
+tests:
+  - name: A silence from 10m to 310m sends a message at 250m and clears when it ends
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="active"}
+        values: '0x9 1x299 0x30'
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="expired"}
+        values: '3x340'
+    alert_rule_test:
+      - eval_time: 249m
+        alertname: AlertsSilenced
+        exp_alerts: []
+      - eval_time: 250m
+        alertname: AlertsSilenced
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              severity: message
+            exp_annotations:
+              summary: "Alerts have been silenced on mon-1 for 4 hours"
+              description: >-
+                A silence in Alertmanager has been active for 4 hours. Each silence keeps the alerts it
+                matches from every receiver, pages included, while the heartbeat to the dead-man service
+                goes on, so it can hide a real fault. On the monitor, amtool silence query lists the active
+                silences (the runbook has the command); expire each one you no longer need.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
+      - eval_time: 309m
+        alertname: AlertsSilenced
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              severity: message
+            exp_annotations:
+              summary: "Alerts have been silenced on mon-1 for 4 hours"
+              description: >-
+                A silence in Alertmanager has been active for 4 hours. Each silence keeps the alerts it
+                matches from every receiver, pages included, while the heartbeat to the dead-man service
+                goes on, so it can hide a real fault. On the monitor, amtool silence query lists the active
+                silences (the runbook has the command); expire each one you no longer need.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
+      - eval_time: 310m
+        alertname: AlertsSilenced
+        exp_alerts: []
+
+  - name: A reading without an active silence at 120m starts the 4 hours again
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="active"}
+        values: '2x119 0 1x300'
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="pending"}
+        values: '1x420'
+    alert_rule_test:
+      - eval_time: 300m
+        alertname: AlertsSilenced
+        exp_alerts: []
+      - eval_time: 360m
+        alertname: AlertsSilenced
+        exp_alerts: []
+      - eval_time: 361m
+        alertname: AlertsSilenced
+        exp_alerts:
+          - exp_labels:
+              host: mon-1
+              severity: message
+            exp_annotations:
+              summary: "Alerts have been silenced on mon-1 for 4 hours"
+              description: >-
+                A silence in Alertmanager has been active for 4 hours. Each silence keeps the alerts it
+                matches from every receiver, pages included, while the heartbeat to the dead-man service
+                goes on, so it can hide a real fault. On the monitor, amtool silence query lists the active
+                silences (the runbook has the command); expire each one you no longer need.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
+
+  - name: Only expired and pending silences send nothing
+    interval: 1m
+    input_series:
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="active"}
+        values: '0x400'
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="expired"}
+        values: '5x400'
+      - series: >-
+          alertmanager_silences{job="alertmanager",instance="127.0.0.1:913",host="mon-1",role="monitor",state="pending"}
+        values: '1x400'
+    alert_rule_test:
+      - eval_time: 400m
+        alertname: AlertsSilenced
+        exp_alerts: []

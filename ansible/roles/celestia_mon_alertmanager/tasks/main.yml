@@ -262,8 +262,8 @@
     mode: "0640"
     validate: "/opt/celestia-mon/prometheus-{{ celestia_mon_versions.prometheus.version }}/promtool check web-config %s"
 
-# For amtool as root, for example (9913 is the default celestia_mon_ports.alertmanager):
-#   sudo /opt/celestia-mon/alertmanager-<version>/amtool --alertmanager.url=http://127.0.0.1:9913 \
+# For amtool as root, for example (913 is the default celestia_mon_ports.alertmanager):
+#   sudo /opt/celestia-mon/alertmanager-<version>/amtool --alertmanager.url=http://127.0.0.1:913 \
 #     --http.config.file=/etc/celestia-mon/alertmanager/amtool-http.yml silence query
 - name: Write amtool's HTTP settings
   ansible.builtin.copy:

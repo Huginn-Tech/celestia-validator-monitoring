@@ -15,6 +15,9 @@ After=network-online.target
 [Service]
 User=celestia-mon-grafana
 Group=celestia-mon-grafana
+# The admin password, which only root can read on disk: systemd hands a copy to the service at its
+# start, under /run/credentials/<unit>/, where grafana.ini reads it.
+LoadCredential=admin-password:{{ celestia_mon_grafana_admin_password_file }}
 WorkingDirectory={{ celestia_mon_grafana_home }}
 ExecStart={{ celestia_mon_grafana_home }}/bin/grafana server \
   --homepath {{ celestia_mon_grafana_home }} \

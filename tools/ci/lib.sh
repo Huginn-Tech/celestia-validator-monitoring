@@ -40,14 +40,21 @@ fetch_release() {
   tar -xzf "$rel.tar.gz" --strip-components=1 "${@/#/$rel/}"
 }
 
-# start_prometheus [FLAG...]: the downloaded ./prometheus on 127.0.0.1:9912 with prometheus.yml, data/
-# and FLAGs, and a stand-in Alertmanager on 127.0.0.1:9913 serving am/ (am/-/ready made here, other
+# allow_low_ports: lets the runner's own user listen below 1024, as only root may on a host, so the
+# stand-ins take the ports of Prometheus (912), Alertmanager (913) and blackbox (919) that doctor reads.
+allow_low_ports() {
+  sudo sysctl -qw net.ipv4.ip_unprivileged_port_start=0
+}
+
+# start_prometheus [FLAG...]: the downloaded ./prometheus on 127.0.0.1:912 with prometheus.yml, data/
+# and FLAGs, and a stand-in Alertmanager on 127.0.0.1:913 serving am/ (am/-/ready made here, other
 # answers written by the script); returns once both answer /-/ready.
 start_prometheus() {
+  allow_low_ports
   ./prometheus --config.file=prometheus.yml --storage.tsdb.path=data "$@" \
-    --web.listen-address=127.0.0.1:9912 >prometheus.log 2>&1 &
+    --web.listen-address=127.0.0.1:912 >prometheus.log 2>&1 &
   touch am/-/ready
-  python3 -m http.server 9913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
-  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9912/-/ready
-  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9913/-/ready
+  python3 -m http.server 913 --bind 127.0.0.1 --directory am >/dev/null 2>&1 &
+  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:912/-/ready
+  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:913/-/ready
 }

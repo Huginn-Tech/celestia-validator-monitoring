@@ -11,7 +11,7 @@ curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127
 cat >"$d/config.json" <<EOF
 {"host": "mon-1", "alertmanager_url": "http://127.0.0.1:8765", "api_user": "celestia-mon",
  "listen": "127.0.0.1:9916", "discord_api": "http://127.0.0.1:8765/api/v10", "interval_seconds": 1,
- "active_minutes": 30, "state_file": "$d/state.json",
+ "active_minutes": 30, "state_file": "$d/state.json", "servers": ["638338779505229824"],
  "channels": [{"id": "111111111111111111", "severity": "page"}, {"id": "222222222222222222", "severity": "message"}]}
 EOF
 once() { CREDENTIALS_DIRECTORY="$d/cred" python3 -I tools/celestia-mon-announcements --config "$d/config.json" --once 2>>"$d/log"; }
@@ -26,6 +26,8 @@ once
 test "$(wc -l <"$d/posts.jsonl")" = 3
 # ...103 is an alert a webhook posted into the channel, not an announcement.
 grep -q '^channel 111111111111111111: passed over 1 message(s) not posted by a followed channel' "$d/log"
+# ...104 is what an announcement channel of another server posted: not Celestia's.
+grep -q '^channel 111111111111111111: passed over 1 message(s) posted by a followed channel of a server not in celestia_mon_announcements_servers' "$d/log"
 python3 - "$d/posts.jsonl" <<'EOF'
 import json, re, sys
 alerts = [a for line in open(sys.argv[1]) for a in json.loads(line)]

@@ -7,6 +7,7 @@
   "interval_seconds": {{ celestia_mon_announcements_interval_seconds | int }},
   "active_minutes": {{ celestia_mon_announcements_active_minutes | int }},
   "state_file": {{ (celestia_mon_announcements_state_dir ~ '/state.json') | to_json }},
+  "servers": {{ celestia_mon_announcements_servers | map('string') | list | to_json }},
   "channels": [
 {% for c in celestia_mon_announcements %}
     {"id": {{ c.channel_id | string | to_json }}, "severity": {{ c.severity | default('page') | to_json }}}{{ ',' if not loop.last else '' }}
