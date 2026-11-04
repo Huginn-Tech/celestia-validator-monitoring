@@ -385,13 +385,23 @@
 # Grafana's first start runs its database migrations. Waiting here also lets
 # the bind check at the end of the playbook see Grafana's listening socket.
 - name: Wait for Grafana on its listen address
-  ansible.builtin.wait_for:
-    host: "{{ celestia_mon_grafana_listen }}"
-    port: "{{ celestia_mon_ports.grafana }}"
-    timeout: 180
-    msg: >-
-      celestia-mon-grafana does not listen on port {{ celestia_mon_ports.grafana }} of {{ celestia_mon_grafana_listen }}.
-      See journalctl -u celestia-mon-grafana.
+  block:
+    - name: Wait for Grafana on its listen address
+      ansible.builtin.wait_for:
+        host: "{{ celestia_mon_grafana_listen }}"
+        port: "{{ celestia_mon_ports.grafana }}"
+        timeout: 180
+  rescue:
+    - name: Read Grafana's last log lines
+      ansible.builtin.command: journalctl -u celestia-mon-grafana -n 30 --no-pager -o short-iso
+      register: celestia_mon_grafana_journal
+      changed_when: false
+      failed_when: false
+    - name: Stop with Grafana's last log lines
+      ansible.builtin.fail:
+        msg: >-
+          celestia-mon-grafana does not listen on port {{ celestia_mon_ports.grafana }} of {{ celestia_mon_grafana_listen }}.
+          Its last log lines (journalctl -u celestia-mon-grafana): {{ celestia_mon_grafana_journal.stdout_lines | default([]) }}
 
 - name: Find older Grafana versions
   ansible.builtin.find:

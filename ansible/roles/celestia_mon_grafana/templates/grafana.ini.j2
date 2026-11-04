@@ -43,7 +43,7 @@ enabled = false
 admin_user = admin
 # Read only when Grafana creates the admin user on its first start.
 # Change the password later in the Grafana UI (Profile > Change password).
-# systemd hands it over at the start (LoadCredential); the file it comes from is root's only.
+# A copy made at each start (ExecStartPre in the unit); the file it comes from is root's only.
 admin_password = $__file{{ '{' ~ celestia_mon_grafana_admin_credential ~ '}' }}
 # No avatars fetched from gravatar.com: the unit lets Grafana reach no host but this one.
 disable_gravatar = true

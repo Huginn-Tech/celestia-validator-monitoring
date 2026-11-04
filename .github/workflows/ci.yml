@@ -1354,8 +1354,10 @@ jobs:
           test "$(sudo stat -c '%U:%G %a' "$f")" = "root:root 600"
           test "$(sudo cat "$f" | wc -c)" = 32
           sudo cmp "$f" /etc/celestia-mon/grafana/admin-password
-          # Grafana gets it from systemd at its start (LoadCredential): the copy is root's only too.
+          # The copy is root's only too: at each start root copies it into Grafana's runtime directory.
           test "$(sudo stat -c '%U:%G %a' /etc/celestia-mon/grafana/admin-password)" = "root:root 600"
+          test "$(sudo stat -c '%U:%G %a' /run/celestia-mon-grafana/admin-password)" = "celestia-mon-grafana:celestia-mon-grafana 400"
+          test "$(sudo stat -c '%U %a' /run/celestia-mon-grafana)" = "celestia-mon-grafana 700"
           admin() { sudo sh -c 'printf "user = \"admin:%s\"\n" "$(cat /etc/celestia-mon/grafana-admin-password)"'; }
           test "$(admin | curl -s -o /dev/null -w '%{http_code}' -K - http://127.0.0.1:9914/api/user)" = 200
           sudo mv "$f" "$f.ci"
