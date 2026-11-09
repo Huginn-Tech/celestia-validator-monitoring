@@ -5,7 +5,7 @@
 
   missed-blocks         the Validator tile and Missed blocks read the SignaturesMissed rule
   upload-readiness      Upload readiness and the Fibre tile, History and cards read the not_ready rules
-  fibre-behind DASHBOARD RULES  no missed_uploads rule, and the Fibre row opens with Uploads failing
+  fibre-behind DASHBOARD RULES  no missed_uploads rule; Fibre behind the network draws the gap, no alert line
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
   first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
@@ -129,14 +129,19 @@ def upload_readiness(args):
 
 def fibre_behind(args):
     """No FibreNotServing missed_uploads rule (whether a publisher's uploads reach Fibre depends on how
-    close it is, not on Fibre), and the Fibre row's first chart (210) is Uploads failing."""
+    close it is, not on Fibre); Fibre behind the network (210) still draws the gap, without an alert line."""
     dash = json.load(open(args[0]))
     rules = [r for g in yaml.safe_load(open(args[1]))["groups"] for r in g["rules"]
              if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
     assert not rules, "a missed_uploads rule: %s" % rules
     chart = next(p for p in dash["panels"] if p.get("id") == 210)
-    assert chart["title"] == "Uploads failing", chart["title"]
-    print("no missed_uploads rule; 210 is %s" % chart["title"])
+    assert chart["title"] == "Fibre behind the network", chart["title"]
+    expr = chart["targets"][0]["expr"]
+    assert "celestia_mon_fibre_last_assigned_timestamp_seconds" in expr and "> bool 60" in expr, expr
+    steps = chart["fieldConfig"]["defaults"].get("thresholds", {}).get("steps", [])
+    assert len(steps) <= 1, "an alert line on 210: %s" % steps
+    print("no missed_uploads rule; 210 draws the gap without an alert line")
+
 
 def clock(args):
     """Clock maximum error draws the metric ClockNotSynced compares, its line at the rule's number."""
