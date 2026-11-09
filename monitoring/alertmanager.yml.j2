@@ -174,13 +174,6 @@ inhibit_rules:
       - 'alertname="FibreDown"'
     target_matchers:
       - 'alertname="FibreNotServing"'
-  # Two Fibres run: only the one the chain names gets uploads, so the other misses every blob.
-  # FibreBothActive fires first and names both.
-  - source_matchers:
-      - 'alertname="FibreBothActive"'
-    target_matchers:
-      - 'alertname="FibreNotServing"'
-      - 'reason="missed_uploads"'
   # A crash-looping Fibre explains the same host's FibreNotServing messages. Not its pages: a message
   # never holds a page, and the crash loop alert outlasts the loop by up to 30 minutes, while a
   # Fibre that has answered NOT_SERVING for 10 minutes is running.

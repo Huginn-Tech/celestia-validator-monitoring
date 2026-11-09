@@ -2479,7 +2479,6 @@ metric_event() {
     celestia_mon_upgrade_version | celestia_mon_upgrade_height | celestia_mon_upgrade_eta_seconds) echo "a network upgrade is scheduled (x/signal)" ;;
     celestia_mon_gov_voting_start_timestamp_seconds | celestia_mon_gov_voting_end_timestamp_seconds | celestia_mon_gov_validator_voted)
       echo "a governance proposal in its voting period (x/gov)" ;;
-    celestia_mon_fibre_last_assigned_timestamp_seconds) echo "a blob Tensile records for the validator (from a Tensile without last_assigned_at, the first since celestia-mon-tensile started)" ;;
     celestia_mon_fibre_obligations_24h) echo "Tensile's first answer with the validator's obligations" ;;
     celestia_mon_fibre_registered) echo "Tensile lists the validator in the active set" ;;
     ALERTS) echo "the first alert that is pending or firing" ;;

@@ -12,7 +12,6 @@
     "MonitorCannotReach": {"alert": "MonitorCannotReach", "for": "3m"},
     "FibreDown": {"alert": "FibreDown", "for": "10m"},
     "FibreBothActive": {"alert": "FibreBothActive", "for": "5m"},
-    "FibreNotServing missed_uploads": {"alert": "FibreNotServing", "labels": {"reason": "missed_uploads"}, "for": "5m"},
     "FibreNotServing uploads_failing": {"alert": "FibreNotServing", "labels": {"reason": "uploads_failing"}, "for": "10m"},
     "FibreNotServing no_telemetry": {"alert": "FibreNotServing", "labels": {"reason": "no_telemetry"}, "for": "30m"},
     "FibreNotServing not_ready message": {"alert": "FibreNotServing", "labels": {"reason": "not_ready", "severity": "message"}, "for": "3m"},
