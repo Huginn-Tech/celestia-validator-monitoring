@@ -64,7 +64,7 @@ groups:
       - {alert: DiskLow, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.host }}"}}
       - {alert: ValidatorSigningTwice, expr: vector(1) == 0, labels: {severity: page}}
       - {alert: FibreNotServing, expr: vector(1) == 0, labels: {severity: page, reason: not_ready}, annotations: {summary: "{{ $labels.host }}"}}
-      - {alert: FibreNotServing, expr: vector(1) == 0, labels: {severity: message, reason: missed_uploads}}
+      - {alert: FibreNotServing, expr: vector(1) == 0, labels: {severity: message, reason: uploads_failing}}
       - {alert: MonitorCannotReach, expr: vector(1) == 0, labels: {severity: page}}
       - {alert: GovVoteMissing, expr: vector(1) == 0, labels: {severity: page}, annotations: {summary: "{{ $labels.proposal_id }}"}}
 EOF
@@ -118,7 +118,7 @@ cat > am/api/v2/silences <<EOF
  {"id":"00000000-0000-0000-0000-000000000005","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
   "comment":"no blobs","createdBy":"op","endsAt":"$soon",
   "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreNotServing"},
-              {"isEqual":true,"isRegex":false,"name":"reason","value":"missed_uploads"}],"startsAt":"2026-10-17T10:00:00.000Z"},
+              {"isEqual":true,"isRegex":false,"name":"reason","value":"uploads_failing"}],"startsAt":"2026-10-17T10:00:00.000Z"},
  {"id":"00000000-0000-0000-0000-000000000006","status":{"state":"active"},"updatedAt":"2026-10-17T10:00:00.000Z",
   "comment":"fibre restart","createdBy":"op","endsAt":"$soon",
   "matchers":[{"isEqual":true,"isRegex":false,"name":"alertname","value":"FibreNotServing"},
@@ -167,7 +167,7 @@ for want in '(ID 00000000-0000-0000-0000-000000000001: holds back NodeNotAdvanci
             'MonitorCannotReach, GovVoteMissing; ends in ' \
             '{alertname="FibreNotServing", reason="not_ready"} by op until ' \
             '(ID 00000000-0000-0000-0000-000000000006: holds back FibreNotServing); the others: {host="val-1"} by op' \
-            ', {alertname="FibreNotServing", reason="missed_uploads"} by op until '; do
+            ', {alertname="FibreNotServing", reason="uploads_failing"} by op until '; do
   grep -qF -- "$want" <<<"$line" || { echo "check 21 with a remote signer and Fibre: missing $want"; exit 1; }
 done
 pages pages-3.yml 7

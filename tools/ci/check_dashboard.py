@@ -5,7 +5,7 @@
 
   missed-blocks         the Validator tile and Missed blocks read the SignaturesMissed rule
   upload-readiness      Upload readiness and the Fibre tile, History and cards read the not_ready rules
-  fibre-behind DASHBOARD RULES  Fibre behind the network draws the missed_uploads rule (the mainnet example)
+  fibre-behind DASHBOARD RULES  no missed_uploads rule, and the Fibre row opens with Uploads failing
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
   first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
@@ -128,23 +128,15 @@ def upload_readiness(args):
 
 
 def fibre_behind(args):
-    """Fibre behind the network draws the value the missed_uploads rule compares, its line at the rule's number."""
+    """No FibreNotServing missed_uploads rule (whether a publisher's uploads reach Fibre depends on how
+    close it is, not on Fibre), and the Fibre row's first chart (210) is Uploads failing."""
     dash = json.load(open(args[0]))
     rules = [r for g in yaml.safe_load(open(args[1]))["groups"] for r in g["rules"]
              if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
-    assert len(rules) == 1, "one missed_uploads rule, not %d" % len(rules)
-    # The chart draws the gap also when the blob carries the validator's signature (the rule's unless).
-    m = re.fullmatch(r"(.*) > (\d+) (and on .*?)(?: unless on .*)?", " ".join(rules[0]["expr"].split()))
-    assert m, rules[0]["expr"]
+    assert not rules, "a missed_uploads rule: %s" % rules
     chart = next(p for p in dash["panels"] if p.get("id") == 210)
-    drawn = " ".join(chart["targets"][0]["expr"].split())
-    value = "%s %s" % (m.group(1), m.group(3))
-    # A gap up to 60 s (an upload settling) draws as 0, a larger one as it is, in minutes.
-    assert drawn == "clamp_min(%s, 0) * ((%s) > bool 60) / 60" % (value, value), (drawn, value)
-    level = chart["fieldConfig"]["defaults"]["thresholds"]["steps"][-1]["value"]
-    assert level * 60 == int(m.group(2)), (level, m.group(2))
-    print("210 draws %s %s, its line at %s s" % (m.group(1), m.group(3), m.group(2)))
-
+    assert chart["title"] == "Uploads failing", chart["title"]
+    print("no missed_uploads rule; 210 is %s" % chart["title"])
 
 def clock(args):
     """Clock maximum error draws the metric ClockNotSynced compares, its line at the rule's number."""
@@ -241,7 +233,6 @@ def first_screen(args):
         assert causes and all('alertstate="firing"' in a for a in causes), causes
         assert not any('unit="fibre"' in a or "FibreBothActive" in a for a in causes), causes
         assert 'ALERTS{alertname="ServiceDown",unit="fibre"}' in status[end:], "%s: 10 lacks the crash loop's hold" % s
-        assert 'ALERTS{alertname="FibreBothActive"}' in status[end:], "%s: 10 lacks FibreBothActive's hold" % s
         assert 'reason!~"not_ready|no_answer|not_served"' in status and 'reason!="not_ready"' not in status, s
         # The card goes red for the page that went out, ahead of the crash loop.
         page = 'ALERTS{alertname="FibreNotServing",reason="not_ready",severity="page",alertstate="firing"}'

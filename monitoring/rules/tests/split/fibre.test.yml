@@ -1,6 +1,5 @@
 # FibreNotServing on the example-split inventory (Fibre on fibre-1). This inventory has no outside
-# check, so missed_uploads and not_served are not rendered: from the hosts alone, a network that
-# sends no blobs and a Fibre that receives none look alike. Fibre starts at 1m (start time 60 s)
+# check, so not_served is not rendered. Fibre starts at 1m (start time 60 s)
 # and gets its first upload at 2m. The last-success gauge holds the Unix time of the last accepted
 # upload.
 rule_files:
