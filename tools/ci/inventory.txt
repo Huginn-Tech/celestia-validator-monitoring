@@ -43,6 +43,7 @@ dashboard/panels-switches        | tools/ci/dashboard/panels.sh                 
 dashboard/missed-blocks          | tools/ci/check_dashboard.py missed-blocks    | Missed blocks read the SignaturesMissed rule
 dashboard/fibre-row              | tools/ci/dashboard/fibre_row.sh              | The Fibre row is symmetric
 dashboard/upload-readiness       | tools/ci/check_dashboard.py upload-readiness | Upload readiness reads the not_ready rules
+dashboard/fibre-behind           | tools/ci/check_dashboard.py fibre-behind     | Fibre behind the network draws the missed_uploads rule
 dashboard/clock                  | tools/ci/check_dashboard.py clock            | Clock maximum error draws the ClockNotSynced rule
 dashboard/restarts               | tools/ci/check_dashboard.py restarts         | Restarts draw the crash-loop rule
 dashboard/serve-series           | ci.yml                                       | Serve the dashboards' series to Prometheus

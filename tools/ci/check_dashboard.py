@@ -5,6 +5,7 @@
 
   missed-blocks         the Validator tile and Missed blocks read the SignaturesMissed rule
   upload-readiness      Upload readiness and the Fibre tile, History and cards read the not_ready rules
+  fibre-behind DASHBOARD RULES  no missed_uploads rule, and the Fibre row opens with Uploads failing
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
   first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
@@ -125,6 +126,17 @@ def upload_readiness(args):
             assert any(page in t["expr"] for t in panels[i]["targets"]), "%s: %d lacks the page" % (s, i)
         print("%s: 215 reads %s; 14 and 20 the page" % (s, m.group(1)))
 
+
+def fibre_behind(args):
+    """No FibreNotServing missed_uploads rule (whether a publisher's uploads reach Fibre depends on how
+    close it is, not on Fibre), and the Fibre row's first chart (210) is Uploads failing."""
+    dash = json.load(open(args[0]))
+    rules = [r for g in yaml.safe_load(open(args[1]))["groups"] for r in g["rules"]
+             if r.get("alert") == "FibreNotServing" and r.get("labels", {}).get("reason") == "missed_uploads"]
+    assert not rules, "a missed_uploads rule: %s" % rules
+    chart = next(p for p in dash["panels"] if p.get("id") == 210)
+    assert chart["title"] == "Uploads failing", chart["title"]
+    print("no missed_uploads rule; 210 is %s" % chart["title"])
 
 def clock(args):
     """Clock maximum error draws the metric ClockNotSynced compares, its line at the rule's number."""
@@ -295,7 +307,7 @@ def signed_share(args):
     print("%s: %d stories, %d queries" % (out, len(stories), len(exprs)))
 
 
-CHECKS = {"missed-blocks": missed_blocks, "upload-readiness": upload_readiness,
+CHECKS = {"missed-blocks": missed_blocks, "upload-readiness": upload_readiness, "fibre-behind": fibre_behind,
           "clock": clock, "restarts": restarts, "first-screen": first_screen, "signed-share": signed_share}
 
 if __name__ == "__main__":
