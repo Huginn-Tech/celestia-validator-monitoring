@@ -2001,8 +2001,8 @@ def servers_tile(s):
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
             "node_exporter answers, no server alert fires or is pending and the rules ran. Otherwise the worst server "
-            "alert in the Status cell's words, amber while it is pending or a warning fires, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
-            "validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
+            "alert in the Status cell's words, amber while it is pending or a warning fires, such as Disk critical "
+            "(DiskLow pages), No peers (NodePeersLow pages: the node the validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
             "RAID array has been missing a disk for %s), No time sync (a clock not synchronised for %s)%s; "
             "Warning: another warning names a server. Which server: its card below and its line in History. Every "
             "word: the panel guide."
