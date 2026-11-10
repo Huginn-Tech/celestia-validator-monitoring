@@ -146,6 +146,8 @@ BAR_PX = 20           # the thickness of every bar of the History board and of t
 # 8 px at the top and 8 px at the bottom (Grafana's paddingSide), so its lanes share the rest.
 PLOT_INSET = 16
 TABLE_ROW_PX = 42     # cellHeight "md": each table row
+TABLE_ROW_SM_PX = 36  # cellHeight "sm"
+ALERT_ROWS = 8        # the alerts All firing alerts shows without scrolling, as a host outage lists
 # The table's header row. At most 40 px, as the render showed: two rows then fit h5 with no
 # scrollbar. Set it to the measured height to keep the band under the last row as small as can be.
 TABLE_HEADER_PX = 40
@@ -4184,7 +4186,8 @@ def alerts_row(s):
             "Level": {"aggregations": ["max"], "operation": "aggregate"},
             "Active for": {"aggregations": ["max"], "operation": "aggregate"}}}},
         {"id": "renameByRegex", "options": {"regex": "^(Level|Active for) \\(.*\\)$", "renamePattern": "$1"}}]
-    return [(6, [(table, 24)])]
+    # The row is closed by default, so a taller table costs the first screen nothing.
+    return [(grid_rows(TABLE_HEADER_PX + TABLE_ROW_SM_PX * ALERT_ROWS, CHROME_TITLED), [(table, 24)])]
 
 
 # The Servers section: one column of charts per server, in the server's colour, each chart titled with the
