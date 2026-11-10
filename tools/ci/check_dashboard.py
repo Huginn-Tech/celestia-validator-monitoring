@@ -8,7 +8,7 @@
   fibre-behind DASHBOARD RULES  no missed_uploads rule; Fibre behind the network draws the gap, no alert line
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
-  first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
+  first-screen          the tiles, History, the Status cell and Rows served mirror the rules and the inhibitions
   signed-share DASHBOARD OUT  writes the promtool test of the signed share, which the job then runs
 
 Each fails with an assertion. Run from the repo root; Python 3 and PyYAML.
@@ -269,6 +269,11 @@ def first_screen(args):
     assert shown == [("Not signalled", "red"), ("Not signalled", "orange")], asks
     assert 'severity="page"' in asks[0] and "severity" not in asks[1], asks
     print("mainnet: 15 reads %d wrong_host rules; 16 is red for the page alone" % len(wrong))
+    # Rows served is amber while the not_served alert holds, not for the whole 24 hours of failed reads.
+    rows = panels[208]["targets"][0]["expr"]
+    assert 'and on () (max(ALERTS{alertname="FibreNotServing",reason="not_served"}))' in rows, rows
+    assert ">= 2" not in rows, rows
+    print("mainnet: 208 is amber while FibreNotServing (not_served) holds")
 
 
 def signed_share(args):

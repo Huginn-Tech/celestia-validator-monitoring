@@ -3840,15 +3840,15 @@ def fibre_row(s):
             of_fact(208, "Rows served, 24 h",
                     "Of Tensile's reads of rows the validator signed for, those that got the rows back; equal is "
                     "good. Tensile reads each blob once, late in the 4 hours Fibre must keep it, for blobs settled "
-                    "in the last 24 hours. From %d failed reads in 24 hours the text is amber, the level at which "
-                    "FibreNotServing (rows not served) fires, not in the 5 h 15 min after the registration moved; "
-                    "Fibre's log names the error. No rows read: none in 24 hours, as on a quiet network. Not checked: "
-                    "no Tensile reading." % unserved
+                    "in the last 24 hours. The text is amber while FibreNotServing (rows not served) fires: from "
+                    "the failed read that makes %d in 24 hours, for an hour after the last such one, not in the "
+                    "5 h 15 min after the registration moved; Fibre's log names the error. No rows read: none in 24 "
+                    "hours, as on a quiet network. Not checked: no Tensile reading." % unserved
                     + more(["FibreNotServing"], [TENSILE]),
                     'max(celestia_mon_fibre_obligations_24h{outcome="served"})',
                     'sum(max by (outcome) (celestia_mon_fibre_obligations_24h{outcome=~"served|broken"}))',
                     "No rows read", "Not checked",
-                    alarm='max(celestia_mon_fibre_obligations_24h{outcome="broken"}) >= %d' % unserved),
+                    alarm='max(ALERTS{alertname="FibreNotServing",reason="not_served"})'),
         ]
         samples = {207: [OF_SAMPLE], 208: [OF_SAMPLE]}
     else:
