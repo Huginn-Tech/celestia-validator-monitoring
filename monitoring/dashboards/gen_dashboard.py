@@ -1506,7 +1506,8 @@ def status_expr(s):
     t = alert_items(s)
     lookup = "(%s)" % " or ".join(label("vector(%d)" % (10 * i), "short", w) for i, w in enumerate(status_shorts(s), 1))
     # 0 text (level under 2), 1 amber, 2 red, plus ten times the short name's place in the lookup.
-    code = "(clamp(floor(topk(1, %s)) - 1, 0, 2) + on (short) %s)" % (t, lookup)
+    # group_left keeps the worst item's labels (title, short, part); a one-to-one match would keep short only.
+    code = "(clamp(floor(topk(1, %s)) - 1, 0, 2) + on (short) group_left () %s)" % (t, lookup)
     # count_values turns the number of items into a label; label_join puts it next to the part.
     counted = 'label_join(%s * on () group_left (n) count_values("n", count(%s)), "pn", ":", "part", "n")' % (code, t)
     many = "([2-9]|[1-9][0-9]+)"
