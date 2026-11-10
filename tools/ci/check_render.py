@@ -164,6 +164,12 @@ def routing(args):
     assert [(c["receiver"], c["matchers"]) for c in r["routes"]] == [("page", ['severity="page"']),
                                                                      ("message", ['severity="message"'])], r
     assert not r.get("continue", False), r
+    # ValidatorSigningTwice: its own route before the page route, to the page receiver at once.
+    twice = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname="ValidatorSigningTwice"']]
+    assert len(twice) == 1 and twice[0] < [i for i, r in enumerate(routes) if r.get("matchers") == ['severity="page"']][0], routes
+    r = routes[twice[0]]
+    assert (r["receiver"], r["group_wait"]) == ("page", "0s") and "group_by" not in r and "repeat_interval" not in r, r
+    assert "routes" not in r and not r.get("continue", False), r
     # A validator out of the active set or a dead signer pages once (ValidatorNotSigning), not also as
     # Fibre not ready; a collector that is down holds back every FibreNotServing but not_ready,
     # no_answer and not_served; a crash loop holds back that host's messages, never a page; the signalling

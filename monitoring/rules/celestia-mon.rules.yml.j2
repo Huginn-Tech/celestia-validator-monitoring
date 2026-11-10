@@ -478,8 +478,10 @@ groups:
       # counts only the signatures a node got back (celestia-core v0.42.3 privval/signer_client.go);
       # a node that tmkms left keeps the key it last read but gets none. A node counts once it got
       # signatures both in the last 2 minutes and in the 2 minutes before, so a tmkms repoint, after
-      # which the node tmkms left gets none within 2 minutes, never matches (not even as pending), and
-      # the alert fires about 3 minutes after a second signer started. Not rendered with
+      # which the node tmkms left gets none within 2 minutes, never matches (not even as pending). The
+      # second node matches 2m15s to 2m30s after it began, and the 1 minute hold lets a short repoint
+      # there and back pass, so the alert fires 3m15s to 3m45s after a second signer started;
+      # Alertmanager sends it at once (a route of its own). Not rendered with
       # celestia_mon_signer_multi_node, where tmkms signs through several nodes on purpose.
       - alert: ValidatorSigningTwice
         expr: >-
