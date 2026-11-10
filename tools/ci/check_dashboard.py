@@ -231,6 +231,12 @@ def first_screen(args):
         band = next(t["expr"] for t in panels[25]["targets"] if t["refId"] == "A")
         assert fired in line and "(ALERTS{%s} unless on () ALERTS{%s})" % (vns, nna) in line, line
         assert fired in band, band
+        # A repoint marker needs another node that signed before: not the same node again after an outage.
+        moved = [a["expr"] for a in json.load(open("build/%s/dashboard.json" % s))["annotations"]["list"]
+                 if a["name"] == "Validator signs through"]
+        assert len(moved) == 1, moved
+        before = moved[0].split(" unless on (host) ", 1)[1].split(" and on () count(", 1)
+        assert len(before) == 2 and before[1] == before[0] + ")", moved
         print("%s: the server lines read red first; a page stays apart from a stall, minute by minute" % s)
     for s in ("split", "mainnet"):
         panels = walk("build/%s/dashboard.json" % s)

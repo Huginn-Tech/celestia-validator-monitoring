@@ -4663,12 +4663,14 @@ def annotations(s, ids):
     units = node_units(s)
     node_sel = "{name=%s}" % q(units[0]) if len(units) == 1 else "{name=~%s}" % q("|".join(re2(u) for u in units))
     charts = sorted(i for i in ids if i >= 100 and ids[i] == "timeseries")
+    # A repoint: a node signs now that did not 3 minutes earlier, while another did. Without that other
+    # signer, it is the same node signing again after an outage (tmkms, the node, Prometheus).
     if s.remote:
-        moved = ("(sum by (host) (increase(%s[2m])) > 0) unless on (host) (sum by (host) (increase(%s[2m] offset 3m)) > 0)"
-                 % (PV, PV))
+        before = "(sum by (host) (increase(%s[2m] offset 3m)) > 0)" % PV
+        moved = "(sum by (host) (increase(%s[2m])) > 0) unless on (host) %s and on () count(%s)" % (PV, before, before)
     else:
-        moved = ("(max by (host) (changes(%s[2m])) > 0) unless on (host) (max by (host) (changes(%s[2m] offset 3m)) > 0)"
-                 % (LSH, LSH))
+        before = "(max by (host) (changes(%s[2m] offset 3m)) > 0)" % LSH
+        moved = "(max by (host) (changes(%s[2m])) > 0) unless on (host) %s and on () count(%s)" % (LSH, before, before)
     notes = [
         {"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": False, "hide": True,
          "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"},
