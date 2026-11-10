@@ -492,13 +492,20 @@ groups:
           summary: "{% raw %}Remote signer on {{ $labels.host }} is slower than {% endraw %}{{ '%g' | format(th.signer_median_seconds * 1000) }} ms"
           description: "The median of the last 50 signatures has been above {{ '%g' | format(th.signer_median_seconds * 1000) }} ms for 15 minutes."
           runbook: "{{ docs }}#remotesignerproblem"
+      # A node creates each failure series at its first failure, at 1, which increase() cannot count:
+      # a series the node did not have 6 hours before, while Prometheus read the node, counts too, so
+      # the first refused proposal after a start of the node fires. The instance and role labels may
+      # change in between (another port), so the series match by host, message type and reason.
 {% if multi %}
       # With celestia_mon_signer_multi_node every node asks for each proposal and tmkms signs the
       # first, so refusals are normal: only when no node got a proposal signed in 6 hours is it a fault.
 {% endif %}
       - alert: RemoteSignerProblem
         expr: >-
-          increase(cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}[6h]) > 0
+          (increase(cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}[6h]) > 0
+          or cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}
+          unless on (host, message_type, reason) cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"} offset 6h
+          and on (host) max by (host) (up{job="celestia-app"} offset 6h) == 1)
 {% if multi %}
           unless on () sum(increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="proposal"}[6h])) > 0
 {% endif %}
