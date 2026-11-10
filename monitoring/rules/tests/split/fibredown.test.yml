@@ -125,6 +125,28 @@ tests:
         alertname: FibreDown
         exp_alerts: []
 
+  # node_exporter answers, but its systemd collector fails from 5m (D-Bus down), so the unit's series
+  # are gone while Fibre answers SERVING: Fibre runs, and ServiceDown names the collector.
+  - name: The systemd collector fails on the Fibre host while Fibre answers its health check; no FibreDown
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x30'
+      - series: >-
+          node_scrape_collector_success{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",collector="systemd"}
+        values: '1x4 0x25'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+      - series: >-
+          probe_grpc_healthcheck_response{job="fibre_health",instance="10.10.0.3:7980",host="fibre-1",role="fibre",serving_status="SERVING"}
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: FibreDown
+        exp_alerts: []
+
   # node_exporter answers but lists no fibre.service: celestia_mon_units.fibre names the wrong unit.
   # Fibre's answer to the health check does not excuse that: this is the only alert for it.
   - name: The inventory names the wrong unit while Fibre answers its health check; a page after 10 minutes

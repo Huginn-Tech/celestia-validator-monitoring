@@ -151,7 +151,7 @@ groups:
   - name: celestia_mon
     rules:
       # ServiceDown: celestia-appd, tmkms, a collector or the blackbox exporter is down or not loaded,
-      # node_exporter cannot read the disks, or a Celestia service is crash looping. Always a message:
+      # node_exporter cannot read the disks or systemd, or a Celestia service is crash looping. Always a message:
       # the pages come from the alerts below,
       # which follow the roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a
       # standby is stopped); FibreDown pages when no Fibre unit is active anywhere. When none of a
@@ -227,6 +227,20 @@ groups:
           summary: "{% raw %}node_exporter cannot read the disks on {{ $labels.host }}{% endraw %}"
           description: "For 3 minutes node_exporter's filesystem collector has failed while node_exporter answers, so DiskLow sees no disk on this host. sudo celestia-mon-doctor (check 10) on it gives the fix."
           runbook: "{{ docs }}#servicedown"
+      # node_exporter answers while its systemd collector fails: it asks systemd over D-Bus, which is
+      # down or stuck. up stays 1 and the unit series go, so the host's unit alerts are blind; its
+      # "not loaded" rules hold back, as this names the cause, and FibreDown counts a Fibre that
+      # answers its health check there as running.
+      - alert: ServiceDown
+        expr: node_scrape_collector_success{job="node",collector="systemd"} == 0
+        for: 3m
+        labels:
+          severity: message
+          unit: systemd_collector
+        annotations:
+          summary: "{% raw %}node_exporter cannot read systemd on {{ $labels.host }}{% endraw %}"
+          description: "For 3 minutes node_exporter's systemd collector has failed while node_exporter answers, so no unit of this host is seen and its unit alerts cannot fire. node_exporter asks systemd over D-Bus: on that host, check systemctl status dbus and journalctl -u celestia-mon-node-exporter."
+          runbook: "{{ docs }}#servicedown"
 {% for key, names, hosts in units %}
 {% if key != 'fibre' %}
       - alert: ServiceDown
@@ -260,7 +274,9 @@ groups:
           runbook: "{{ docs }}#servicedown"
 {% for h in hosts if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
       - alert: ServiceDown
-        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, key) }}.service"}) and on () up{job="node",host="{{ h }}"} == 1
+        expr: >-
+          absent(node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, key) }}.service"}) and on () up{job="node",host="{{ h }}"} == 1
+          unless on () node_scrape_collector_success{job="node",host="{{ h }}",collector="systemd"} == 0
         for: 2m
         labels:
           severity: message
@@ -526,7 +542,8 @@ groups:
       # everywhere, crash looping (active under a minute at a time), the host of the active Fibre down
       # (its node_exporter goes with it) and no standby started, or celestia_mon_units.fibre naming
       # the wrong unit. A failover within 9 minutes pages nobody. A host whose node_exporter does not
-      # answer while its Fibre answers the health check has a running Fibre (the unless).
+      # answer, or answers without reading systemd, while its Fibre answers the health check has a
+      # running Fibre (the unless).
       # The branches after it look at the endpoint from outside, through Tensile, when it is set up.
 {% if mon_only %}
       # While no target on a Celestia host answers, MonitorCannotReach pages instead.
@@ -537,7 +554,7 @@ groups:
 {% if mon_only %}
           and on () {{ some_reached }}
 {% endif %}
-          unless on () count(max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status=~"SERVING|NOT_SERVING"}) == 1 unless on (host) max by (host) (up{job="node"}) == 1)
+          unless on () count(max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status=~"SERVING|NOT_SERVING"}) == 1 unless on (host) (max by (host) (up{job="node"}) == 1 unless on (host) max by (host) (node_scrape_collector_success{job="node",collector="systemd"}) == 0))
         for: 10m
         labels:
           severity: page
