@@ -218,13 +218,29 @@ for broken in end voted; do
 done
 # A title in Markdown: its square brackets become round ones, so Discord shows no link under other words,
 # and each link becomes "link removed": one with a scheme, and a bare domain name, which Telegram and
-# Slack show as a link. A version number stays.
+# Slack show as a link. A version number stays. Each handle, which Telegram shows as a link to that
+# account, becomes "handle removed", also one with a domain; an address (name@host) stays.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
   '"gov": [{"id": 103, "start": 1792000000, "end": 1792604800, "title": "[Vote here](https://phish.example)"},
-           {"id": 104, "start": 1792000000, "end": 1792604800, "title": "Upgrade to v10.5.0: patch at evil-site.example/fix now"}]'
+           {"id": 104, "start": 1792000000, "end": 1792604800, "title": "Upgrade to v10.5.0: patch at evil-site.example/fix now"},
+           {"id": 106, "start": 1792000000, "end": 1792604800, "title": "Re-signal now: DM @CelestiaDesk or @desk.example, not ops@home"}]'
 m=$(run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(link removed)"} 1' <<<"$m"
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="104",title="Upgrade to v10.5.0: patch at link removed now"} 1' <<<"$m"
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="106",title="Re-signal now: DM handle removed or handle removed, not ops@home"} 1' <<<"$m"
+# A proposal carries its messages, as large as a transaction may be: a Proposals answer over 1 MiB
+# is read, and one over 12 MiB is not, while x/signal is read all the same.
+state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
+  '"gov": [{"id": 105, "start": 1792000000, "end": 1792604800, "title": "Large", "summary_bytes": 3000000}]'
+m=$(run "$addr" http://127.0.0.1:8767)
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="105",title="Large"} 1' <<<"$m"
+if grep -q 'reason="gov"' <<<"$m"; then echo "a Proposals answer over 1 MiB was not read"; cat "$d/err"; exit 1; fi
+state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
+  '"gov": [{"id": 105, "start": 1792000000, "end": 1792604800, "title": "Large", "summary_bytes": 13000000}]'
+m=$(run "$addr" http://127.0.0.1:8767)
+grep -qxF 'celestia_mon_signal_errors_total{reason="gov"} 1' <<<"$m"
+grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+grep -qF 'http://127.0.0.1:8767 answered /abci_query with more than 12582912 bytes; the proposals read last are kept' "$d/err"
 # gov false: no proposal is read and no gov metric is served; gov must be true or false.
 m=$(cfg='"gov": false' run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
@@ -293,14 +309,18 @@ EOF
 
 # As a service: while the block time cannot be measured, the one measured last stays; while
 # the proposals cannot be read, the ones read last stay and x/signal goes on being read;
-# while no RPC can be read, the whole last reading stays and only its time ages.
+# while no RPC can be read, the whole last reading stays and only its time ages, and the ETA of
+# the upgrade, which counts from the time of the reading, goes on counting down.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"
 printf '{"chain_id": "celestia", "rpc": ["http://127.0.0.1:8767"], "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 1}' \
   "$addr" >"$d/service.json"
 python3 -I tools/celestia-mon-signal --config "$d/service.json" 2>"$d/service.err" &
 service=$!
 metrics() { curl -fsS http://127.0.0.1:9918/metrics; }
-reading() { metrics | grep -Ev '^(#|celestia_mon_(signal|gov)_last_success_timestamp_seconds|celestia_mon_signal_errors_total)'; }
+reading() {
+  metrics | grep -Ev '^(#|celestia_mon_(signal|gov)_last_success_timestamp_seconds|celestia_mon_signal_errors_total|celestia_mon_upgrade_eta_seconds)'
+}
+eta() { metrics | sed -n 's/^celestia_mon_upgrade_eta_seconds //p'; }
 wait_for() { # an extended regular expression that a whole metrics line must match
   for _ in $(seq 30); do
     if grep -Eqx "$1" <<<"$(metrics 2>/dev/null)"; then return 0; fi
@@ -308,7 +328,8 @@ wait_for() { # an extended regular expression that a whole metrics line must mat
   done
   echo "no metrics line matches $1"; cat "$d/service.err"; exit 1
 }
-wait_for 'celestia_mon_upgrade_eta_seconds 334808'
+# 334808 s at the reading, less the seconds since.
+wait_for 'celestia_mon_upgrade_eta_seconds 33480[0-8]'
 # The proposals are read after x/signal, in the same read.
 wait_for 'celestia_mon_gov_validator_voted\{proposal_id="101"\} 1'
 before=$(reading)
@@ -339,8 +360,23 @@ test "$(metrics | grep '^celestia_mon_gov_last_success_timestamp_seconds ')" = "
 state "$d/rpc.json" mocha-5 CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
 wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} [1-9][0-9]*'
 at=$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')
+eta_at=$(eta)
 wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} ([3-9]|[1-9][0-9]+)'
 test "$(reading)" = "$before" || { echo "a failed read changed the reading"; reading; exit 1; }
 test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" = "$at" ||
   { echo "the last read time moved without a read"; exit 1; }
+test "$(eta)" -lt "$eta_at" || { echo "the ETA stood still while no RPC could be read: $eta_at, then $(eta)"; exit 1; }
+# A connection that sends no request is closed after 10 seconds, so idle ones cannot hold the
+# metrics endpoint (the collectors share this handler).
+python3 -I - <<'EOF'
+import socket
+import time
+
+s = socket.create_connection(("127.0.0.1", 9918))
+s.settimeout(30)
+t = time.monotonic()
+assert s.recv(1) == b"", "an idle connection got an answer"
+assert 5 < time.monotonic() - t < 20, f"an idle connection was closed after {time.monotonic() - t:.1f} s"
+EOF
+metrics >/dev/null
 kill "$service"
