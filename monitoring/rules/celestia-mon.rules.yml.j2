@@ -366,7 +366,9 @@ groups:
       # for a host whose page already fires while it still has too few peers: otherwise it would
       # resolve 15 minutes after the last signature, while the node is still cut off. No page while
       # another node with enough peers signs (signing_nodes() over 2 minutes): the validator signs
-      # through that node, after a tmkms repoint or with tmkms signing through several nodes.
+      # through that node, after a tmkms repoint or with tmkms signing through several nodes. A failed
+      # scrape of the node would resolve the page, release what it holds back and, as the window
+      # holds no signature then, end it for good; keep_firing_for holds it through that.
       - alert: NodePeersLow
         expr: cometbft_p2p_peers{job="celestia-app"} < {{ peers_message }}
         for: 5m
@@ -393,6 +395,7 @@ groups:
           unless on () count(max by (host) (changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[2m])) > 0 unless on (host) cometbft_p2p_peers{job="celestia-app"} < {{ peers_page }})
 {% endif %}
         for: 1m
+        keep_firing_for: 5m
         labels:
           severity: page
         annotations:
