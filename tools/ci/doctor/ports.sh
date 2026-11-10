@@ -130,3 +130,29 @@ for want in '^SKIP +1 +node metrics +not a validator or backup node host' \
 done
 # 15 and 16 are retired numbers: no line carries them, and the checks around them keep theirs.
 if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "the monitor-only host printed a line numbered 15 or 16"; exit 1; fi
+
+# A collector's port takes no login, so check 8 names any other process that holds it: here a
+# stand-in for celestia-mon-tensile that is stopped while another process listens where its
+# config.json says, then the same unit listening there itself.
+echo "::group::a collector's port held by another process"
+echo '{"listen": "127.0.0.1:9917"}' >"$RUNNER_TEMP/tensile.json"
+printf '%s\n' '[Service]' \
+  "ExecStart=/bin/sh -c 'exec python3 -m http.server 9917 --bind 127.0.0.1 --directory $RUNNER_TEMP/www' tensile --config $RUNNER_TEMP/tensile.json" \
+  | sudo tee /etc/systemd/system/celestia-mon-tensile.service >/dev/null
+sudo systemctl daemon-reload
+python3 -m http.server 9917 --bind 127.0.0.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+squatter=$!
+curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9917/metrics
+run sudo bash tools/doctor.sh --config /dev/null --roles monitor --data-mounts / --head-wait 2
+grep -Eq "^FAIL +8 +private binds +127\.0\.0\.1:9917, where celestia-mon-tensile listens, is held by python3[.0-9]* \(pid $squatter, user $(id -un)\), not by that service\. " <<<"$out"
+kill "$squatter"
+wait "$squatter" || true
+sudo systemctl start celestia-mon-tensile
+curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9917/metrics
+run sudo bash tools/doctor.sh --config /dev/null --roles monitor --data-mounts / --head-wait 2
+echo "::endgroup::"
+grep -Eq '^OK +8 +private binds +.*celestia-mon-tensile 127\.0\.0\.1:9917' <<<"$out"
+if grep -qF 'where celestia-mon-tensile listens' <<<"$out"; then echo "check 8 names celestia-mon-tensile's own socket"; exit 1; fi
+sudo systemctl stop celestia-mon-tensile
+sudo rm /etc/systemd/system/celestia-mon-tensile.service
+sudo systemctl daemon-reload

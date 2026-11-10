@@ -1973,11 +1973,13 @@ CELESTIA_MON_UNITS=(celestia-mon-node-exporter celestia-mon-otelcol celestia-mon
   celestia-mon-announcements celestia-mon-tensile celestia-mon-signal celestia-mon-blackbox)
 CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager celestia-mon-announcements celestia-mon-tensile
   celestia-mon-signal celestia-mon-blackbox)
+# The collectors, each with a config.json that names the address it listens on.
+CELESTIA_MON_COLLECTOR_UNITS=(celestia-mon-announcements celestia-mon-tensile celestia-mon-signal)
 
 check_binds() {
-  local name="private binds" fw unit pid addr detail r start port
-  local -a ok=() bad=() wide=() open=() low=() pw=()
-  local -A unit_of=()
+  local name="private binds" fw unit pid addr detail r start port cfg mine
+  local -a ok=() bad=() wide=() open=() low=() pw=() squat=() held=()
+  local -A unit_of=() listen_of=() holders=()
   net_read
   fw=$FW
   # Only root may listen below net.ipv4.ip_unprivileged_port_start (1024 by default, and on a
@@ -2003,8 +2005,17 @@ check_binds() {
     pid=$(unit_prop "$unit" MainPID)
     if [[ $pid =~ ^[1-9][0-9]*$ ]]; then unit_of[$pid]=$unit; fi
   done
+  # The collectors' ports take no login, and the port numbers are above 1024: Prometheus
+  # scrapes whatever process listens there. Each listens where its config.json says.
+  for unit in "${CELESTIA_MON_COLLECTOR_UNITS[@]}"; do
+    unit_loaded "$unit" || continue
+    cfg=$(flag_value "$(unit_argv "$unit")" config) || continue
+    addr=$(sed -n 's/.*"listen": *"\([^"]*\)".*/\1/p' "$cfg" 2>/dev/null | head -n 1)
+    if [[ -n $addr ]]; then listen_of[$unit]=$addr; fi
+  done
   # ss prints the owners of each socket as users:(("name",pid=N,fd=M),...).
   while read -r pid addr; do
+    if [[ -n $pid ]]; then holders[$addr]+="$pid "; fi
     [[ -n $pid && -n ${unit_of[$pid]+set} ]] || continue
     unit=${unit_of[$pid]}
     if [[ $(addr_class "$addr") != private ]]; then
@@ -2021,6 +2032,22 @@ check_binds() {
       fi
     fi
   done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
+  for unit in "${CELESTIA_MON_COLLECTOR_UNITS[@]}"; do
+    addr=${listen_of[$unit]:-}
+    [[ -n $addr && -n ${holders[$addr]:-} ]] || continue
+    read -r -a held <<<"${holders[$addr]}"
+    mine=false
+    for pid in "${held[@]}"; do
+      if [[ ${unit_of[$pid]:-} == "$unit" ]]; then mine=true; fi
+    done
+    if [[ $mine == false ]]; then
+      pid=${held[0]}
+      squat+=("$addr, where $unit listens, is held by $(cat "/proc/$pid/comm" 2>/dev/null) (pid $pid, user $(ps -o user= -p "$pid" 2>/dev/null | tr -d ' '))")
+    fi
+  done
+  if ((${#squat[@]} > 0)); then
+    report FAIL 8 "$name" "$(join "${squat[@]}"), not by that service. Prometheus scrapes these ports without a login, so it reads what that process serves as the collector's, and the alerts on it (such as FibreDown from outside, GovVoteMissing) can stay quiet. Fix: find the process (\"sudo ss -tlnp\"), stop it and find out how it got there, then \"sudo systemctl restart <unit>\""
+  fi
   if ((${#bad[@]} > 0)); then
     detail="$(join "${bad[@]}") not on a private address"
     if ((${#wide[@]} > 0)); then detail+="; $(join "${wide[@]}") not on 127.0.0.1"; fi
