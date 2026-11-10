@@ -3107,7 +3107,9 @@ def signing_time(s, pid, hue, title, name_px=None):
     proposals bar says "Bad proposals" while RemoteSignerProblem's proposal failures fire."""
     sig = signing_nodes(s)
     bucket = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type%s}'
-    p99 = "max(histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) and on (host) %s) * 1000 or vector(-9)"
+    # Buckets whose rates are all 0 (no such signature in the window) give NaN, which '>= 0' drops, so
+    # the bar reads None rather than No data.
+    p99 = "max((histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) >= 0) and on (host) %s) * 1000 or vector(-9)"
     names = signing_names(s)
     exprs = [
         "max(%s and on (host) %s) * 1000 or vector(-9)" % (MEDIAN, sig),

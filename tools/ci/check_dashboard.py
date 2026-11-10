@@ -275,6 +275,13 @@ def first_screen(args):
     assert shown == [("Not signalled", "red"), ("Not signalled", "orange")], asks
     assert 'severity="page"' in asks[0] and "severity" not in asks[1], asks
     print("mainnet: 15 reads %d wrong_host rules; 16 is red for the page alone" % len(wrong))
+    # The signer's slowest-1% bars drop histogram_quantile's NaN (no such signature in the window), so
+    # "or vector(-9)" reads None, not No data.
+    signer = [p for i, p in panels.items() if 34 <= i < 38 and "Slowest 1%, proposals" in
+              [t["legendFormat"] for t in p["targets"]]]
+    slowest = [t["expr"] for p in signer for t in p["targets"] if t["legendFormat"].startswith("Slowest 1%")]
+    assert len(signer) == 1 and len(slowest) == 3, signer
+    assert all("max((histogram_quantile(0.99, " in e and ") >= 0) and on (host) " in e for e in slowest), slowest
     # Rows served is amber while the not_served alert holds, not for the whole 24 hours of failed reads.
     rows = panels[208]["targets"][0]["expr"]
     assert 'and on () (max(ALERTS{alertname="FibreNotServing",reason="not_served"}))' in rows, rows
