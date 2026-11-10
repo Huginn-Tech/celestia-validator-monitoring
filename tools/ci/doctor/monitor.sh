@@ -137,6 +137,9 @@ if ! grep -Eq '^FAIL +11 +monitor stack +1 of 2 scrape targets down: closed http
   echo "check 11 did not report the closed target"
   exit 1
 fi
+# The stand-ins listen below 1024 because this job lowered net.ipv4.ip_unprivileged_port_start
+# (allow_low_ports), as any account on such a host could.
+says 8 'net.ipv4.ip_unprivileged_port_start is 0, so any account on this host may listen on 912, 913, where '
 line=$(grep -E '^WARN +12 +rule metrics +5 of 8 metrics ' <<<"$out" || true)
 if [ -z "$line" ]; then
   echo "check 12 did not find exactly 8 metric names with 5 of them missing"
@@ -368,3 +371,8 @@ out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monito
 line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)
 grep -qF 'fibre_server_store_put_duration_seconds_count (after the first upload Fibre stores)' <<<"$line" ||
   { echo "check 12 does not wait for the first upload Fibre stores"; exit 1; }
+says 8 'net.ipv4.ip_unprivileged_port_start is 0, so any account on this host may listen on 912, 913, 919, where '
+# With the setting back at its default, only root may listen on those ports.
+sudo sysctl -qw net.ipv4.ip_unprivileged_port_start=1024
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>/dev/null) || true
+if grep -qF 'ip_unprivileged_port_start' <<<"$out"; then echo "check 8 warns on the default setting"; exit 1; fi

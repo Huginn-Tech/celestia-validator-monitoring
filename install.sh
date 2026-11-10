@@ -554,6 +554,23 @@ elif [[ -n $inventory ]]; then
 fi
 checked=("$repo")
 [[ -z $inv_dir ]] || checked+=("$inv_dir")
+# --edit-vault reads no inventory, so the vault file's directory is checked the same way, and each
+# directory above it by itself (one with the sticky bit, such as /tmp, lets no one else rename what
+# is in it): another user who can write to one could swap vault.yml for a link while ansible-vault
+# runs as root, which would then encrypt or overwrite the file that link names.
+if [[ $mode == edit-vault ]]; then
+  checked+=("$(dirname -- "$vault_target")")
+  up=$(dirname -- "$(dirname -- "$vault_target")")
+  while :; do
+    unsafe=$(find "$up" -maxdepth 0 \( \( ! -user 0 ! -user "${SUDO_UID:-0}" \) -o \( ! -perm -1000 -perm -0002 \) \
+      -o \( ! -perm -1000 -perm -0020 ! -group 0 ! -group "${SUDO_GID:-0}" \) \) -print 2>/dev/null || true)
+    [[ -z $unsafe ]] ||
+      die "$unsafe, above $vault_target, belongs to another user, or another user or group can write to it: only root or" \
+        "the user running sudo may own it and write to it (chown, chmod go-w), or keep the vault in a directory of your own"
+    [[ $up != / ]] || break
+    up=$(dirname -- "$up")
+  done
+fi
 unsafe=$(find -L "${checked[@]}" -xdev ! -type l \( -perm -0002 -o \( ! -user 0 ! -user "${SUDO_UID:-0}" \) \
   -o \( -perm -0020 ! -group 0 ! -group "${SUDO_GID:-0}" \) \) -print -quit 2>/dev/null || true)
 [[ -z $unsafe ]] ||
