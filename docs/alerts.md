@@ -443,7 +443,7 @@ Only with `celestia_mon_signal` set.
 
 Only with `celestia_mon_signal` set.
 
-**What it means.** The scheduled upgrade is less than 24 hours away at the measured block time, or 2.6 s per block until one is measured. A node that does not run a celestia-app release that supports the new version stops at the upgrade height, and with the validator node the validator stops signing. It names no host.
+**What it means.** The scheduled upgrade is less than 24 hours away at the measured block time, or 2.6 s per block until one is measured. A node that does not run a celestia-app release that supports the new version stops at the upgrade height, and with the validator node the validator stops signing. It names no host. While no RPC can be read (or the chain has stalled), celestia-mon-signal counts the time left down from its last reading, so the message still comes on time; after a restart of the service with no RPC readable, the rules keep the time left it served last until a read works again.
 
 **Severity.** message, sent once. Once sent, it stays until the chain has switched, also when slower blocks move the time left back above 24 hours; its "resolved" message means the chain has switched to the new version.
 

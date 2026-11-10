@@ -309,14 +309,18 @@ EOF
 
 # As a service: while the block time cannot be measured, the one measured last stays; while
 # the proposals cannot be read, the ones read last stay and x/signal goes on being read;
-# while no RPC can be read, the whole last reading stays and only its time ages.
+# while no RPC can be read, the whole last reading stays and only its time ages, and the ETA of
+# the upgrade, which counts from the time of the reading, goes on counting down.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 "$gov"
 printf '{"chain_id": "celestia", "rpc": ["http://127.0.0.1:8767"], "validator": "%s", "listen": "127.0.0.1:9918", "interval_seconds": 1}' \
   "$addr" >"$d/service.json"
 python3 -I tools/celestia-mon-signal --config "$d/service.json" 2>"$d/service.err" &
 service=$!
 metrics() { curl -fsS http://127.0.0.1:9918/metrics; }
-reading() { metrics | grep -Ev '^(#|celestia_mon_(signal|gov)_last_success_timestamp_seconds|celestia_mon_signal_errors_total)'; }
+reading() {
+  metrics | grep -Ev '^(#|celestia_mon_(signal|gov)_last_success_timestamp_seconds|celestia_mon_signal_errors_total|celestia_mon_upgrade_eta_seconds)'
+}
+eta() { metrics | sed -n 's/^celestia_mon_upgrade_eta_seconds //p'; }
 wait_for() { # an extended regular expression that a whole metrics line must match
   for _ in $(seq 30); do
     if grep -Eqx "$1" <<<"$(metrics 2>/dev/null)"; then return 0; fi
@@ -324,7 +328,8 @@ wait_for() { # an extended regular expression that a whole metrics line must mat
   done
   echo "no metrics line matches $1"; cat "$d/service.err"; exit 1
 }
-wait_for 'celestia_mon_upgrade_eta_seconds 334808'
+# 334808 s at the reading, less the seconds since.
+wait_for 'celestia_mon_upgrade_eta_seconds 33480[0-8]'
 # The proposals are read after x/signal, in the same read.
 wait_for 'celestia_mon_gov_validator_voted\{proposal_id="101"\} 1'
 before=$(reading)
@@ -355,10 +360,12 @@ test "$(metrics | grep '^celestia_mon_gov_last_success_timestamp_seconds ')" = "
 state "$d/rpc.json" mocha-5 CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 '"refuse": ["blockchain"]'
 wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} [1-9][0-9]*'
 at=$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')
+eta_at=$(eta)
 wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} ([3-9]|[1-9][0-9]+)'
 test "$(reading)" = "$before" || { echo "a failed read changed the reading"; reading; exit 1; }
 test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" = "$at" ||
   { echo "the last read time moved without a read"; exit 1; }
+test "$(eta)" -lt "$eta_at" || { echo "the ETA stood still while no RPC could be read: $eta_at, then $(eta)"; exit 1; }
 # A connection that sends no request is closed after 10 seconds, so idle ones cannot hold the
 # metrics endpoint (the collectors share this handler).
 python3 -I - <<'EOF'
