@@ -218,13 +218,16 @@ for broken in end voted; do
 done
 # A title in Markdown: its square brackets become round ones, so Discord shows no link under other words,
 # and each link becomes "link removed": one with a scheme, and a bare domain name, which Telegram and
-# Slack show as a link. A version number stays.
+# Slack show as a link. A version number stays. Each handle, which Telegram shows as a link to that
+# account, becomes "handle removed", also one with a domain; an address (name@host) stays.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
   '"gov": [{"id": 103, "start": 1792000000, "end": 1792604800, "title": "[Vote here](https://phish.example)"},
-           {"id": 104, "start": 1792000000, "end": 1792604800, "title": "Upgrade to v10.5.0: patch at evil-site.example/fix now"}]'
+           {"id": 104, "start": 1792000000, "end": 1792604800, "title": "Upgrade to v10.5.0: patch at evil-site.example/fix now"},
+           {"id": 106, "start": 1792000000, "end": 1792604800, "title": "Re-signal now: DM @CelestiaDesk or @desk.example, not ops@home"}]'
 m=$(run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(link removed)"} 1' <<<"$m"
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="104",title="Upgrade to v10.5.0: patch at link removed now"} 1' <<<"$m"
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="106",title="Re-signal now: DM handle removed or handle removed, not ops@home"} 1' <<<"$m"
 # A proposal carries its messages, as large as a transaction may be: a Proposals answer over 1 MiB
 # is read, and one over 12 MiB is not, while x/signal is read all the same.
 state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \

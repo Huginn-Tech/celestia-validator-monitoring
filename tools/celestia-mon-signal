@@ -75,6 +75,11 @@ SQUARE_TO_ROUND = str.maketrans("[]", "()")
 LINKISH = re.compile(r"(?:\b[A-Za-z][A-Za-z0-9+.-]*://|\bwww\.)[^\s()<>\"']*"
                      r"|(?:[\w-]+\.)+(?:[^\W\d_]{2,63}|xn--[\w-]+)\b(?:[/:?#][^\s()<>\"']*)?", re.IGNORECASE)
 LINK_REMOVED = "link removed"
+# A handle (@name) in a title, which Telegram shows as a link to that account whatever the parse mode,
+# and a chat channel as a mention (@everyone). Removed after the links, so a handle with a domain
+# (@name.example) goes as one; an address (name@host) stays.
+HANDLE = re.compile(r"(?<!\w)@+(?:" + re.escape(LINK_REMOVED) + r"|\w+)")
+HANDLE_REMOVED = "handle removed"
 # The blocks the block time is measured over.
 BLOCK_SPAN = 1000
 # The block time for the ETA until one is measured: celestia-app's figure for its upgrade delays
@@ -466,12 +471,13 @@ def title_text(raw):
     submitted the proposal: line breaks, tabs and other spaces become one space, control and
     format characters (zero-width ones, direction overrides) are dropped, square brackets become
     round ones, so no chat channel that reads Markdown (Discord) shows a link under other words
-    ([text](url)) in an alert, each link (LINKISH) becomes the words "link removed", and it keeps at
-    most TITLE_CHARS characters."""
+    ([text](url)) in an alert, each link (LINKISH) becomes the words "link removed" and each handle
+    (HANDLE) the words "handle removed", and it keeps at most TITLE_CHARS characters."""
     text = raw.decode("utf-8", errors="replace").translate(SQUARE_TO_ROUND)
     text = "".join(" " if c.isspace() else c if c.isprintable() else "" for c in text)
     text = " ".join(text.split())
     text = LINKISH.sub(LINK_REMOVED, text)
+    text = HANDLE.sub(HANDLE_REMOVED, text)
     return text if len(text) <= TITLE_CHARS else text[: TITLE_CHARS - 1].rstrip() + "…"
 
 
