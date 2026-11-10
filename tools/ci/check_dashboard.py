@@ -213,6 +213,11 @@ def first_screen(args):
     for s in ("mainnet", "five"):
         panels = walk("build/%s/dashboard.json" % s)
         worst_first("%s: tile 17" % s, panels[17], panels[17]["targets"][0])
+        # Amber while an alert is pending too, as in the Status cell; red only for a page that fires.
+        shown = words(panels[17], "A")
+        ambers = [b for b in branches(panels[17]["targets"][0]["expr"])
+                  if shown.get(code(b), (None, None))[1] in AMBER and "ALERTS{" in b]
+        assert ambers and not any('alertstate="firing"' in b for b in ambers), "%s: tile 17 amber firing only" % s
     for s in ("single", "split", "mainnet", "five"):
         panels = walk("build/%s/dashboard.json" % s)
         lines = [t for t in panels[20]["targets"] if t["refId"].startswith("S")]

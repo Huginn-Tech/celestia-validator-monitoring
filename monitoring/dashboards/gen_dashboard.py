@@ -1963,13 +1963,18 @@ UNREACHED_PAGE = 'alertname="MonitorCannotReach",severity="page"'
 
 def servers_tile(s):
     """(id, title, description, query, words) of the Servers tile: the server lines of the History board
-    now, the worst first, in their words and colours. It only makes four or five answers six (with
-    Monitoring for four), so the tiles line up with the six cells of the top strip."""
+    now, the worst first, in their words and colours; amber also while the alert is pending, as in the
+    Status cell. It only makes four or five answers six (with Monitoring for four), so the tiles line up
+    with the six cells of the top strip."""
     sel = "host=~%s" % q("|".join(re2(h) for h in s.servers))
 
     def alert(match):
         """An alert matching match fires now for one of the servers."""
         return 'max(ALERTS{alertstate="firing",%s,%s})' % (match, sel)
+
+    def held(match):
+        """An alert matching match is pending or fires now for one of the servers (amber)."""
+        return 'max(ALERTS{%s,%s})' % (match, sel)
 
     # As a line's green: the alert rules ran in the last 2 minutes and none failed.
     rules = ('((time() - max(%s) <= 120) unless on () max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}))'
@@ -1977,24 +1982,24 @@ def servers_tile(s):
     down = service_down(s)
     # MonitorCannotReach's page names no server.
     unreached = (['max(ALERTS{alertstate="firing",%s}) * 0 + 5' % UNREACHED_PAGE] if s.mon_only else []) + (
-        ['%s * 0 + 4' % alert('alertname="MonitorCannotReach"')] if s.reached else [])
+        ['%s * 0 + 4' % held('alertname="MonitorCannotReach"')] if s.reached else [])
     expr = chain(*(
         ["%s * 0 + 3" % alert(DISK_PAGE), "%s * 0 + 8" % alert(PEERS_PAGE)] + unreached
-        + ["%s * 0 + %d" % (alert(m), 30 + i) for i, (m, _) in enumerate(down)]
-        + ["%s * 0 + 6" % alert('alertname="DiskLow"'),
-           "%s * 0 + 9" % alert('alertname="NodePeersLow"'),
-           "%s * 0 + 7" % alert('alertname="NodeBehind"'),
-           "%s * 0 + 10" % alert('alertname="RaidDegraded"'),
-           "%s * 0 + 20" % alert('alertname="ClockNotSynced"'),
-           "%s * 0 + 2" % alert('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
+        + ["%s * 0 + %d" % (held(m), 30 + i) for i, (m, _) in enumerate(down)]
+        + ["%s * 0 + 6" % held('alertname="DiskLow"'),
+           "%s * 0 + 9" % held('alertname="NodePeersLow"'),
+           "%s * 0 + 7" % held('alertname="NodeBehind"'),
+           "%s * 0 + 10" % held('alertname="RaidDegraded"'),
+           "%s * 0 + 20" % held('alertname="ClockNotSynced"'),
+           "%s * 0 + 2" % held('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
            '((count(up{job="node",%s} == 1) == %d) and on () %s) * 0 + 1' % (sel, len(s.servers), rules),
            'max(up{job="prometheus"}) * 0']))
     colour = {OK: "text", WARN: "orange", ALERT: "red", NODATA: GREY}
     words = ([(1, "All up", FINE)] + [(c, w, colour[f]) for c, w, f in SERVER_WORDS if c != 1]
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
-            "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
-            "Status cell's words, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
+            "node_exporter answers, no server alert fires or is pending and the rules ran. Otherwise the worst server "
+            "alert in the Status cell's words, amber while it is pending or a warning fires, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
             "validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
             "RAID array has been missing a disk for %s), No time sync (a clock not synchronised for %s)%s; "
             "Warning: another warning names a server. Which server: its card below and its line in History. Every "
