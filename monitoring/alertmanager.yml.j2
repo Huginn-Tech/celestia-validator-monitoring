@@ -122,6 +122,12 @@ route:
       matchers:
         - 'alertname="RaidDegraded"'
       repeat_interval: 24h
+    # Two nodes get the validator's signatures (ValidatorSigningTwice): a double sign can follow at
+    # any height, so the page goes out at once, without the 30 seconds that group other alerts.
+    - receiver: page
+      matchers:
+        - 'alertname="ValidatorSigningTwice"'
+      group_wait: 0s
     - receiver: page
       matchers:
         - 'severity="page"'

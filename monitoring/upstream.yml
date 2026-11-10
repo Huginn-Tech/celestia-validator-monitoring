@@ -223,6 +223,7 @@ files:
   - {repo: app, file: x/signal/cli/tx.go, find: ['Use:\s+"signal version"']}  # tx signal signal
   - {repo: app, file: x/signal/cli/query.go, find: ['Use:\s+"tally version"']}  # query signal tally
   - {repo: app, file: pkg/appconsts/app_consts.go, find: ['interval of ~2\.6 seconds']}  # the block time until one is measured
+  - {repo: app, file: pkg/appconsts/app_consts.go, find: ['MaxTxSize\s+int\s+= 8_388_608']}  # sizes GOV_MAX_BODY
   - repo: app
     file: app/params/config.go  # the account and operator address prefixes celestia-mon-signal uses
     find: ['Bech32PrefixAccAddr = "celestia"',

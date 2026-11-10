@@ -146,6 +146,8 @@ BAR_PX = 20           # the thickness of every bar of the History board and of t
 # 8 px at the top and 8 px at the bottom (Grafana's paddingSide), so its lanes share the rest.
 PLOT_INSET = 16
 TABLE_ROW_PX = 42     # cellHeight "md": each table row
+TABLE_ROW_SM_PX = 36  # cellHeight "sm"
+ALERT_ROWS = 8        # the alerts All firing alerts shows without scrolling, as a host outage lists
 # The table's header row. At most 40 px, as the render showed: two rows then fit h5 with no
 # scrollbar. Set it to the measured height to keep the band under the last row as small as can be.
 TABLE_HEADER_PX = 40
@@ -349,6 +351,7 @@ TITLES = [
     ("ServiceDown:message:fibre:crashloop::([^:]*)", "Fibre keeps restarting on $1", "Fibre crash", P_FIBRE, "fibre"),
     ("ServiceDown:message:blackbox:::([^:]*)", "Fibre health check not read on $1", "Probe stopped", P_FIBRE, "fibre"),
     ("ServiceDown:message:filesystem_collector:::([^:]*)", "Disks not read on $1", "No disk data", P_SERVERS, None),
+    ("ServiceDown:message:systemd_collector:::([^:]*)", "Services not read on $1", "No unit data", P_SERVERS, None),
     ("DiskLow:page::::([^:]*)", "Disk full or read-only on $1", "Disk critical", P_SERVERS, None),
     ("DiskLow:message::::([^:]*)", "Disk low or read-only on $1", "Disk low", P_SERVERS, None),
     ("RaidDegraded:.*:([^:]*)", "RAID degraded on $1", "RAID degraded", P_SERVERS, None),
@@ -1506,7 +1509,8 @@ def status_expr(s):
     t = alert_items(s)
     lookup = "(%s)" % " or ".join(label("vector(%d)" % (10 * i), "short", w) for i, w in enumerate(status_shorts(s), 1))
     # 0 text (level under 2), 1 amber, 2 red, plus ten times the short name's place in the lookup.
-    code = "(clamp(floor(topk(1, %s)) - 1, 0, 2) + on (short) %s)" % (t, lookup)
+    # group_left keeps the worst item's labels (title, short, part); a one-to-one match would keep short only.
+    code = "(clamp(floor(topk(1, %s)) - 1, 0, 2) + on (short) group_left () %s)" % (t, lookup)
     # count_values turns the number of items into a label; label_join puts it next to the part.
     counted = 'label_join(%s * on () group_left (n) count_values("n", count(%s)), "pn", ":", "part", "n")' % (code, t)
     many = "([2-9]|[1-9][0-9]+)"
@@ -1932,7 +1936,7 @@ def upgrade_tile(s):
 
 # ServiceDown's rules for a metrics endpoint (up == 0, or a collector behind it that fails); the others
 # watch a systemd unit.
-ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol", "blackbox", "filesystem_collector")
+ENDPOINT_UNITS = ("node_exporter", "celestia_app", "otelcol", "blackbox", "filesystem_collector", "systemd_collector")
 
 
 def service_down(s):
@@ -1962,13 +1966,18 @@ UNREACHED_PAGE = 'alertname="MonitorCannotReach",severity="page"'
 
 def servers_tile(s):
     """(id, title, description, query, words) of the Servers tile: the server lines of the History board
-    now, the worst first, in their words and colours. It only makes four or five answers six (with
-    Monitoring for four), so the tiles line up with the six cells of the top strip."""
+    now, the worst first, in their words and colours; amber also while the alert is pending, as in the
+    Status cell. It only makes four or five answers six (with Monitoring for four), so the tiles line up
+    with the six cells of the top strip."""
     sel = "host=~%s" % q("|".join(re2(h) for h in s.servers))
 
     def alert(match):
         """An alert matching match fires now for one of the servers."""
         return 'max(ALERTS{alertstate="firing",%s,%s})' % (match, sel)
+
+    def held(match):
+        """An alert matching match is pending or fires now for one of the servers (amber)."""
+        return 'max(ALERTS{%s,%s})' % (match, sel)
 
     # As a line's green: the alert rules ran in the last 2 minutes and none failed.
     rules = ('((time() - max(%s) <= 120) unless on () max(ALERTS{alertname="MonitoringBroken",alertstate="firing"}))'
@@ -1976,25 +1985,25 @@ def servers_tile(s):
     down = service_down(s)
     # MonitorCannotReach's page names no server.
     unreached = (['max(ALERTS{alertstate="firing",%s}) * 0 + 5' % UNREACHED_PAGE] if s.mon_only else []) + (
-        ['%s * 0 + 4' % alert('alertname="MonitorCannotReach"')] if s.reached else [])
+        ['%s * 0 + 4' % held('alertname="MonitorCannotReach"')] if s.reached else [])
     expr = chain(*(
         ["%s * 0 + 3" % alert(DISK_PAGE), "%s * 0 + 8" % alert(PEERS_PAGE)] + unreached
-        + ["%s * 0 + %d" % (alert(m), 30 + i) for i, (m, _) in enumerate(down)]
-        + ["%s * 0 + 6" % alert('alertname="DiskLow"'),
-           "%s * 0 + 9" % alert('alertname="NodePeersLow"'),
-           "%s * 0 + 7" % alert('alertname="NodeBehind"'),
-           "%s * 0 + 10" % alert('alertname="RaidDegraded"'),
-           "%s * 0 + 20" % alert('alertname="ClockNotSynced"'),
-           "%s * 0 + 2" % alert('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
+        + ["%s * 0 + %d" % (held(m), 30 + i) for i, (m, _) in enumerate(down)]
+        + ["%s * 0 + 6" % held('alertname="DiskLow"'),
+           "%s * 0 + 9" % held('alertname="NodePeersLow"'),
+           "%s * 0 + 7" % held('alertname="NodeBehind"'),
+           "%s * 0 + 10" % held('alertname="RaidDegraded"'),
+           "%s * 0 + 20" % held('alertname="ClockNotSynced"'),
+           "%s * 0 + 2" % held('severity="message",alertname!~%s' % q(SERVER_OTHERS)),
            '((count(up{job="node",%s} == 1) == %d) and on () %s) * 0 + 1' % (sel, len(s.servers), rules),
            'max(up{job="prometheus"}) * 0']))
     colour = {OK: "text", WARN: "orange", ALERT: "red", NODATA: GREY}
     words = ([(1, "All up", FINE)] + [(c, w, colour[f]) for c, w, f in SERVER_WORDS if c != 1]
              + [(30 + i, w, "orange") for i, (_, w) in enumerate(down)])
     desc = ("Are all servers reporting, with their services up and disks not full? All up: every server's "
-            "node_exporter answers, no server alert fires and the rules ran. Otherwise the worst server alert in the "
-            "Status cell's words, such as Disk critical (DiskLow pages), No peers (NodePeersLow pages: the node the "
-            "validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
+            "node_exporter answers, no server alert fires or is pending and the rules ran. Otherwise the worst server "
+            "alert in the Status cell's words, amber while it is pending or a warning fires, such as Disk critical "
+            "(DiskLow pages), No peers (NodePeersLow pages: the node the validator signs through has none), Few peers (a node has fewer than %d peers), RAID degraded (an md "
             "RAID array has been missing a disk for %s), No time sync (a clock not synchronised for %s)%s; "
             "Warning: another warning names a server. Which server: its card below and its line in History. Every "
             "word: the panel guide."
@@ -3101,7 +3110,9 @@ def signing_time(s, pid, hue, title, name_px=None):
     proposals bar says "Bad proposals" while RemoteSignerProblem's proposal failures fire."""
     sig = signing_nodes(s)
     bucket = 'cometbft_privval_signing_latency_seconds_bucket{job="celestia-app",message_type%s}'
-    p99 = "max(histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) and on (host) %s) * 1000 or vector(-9)"
+    # Buckets whose rates are all 0 (no such signature in the window) give NaN, which '>= 0' drops, so
+    # the bar reads None rather than No data.
+    p99 = "max((histogram_quantile(0.99, sum by (host, le) (rate(%s[%s]))) >= 0) and on (host) %s) * 1000 or vector(-9)"
     names = signing_names(s)
     exprs = [
         "max(%s and on (host) %s) * 1000 or vector(-9)" % (MEDIAN, sig),
@@ -3834,15 +3845,15 @@ def fibre_row(s):
             of_fact(208, "Rows served, 24 h",
                     "Of Tensile's reads of rows the validator signed for, those that got the rows back; equal is "
                     "good. Tensile reads each blob once, late in the 4 hours Fibre must keep it, for blobs settled "
-                    "in the last 24 hours. From %d failed reads in 24 hours the text is amber, the level at which "
-                    "FibreNotServing (rows not served) fires, not in the 5 h 15 min after the registration moved; "
-                    "Fibre's log names the error. No rows read: none in 24 hours, as on a quiet network. Not checked: "
-                    "no Tensile reading." % unserved
+                    "in the last 24 hours. The text is amber while FibreNotServing (rows not served) fires: from "
+                    "the failed read that makes %d in 24 hours, for an hour after the last such one, not in the "
+                    "5 h 15 min after the registration moved; Fibre's log names the error. No rows read: none in 24 "
+                    "hours, as on a quiet network. Not checked: no Tensile reading." % unserved
                     + more(["FibreNotServing"], [TENSILE]),
                     'max(celestia_mon_fibre_obligations_24h{outcome="served"})',
                     'sum(max by (outcome) (celestia_mon_fibre_obligations_24h{outcome=~"served|broken"}))',
                     "No rows read", "Not checked",
-                    alarm='max(celestia_mon_fibre_obligations_24h{outcome="broken"}) >= %d' % unserved),
+                    alarm='max(ALERTS{alertname="FibreNotServing",reason="not_served"})'),
         ]
         samples = {207: [OF_SAMPLE], 208: [OF_SAMPLE]}
     else:
@@ -4176,7 +4187,8 @@ def alerts_row(s):
             "Level": {"aggregations": ["max"], "operation": "aggregate"},
             "Active for": {"aggregations": ["max"], "operation": "aggregate"}}}},
         {"id": "renameByRegex", "options": {"regex": "^(Level|Active for) \\(.*\\)$", "renamePattern": "$1"}}]
-    return [(6, [(table, 24)])]
+    # The row is closed by default, so a taller table costs the first screen nothing.
+    return [(grid_rows(TABLE_HEADER_PX + TABLE_ROW_SM_PX * ALERT_ROWS, CHROME_TITLED), [(table, 24)])]
 
 
 # The Servers section: one column of charts per server, in the server's colour, each chart titled with the
@@ -4657,12 +4669,14 @@ def annotations(s, ids):
     units = node_units(s)
     node_sel = "{name=%s}" % q(units[0]) if len(units) == 1 else "{name=~%s}" % q("|".join(re2(u) for u in units))
     charts = sorted(i for i in ids if i >= 100 and ids[i] == "timeseries")
+    # A repoint: a node signs now that did not 3 minutes earlier, while another did. Without that other
+    # signer, it is the same node signing again after an outage (tmkms, the node, Prometheus).
     if s.remote:
-        moved = ("(sum by (host) (increase(%s[2m])) > 0) unless on (host) (sum by (host) (increase(%s[2m] offset 3m)) > 0)"
-                 % (PV, PV))
+        before = "(sum by (host) (increase(%s[2m] offset 3m)) > 0)" % PV
+        moved = "(sum by (host) (increase(%s[2m])) > 0) unless on (host) %s and on () count(%s)" % (PV, before, before)
     else:
-        moved = ("(max by (host) (changes(%s[2m])) > 0) unless on (host) (max by (host) (changes(%s[2m] offset 3m)) > 0)"
-                 % (LSH, LSH))
+        before = "(max by (host) (changes(%s[2m] offset 3m)) > 0)" % LSH
+        moved = "(max by (host) (changes(%s[2m])) > 0) unless on (host) %s and on () count(%s)" % (LSH, before, before)
     notes = [
         {"builtIn": 1, "datasource": {"type": "grafana", "uid": "-- Grafana --"}, "enable": False, "hide": True,
          "iconColor": "rgba(0, 211, 255, 1)", "name": "Annotations & Alerts", "type": "dashboard"},
