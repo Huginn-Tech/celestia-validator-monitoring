@@ -1,6 +1,7 @@
 # AlertsSilenced on the example-split inventory (monitor mon-1): Alertmanager has held a silence for
 # 4 hours, one silence or several one after another, so a message goes out. A reading without an
-# active silence starts the 4 hours again; expired and pending silences do not count.
+# active silence starts the 4 hours again; expired and pending silences do not count. The alert
+# names the monitor in its summary but carries no host label, so a host silence never matches it.
 rule_files:
   - celestia-mon.rules.yml
 evaluation_interval: 1m
@@ -23,7 +24,6 @@ tests:
         alertname: AlertsSilenced
         exp_alerts:
           - exp_labels:
-              host: mon-1
               severity: message
             exp_annotations:
               summary: "Alerts have been silenced on mon-1 for 4 hours"
@@ -37,7 +37,6 @@ tests:
         alertname: AlertsSilenced
         exp_alerts:
           - exp_labels:
-              host: mon-1
               severity: message
             exp_annotations:
               summary: "Alerts have been silenced on mon-1 for 4 hours"
@@ -71,7 +70,6 @@ tests:
         alertname: AlertsSilenced
         exp_alerts:
           - exp_labels:
-              host: mon-1
               severity: message
             exp_annotations:
               summary: "Alerts have been silenced on mon-1 for 4 hours"

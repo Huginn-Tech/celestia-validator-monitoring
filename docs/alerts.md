@@ -10,7 +10,7 @@ The dashboard calls a page alert **Urgent** (red) and a message alert **Warning*
 
 With upgrade signalling on, the validator's votes on governance proposals are watched too: [GovVoteMissing](#govvotemissing) says when a proposal nears the end of its voting period without the validator's vote. Nothing is sent when a vote opens; what a proposal changes comes through its forum post and Celestia's announcements ([CelestiaAnnouncement](#celestiaannouncement)).
 
-The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), GovVoteMissing, which names the proposal, and MonitorCannotReach's page, which is about every host at once. Every other alert names the host it is about; NodePeersLow's page reads from the metrics which node signs.
+The validator role can move to a backup node (tmkms pointed at it), and the Fibre role to a standby Fibre host. The alerts about those roles therefore watch the install as a whole and read which node signs and which Fibre runs from the metrics, never from the inventory: NodeNotAdvancing, ValidatorNotSigning, SignaturesMissed, ValidatorSigningTwice, FibreDown and FibreBothActive name no host, and neither do the Watchdog, the network upgrade alerts (UpgradeSignalMissing, UpgradeScheduled, UpgradeSoon), GovVoteMissing, which names the proposal, MonitorCannotReach's page, which is about every host at once, and AlertsSilenced, which names the monitor in its text only, so that a host silence cannot hold it back. Every other alert names the host it is about; NodePeersLow's page reads from the metrics which node signs.
 
 | Alert | Severity | Catches |
 |---|---|---|
@@ -520,7 +520,7 @@ Only with `celestia_mon_signal` set.
 
 ## AlertsSilenced
 
-**What it means.** Alertmanager has held a silence for 4 hours: one silence, or several one after another with no moment between them without one. A silence keeps every alert it matches from every receiver, pages included, while the Watchdog keeps sending the heartbeat, so the dead-man service stays green. A silence that was forgotten after planned work, or set wider than meant (a whole host, every page), hides a real fault for as long as it lasts, and nothing else tells you. It fires 4 hours after the first silence began and clears when no silence is active. The alert names the monitor host, so a silence of that host holds it back too.
+**What it means.** Alertmanager has held a silence for 4 hours: one silence, or several one after another with no moment between them without one. A silence keeps every alert it matches from every receiver, pages included, while the Watchdog keeps sending the heartbeat, so the dead-man service stays green. A silence that was forgotten after planned work, or set wider than meant (a whole host, every page), hides a real fault for as long as it lasts, and nothing else tells you. It fires 4 hours after the first silence began and clears when no silence is active. Its summary names the monitor host, but it carries no host label, so a host silence never holds it back, also one of the monitor's own host.
 
 **Severity.** message.
 

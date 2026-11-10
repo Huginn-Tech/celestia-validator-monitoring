@@ -1141,14 +1141,16 @@ groups:
       # AlertsSilenced: Alertmanager has held at least one silence for 4 hours, one silence or several
       # one after another. A silence keeps the alerts it matches from every receiver, pages included,
       # while the heartbeat to the dead-man service goes on, so a silence that was forgotten or set wider
-      # than meant hides a real fault for as long as it lasts, and nothing else reports it.
+      # than meant hides a real fault for as long as it lasts, and nothing else reports it. It carries
+      # no host label: a silence of the monitor's own host, which also runs Fibre or a node in some
+      # layouts, would hold it back too.
       - alert: AlertsSilenced
-        expr: max by (host) (alertmanager_silences{state="active"}) > 0
+        expr: max(alertmanager_silences{state="active"}) > 0
         for: 4h
         labels:
           severity: message
         annotations:
-          summary: "{% raw %}Alerts have been silenced on {{ $labels.host }} for 4 hours{% endraw %}"
+          summary: "Alerts have been silenced on {{ celestia_mon_monitor_host }} for 4 hours"
           description: "A silence in Alertmanager has been active for 4 hours. Each silence keeps the alerts it matches from every receiver, pages included, while the heartbeat to the dead-man service goes on, so it can hide a real fault. On the monitor, amtool silence query lists the active silences (the runbook has the command); expire each one you no longer need."
           runbook: "{{ docs }}#alertssilenced"
 
