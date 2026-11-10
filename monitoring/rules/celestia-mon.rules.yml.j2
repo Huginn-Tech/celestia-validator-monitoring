@@ -540,8 +540,9 @@ groups:
       # FibreDown, seen from outside: Tensile (celestia-mon-tensile) dials the Fibre endpoint
       # registered on chain from outside this install's networks. A running Fibre unit is not
       # enough when nobody can reach it: a closed port, an inbound outage at the provider, or the
-      # wrong address on chain. Reachable means TCP and TLS; a wrong identity shows on the dashboard.
-      # Only checks of the last 15 minutes count; TensileUnreadable reports a check that stopped.
+      # wrong address on chain. Reachable means TCP and TLS; no rule reads a wrong identity
+      # (celestia_mon_fibre_identity_verified). Only checks of the last 15 minutes count;
+      # TensileUnreadable reports a check that stopped.
       - alert: FibreDown
         expr: >-
           max by (endpoint) (celestia_mon_fibre_reachable) == 0

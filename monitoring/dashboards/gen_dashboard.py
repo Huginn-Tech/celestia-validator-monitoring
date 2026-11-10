@@ -3763,7 +3763,7 @@ def fibre_row(s):
     leaves them readable, then the Upload readiness line with its share (readiness_band) and four charts
     of one size in two lines: the two that the Fibre alerts read, then Uploads and Downloads. With the
     outside check the facts set Fibre's own count next to Tensile's record of the blobs sent to the
-    validator, and the first chart draws what FibreNotServing (uploads missed) watches; without it, the
+    validator, and the first chart draws how far Fibre trails those blobs (no alert reads it); without it, the
     facts are Fibre's own uploads and the first chart draws what FibreNotServing (uploads failing)
     watches. A chart of the upload's steps is left out: it was empty whenever no blob came, and its total
     is the Upload time fact."""
