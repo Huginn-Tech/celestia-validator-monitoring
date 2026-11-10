@@ -8,7 +8,7 @@
   fibre-behind DASHBOARD RULES  no missed_uploads rule; Fibre behind the network draws the gap, no alert line
   clock                 Clock maximum error draws the ClockNotSynced rule
   restarts              Restarts draw the crash-loop rule
-  first-screen          the tiles, History and the Status cell mirror the rules and the inhibitions
+  first-screen          the tiles, History, the Status cell and Rows served mirror the rules and the inhibitions
   signed-share DASHBOARD OUT  writes the promtool test of the signed share, which the job then runs
 
 Each fails with an assertion. Run from the repo root; Python 3 and PyYAML.
@@ -213,6 +213,11 @@ def first_screen(args):
     for s in ("mainnet", "five"):
         panels = walk("build/%s/dashboard.json" % s)
         worst_first("%s: tile 17" % s, panels[17], panels[17]["targets"][0])
+        # Amber while an alert is pending too, as in the Status cell; red only for a page that fires.
+        shown = words(panels[17], "A")
+        ambers = [b for b in branches(panels[17]["targets"][0]["expr"])
+                  if shown.get(code(b), (None, None))[1] in AMBER and "ALERTS{" in b]
+        assert ambers and not any('alertstate="firing"' in b for b in ambers), "%s: tile 17 amber firing only" % s
     for s in ("single", "split", "mainnet", "five"):
         panels = walk("build/%s/dashboard.json" % s)
         lines = [t for t in panels[20]["targets"] if t["refId"].startswith("S")]
@@ -226,6 +231,12 @@ def first_screen(args):
         band = next(t["expr"] for t in panels[25]["targets"] if t["refId"] == "A")
         assert fired in line and "(ALERTS{%s} unless on () ALERTS{%s})" % (vns, nna) in line, line
         assert fired in band, band
+        # A repoint marker needs another node that signed before: not the same node again after an outage.
+        moved = [a["expr"] for a in json.load(open("build/%s/dashboard.json" % s))["annotations"]["list"]
+                 if a["name"] == "Validator signs through"]
+        assert len(moved) == 1, moved
+        before = moved[0].split(" unless on (host) ", 1)[1].split(" and on () count(", 1)
+        assert len(before) == 2 and before[1] == before[0] + ")", moved
         print("%s: the server lines read red first; a page stays apart from a stall, minute by minute" % s)
     for s in ("split", "mainnet"):
         panels = walk("build/%s/dashboard.json" % s)
@@ -239,6 +250,8 @@ def first_screen(args):
         assert not any('unit="fibre"' in a or "FibreBothActive" in a for a in causes), causes
         assert 'ALERTS{alertname="ServiceDown",unit="fibre"}' in status[end:], "%s: 10 lacks the crash loop's hold" % s
         assert 'reason!~"not_ready|no_answer|not_served"' in status and 'reason!="not_ready"' not in status, s
+        # The code keeps the worst item's part for the label: a one-to-one "on (short)" keeps short only.
+        assert ") + on (short) group_left () (" in status, "%s: 10's code drops the part label" % s
         # The card goes red for the page that went out, ahead of the crash loop.
         page = 'ALERTS{alertname="FibreNotServing",reason="not_ready",severity="page",alertstate="firing"}'
         loop = 'max by (host) (ALERTS{alertname="ServiceDown",unit="fibre",alertstate="firing"})'
@@ -262,6 +275,18 @@ def first_screen(args):
     assert shown == [("Not signalled", "red"), ("Not signalled", "orange")], asks
     assert 'severity="page"' in asks[0] and "severity" not in asks[1], asks
     print("mainnet: 15 reads %d wrong_host rules; 16 is red for the page alone" % len(wrong))
+    # The signer's slowest-1% bars drop histogram_quantile's NaN (no such signature in the window), so
+    # "or vector(-9)" reads None, not No data.
+    signer = [p for i, p in panels.items() if 34 <= i < 38 and "Slowest 1%, proposals" in
+              [t["legendFormat"] for t in p["targets"]]]
+    slowest = [t["expr"] for p in signer for t in p["targets"] if t["legendFormat"].startswith("Slowest 1%")]
+    assert len(signer) == 1 and len(slowest) == 3, signer
+    assert all("max((histogram_quantile(0.99, " in e and ") >= 0) and on (host) " in e for e in slowest), slowest
+    # Rows served is amber while the not_served alert holds, not for the whole 24 hours of failed reads.
+    rows = panels[208]["targets"][0]["expr"]
+    assert 'and on () (max(ALERTS{alertname="FibreNotServing",reason="not_served"}))' in rows, rows
+    assert ">= 2" not in rows, rows
+    print("mainnet: 208 is amber while FibreNotServing (not_served) holds")
 
 
 def signed_share(args):

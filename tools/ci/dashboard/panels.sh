@@ -41,6 +41,9 @@ for s in single split mainnet five; do
          | ([.panels[] | select(.type != "row" and .id < 100) | .gridPos.y + .gridPos.h] | max) == $y
          and (.panels[] | select(.id == 300) | .collapsed)
          and (.panels[] | select(.id == 100) | .gridPos.y) == $y + 1' "build/$s/dashboard.json"
+  # Firing alerts (301) in the closed row: eight sm rows (36 px) under its header, about a host outage's alerts.
+  jq -e '[.panels[] | select(.id == 300) | .panels[] | [.id, .gridPos.w, .gridPos.h, .options.cellHeight]]
+         == [[301, 24, 11, "sm"]]' "build/$s/dashboard.json"
   jq -e '[.panels[] | select(.gridPos.y == 0) | [.gridPos.x, .gridPos.w, .gridPos.h]]
          == [[0,4,3],[4,4,3],[8,4,3],[12,4,3],[16,4,3],[20,4,3]]' "build/$s/dashboard.json"
   jq -e '[.panels[] | select(.gridPos.y == 3 and .type == "stat") | .gridPos] as $t
