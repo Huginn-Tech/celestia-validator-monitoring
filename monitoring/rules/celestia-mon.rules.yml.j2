@@ -763,7 +763,8 @@ groups:
       # hosts (validator and backup nodes) and kms hosts, and send messages on Fibre-only hosts and
       # on a monitor host that runs no Celestia service (the disk of Prometheus's data). The Fibre
       # store has its own rules unless it is also a node data mount. Each mount gets one set of
-      # rules.
+      # rules. The page fires at once and holds for 15 minutes after its cause ends, so a failed
+      # scrape or a disk that moves back and forth across the line does not page again.
 {# celestia_mon_data_mounts is [/] on a host that sets none. #}
 {% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
@@ -775,6 +776,7 @@ groups:
           node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
           or node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"} / node_filesystem_size_bytes{host="{{ h }}",mountpoint="{{ m }}"}
           < {{ th.disk_page_free_ratio }}
+        keep_firing_for: 15m
         labels:
           severity: page
         annotations:
