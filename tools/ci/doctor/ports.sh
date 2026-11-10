@@ -133,7 +133,7 @@ if grep -Eq '^(OK|WARN|FAIL|SKIP|INFO|NOT YET) +1[56] ' <<<"$out"; then echo "th
 
 # A collector's port takes no login, so check 8 names any other process that holds it: here a
 # stand-in for celestia-mon-tensile that is stopped while another process listens where its
-# config.json says, then the same unit listening there itself.
+# config.json says, then on 0.0.0.0 at that port, then the same unit listening there itself.
 echo "::group::a collector's port held by another process"
 echo '{"listen": "127.0.0.1:9917"}' >"$RUNNER_TEMP/tensile.json"
 printf '%s\n' '[Service]' \
@@ -141,6 +141,14 @@ printf '%s\n' '[Service]' \
   | sudo tee /etc/systemd/system/celestia-mon-tensile.service >/dev/null
 sudo systemctl daemon-reload
 python3 -m http.server 9917 --bind 127.0.0.1 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
+squatter=$!
+curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9917/metrics
+run sudo bash tools/doctor.sh --config /dev/null --roles monitor --data-mounts / --head-wait 2
+grep -Eq "^FAIL +8 +private binds +127\.0\.0\.1:9917, where celestia-mon-tensile listens, is held by python3[.0-9]* \(pid $squatter, user $(id -un)\), not by that service\. " <<<"$out"
+kill "$squatter"
+wait "$squatter" || true
+# The same on the wildcard: Prometheus's scrape of 127.0.0.1:9917 reaches it as well.
+python3 -m http.server 9917 --bind 0.0.0.0 --directory "$RUNNER_TEMP/www" >/dev/null 2>&1 &
 squatter=$!
 curl -fsS --retry 30 --retry-connrefused --retry-delay 1 -o /dev/null http://127.0.0.1:9917/metrics
 run sudo bash tools/doctor.sh --config /dev/null --roles monitor --data-mounts / --head-wait 2
