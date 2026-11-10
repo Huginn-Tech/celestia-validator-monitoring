@@ -245,7 +245,8 @@ ms() { awk -v s="$1" 'BEGIN { printf "%.1f", s * 1000 }'; }
 
 # celestia-mon's Prometheus and Alertmanager ask for HTTP basic auth: user api_user, the
 # password in api_password_file (root only). curl reads it from a config on a file
-# descriptor, so it never shows in the process list, and gets it only for their URLs.
+# descriptor, so it never shows in the process list, and gets it only for their URLs: the
+# configured URL itself or a path under it, so a node RPC on 127.0.0.1:9130 never gets it.
 API_AUTH=""
 api_auth_load() {
   local f=${C[api_password_file]} pw
@@ -258,7 +259,7 @@ api_auth_load() {
 }
 api_url() { # URL -> true for celestia-mon's Prometheus or Alertmanager
   local p=${C[prometheus_url]%/} a=${C[alertmanager_url]%/}
-  [[ (-n $p && $1 == "$p"*) || (-n $a && $1 == "$a"*) ]]
+  [[ (-n $p && ($1 == "$p" || $1 == "$p/"*)) || (-n $a && ($1 == "$a" || $1 == "$a/"*)) ]]
 }
 mon_curl() { # URL, curl options -> curl's output, with the basic auth for celestia-mon's API URLs
   local url=$1
