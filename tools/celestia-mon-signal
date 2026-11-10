@@ -28,7 +28,7 @@ that gave the x/signal reading but need not be; while none gives them, the propo
 stay, and the x/signal reading goes on. Only the Python standard library is used; it sends no
 transaction and needs no key. An http URL must name this host or an address of the private network
 (PLAIN_HTTP); any other RPC is reached over https. No redirect is followed, and no answer larger
-than MAX_BODY is read.
+than MAX_BODY (GOV_MAX_BODY for the proposals) is read.
 """
 
 import argparse
@@ -88,6 +88,9 @@ MAX_BLOCKS_BEHIND = 40
 # The largest answer read, in bytes: 20 block headers or a query take a few KiB, and a larger
 # answer is refused rather than read into memory.
 MAX_BODY = 1 << 20
+# The largest Proposals answer read: each proposal comes with its messages, and one may be as large as
+# a transaction (celestia-app pkg/appconsts/app_consts.go, MaxTxSize: 8 MiB), some 11 MiB in base64.
+GOV_MAX_BODY = 12 << 20
 # The addresses an http URL may name: this host and the private network (RFC 1918, CGNAT for
 # Tailscale, IPv6 ULA). Anywhere else, a provider's key in the path and the answers would cross
 # the internet unencrypted.
@@ -334,16 +337,16 @@ class ReadError(Exception):
         self.reason = reason
 
 
-def get(rpc, path, /, **params):
-    """The result of a CometBFT RPC call. path is positional only: /abci_query has a parameter
-    named path too."""
+def get(rpc, path, limit=MAX_BODY, /, **params):
+    """The result of a CometBFT RPC call, of an answer of at most limit bytes. path and limit are
+    positional only: /abci_query has a parameter named path too."""
     url = rpc.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/json"})
     try:
         with OPENER.open(req, timeout=20) as resp:
-            data = resp.read(MAX_BODY + 1)
-        if len(data) > MAX_BODY:
-            raise ReadError("format", f"{shown(rpc)} answered {path} with more than {MAX_BODY} bytes")
+            data = resp.read(limit + 1)
+        if len(data) > limit:
+            raise ReadError("format", f"{shown(rpc)} answered {path} with more than {limit} bytes")
         body = json.loads(data)
     except urllib.error.HTTPError as e:
         if 300 <= e.code < 400:
@@ -372,12 +375,12 @@ def get(rpc, path, /, **params):
     return result
 
 
-def abci_query(rpc, path, height, data=b""):
+def abci_query(rpc, path, height, data=b"", limit=MAX_BODY):
     """The value of an ABCI query at a height, None when the store holds none."""
     params = {"path": json.dumps(path), "height": height}
     if data:
         params["data"] = "0x" + data.hex()
-    response = get(rpc, "/abci_query", **params).get("response") or {}
+    response = get(rpc, "/abci_query", limit, **params).get("response") or {}
     code = int(response.get("code") or 0)
     if code != 0:
         raise ReadError("query", f"{shown(rpc)} answered {path} with code {code}: {response.get('log')}")
@@ -478,7 +481,7 @@ def read_gov(rpc, height, voter):
     during the read cannot mix two states."""
     status = b"\x08" + encode_varint(VOTING_PERIOD)
     out = {}
-    for raw in repeated(abci_query(rpc, GOV_PATH, height, status) or b"", 1):
+    for raw in repeated(abci_query(rpc, GOV_PATH, height, status, GOV_MAX_BODY) or b"", 1):
         p = fields(raw)
         n = uint(p, 1)
         if not isinstance(p.get(11, b""), bytes):
@@ -487,7 +490,7 @@ def read_gov(rpc, height, voter):
                   "end": seconds(p.get(9), f"proposal {n}'s voting end time"),
                   "voted": 0, "title": title_text(p.get(11, b""))}
     with_voter = status + b"\x12" + encode_varint(len(voter)) + voter.encode()
-    for raw in repeated(abci_query(rpc, GOV_PATH, height, with_voter) or b"", 1):
+    for raw in repeated(abci_query(rpc, GOV_PATH, height, with_voter, GOV_MAX_BODY) or b"", 1):
         n = uint(fields(raw), 1)
         # A proposal the first answer lacks would come only from a broken answer.
         if n not in out:

@@ -27,7 +27,8 @@ and optionally:
                nested 500000 deep (valid, under 1 MiB, far deeper than Python's parser goes)
   gov          the proposals, [{id, start, end, title, voters}]: start and end in Unix seconds,
                voters the celestia1 accounts with a vote; and optionally status (2, the voting
-               period, by default), nanos (of the end) and expedited. Proposals answers those
+               period, by default), nanos (of the end), expedited and summary_bytes (a summary of
+               that many bytes, for an answer past a size limit). Proposals answers those
                with the status asked, and with a voter asked those it lists; none by default
   gov_error    true for a node that fails the Proposals query (code 6)
   gov_broken   a Proposals answer that does not read: "end" leaves out each proposal's voting end
@@ -134,7 +135,7 @@ def proposal(p, end=True):
             + field(8, field(1, p["start"]))
             + (field(9, field(1, p["end"]) + field(2, p.get("nanos", 0))) if end else b"")
             + field(10, b"ipfs://bafkreigdummy") + field(11, p.get("title", "").encode())
-            + field(12, f"The summary of proposal {p['id']}.".encode())
+            + field(12, b"x" * p["summary_bytes"] if "summary_bytes" in p else f"The summary of proposal {p['id']}.".encode())
             + field(13, b"celestia1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq") + field(14, p.get("expedited", False)))
 
 

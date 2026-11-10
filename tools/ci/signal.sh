@@ -225,6 +225,19 @@ state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
 m=$(run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="103",title="(Vote here)(link removed)"} 1' <<<"$m"
 grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="104",title="Upgrade to v10.5.0: patch at link removed now"} 1' <<<"$m"
+# A proposal carries its messages, as large as a transaction may be: a Proposals answer over 1 MiB
+# is read, and one over 12 MiB is not, while x/signal is read all the same.
+state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
+  '"gov": [{"id": 105, "start": 1792000000, "end": 1792604800, "title": "Large", "summary_bytes": 3000000}]'
+m=$(run "$addr" http://127.0.0.1:8767)
+grep -qxF 'celestia_mon_gov_proposal_info{proposal_id="105",title="Large"} 1' <<<"$m"
+if grep -q 'reason="gov"' <<<"$m"; then echo "a Proposals answer over 1 MiB was not read"; cat "$d/err"; exit 1; fi
+state "$d/rpc.json" celestia CgcIChDy0poH CJv2gb0BEMj0pLgBGNbYkt0B 10 1 \
+  '"gov": [{"id": 105, "start": 1792000000, "end": 1792604800, "title": "Large", "summary_bytes": 13000000}]'
+m=$(run "$addr" http://127.0.0.1:8767)
+grep -qxF 'celestia_mon_signal_errors_total{reason="gov"} 1' <<<"$m"
+grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
+grep -qF 'http://127.0.0.1:8767 answered /abci_query with more than 12582912 bytes; the proposals read last are kept' "$d/err"
 # gov false: no proposal is read and no gov metric is served; gov must be true or false.
 m=$(cfg='"gov": false' run "$addr" http://127.0.0.1:8767)
 grep -qxF 'celestia_mon_upgrade_height 15116658' <<<"$m"
