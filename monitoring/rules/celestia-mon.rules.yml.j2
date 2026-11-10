@@ -545,7 +545,9 @@ groups:
       # (its node_exporter goes with it) and no standby started, or celestia_mon_units.fibre naming
       # the wrong unit. A failover within 9 minutes pages nobody. A host whose node_exporter does not
       # answer, or answers without reading systemd, while its Fibre answers the health check has a
-      # running Fibre (the unless).
+      # running Fibre (the unless). A unit that holds active over a minute at a time but exits before
+      # Fibre is ever ready counts as running, and each restart starts not_ready's 10 minutes again:
+      # only ServiceDown's crash loop message reports it.
       # The branches after it look at the endpoint from outside, through Tensile, when it is set up.
 {% if mon_only %}
       # While no target on a Celestia host answers, MonitorCannotReach pages instead.
@@ -571,7 +573,9 @@ groups:
       # enough when nobody can reach it: a closed port, an inbound outage at the provider, or the
       # wrong address on chain. Reachable means TCP and TLS; no rule reads a wrong identity
       # (celestia_mon_fibre_identity_verified). Only checks of the last 15 minutes count;
-      # TensileUnreadable reports a check that stopped.
+      # TensileUnreadable reports a check that stopped. Tensile calls an endpoint unreachable at its
+      # second failed check in a row, and the 10 minutes come on top: 15 to 23 minutes after the
+      # fault at Tensile's usual 5 minutes between checks, up to about 26 at 7 minutes.
       - alert: FibreDown
         expr: >-
           max by (endpoint) (celestia_mon_fibre_reachable) == 0
