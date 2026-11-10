@@ -324,6 +324,36 @@
     quiet: true
   loop: "{{ celestia_mon_password_ports | select('in', celestia_mon_host_services) | list }}"
 
+# Only root may listen below net.ipv4.ip_unprivileged_port_start: 1024 by default, and on a kernel
+# without the setting. A host that lowers it (as for rootless containers) lets any account take
+# those ports too.
+- name: Read the lowest port any account may listen on
+  ansible.builtin.slurp:
+    src: /proc/sys/net/ipv4/ip_unprivileged_port_start
+  register: celestia_mon_preflight_unprivileged
+  failed_when: false
+  when: celestia_mon_password_ports | select('in', celestia_mon_host_services) | list | length > 0
+
+- name: Check that only root may listen on the ports that take the API password
+  ansible.builtin.assert:
+    that:
+      - celestia_mon_preflight_open_ports | length == 0
+    fail_msg: >-
+      net.ipv4.ip_unprivileged_port_start is {{ celestia_mon_preflight_unprivileged_start }} on this host, so any account
+      here may listen on {{ celestia_mon_preflight_open_ports | join(', ') }}, which take the API password with every
+      request: another account could listen there while the service restarts and read the password. Set it above
+      {{ celestia_mon_preflight_open_ports | map('int') | max }} ("sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024",
+      and remove the line that lowers it from /etc/sysctl.conf or /etc/sysctl.d), then run again.
+    quiet: true
+  when: celestia_mon_password_ports | select('in', celestia_mon_host_services) | list | length > 0
+  vars:
+    celestia_mon_preflight_unprivileged_start: >-
+      {{ (celestia_mon_preflight_unprivileged.content | b64decode | trim | int)
+         if celestia_mon_preflight_unprivileged.content is defined else 1024 }}
+    celestia_mon_preflight_open_ports: >-
+      {{ celestia_mon_password_ports | select('in', celestia_mon_host_services) | map('extract', celestia_mon_ports)
+         | map('int') | select('ge', celestia_mon_preflight_unprivileged_start | int) | map('string') | list }}
+
 - name: Check that celestia-mon's ports are free or held by its own services
   ansible.builtin.include_tasks: port_check.yml
   vars:

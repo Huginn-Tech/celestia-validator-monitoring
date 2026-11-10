@@ -1975,11 +1975,26 @@ CELESTIA_MON_LOOPBACK_UNITS=(celestia-mon-prometheus celestia-mon-alertmanager c
   celestia-mon-signal celestia-mon-blackbox)
 
 check_binds() {
-  local name="private binds" fw unit pid addr detail r
-  local -a ok=() bad=() wide=() open=()
+  local name="private binds" fw unit pid addr detail r start port
+  local -a ok=() bad=() wide=() open=() low=() pw=()
   local -A unit_of=()
   net_read
   fw=$FW
+  # Only root may listen below net.ipv4.ip_unprivileged_port_start (1024 by default, and on a
+  # kernel without the setting): on a lower setting any account here may take the ports that
+  # Prometheus, Alertmanager and celestia-mon-blackbox take the API password on.
+  if has_role monitor; then
+    start=$(cat /proc/sys/net/ipv4/ip_unprivileged_port_start 2>/dev/null) || start=1024
+    [[ $start =~ ^[0-9]+$ ]] || start=1024
+    pw=("$(url_port "${C[prometheus_url]}")" "$(url_port "${C[alertmanager_url]}")")
+    if fibre_on; then pw+=("$(url_port "${C[blackbox_url]}")"); fi
+    for port in "${pw[@]}"; do
+      if [[ $port =~ ^[0-9]+$ ]] && ((port >= start)); then low+=("$port"); fi
+    done
+    if ((${#low[@]} > 0)); then
+      report WARN 8 "$name" "net.ipv4.ip_unprivileged_port_start is $start, so any account on this host may listen on $(join "${low[@]}"), where Prometheus, Alertmanager and celestia-mon-blackbox take the API password: another account could listen there while the service restarts and read the password. Fix: set it to 1024 (\"sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1024\") and remove the line that lowers it from /etc/sysctl.conf or /etc/sysctl.d"
+    fi
+  fi
   if [[ $(id -u) -ne 0 ]]; then
     report SKIP 8 "$name" "run as root to see which process owns each socket; firewall: $fw"
     return

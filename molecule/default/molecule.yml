@@ -14,6 +14,9 @@ platforms:
     command: /lib/systemd/systemd
     privileged: true
     cgroupns_mode: host
+    # Docker lowers it to 0 in a container; on a host it is 1024, which the install requires.
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "1024"
     volumes:
       - /sys/fs/cgroup:/sys/fs/cgroup:rw
     tmpfs:
