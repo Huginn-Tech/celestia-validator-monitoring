@@ -43,6 +43,7 @@ The Status words and what they stand for (hover the cell's (i) for the list of y
 | Rows not served, Uploads failing, Not ready, No answer, No Fibre data | FibreNotServing: rows the validator signed for not served (`celestia_mon_tensile`), uploads failing, Fibre's own health check not ready (red once it pages) or not answering the monitor, no Fibre metrics |
 | Not reporting | ServiceDown: a server's node_exporter does not answer |
 | No disk data | ServiceDown: node_exporter answers but cannot read the disks |
+| No unit data | ServiceDown: node_exporter answers but cannot read systemd |
 | No node data, No Fibre data | ServiceDown: celestia-appd's or the OpenTelemetry collector's metrics lost |
 | Node stopped, Node crashing, Node missing | ServiceDown: celestia-appd stopped, in a crash loop, or its unit missing |
 | Signer down, Signer crash, No signer | ServiceDown: tmkms, likewise (`celestia_mon_kms_scrape`) |

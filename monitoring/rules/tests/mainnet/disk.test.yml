@@ -67,6 +67,58 @@ tests:
               description: "Free space has been below 10% for 10 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
+  # 4% free, a failed scrape at 5m (every series stale), then 12% free from 10m. The page keeps firing
+  # through the failed scrape and for 15 minutes after the disk has room again (keep_firing_for), so
+  # neither a failed scrape nor a disk that moves back and forth across 5% pages again.
+  - name: Backup node data disk under 5%; the page holds through a failed scrape and for 15m after
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"}
+        values: '2000000000000x4 stale 2000000000000x25'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"}
+        values: '80000000000x4 stale 80000000000x3 240000000000x21'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre",device="/dev/nvme0n1p2",fstype="ext4",mountpoint="/"}
+        values: '0x4 stale 0x25'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme0n1p2
+              fstype: ext4
+              mountpoint: /
+              severity: page
+            exp_annotations:
+              summary: "/ on fibre-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 5% free space."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+      - eval_time: 24m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              device: /dev/nvme0n1p2
+              fstype: ext4
+              mountpoint: /
+              severity: page
+            exp_annotations:
+              summary: "/ on fibre-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 5% free space."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+      - eval_time: 25m
+        alertname: DiskLow
+        exp_alerts: []
+
   # val-1's disk also holds the standby Fibre's store: it gets the node data rules only.
   - name: Validator node disk turns read-only; one page at once
     interval: 1m

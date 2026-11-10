@@ -151,7 +151,7 @@ groups:
   - name: celestia_mon
     rules:
       # ServiceDown: celestia-appd, tmkms, a collector or the blackbox exporter is down or not loaded,
-      # node_exporter cannot read the disks, or a Celestia service is crash looping. Always a message:
+      # node_exporter cannot read the disks or systemd, or a Celestia service is crash looping. Always a message:
       # the pages come from the alerts below,
       # which follow the roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a
       # standby is stopped); FibreDown pages when no Fibre unit is active anywhere. When none of a
@@ -227,6 +227,20 @@ groups:
           summary: "{% raw %}node_exporter cannot read the disks on {{ $labels.host }}{% endraw %}"
           description: "For 3 minutes node_exporter's filesystem collector has failed while node_exporter answers, so DiskLow sees no disk on this host. sudo celestia-mon-doctor (check 10) on it gives the fix."
           runbook: "{{ docs }}#servicedown"
+      # node_exporter answers while its systemd collector fails: it asks systemd over D-Bus, which is
+      # down or stuck. up stays 1 and the unit series go, so the host's unit alerts are blind; its
+      # "not loaded" rules hold back, as this names the cause, and FibreDown counts a Fibre that
+      # answers its health check there as running.
+      - alert: ServiceDown
+        expr: node_scrape_collector_success{job="node",collector="systemd"} == 0
+        for: 3m
+        labels:
+          severity: message
+          unit: systemd_collector
+        annotations:
+          summary: "{% raw %}node_exporter cannot read systemd on {{ $labels.host }}{% endraw %}"
+          description: "For 3 minutes node_exporter's systemd collector has failed while node_exporter answers, so no unit of this host is seen and its unit alerts cannot fire. node_exporter asks systemd over D-Bus: on that host, check systemctl status dbus and journalctl -u celestia-mon-node-exporter."
+          runbook: "{{ docs }}#servicedown"
 {% for key, names, hosts in units %}
 {% if key != 'fibre' %}
       - alert: ServiceDown
@@ -260,7 +274,9 @@ groups:
           runbook: "{{ docs }}#servicedown"
 {% for h in hosts if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
       - alert: ServiceDown
-        expr: absent(node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, key) }}.service"}) and on () up{job="node",host="{{ h }}"} == 1
+        expr: >-
+          absent(node_systemd_unit_state{host="{{ h }}",name="{{ unit(h, key) }}.service"}) and on () up{job="node",host="{{ h }}"} == 1
+          unless on () node_scrape_collector_success{job="node",host="{{ h }}",collector="systemd"} == 0
         for: 2m
         labels:
           severity: message
@@ -366,7 +382,9 @@ groups:
       # for a host whose page already fires while it still has too few peers: otherwise it would
       # resolve 15 minutes after the last signature, while the node is still cut off. No page while
       # another node with enough peers signs (signing_nodes() over 2 minutes): the validator signs
-      # through that node, after a tmkms repoint or with tmkms signing through several nodes.
+      # through that node, after a tmkms repoint or with tmkms signing through several nodes. A failed
+      # scrape of the node would resolve the page, release what it holds back and, as the window
+      # holds no signature then, end it for good; keep_firing_for holds it through that.
       - alert: NodePeersLow
         expr: cometbft_p2p_peers{job="celestia-app"} < {{ peers_message }}
         for: 5m
@@ -393,6 +411,7 @@ groups:
           unless on () count(max by (host) (changes(cometbft_consensus_validator_last_signed_height{job="celestia-app"}[2m])) > 0 unless on (host) cometbft_p2p_peers{job="celestia-app"} < {{ peers_page }})
 {% endif %}
         for: 1m
+        keep_firing_for: 5m
         labels:
           severity: page
         annotations:
@@ -459,8 +478,10 @@ groups:
       # counts only the signatures a node got back (celestia-core v0.42.3 privval/signer_client.go);
       # a node that tmkms left keeps the key it last read but gets none. A node counts once it got
       # signatures both in the last 2 minutes and in the 2 minutes before, so a tmkms repoint, after
-      # which the node tmkms left gets none within 2 minutes, never matches (not even as pending), and
-      # the alert fires about 3 minutes after a second signer started. Not rendered with
+      # which the node tmkms left gets none within 2 minutes, never matches (not even as pending). The
+      # second node matches 2m15s to 2m30s after it began, and the 1 minute hold lets a short repoint
+      # there and back pass, so the alert fires 3m15s to 3m45s after a second signer started;
+      # Alertmanager sends it at once (a route of its own). Not rendered with
       # celestia_mon_signer_multi_node, where tmkms signs through several nodes on purpose.
       - alert: ValidatorSigningTwice
         expr: >-
@@ -492,13 +513,20 @@ groups:
           summary: "{% raw %}Remote signer on {{ $labels.host }} is slower than {% endraw %}{{ '%g' | format(th.signer_median_seconds * 1000) }} ms"
           description: "The median of the last 50 signatures has been above {{ '%g' | format(th.signer_median_seconds * 1000) }} ms for 15 minutes."
           runbook: "{{ docs }}#remotesignerproblem"
+      # A node creates each failure series at its first failure, at 1, which increase() cannot count:
+      # a series the node did not have 6 hours before, while Prometheus read the node, counts too, so
+      # the first refused proposal after a start of the node fires. The instance and role labels may
+      # change in between (another port), so the series match by host, message type and reason.
 {% if multi %}
       # With celestia_mon_signer_multi_node every node asks for each proposal and tmkms signs the
       # first, so refusals are normal: only when no node got a proposal signed in 6 hours is it a fault.
 {% endif %}
       - alert: RemoteSignerProblem
         expr: >-
-          increase(cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}[6h]) > 0
+          (increase(cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}[6h]) > 0
+          or cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"}
+          unless on (host, message_type, reason) cometbft_privval_signing_failures_total{message_type="proposal",reason!~"timeout|no_connection"} offset 6h
+          and on (host) max by (host) (up{job="celestia-app"} offset 6h) == 1)
 {% if multi %}
           unless on () sum(increase(cometbft_privval_signing_latency_seconds_count{job="celestia-app",message_type="proposal"}[6h])) > 0
 {% endif %}
@@ -516,7 +544,10 @@ groups:
       # everywhere, crash looping (active under a minute at a time), the host of the active Fibre down
       # (its node_exporter goes with it) and no standby started, or celestia_mon_units.fibre naming
       # the wrong unit. A failover within 9 minutes pages nobody. A host whose node_exporter does not
-      # answer while its Fibre answers the health check has a running Fibre (the unless).
+      # answer, or answers without reading systemd, while its Fibre answers the health check has a
+      # running Fibre (the unless). A unit that holds active over a minute at a time but exits before
+      # Fibre is ever ready counts as running, and each restart starts not_ready's 10 minutes again:
+      # only ServiceDown's crash loop message reports it.
       # The branches after it look at the endpoint from outside, through Tensile, when it is set up.
 {% if mon_only %}
       # While no target on a Celestia host answers, MonitorCannotReach pages instead.
@@ -527,7 +558,7 @@ groups:
 {% if mon_only %}
           and on () {{ some_reached }}
 {% endif %}
-          unless on () count(max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status=~"SERVING|NOT_SERVING"}) == 1 unless on (host) max by (host) (up{job="node"}) == 1)
+          unless on () count(max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status=~"SERVING|NOT_SERVING"}) == 1 unless on (host) (max by (host) (up{job="node"}) == 1 unless on (host) max by (host) (node_scrape_collector_success{job="node",collector="systemd"}) == 0))
         for: 10m
         labels:
           severity: page
@@ -542,7 +573,9 @@ groups:
       # enough when nobody can reach it: a closed port, an inbound outage at the provider, or the
       # wrong address on chain. Reachable means TCP and TLS; no rule reads a wrong identity
       # (celestia_mon_fibre_identity_verified). Only checks of the last 15 minutes count;
-      # TensileUnreadable reports a check that stopped.
+      # TensileUnreadable reports a check that stopped. Tensile calls an endpoint unreachable at its
+      # second failed check in a row, and the 10 minutes come on top: 15 to 23 minutes after the
+      # fault at Tensile's usual 5 minutes between checks, up to about 26 at 7 minutes.
       - alert: FibreDown
         expr: >-
           max by (endpoint) (celestia_mon_fibre_reachable) == 0
@@ -753,7 +786,8 @@ groups:
       # hosts (validator and backup nodes) and kms hosts, and send messages on Fibre-only hosts and
       # on a monitor host that runs no Celestia service (the disk of Prometheus's data). The Fibre
       # store has its own rules unless it is also a node data mount. Each mount gets one set of
-      # rules.
+      # rules. The page fires at once and holds for 15 minutes after its cause ends, so a failed
+      # scrape or a disk that moves back and forth across the line does not page again.
 {# celestia_mon_data_mounts is [/] on a host that sets none. #}
 {% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
@@ -765,6 +799,7 @@ groups:
           node_filesystem_readonly{host="{{ h }}",mountpoint="{{ m }}"} == 1
           or node_filesystem_avail_bytes{host="{{ h }}",mountpoint="{{ m }}"} / node_filesystem_size_bytes{host="{{ h }}",mountpoint="{{ m }}"}
           < {{ th.disk_page_free_ratio }}
+        keep_firing_for: 15m
         labels:
           severity: page
         annotations:
@@ -1112,14 +1147,16 @@ groups:
       # AlertsSilenced: Alertmanager has held at least one silence for 4 hours, one silence or several
       # one after another. A silence keeps the alerts it matches from every receiver, pages included,
       # while the heartbeat to the dead-man service goes on, so a silence that was forgotten or set wider
-      # than meant hides a real fault for as long as it lasts, and nothing else reports it.
+      # than meant hides a real fault for as long as it lasts, and nothing else reports it. It carries
+      # no host label: a silence of the monitor's own host, which also runs Fibre or a node in some
+      # layouts, would hold it back too.
       - alert: AlertsSilenced
-        expr: max by (host) (alertmanager_silences{state="active"}) > 0
+        expr: max(alertmanager_silences{state="active"}) > 0
         for: 4h
         labels:
           severity: message
         annotations:
-          summary: "{% raw %}Alerts have been silenced on {{ $labels.host }} for 4 hours{% endraw %}"
+          summary: "Alerts have been silenced on {{ celestia_mon_monitor_host }} for 4 hours"
           description: "A silence in Alertmanager has been active for 4 hours. Each silence keeps the alerts it matches from every receiver, pages included, while the heartbeat to the dead-man service goes on, so it can hide a real fault. On the monitor, amtool silence query lists the active silences (the runbook has the command); expire each one you no longer need."
           runbook: "{{ docs }}#alertssilenced"
 

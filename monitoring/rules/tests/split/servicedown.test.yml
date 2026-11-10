@@ -378,3 +378,41 @@ tests:
       - eval_time: 10m
         alertname: ServiceDown
         exp_alerts: []
+
+  # node_exporter answers and its systemd collector fails from 5m (D-Bus down): up stays 1 and the
+  # unit series are gone. One message for that collector; celestia-appd's "is not loaded", which the
+  # missing series would raise after 2 minutes, holds back, as the cause is the collector.
+  - name: The systemd collector fails while node_exporter answers; a message after 3m, no "not loaded"
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x24'
+      - series: >-
+          node_scrape_collector_success{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",collector="systemd"}
+        values: '1x4 0x20'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.1:9910
+              host: val-1
+              role: validator
+              collector: systemd
+              severity: message
+              unit: systemd_collector
+            exp_annotations:
+              summary: "node_exporter cannot read systemd on val-1"
+              description: >-
+                For 3 minutes node_exporter's systemd collector has failed while node_exporter answers, so no unit
+                of this host is seen and its unit alerts cannot fire. node_exporter asks systemd over D-Bus: on that
+                host, check systemctl status dbus and journalctl -u celestia-mon-node-exporter.
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
