@@ -125,6 +125,10 @@ def serve_metrics(listen, metrics):
     host, _, port = listen.rpartition(":")
 
     class Handler(BaseHTTPRequestHandler):
+        # A connection that sends no request within this many seconds is closed, so idle ones
+        # cannot hold every thread and file descriptor while the scrape waits.
+        timeout = 10
+
         def do_GET(self):
             if self.path != "/metrics":
                 self.send_error(404)

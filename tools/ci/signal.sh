@@ -343,4 +343,17 @@ wait_for 'celestia_mon_signal_errors_total\{reason="wrong_network"\} ([3-9]|[1-9
 test "$(reading)" = "$before" || { echo "a failed read changed the reading"; reading; exit 1; }
 test "$(metrics | grep '^celestia_mon_signal_last_success_timestamp_seconds ')" = "$at" ||
   { echo "the last read time moved without a read"; exit 1; }
+# A connection that sends no request is closed after 10 seconds, so idle ones cannot hold the
+# metrics endpoint (the collectors share this handler).
+python3 -I - <<'EOF'
+import socket
+import time
+
+s = socket.create_connection(("127.0.0.1", 9918))
+s.settimeout(30)
+t = time.monotonic()
+assert s.recv(1) == b"", "an idle connection got an answer"
+assert 5 < time.monotonic() - t < 20, f"an idle connection was closed after {time.monotonic() - t:.1f} s"
+EOF
+metrics >/dev/null
 kill "$service"
