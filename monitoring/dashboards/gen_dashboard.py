@@ -1413,8 +1413,8 @@ def alert_items(s):
                 'reason) (ALERTS{alertname="FibreNotServing",reason="not_ready"}) and on () '
                 'max(ALERTS{alertname="ValidatorNotSigning"%s}))' % (state, state))
     # Held back as messages only, as the inhibitions do: a crash-looping Fibre holds its host's every
-    # FibreNotServing message and no page (the crash loop alert outlasts the loop, and a Fibre that has
-    # answered NOT_SERVING for 10 minutes runs).
+    # FibreNotServing message and no page (the crash loop alert outlasts the loop by up to 10 minutes, and
+    # a Fibre that has answered NOT_SERVING for 10 minutes runs).
     fibre_messages = ("unless on (alertname, host) %s"
                       % label('max by (host) (ALERTS{alertname="ServiceDown",unit="fibre"})', "alertname",
                               "FibreNotServing"))
@@ -2566,8 +2566,11 @@ def servers_table(s):
                + ([("tmkms", "Signer crash")] if s.kms_hosts else []))
     units = [u for k, _ in crashes for u in s.names(k)]
     restart_sel = "{name=~%s}" % q("|".join(re2(u) for u in units))
-    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{%s}[30m]))) > %s%s) * 0 - %d"
-                        % (s.is_unit(k), num(s.CL), " unless on (host) (%s)" % BOOTED if k == "fibre" else "", 10 + i)
+    # ServiceDown's crash-loop condition per host: the count of 30 minutes, with a restart in the last 10.
+    crash = " or ".join("(floor(max by (host) (increase(node_systemd_service_restart_total{%s}[30m]))) > %s and "
+                        "max by (host) (increase(node_systemd_service_restart_total{%s}[10m])) > 0%s) * 0 - %d"
+                        % (s.is_unit(k), num(s.CL), s.is_unit(k),
+                           " unless on (host) (%s)" % BOOTED if k == "fibre" else "", 10 + i)
                         for i, (k, _) in enumerate(crashes))
     restarts = ("(%s or floor(sum by (host) (increase(node_systemd_service_restart_total%s[24h])))) and on (host) %s %s"
                 % (crash, restart_sel, NE_UP, nodata_all))

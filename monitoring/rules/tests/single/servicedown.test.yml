@@ -126,8 +126,46 @@ tests:
               unit: appd
             exp_annotations:
               summary: "celestia-appd.service is crash looping on node-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # The unit restarts at 10m, 11m and 12m and then stays up. The count of 30 minutes still reads 3
+  # until 41m; the message ends once no restart lies in the last 10 minutes: the range at 20m still
+  # holds the restart of 12m (the samples of 11m and 12m), the one at 21m does not.
+  - name: celestia-appd restarts three times and stays up; the crash loop ends 10 minutes after the last restart
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1x45'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x45'
+      - series: >-
+          node_systemd_service_restart_total{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service"}
+        values: '0x9 1 2 3x33'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              name: celestia-appd.service
+              severity: message
+              unit: appd
+            exp_annotations:
+              summary: "celestia-appd.service is crash looping on node-1"
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+      - eval_time: 21m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 40m
+        alertname: ServiceDown
+        exp_alerts: []
 
   - name: Two restarts in 30 minutes are not a crash loop
     interval: 1m
