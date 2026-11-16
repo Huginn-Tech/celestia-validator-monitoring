@@ -57,7 +57,11 @@ route:
   receiver: message
   group_by: [alertname, host]
   group_wait: 30s
-  group_interval: 5m
+  # A group already notified is sent again, for an alert that resolved or a new one, at its next
+  # round, so a "resolved" comes up to 3 minutes after Prometheus ends the alert. A round is also
+  # all the time one notification has: a receiver slower than that fails and is sent again at the
+  # next round, a second copy where it did deliver. 3 minutes leaves room for a slow chat API.
+  group_interval: 3m
   repeat_interval: 4h
   routes:
     # Heartbeat to the external dead-man service, every 1-2 minutes. Nothing else
@@ -71,16 +75,21 @@ route:
       continue: false
     # Celestia's announcements (celestia-mon-announcements): one notification per announcement,
     # sent at once. The service posts each again until it ends, so a restart here cannot lose it;
-    # the notification log, kept on disk, holds back a second notification. The chat channels and
-    # webhooks get no "resolved" message for it; PagerDuty does, so its incident closes when the
-    # announcement ends (active_minutes, 30).
+    # the notification log, kept on disk, holds back a second notification. A send that fails is
+    # tried again, so a receiver that delivered and still answered with an error (a gateway
+    # timeout) shows the announcement twice. The chat channels and webhooks get no "resolved"
+    # message for it; PagerDuty does, so its incident closes within 5 minutes of the
+    # announcement's end (active_minutes, 30).
     - matchers:
         - 'alertname="CelestiaAnnouncement"'
       group_by: ['...']
       group_wait: 0s
-      group_interval: 1m
+      # The time one notification has, retries included (the first goes out at once, group_wait).
+      # With 1 minute a slow chat API ran out of it: the send counted as failed
+      # (NotificationsFailing, the dead-man's heartbeat paused for an hour) and went out again.
+      group_interval: 5m
       # Within the 120 hours Alertmanager keeps its notification log (a longer interval can repeat
-      # sooner); an announcement is active for 30 minutes, so it is never sent twice.
+      # sooner); an announcement is active for 30 minutes, so it does not repeat.
       repeat_interval: 96h
       routes:
         - receiver: announcement-page
@@ -181,7 +190,7 @@ inhibit_rules:
     target_matchers:
       - 'alertname="FibreNotServing"'
   # A crash-looping Fibre explains the same host's FibreNotServing messages. Not its pages: a message
-  # never holds a page, and the crash loop alert outlasts the loop by up to 30 minutes, while a
+  # never holds a page, and the crash loop alert outlasts the loop by up to 10 minutes, while a
   # Fibre that has answered NOT_SERVING for 10 minutes is running.
   - source_matchers:
       - 'alertname="ServiceDown"'

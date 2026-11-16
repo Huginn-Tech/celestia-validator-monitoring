@@ -168,12 +168,14 @@ def restarts(args):
     for s in ("single", "split", "mainnet", "five"):
         crash = [r for r in rendered(s, "ServiceDown") if "node_systemd_service_restart_total" in r["expr"]]
         exprs = [" ".join(r["expr"].split()) for r in crash]
-        found = [re.fullmatch(r"floor\(increase\(node_systemd_service_restart_total\{[^}]*\}\[30m\]\)\) > (\d+)(%s)?"
-                              % re.escape(BOOT_GUARD), e) for e in exprs]
+        # The count of 30 minutes, and a restart of the same unit in the last 10: the alert ends 10 minutes
+        # after the last restart.
+        found = [re.fullmatch(r"floor\(increase\((node_systemd_service_restart_total\{[^}]*\})\[30m\]\)\) > (\d+) "
+                              r"and increase\(\1\[10m\]\) > 0(%s)?" % re.escape(BOOT_GUARD), e) for e in exprs]
         assert found and all(found), "%s: the crash-loop rules %s" % (s, exprs)
-        levels = {int(m.group(1)) for m in found}
+        levels = {int(m.group(2)) for m in found}
         assert len(levels) == 1, "%s: crash-loop levels %s" % (s, levels)
-        guarded = {r["labels"]["unit"] for r, m in zip(crash, found) if m.group(2)}
+        guarded = {r["labels"]["unit"] for r, m in zip(crash, found) if m.group(3)}
         assert guarded == {r["labels"]["unit"] for r in crash} & {"fibre"}, "%s: the boot guard on %s" % (s, guarded)
         n = levels.pop()
         panels = walk("build/%s/dashboard.json" % s)
@@ -186,6 +188,8 @@ def restarts(args):
         print("%s: 480 draws %d series, its line at %s" % (s, len(chart["targets"]), level))
     table = [t["expr"] for t in walk("build/table/dashboard.json")[26]["targets"] if BOOT_GUARD in t["expr"]]
     assert len(table) == 1 and table[0].count(BOOT_GUARD) == 1, table
+    # Servers now reads "crashing" by the rule's condition: each 30-minute count with a restart in the last 10.
+    assert table[0].count("[30m]))) > ") == table[0].count("[10m])) > 0") >= 1, table
     print("table: Servers now leaves out a host that just booted, for Fibre only")
 
 

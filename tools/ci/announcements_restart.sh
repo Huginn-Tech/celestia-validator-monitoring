@@ -29,7 +29,7 @@ route:
   receiver: hook
   group_by: ['...']
   group_wait: 0s
-  group_interval: 1m
+  group_interval: 5m
   repeat_interval: 96h
 receivers:
   - name: hook

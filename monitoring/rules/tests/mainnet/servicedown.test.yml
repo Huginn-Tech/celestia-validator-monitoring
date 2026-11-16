@@ -137,7 +137,7 @@ tests:
               unit: fibre
             exp_annotations:
               summary: "fibre.service is crash looping on fibre-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # The host booted at 0. Fibre exits until its node answers, six restarts in the first 4 minutes,
@@ -208,7 +208,7 @@ tests:
               unit: fibre
             exp_annotations:
               summary: "fibre.service is crash looping on fibre-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Wrong appd unit name for the backup node; node_exporter is up but has no such unit

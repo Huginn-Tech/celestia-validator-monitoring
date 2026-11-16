@@ -256,12 +256,16 @@ groups:
 {% endif %}
       - alert: ServiceDown
         # increase() extrapolates to the window edges (2 restarts can read as 2.07); floor() counts whole restarts.
+        # The count alone would hold for 30 minutes after the last restart; with a restart in the last 10
+        # minutes it ends 10 minutes after the unit last restarted. systemd counts only its own restarts
+        # (NRestarts), not a systemctl restart by hand.
 {% if key == 'fibre' %}
         # After a host boots, Fibre exits until its node answers; those restarts are no crash loop.
         # 40 minutes: the 30-minute window plus the time the node takes to open its gRPC port.
 {% endif %}
         expr: >-
           floor(increase(node_systemd_service_restart_total{name{{ one_of(names) }}}[30m])) > {{ th.crashloop_restarts }}
+          and increase(node_systemd_service_restart_total{name{{ one_of(names) }}}[10m]) > 0
 {% if key == 'fibre' %}
           unless on (host) (time() - node_boot_time_seconds{job="node"} < 2400)
 {% endif %}
@@ -270,7 +274,7 @@ groups:
           unit: {{ key }}
         annotations:
           summary: "{% raw %}{{ $labels.name }} is crash looping on {{ $labels.host }}{% endraw %}"
-          description: "systemd restarted the unit more than {{ th.crashloop_restarts }} times in 30 minutes."
+          description: "systemd restarted the unit more than {{ th.crashloop_restarts }} times in 30 minutes. This ends 10 minutes after its last restart."
           runbook: "{{ docs }}#servicedown"
 {% for h in hosts if h in vf or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
       - alert: ServiceDown

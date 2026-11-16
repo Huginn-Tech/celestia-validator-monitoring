@@ -165,7 +165,7 @@ tests:
               unit: fibre
             exp_annotations:
               summary: "fibre-standby.service is crash looping on val-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: kms-1's tmkms-signer.service stops; a message under its own name

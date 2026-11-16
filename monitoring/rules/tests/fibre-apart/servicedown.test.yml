@@ -116,7 +116,7 @@ tests:
               unit: appd
             exp_annotations:
               summary: "celestia.service is crash looping on node-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes."
+              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # node_exporter on node-1 answers but lists only a unit of the default name: the not-loaded rule
