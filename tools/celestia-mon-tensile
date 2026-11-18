@@ -7,8 +7,9 @@ records every settled blob: the validators it assigned rows to, the endorsements
 whether each validator later returned the rows it signed for. This service reads the validator's
 status from Tensile's API every interval and serves it as Prometheus metrics: the registered
 endpoint, whether Tensile reached it (TCP and TLS) at its last check, and when that check ran,
-which FibreDown uses; and the blobs the network assigned to the validator, which FibreNotServing
-compares with Fibre's own uploads.
+which FibreDown uses; Tensile's reads of the rows the validator signed for, which FibreNotServing
+(not_served) uses; and the blobs the network assigned to the validator, which the dashboard draws
+beside Fibre's own uploads (Fibre behind the network). No alert reads those blobs.
 
 A Tensile that does not send signing.last_assigned_at, as Tensile does not yet, gives only the
 number of blobs assigned in its last 24 hours. The time of the newest one is then the time of the

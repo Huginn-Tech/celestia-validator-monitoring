@@ -256,7 +256,7 @@ Only with `celestia_mon_fibre_enabled: true`.
 
 The `check` label tells the cases apart (none for the unit, `reachability`, `registration` with `reason` `wrong_host` or `not_registered`), and the dashboard names each in one word: "Not running", "Unreachable", "Wrong host", "Not registered".
 
-celestia-mon-tensile on the monitor reads Tensile's verdict for your validator every minute and serves it as metrics; Tensile is used only for this check and for the blobs [FibreNotServing](#fibrenotserving) compares with Fibre's uploads. Set it up in the inventory, on the monitor host: `celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "<celestiavalcons1...>"}` (Tensile's API for your network; check 4 of `celestia-mon-doctor` on the validator prints the consensus address), and set `celestia_mon_fibre_public_endpoint` on every Fibre host. [TensileUnreadable](#tensileunreadable) tells you when the outside check stops.
+celestia-mon-tensile on the monitor reads Tensile's verdict for your validator every minute and serves it as metrics; Tensile is used only for this check, for the rows [FibreNotServing](#fibrenotserving) (`not_served`) reports as not served, and for the dashboard's Blobs endorsed, Rows served and Fibre behind the network. Set it up in the inventory, on the monitor host: `celestia_mon_tensile: {api: "https://tensile-mocha.huginn.tech/api/v1", validator: "<celestiavalcons1...>"}` (Tensile's API for your network; check 4 of `celestia-mon-doctor` on the validator prints the consensus address), and set `celestia_mon_fibre_public_endpoint` on every Fibre host. [TensileUnreadable](#tensileunreadable) tells you when the outside check stops.
 
 **Severity.** page. While it fires, FibreNotServing is held back.
 

@@ -781,10 +781,10 @@ jobs:
       - name: Upload readiness reads the not_ready rules
         id: upload-readiness
         run: python tools/ci/check_dashboard.py upload-readiness
-      # Fibre behind the network (with the outside check) draws the value FibreNotServing (missed_uploads)
-      # compares, which is the rule's expression without its comparison (inside the clamp that draws an
-      # upload settling as 0), and its dashed line at the rule's number, so neither side can change alone.
-      - name: Fibre behind the network draws the missed_uploads rule
+      # Fibre behind the network (with the outside check) draws how far Fibre's last upload trails the
+      # newest blob sent to the validator (inside the clamp that draws an upload settling as 0), without an
+      # alert line: no rule reads it, as FibreNotServing has no missed_uploads rule.
+      - name: Fibre behind the network draws the gap without an alert line
         id: fibre-behind
         run: python tools/ci/check_dashboard.py fibre-behind build/mainnet/dashboard.json build/mainnet/rules/celestia-mon.rules.yml
       # Clock maximum error (490) draws, for every server, the metric ClockNotSynced compares, and its
