@@ -1889,9 +1889,10 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only. This branch changes no dashboard, so --same stands
-  # alone. Then the alert rules and the dashboard settings of each example inventory, rendered by both
-  # branches.
+  # pairs), or leaves --same out to report only, as this branch does: the Fibre tile, the role band, the
+  # Fibre cards, the Role column and the Signer service row now read a failing systemd collector as the
+  # rules do, in their queries, not only texts. Then the alert rules and the dashboard settings of each
+  # example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1917,7 +1918,7 @@ jobs:
             fi
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)"
       # The alert rules and the dashboard settings of each example inventory, rendered by the base branch
       # from its checkout (its templates, inventories, roles and render.yml) and by this branch: single,
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
