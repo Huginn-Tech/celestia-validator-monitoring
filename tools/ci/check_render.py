@@ -4,6 +4,8 @@
 
   holds HOLDS RULES...   each hold time the dashboard prints (monitoring/rules/holds.json) is the for: of
                          every rule it names
+  keeps RULES...         the holds after a cause ends: DiskLow's page holds 5 minutes on its own ALERTS series,
+                         ClockNotSynced has none
   votes MOCHA NOGOV      the vote rules on Mocha (GovVoteMissing sends its message only) and with gov off
                          (no GovVoteMissing; SignalUnreadable about x/signal only); the two rendered rules files
   twice SPLIT MULTI      ValidatorSigningTwice pages in the split example, and is left out of it rendered with
@@ -12,7 +14,8 @@
   targets PROMETHEUS     the mainnet example's scrape targets follow the inventory groups
   ports PROMETHEUS       a host's own ports stay that host's (the mainnet example with ports set per host)
   receivers-text ALERTMANAGER  PagerDuty and Slack receivers send celestia-mon's text
-  routing ALERTMANAGER   routes, inhibitions and receivers of the split example with every receiver type
+  routing ALERTMANAGER   routes with their timings, inhibitions and receivers of the split example with every
+                         receiver type
 
 Each fails with an assertion (holds with the list of what does not match). Python 3 and PyYAML.
 """
@@ -44,6 +47,21 @@ def holds(args):
         else:
             print("%s: %s in %d rules" % (name, h["for"], len(found)))
     sys.exit(1 if failed else 0)
+
+
+def keeps(args):
+    """DiskLow's page holds 5 minutes after its expression, which reads its own ALERTS series; ClockNotSynced has no hold."""
+    for path in args:
+        rules = [r for g in yaml.safe_load(open(path))["groups"] for r in g["rules"] if "alert" in r]
+        disk = [r for r in rules if r["alert"] == "DiskLow" and r.get("labels", {}).get("severity") == "page"]
+        assert disk, "%s: no DiskLow page rule" % path
+        for r in disk:
+            assert r.get("keep_firing_for") == "5m" and "for" not in r, r
+            assert 'ALERTS{alertname="DiskLow",severity="page",alertstate="firing"}' in r["expr"], r
+        clock = [r for r in rules if r["alert"] == "ClockNotSynced"]
+        assert clock, "%s: no ClockNotSynced rule" % path
+        assert all("keep_firing_for" not in r for r in clock), clock
+        print("%s: %d DiskLow page rules hold 5m on their ALERTS series; ClockNotSynced has no hold" % (path, len(disk)))
 
 
 def votes(args):
@@ -139,10 +157,26 @@ def receivers_text(args):
 
 
 def routing(args):
-    """Routing follows the receiver type; the inhibitions of one cause; the receivers of each route."""
+    """The route timings; routing follows the receiver type; the inhibitions of one cause; the receivers of each route."""
     config = yaml.safe_load(open(args[0]))
-    # UpgradeScheduled and UpgradeSoon: their own route, each alert sent once, before the message route.
     routes = config["route"]["routes"]
+    # The timings: a round of 3 minutes, which is also when a "resolved" goes out and all the time one
+    # notification has; the heartbeat and the announcements have their own round, and no other route.
+    def timing(r):
+        return r.get("group_wait"), r.get("group_interval"), r.get("repeat_interval")
+    def one(matchers):
+        found = [r for r in routes if r.get("matchers") == matchers]
+        assert len(found) == 1, (matchers, routes)
+        return found[0]
+    def below(route):
+        return [r for c in route.get("routes", []) for r in [c] + below(c)]
+    assert timing(config["route"]) == ("30s", "3m", "4h"), timing(config["route"])
+    watchdog, announcement = one(['alertname="Watchdog"']), one(['alertname="CelestiaAnnouncement"'])
+    assert timing(watchdog) == ("0s", "1m", "1m"), watchdog
+    assert timing(announcement) == ("0s", "5m", "96h"), announcement
+    own_round = [r for r in below(config["route"]) if "group_interval" in r]
+    assert own_round == [watchdog, announcement], own_round
+    # UpgradeScheduled and UpgradeSoon: their own route, each alert sent once, before the message route.
     upgrade = [i for i, r in enumerate(routes) if r.get("matchers") == ['alertname=~"UpgradeScheduled|UpgradeSoon"']]
     assert len(upgrade) == 1, routes
     r = routes[upgrade[0]]
@@ -210,8 +244,8 @@ def routing(args):
     print("page:", count("page"), "message:", count("message"))
 
 
-CHECKS = {"holds": holds, "votes": votes, "twice": twice, "limits": limits, "targets": targets, "ports": ports,
-          "receivers-text": receivers_text, "routing": routing}
+CHECKS = {"holds": holds, "keeps": keeps, "votes": votes, "twice": twice, "limits": limits, "targets": targets,
+          "ports": ports, "receivers-text": receivers_text, "routing": routing}
 
 if __name__ == "__main__":
     if len(sys.argv) < 3 or sys.argv[1] not in CHECKS:

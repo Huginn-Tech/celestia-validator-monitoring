@@ -334,6 +334,14 @@ jobs:
         run: >-
           python tools/ci/check_render.py holds monitoring/rules/holds.json
           monitoring/rules/tests/{single,split,mainnet,fibre-apart}/celestia-mon.rules.yml
+      # How long an alert stays after its cause ends decides when its "resolved" goes out: DiskLow's
+      # page holds 5 minutes, and its expression reads its own ALERTS series (it holds until one point
+      # above its level); ClockNotSynced has no hold.
+      - name: The holds after an alert's cause ends
+        id: keeps
+        run: >-
+          python tools/ci/check_render.py keeps
+          monitoring/rules/tests/{single,split,mainnet,fibre-apart}/celestia-mon.rules.yml
       - name: Install promtool and amtool at the pinned versions
         run: |
           set -euo pipefail
@@ -1881,9 +1889,9 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only, as this branch does: AlertsSilenced joins the queries
-  # of the Status cell, the Monitoring answer and History, not only texts. Then the alert rules and the
-  # dashboard settings of each example inventory, rendered by both branches.
+  # pairs), or leaves --same out to report only. This branch changes no dashboard, so --same stands
+  # alone. Then the alert rules and the dashboard settings of each example inventory, rendered by both
+  # branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1909,14 +1917,15 @@ jobs:
             fi
             python monitoring/dashboards/gen_dashboard.py --config "build/$s/dashboard-config.json" --out "build/$s/head.json"
           done
-          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)"
+          python tools/ci/dashboard_diff.py build "$GITHUB_BASE_REF at $(git rev-parse --short FETCH_HEAD)" --same
       # The alert rules and the dashboard settings of each example inventory, rendered by the base branch
       # from its checkout (its templates, inventories, roles and render.yml) and by this branch: single,
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: all of them, as their rules gain
-      # AlertsSilenced.
+      # scenarios in changed, whose renders this branch changes on purpose: all of them, as DiskLow's page
+      # holds until one point above its level and then 5 minutes, and ClockNotSynced ends at the first
+      # reading under 16 s.
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch
