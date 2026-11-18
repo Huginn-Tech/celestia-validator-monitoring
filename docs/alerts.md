@@ -80,7 +80,7 @@ celestia_mon_receivers:
 | `peers_message_below` | 2 | NodePeersLow (message) |
 | `peers_page_below` | 1 | NodePeersLow (page). Keep it at 1: the install stops on any other value, because the page holds back ValidatorNotSigning, NodeNotAdvancing and SignaturesMissed, which is right only for a node that receives nothing, and at 0 it would never page. The dashboard names the page "No peers" |
 | `signer_median_seconds` | 0.010 | RemoteSignerProblem |
-| `disk_page_free_ratio` | 0.05 | DiskLow (page) |
+| `disk_page_free_ratio` | 0.05 | DiskLow (page). The page ends one point above it |
 | `disk_message_free_ratio` | 0.10 | DiskLow (message) |
 | `crashloop_restarts` | 2 | ServiceDown (crash loop) |
 
@@ -354,7 +354,7 @@ Where the commands below read `journalctl -u <fibre unit>`, a Fibre unit that wr
 | Fibre store | the space the storage budget still needs is more than the free space, for 30 minutes | message |
 | Fibre store, when Fibre reports a budget of 0 (no limit) or no budget | less than 10% free for 10 minutes | message |
 
-The page comes at once and resolves 15 minutes after the disk is writable again with 5% free or more, so a failed scrape of the host, or a disk that moves back and forth across 5%, does not page again.
+The page comes at once. It resolves 5 minutes after the first reading that shows the disk writable with 6% free or more, one point above `disk_page_free_ratio`. Between 5% and 6% it holds, so a disk that moves back and forth across 5% does not page again. A failed scrape of the host does not resolve it for 15 minutes.
 
 The Fibre store has no percentage rule while a budget is set: Fibre keeps its occupancy near the budget at full load, which is normal. A stopped Fibre reports no budget, and neither does one whose collector is down: a store more than 90% full then sends the no-budget message about 15 minutes after the stop, and every 4 hours while it lasts. A standby that once ran can hold such a store. A Fibre store that is also a data mount of a celestia-appd host (a standby Fibre on the validator's disk, for example) follows the data mount rows instead, and keeps the budget row.
 
