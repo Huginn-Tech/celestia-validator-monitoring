@@ -8,7 +8,7 @@ evaluation_interval: 1m
 
 tests:
   # mon-1's time sync stopped long ago: its error sits at 16 s. The message fires after an hour, and
-  # resolves 10 minutes after the first update once time sync works again (71m; keep_firing_for).
+  # resolves at the first update once time sync works again (71m).
   - name: A clock not synchronised for an hour; the message, resolved after the next update
     interval: 1m
     input_series:
@@ -37,7 +37,7 @@ tests:
                 runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
                 allow outgoing NTP (UDP 123).
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
-      - eval_time: 80m
+      - eval_time: 70m
         alertname: ClockNotSynced
         exp_alerts:
           - exp_labels:
@@ -55,7 +55,7 @@ tests:
                 runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
                 allow outgoing NTP (UDP 123).
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
-      - eval_time: 81m
+      - eval_time: 71m
         alertname: ClockNotSynced
         exp_alerts: []
 
@@ -87,8 +87,67 @@ tests:
                 allow outgoing NTP (UDP 123).
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
 
-  # A failed scrape at 31m marks the series stale while the hour runs, where keep_firing_for does not
-  # help. The 3-minute window still holds the samples before it, so the hour goes on.
+  # The host's metrics are missing from 63m to 70m, longer than the 3-minute window holds. While the
+  # alert fires, its last reading stands for 13 minutes, so it keeps firing.
+  - name: 8 minutes without data while it fires do not resolve it
+    interval: 1m
+    input_series:
+      - series: >-
+          node_timex_maxerror_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '16x62 stale _x7 16x10'
+    alert_rule_test:
+      - eval_time: 70m
+        alertname: ClockNotSynced
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              severity: message
+            exp_annotations:
+              summary: "Clock not synchronised on fibre-1"
+              description: >-
+                For an hour the kernel has reported this host's clock as not synchronised: chrony or systemd-timesyncd has
+                stopped correcting it, or has not corrected it since boot. Nothing fails yet, but the clock now drifts freely:
+                a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
+                runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
+                allow outgoing NTP (UDP 123).
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+
+  # The last reading is at 62m. It stands until 74m; at 75m the alert resolves, and ServiceDown or
+  # MonitorCannotReach names the host.
+  - name: 13 minutes without data resolve it
+    interval: 1m
+    input_series:
+      - series: >-
+          node_timex_maxerror_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '16x62 stale _x30'
+    alert_rule_test:
+      - eval_time: 74m
+        alertname: ClockNotSynced
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              severity: message
+            exp_annotations:
+              summary: "Clock not synchronised on fibre-1"
+              description: >-
+                For an hour the kernel has reported this host's clock as not synchronised: chrony or systemd-timesyncd has
+                stopped correcting it, or has not corrected it since boot. Nothing fails yet, but the clock now drifts freely:
+                a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
+                runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
+                allow outgoing NTP (UDP 123).
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+      - eval_time: 75m
+        alertname: ClockNotSynced
+        exp_alerts: []
+
+  # A failed scrape at 31m marks the series stale while the hour runs, where the term for the firing
+  # alert does not help. The 3-minute window still holds the samples before it, so the hour goes on.
   - name: A failed scrape does not restart the hour
     interval: 1m
     input_series:
@@ -97,6 +156,40 @@ tests:
         values: '16x30 stale 16x40'
     alert_rule_test:
       - eval_time: 60m
+        alertname: ClockNotSynced
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.20.0.2:9910
+              host: fibre-1
+              role: fibre
+              severity: message
+            exp_annotations:
+              summary: "Clock not synchronised on fibre-1"
+              description: >-
+                For an hour the kernel has reported this host's clock as not synchronised: chrony or systemd-timesyncd has
+                stopped correcting it, or has not corrected it since boot. Nothing fails yet, but the clock now drifts freely:
+                a Celestia node whose clock falls about 60 seconds behind rejects every block, and a Fibre server whose clock
+                runs about 2 minutes ahead reports itself not ready. Run chronyc tracking or timedatectl timesync-status, and
+                allow outgoing NTP (UDP 123).
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#clocknotsynced"
+
+  # The host's metrics are missing from 31m to 35m while the hour runs. No alert fires yet, so only
+  # the 3-minute window counts: it is empty from 33m, and the hour starts again at 36m.
+  - name: A 5-minute gap inside the hour restarts the hour
+    interval: 1m
+    input_series:
+      - series: >-
+          node_timex_maxerror_seconds{job="node",instance="10.20.0.2:9910",host="fibre-1",role="fibre"}
+        values: '16x30 stale _x4 16x70'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClockNotSynced
+        exp_alerts: []
+      - eval_time: 95m
+        alertname: ClockNotSynced
+        exp_alerts: []
+      - eval_time: 96m
         alertname: ClockNotSynced
         exp_alerts:
           - exp_labels:

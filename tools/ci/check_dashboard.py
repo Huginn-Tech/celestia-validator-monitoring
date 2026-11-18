@@ -150,9 +150,14 @@ def clock(args):
         found = [r for g in yaml.safe_load(open(rules))["groups"] for r in g["rules"]
                  if r.get("alert") == "ClockNotSynced"]
         assert len(found) == 1, "%s: one ClockNotSynced rule, not %d" % (s, len(found))
-        m = re.fullmatch(r"min_over_time\((node_timex_maxerror_seconds)\{[^}]*\}\[3m\]\) >= (\d+)",
-                         " ".join(found[0]["expr"].split()))
-        assert m, found[0]["expr"]
+        # The hour's term, last, with the level the chart draws; before it the term that holds a firing
+        # alert through missing data, at the same level.
+        expr = " ".join(found[0]["expr"].split())
+        m = re.search(r"or min_over_time\((node_timex_maxerror_seconds)\{[^}]*\}\[3m\]\) >= (\d+)$", expr)
+        assert m, expr
+        latch = re.match(r"last_over_time\(node_timex_maxerror_seconds\{[^}]*\}\[13m\]\) >= (\d+) and on \(host\) ", expr)
+        assert latch and latch.group(1) == m.group(2), expr
+        assert "keep_firing_for" not in found[0], found[0]
         panels = walk("build/%s/dashboard.json" % s)
         chart = panels[490]
         assert chart["targets"] and all(m.group(1) + "{" in t["expr"] for t in chart["targets"]), chart["targets"]

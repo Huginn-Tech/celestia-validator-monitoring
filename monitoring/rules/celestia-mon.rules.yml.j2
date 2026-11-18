@@ -909,16 +909,18 @@ groups:
       # after the last correction. A clocksource switch or a step also sets 16 s until the daemon's
       # next update, hence the hour. Nothing fails yet, but the clock drifts freely: a node about 60 s
       # slow rejects every block (celestia-core v0.42.3), and a Fibre server about 2 minutes fast
-      # reports itself not ready. A clock synchronised to a wrong source passes. A single failed
-      # scrape must not resolve it, which would read as "time sync works again", hence
-      # keep_firing_for. keep_firing_for holds a firing alert only: while the hour runs, a failed
-      # scrape marks the series stale, which would restart it. min_over_time over 3 minutes,
-      # ServiceDown's hold, carries the hour across that, and one sample under 16 s still ends it
-      # at once.
+      # reports itself not ready. A clock synchronised to a wrong source passes. While it fires, a
+      # failed scrape must not resolve it, which would read as "time sync works again": the first
+      # term lets the last reading stand for 13 minutes without data. It needs the firing alert, so
+      # it never shortens the hour. While the hour runs, a failed scrape marks the series stale, which
+      # would restart it. min_over_time over 3 minutes, ServiceDown's hold, carries the hour across
+      # that, and one sample under 16 s ends the alert at once.
       - alert: ClockNotSynced
-        expr: min_over_time(node_timex_maxerror_seconds{job="node"}[3m]) >= 16
+        expr: >-
+          last_over_time(node_timex_maxerror_seconds{job="node"}[13m]) >= 16
+          and on (host) max by (host) (ALERTS{alertname="ClockNotSynced",alertstate="firing"})
+          or min_over_time(node_timex_maxerror_seconds{job="node"}[3m]) >= 16
         for: 1h
-        keep_firing_for: 10m
         labels:
           severity: message
         annotations:
