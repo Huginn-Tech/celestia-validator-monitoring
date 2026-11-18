@@ -2015,8 +2015,14 @@ check_binds() {
   done
   # ss prints the owners of each socket as users:(("name",pid=N,fd=M),...).
   while read -r pid addr; do
-    # Keyed by port: a process on 0.0.0.0, [::] or * takes the collector's 127.0.0.1 connections too.
-    if [[ -n $pid ]]; then holders[${addr##*:}]+="$pid "; fi
+    # Keyed by address, and by port alone on a wildcard: a process on 0.0.0.0, [::] or * takes the
+    # collector's 127.0.0.1 connections too, one on another address at that port does not.
+    if [[ -n $pid ]]; then
+      case ${addr%:*} in
+        0.0.0.0 | '[::]' | '*') holders[${addr##*:}]+="$pid " ;;
+        *) holders[$addr]+="$pid " ;;
+      esac
+    fi
     [[ -n $pid && -n ${unit_of[$pid]+set} ]] || continue
     unit=${unit_of[$pid]}
     if [[ $(addr_class "$addr") != private ]]; then
@@ -2035,8 +2041,8 @@ check_binds() {
   done < <(ss -Htlnp 2>/dev/null | awk '{ s = $0; while (match(s, /pid=[0-9]+/)) { print substr(s, RSTART + 4, RLENGTH - 4), $4; s = substr(s, RSTART + RLENGTH) } }' | sort -u)
   for unit in "${CELESTIA_MON_COLLECTOR_UNITS[@]}"; do
     addr=${listen_of[$unit]:-}
-    [[ -n $addr && -n ${holders[${addr##*:}]:-} ]] || continue
-    read -r -a held <<<"${holders[${addr##*:}]}"
+    [[ -n $addr && -n ${holders[$addr]:-}${holders[${addr##*:}]:-} ]] || continue
+    read -r -a held <<<"${holders[$addr]:-}${holders[${addr##*:}]:-}"
     mine=false
     for pid in "${held[@]}"; do
       if [[ ${unit_of[$pid]:-} == "$unit" ]]; then mine=true; fi
