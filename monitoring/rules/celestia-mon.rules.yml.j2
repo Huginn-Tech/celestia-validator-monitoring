@@ -798,7 +798,8 @@ groups:
       # writable with that much free (keep_firing_for, for a filesystem that turns read-only again).
       # A failed scrape leaves the last reading standing for 10 minutes, 15 with the hold. The hold
       # between the two levels is read from the page's own ALERTS series: a Prometheus that was down
-      # for more than 5 minutes starts again without it, and the page ends until the page level.
+      # for more than 5 minutes starts again without it: the page is gone until free space is under
+      # the page level again.
 {# celestia_mon_data_mounts is [/] on a host that sets none. #}
 {% for h in (vf + kms + [mon]) | unique if h in vf or h == mon or hostvars[h].celestia_mon_kms_scrape | default(false) | bool %}
 {% set node_host = h in nodes or h in kms %}
