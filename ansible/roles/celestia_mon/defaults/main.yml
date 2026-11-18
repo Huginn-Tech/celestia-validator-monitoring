@@ -93,6 +93,7 @@ celestia_mon_grafana_clients: []
 
 # Alert thresholds (see docs/alerts.md). The durations (for example ValidatorNotSigning's 2
 # minutes, FibreDown's 10) are fixed in the rules.
+# DiskLow's page ends one point above disk_page_free_ratio.
 celestia_mon_thresholds:
   not_signing_blocks: 10
   signatures_missed_ratio: 0.05

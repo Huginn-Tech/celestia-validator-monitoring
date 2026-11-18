@@ -85,6 +85,83 @@ tests:
               description: "The filesystem is read-only or has less than 5% free space."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
+  # 4% free, 5.9% from 3m: the page holds, as free space is still under 6%. 6.5% from 9m: the page
+  # ends 5 minutes later. The message comes at 10m, under 10% all along.
+  - name: The page holds at 5.9% and ends 5m after 6.5%
+    interval: 1m
+    input_series:
+      - series: >-
+          node_filesystem_size_bytes{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '2000000000000x20'
+      - series: >-
+          node_filesystem_avail_bytes{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '80000000000x2 118000000000x5 130000000000x10'
+      - series: >-
+          node_filesystem_readonly{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",device="/dev/nvme0n1p1",fstype="ext4",mountpoint="/var/lib/celestia"}
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 5% free space."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+      - eval_time: 13m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: message
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: page
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 is read-only or almost full"
+              description: "The filesystem is read-only or has less than 5% free space."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+      - eval_time: 14m
+        alertname: DiskLow
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              device: /dev/nvme0n1p1
+              fstype: ext4
+              mountpoint: /var/lib/celestia
+              severity: message
+            exp_annotations:
+              summary: "/var/lib/celestia on node-1 has little free space"
+              description: "Free space has been below 10% for 10 minutes."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
+
   - name: Fibre off renders no Fibre store rules
     interval: 1m
     input_series:

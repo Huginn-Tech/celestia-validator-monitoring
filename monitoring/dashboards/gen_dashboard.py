@@ -273,6 +273,11 @@ PEERS_PAGE = 'alertname="NodePeersLow",severity="page"'
 VNS10 = '(max(ALERTS{alertname="ValidatorNotSigning",alertstate="firing"}) * 10 or vector(0))'
 NNA10 = '(max(ALERTS{alertname="NodeNotAdvancing",alertstate="firing"}) * 10 or vector(0))'
 NE_UP = '(max by (host) (up{job="node"}) == 1)'
+# node_exporter answers while its systemd collector fails (ServiceDown's systemd_collector rule, "No unit
+# data"): no unit of the server is seen. UNITS_READ: the servers whose units are read, as FibreDown's unit
+# rule and ServiceDown's "not loaded" rules have it.
+UNITS_UNREAD = '(max by (host) (node_scrape_collector_success{job="node",collector="systemd"}) == 0)'
+UNITS_READ = '(max by (host) (up{job="node"}) == 1 unless on (host) %s)' % UNITS_UNREAD
 UP_LOST = 'or on () (max(up{job="prometheus"}) * 0 - 1)'
 # ServiceDown's crash-loop rule for Fibre leaves out a host that booted in the last 40 minutes: Fibre exits
 # until its node answers, and those restarts stay in the rule's 30-minute window (CI checks the rule's text).
@@ -410,7 +415,8 @@ MESSAGE_PRIORITY = {"NodePeersLow": 0.022, "GovVoteMissing": 0.011}
 # The Role column: a server's parts add up to one code. (code, words, short words).
 NODE_PARTS = [(1, "Signing node", "Signing"), (2, "Backup node", "Backup"), (3, "Node, not signing", "Not signing")]
 FIBRE_PARTS = [(4, "Fibre active", "Fibre"), (8, "Fibre standby", "Fibre standby")]
-KMS_PARTS = [(16, "Remote signer", "Remote signer"), (32, "Signer down", "Signer down"), (64, "No signer", "No signer")]
+KMS_PARTS = [(16, "Remote signer", "Remote signer"), (32, "Signer down", "Signer down"), (48, "No unit data", "No unit data"),
+             (64, "No signer", "No signer")]
 
 
 def q(value):
@@ -929,15 +935,16 @@ def fibre_active(s):
 
 
 def fibre_seen(s):
-    """fibre_active, plus a host that sends Fibre metrics while its node_exporter does not answer:
-    its Fibre runs, only its unit state cannot be read."""
+    """fibre_active, plus a host that sends Fibre metrics while its node_exporter does not answer or
+    cannot read systemd: its Fibre runs, only its unit state cannot be read."""
     return ("(%s or ((max by (host) (fibre_server_upload_shard_budget_bytes) * 0 + 1) "
-            'unless on (host) (max by (host) (up{job="node"}) == 1)))' % fibre_active(s))
+            "unless on (host) %s))" % (fibre_active(s), UNITS_READ))
 
 
 def fibre_lost(s):
-    """The Fibre hosts whose unit state cannot be read (node_exporter does not answer)."""
-    return '(%s unless on (host) (max by (host) (up{job="node"}) == 1))' % lookup(s.fibre_hosts)
+    """The Fibre hosts whose unit state cannot be read (node_exporter does not answer or cannot read
+    systemd)."""
+    return "(%s unless on (host) %s)" % (lookup(s.fibre_hosts), UNITS_READ)
 
 
 def wrong_host(s):
@@ -1848,7 +1855,7 @@ def fibre_tile(s):
             "and that is fine. Amber: FibreNotServing by its reason (Not ready: Fibre's own health check fails; No "
             "answer: the check gets none), Two "
             "Fibres (FibreBothActive), Fibre crash (ServiceDown's crash loop) or Not running; red once FibreDown or "
-            "Not ready pages. Not seen: a Fibre host is not reporting, so its Fibre may still run. Which server runs "
+            "Not ready pages. Not seen: a Fibre host's units are not read, so its Fibre may still run. Which server runs "
             "it: the cards below. Every word: the panel guide.")
     return 14, "Fibre", desc + more(["FibreDown", "FibreNotServing", "FibreBothActive", "ServiceDown"],
                                     [PANEL_GUIDE, FIBRE_DASHBOARD]), expr, words
@@ -2460,7 +2467,7 @@ def key_line(s, axis, width):
 def role_codes(s, short, hosts=None):
     """(code, words, colour) of every Role the servers (or hosts) can show. A server's parts add up to
     one code: node 1-3, Fibre 4 or 8, KMS 16-64; 128 the monitor on a host of its own. Amber while the
-    node does not sign or tmkms is stopped or not loaded; grey for a standby Fibre alone."""
+    node does not sign or tmkms is stopped, not loaded or not read; grey for a standby Fibre alone."""
     hosts = s.servers if hosts is None else hosts
     pick = 2 if short else 1
     node = [(0, None)] + ([(p[0], p[pick]) for p in NODE_PARTS] if set(hosts) & set(s.nodes) else [])
@@ -2471,7 +2478,7 @@ def role_codes(s, short, hosts=None):
         for f, fw in fibre:
             for k, kw in kms:
                 if n + f + k:
-                    color = "orange" if n == 3 or k in (32, 64) else GREY if n + f + k == 8 else "text"
+                    color = "orange" if n == 3 or k in (32, 48, 64) else GREY if n + f + k == 8 else "text"
                     codes.append((n + f + k, ", ".join(w for w in (nw, fw, kw) if w), color))
     if s.mon_only and s.monitor in hosts:
         codes.append((128, "Monitoring", "text"))
@@ -2511,10 +2518,13 @@ def servers_table(s):
         tmkms = 'node_systemd_unit_state{%s,state="active",host=~%s}' % (
             s.is_unit("tmkms"), q("|".join(re2(h) for h in s.kms_hosts)))
         kms = "(max by (host) (%s) == 1) * 0 + 16 or (max by (host) (%s) == 0) * 0 + 32" % (tmkms, tmkms)
-        # The ServiceDown rule for a unit that is not loaded, per KMS host.
+        # The ServiceDown rule for a unit that is not loaded, per KMS host: not while node_exporter cannot read
+        # systemd, which reads "No unit data".
         for k in s.kms_hosts:
-            kms += (' or (absent(node_systemd_unit_state{host=%s,name=%s}) and on () (up{job="node",host=%s} == 1)) '
-                    "* 0 + 64" % (q(k), q(s.unit(k, "tmkms")), q(k)))
+            unread = 'node_scrape_collector_success{job="node",host=%s,collector="systemd"} == 0' % q(k)
+            kms += (' or (absent(node_systemd_unit_state{host=%s,name=%s}) and on () (up{job="node",host=%s} == 1) '
+                    "unless on () (%s)) * 0 + 64 or (max by (host) (%s)) * 0 + 48"
+                    % (q(k), q(s.unit(k, "tmkms")), q(k), unread, unread))
         parts.append(label(kms, "part", "kms"))
     if s.mon_only:
         # The monitor on a host of its own runs no Celestia service: its role is the monitoring.
@@ -2880,11 +2890,13 @@ def fibre_signer_words(s):
 
 
 def signer_service(s, host):
-    """tmkms's unit on a scraped KMS host, as ServiceDown reads it."""
+    """tmkms's unit on a scraped KMS host, as ServiceDown reads it: "No unit data", not "No signer",
+    while node_exporter cannot read systemd."""
     sel = "host=%s,name=%s" % (q(host), q(s.unit(host, "tmkms")))
     return chain(
         'max(ALERTS{alertname="ServiceDown",unit="tmkms",alertstate="firing",host=%s,job!="",state=""}) * 0 + 11'
         % q(host),
+        '(max(node_scrape_collector_success{job="node",host=%s,collector="systemd"}) == 0) * 0 + 12' % q(host),
         '(max(absent(node_systemd_unit_state{%s})) and on () (max(up{job="node",host=%s}) == 1)) * 0 + 4' % (sel, q(host)),
         '(max(node_systemd_unit_state{%s,state="active"}) == 1) * 0 + 1' % sel,
         '(max(node_systemd_unit_state{%s,state="active"}) == 0) * 0 + 3' % sel,
@@ -2915,7 +2927,8 @@ def card_rows(s, kind, host, short):
     if kind == "kms":
         rows.append(("Signer service", signer_service(s, host),
                      [(1, "Running", "text"), (3, "Signer down", "orange"), (4, "No signer", "orange"),
-                      (10, "Not reporting", "orange"), (11, "Signer crash", "orange")] + NOTHING, False))
+                      (10, "Not reporting", "orange"), (11, "Signer crash", "orange"),
+                      (12, "No unit data", "orange")] + NOTHING, False))
     return rows
 
 

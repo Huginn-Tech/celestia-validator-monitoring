@@ -322,7 +322,7 @@ A public RPC is someone else's node: the reads are public and need no key, but t
 
 ### Outside check of the Fibre endpoint
 
-[Tensile](https://tensile.huginn.tech), a Fibre observer, dials the Fibre endpoint registered on chain from outside your networks. With `celestia_mon_tensile` set, celestia-mon-tensile on the monitor reads its verdict for your validator every minute: [FibreDown](alerts.md#fibredown) then also pages when the endpoint cannot be reached from outside, names another box than the one where Fibre runs, or is not registered, and [FibreNotServing](alerts.md#fibrenotserving) compares Fibre's uploads with the blobs Tensile saw. [TensileUnreadable](alerts.md#tensileunreadable) tells you when the check stops.
+[Tensile](https://tensile.huginn.tech), a Fibre observer, dials the Fibre endpoint registered on chain from outside your networks. With `celestia_mon_tensile` set, celestia-mon-tensile on the monitor reads its verdict for your validator every minute: [FibreDown](alerts.md#fibredown) then also pages when the endpoint cannot be reached from outside, names another box than the one where Fibre runs, or is not registered, and [FibreNotServing](alerts.md#fibrenotserving) (`not_served`) tells you when Fibre did not return rows the validator signed for to Tensile. The dashboard's Fibre behind the network draws how far Fibre's last upload trails the blobs Tensile saw sent to the validator; no alert reads it. [TensileUnreadable](alerts.md#tensileunreadable) tells you when the check stops.
 
 ```yaml
     mon-1:
