@@ -37,7 +37,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "RAID array md2 runs on fewer disks than it needs (1 missing)."
-              description: "cat /proc/mdstat on the host shows the missing disk and a rebuild's progress."
+              description: "Run cat /proc/mdstat on val-1: it shows the missing disk and a rebuild's progress."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
       - eval_time: 30m
         alertname: RaidDegraded
@@ -51,7 +51,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "RAID array md2 runs on fewer disks than it needs (1 missing)."
-              description: "cat /proc/mdstat on the host shows the missing disk and a rebuild's progress."
+              description: "Run cat /proc/mdstat on val-1: it shows the missing disk and a rebuild's progress."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
       - eval_time: 31m
         alertname: RaidDegraded
@@ -81,7 +81,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "RAID array md0 runs on fewer disks than it needs (1 missing)."
-              description: "cat /proc/mdstat on the host shows the missing disk and a rebuild's progress."
+              description: "Run cat /proc/mdstat on fibre-1: it shows the missing disk and a rebuild's progress."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#raiddegraded"
 
   # The monthly check and a resync after an unclean shutdown keep [2/2]; an array that is not

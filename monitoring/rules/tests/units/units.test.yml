@@ -34,7 +34,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1 (fibre.service), val-1 (fibre-standby.service)."
+              summary: "No Fibre unit is seen active on fibre-1 (fibre.service), val-1 (fibre-standby.service)."
               description: "Check systemctl status of the Fibre unit on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
@@ -105,7 +105,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: val-1
@@ -113,7 +113,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On val-1: journalctl -u fibre-standby.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre-standby.service | grep 'health check failed' on val-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
 
   - name: Crash loop of val-1's fibre-standby.service sends a message

@@ -39,7 +39,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Prometheus failed to evaluate alert rules in the last 10 minutes."
-              description: "Some alerts may not fire. journalctl -u celestia-mon-prometheus on mon-1 names the rule and the error."
+              description: "Some alerts may not fire. Run journalctl -u celestia-mon-prometheus on mon-1: it names the rule and the error."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitoringbroken"
       - eval_time: 20m
         alertname: MonitoringBroken

@@ -192,7 +192,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "v11 upgrade scheduled at height 15116658, in about 1d 3h 13m 20s."
-              description: "The validator did not signal it. Every node here needs a release that supports v11."
+              description: "The validator did not signal it, and signals are closed. Every node here needs a release that supports v11."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#upgradescheduled
       - eval_time: 32m
         alertname: UpgradeSoon
@@ -328,7 +328,7 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: "The upgrade signal or the governance votes have not been read for 15 minutes."
+              summary: "The upgrade signal or the governance votes are not being read."
               description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
 
@@ -380,7 +380,7 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: "The upgrade signal or the governance votes have not been read for 15 minutes."
+              summary: "The upgrade signal or the governance votes are not being read."
               description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
 
@@ -415,7 +415,7 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: "The upgrade signal or the governance votes have not been read for 15 minutes."
+              summary: "The upgrade signal or the governance votes are not being read."
               description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable
       - eval_time: 40m

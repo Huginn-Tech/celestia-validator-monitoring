@@ -238,7 +238,7 @@ tests:
               host: fibre-1
               severity: message
             exp_annotations:
-              summary: "/var/lib/fibre on fibre-1 has less free space than Fibre's storage budget still needs."
+              summary: "Fibre store /var/lib/fibre on fibre-1 has less free space than the storage budget still needs."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store full up to its budget with room left; quiet

@@ -53,7 +53,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 55 blocks in the last hour, more than 5%."
+              summary: "The validator missed 55 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 40m
@@ -62,7 +62,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 95 blocks in the last hour, more than 5%."
+              summary: "The validator missed 95 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
 
@@ -91,7 +91,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 55 blocks in the last hour, more than 5%."
+              summary: "The validator missed 55 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 22m
@@ -100,7 +100,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 95 blocks in the last hour, more than 5%."
+              summary: "The validator missed 95 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 90m
@@ -109,7 +109,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 300 blocks in the last hour, more than 5%."
+              summary: "The validator missed 300 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
 
@@ -155,7 +155,7 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: "The validator missed 100 blocks in the last hour, more than 5%."
+              summary: "The validator missed 100 blocks in the last hour, more than 5% of them."
               description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signaturesmissed"
       - eval_time: 80m

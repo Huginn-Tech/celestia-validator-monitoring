@@ -54,7 +54,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreNotServing
@@ -65,7 +65,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
@@ -73,7 +73,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 10 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreDown

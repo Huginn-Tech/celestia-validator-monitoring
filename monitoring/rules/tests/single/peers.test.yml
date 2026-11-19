@@ -33,7 +33,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "The node has fewer than 2 peers (1 now)."
-              description: "Check the nodes it peers with and this host's network."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 15m
         alertname: NodePeersLow
@@ -71,7 +71,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "The node the validator signs through has no peers."
-              description: "Check the network of node-1 and the nodes it peers with first."
+              description: "The validator misses every block. Check the network of node-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 41m
         alertname: NodePeersLow
@@ -85,7 +85,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "The node the validator signs through has no peers."
-              description: "Check the network of node-1 and the nodes it peers with first."
+              description: "The validator misses every block. Check the network of node-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
           - exp_labels:
               chain_id: celestia
@@ -96,7 +96,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "The node has fewer than 2 peers (0 now)."
-              description: "Check the nodes it peers with and this host's network."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 49m
         alertname: NodePeersLow
@@ -110,7 +110,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "The node the validator signs through has no peers."
-              description: "Check the network of node-1 and the nodes it peers with first."
+              description: "The validator misses every block. Check the network of node-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 50m
         alertname: NodePeersLow
@@ -143,5 +143,5 @@ tests:
               severity: message
             exp_annotations:
               summary: "The node has fewer than 2 peers (0 now)."
-              description: "Check the nodes it peers with and this host's network."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"

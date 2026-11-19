@@ -38,7 +38,7 @@ tests:
               channel: "111111111111111111"
               job: announcements
             exp_annotations:
-              summary: "Celestia's announcements have not been read for 15 minutes."
+              summary: "Celestia's announcements are not being read."
               description: "New ones would not reach you. Run journalctl -u celestia-mon-announcements on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
 
@@ -59,6 +59,6 @@ tests:
               host: mon-1
               job: announcements
             exp_annotations:
-              summary: "Celestia's announcements have not been read for 15 minutes."
+              summary: "Celestia's announcements are not being read."
               description: "New ones would not reach you. Run journalctl -u celestia-mon-announcements on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable

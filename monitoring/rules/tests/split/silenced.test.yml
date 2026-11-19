@@ -27,7 +27,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A silence has been active on mon-1 for 4 hours."
-              description: "A silence can hide a page. Run amtool silence query and expire the ones you no longer need."
+              description: "A silence can hide a page. Run amtool silence query on mon-1 and expire the ones you no longer need."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
       - eval_time: 309m
         alertname: AlertsSilenced
@@ -36,7 +36,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A silence has been active on mon-1 for 4 hours."
-              description: "A silence can hide a page. Run amtool silence query and expire the ones you no longer need."
+              description: "A silence can hide a page. Run amtool silence query on mon-1 and expire the ones you no longer need."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
       - eval_time: 310m
         alertname: AlertsSilenced
@@ -65,7 +65,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A silence has been active on mon-1 for 4 hours."
-              description: "A silence can hide a page. Run amtool silence query and expire the ones you no longer need."
+              description: "A silence can hide a page. Run amtool silence query on mon-1 and expire the ones you no longer need."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#alertssilenced"
 
   - name: Only expired and pending silences send nothing

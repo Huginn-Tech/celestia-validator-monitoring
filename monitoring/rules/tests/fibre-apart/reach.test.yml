@@ -83,7 +83,7 @@ tests:
               host: node-1
             exp_annotations:
               summary: "node-1 answers on none of its metrics endpoints."
-              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: FibreNotServing
@@ -94,7 +94,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 8m
         alertname: ServiceDown
@@ -108,7 +108,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
@@ -116,7 +116,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "Fibre's health check has answered NOT_SERVING for 10 minutes."
-              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 15m
         alertname: NodeNotAdvancing
@@ -190,7 +190,7 @@ tests:
               host: fibre-1
             exp_annotations:
               summary: "fibre-1 answers on none of its metrics endpoints."
-              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 14m
         alertname: FibreDown
@@ -201,7 +201,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1, val-1."
+              summary: "No Fibre unit is seen active on fibre-1, val-1."
               description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
       - eval_time: 15m
@@ -212,7 +212,7 @@ tests:
               host: fibre-1
             exp_annotations:
               summary: "fibre-1 answers on none of its metrics endpoints."
-              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 15m
         alertname: ServiceDown

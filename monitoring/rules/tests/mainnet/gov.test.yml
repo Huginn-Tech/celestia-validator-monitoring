@@ -46,7 +46,7 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 (Raise the block size) ends in about 1d 23h 45m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # The same vote with 25 hours left at 0: the message from the start, the page once less than a
@@ -75,7 +75,7 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 (Raise the block size) ends in about 1d 0h 45m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h15m
         alertname: GovVoteMissing
@@ -85,14 +85,14 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 (Raise the block size) ends in about 23h 45m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
           - exp_labels:
               severity: page
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 (Raise the block size) ends in about 23h 45m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
@@ -122,7 +122,7 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 ends in about 19h 45m 0s without the validator's vote."
-              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h50m
         alertname: GovVoteMissing
@@ -132,7 +132,7 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 ends in about 18h 10m 0s without the validator's vote."
-              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # An expedited vote of 1 day with 13 hours left at 0: half the vote is left from 1h on, so the
@@ -159,7 +159,7 @@ tests:
               proposal_id: '12'
             exp_annotations:
               summary: "Proposal 12 ends in about 11h 45m 0s without the validator's vote."
-              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain."
+              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # A day's vote with 90 minutes left: the page from 10m on. No reading from 40m to 1h (a scrape
@@ -187,7 +187,7 @@ tests:
               proposal_id: '12'
             exp_annotations:
               summary: "Proposal 12 ends in about 25m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
@@ -217,7 +217,7 @@ tests:
               proposal_id: '9'
             exp_annotations:
               summary: "Proposal 9 ends in about 1d 0h 8m 0s without the validator's vote."
-              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 17m
         alertname: GovVoteMissing
@@ -248,7 +248,7 @@ tests:
               proposal_id: '12'
             exp_annotations:
               summary: "Proposal 12 ends in about 45m 0s without the validator's vote."
-              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain."
+              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 25m
         alertname: GovVoteMissing
@@ -283,6 +283,6 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: "The upgrade signal or the governance votes have not been read for 15 minutes."
+              summary: "The upgrade signal or the governance votes are not being read."
               description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable

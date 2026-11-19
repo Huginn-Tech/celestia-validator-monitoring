@@ -81,7 +81,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Proposal signing failed in the last 6 hours (remote_error)."
-              description: "Check the tmkms log around the failed proposals."
+              description: "Check the log of tmkms around the failed proposals."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"
 
   # Prometheus reads the node all along. A refusal at the start, then the node restarts at 11m and
@@ -118,5 +118,5 @@ tests:
               severity: message
             exp_annotations:
               summary: "Proposal signing failed in the last 6 hours (remote_error)."
-              description: "Check the tmkms log around the failed proposals."
+              description: "Check the log of tmkms around the failed proposals."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"

@@ -60,7 +60,7 @@ In Telegram, Discord and Slack each notification reads as short text (`monitorin
 ```
 🔴 ValidatorNotSigning
 No signature seen for more than 10 blocks.
-val-1 is unreachable. Check tmkms first.
+The node on val-1 is unreachable and may still sign. Check an explorer first, then tmkms.
 
 🟡 DiskLow · val-1 · /var/lib/celestia
 /var/lib/celestia on val-1 has 8.912% free.

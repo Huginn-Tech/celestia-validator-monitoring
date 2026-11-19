@@ -77,7 +77,7 @@ def votes(args):
     assert rules(args[1], "GovVoteMissing") == []
     unread = rules(args[1], "SignalUnreadable")
     assert len(unread) == 1 and "_gov_" not in unread[0]["expr"], unread
-    assert unread[0]["annotations"]["summary"] == "The upgrade signal has not been read for 15 minutes.", unread
+    assert unread[0]["annotations"]["summary"] == "The upgrade signal is not being read.", unread
     print("mocha: GovVoteMissing, message only; nogov: no GovVoteMissing, SignalUnreadable about x/signal only")
 
 

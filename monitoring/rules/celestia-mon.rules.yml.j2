@@ -102,7 +102,7 @@
 {% set gov_summary = "Proposal {{ $labels.proposal_id }}" ~ gov_title
    ~ " ends in about {{ $value | humanizeDuration }} without the validator's vote." %}
 {% set gov_text = "Vote from " ~ gov_voter
-   ~ ": celestia-appd tx gov vote {{ $labels.proposal_id }} yes|no|no_with_veto|abstain." %}
+   ~ ": celestia-appd tx gov vote {{ $labels.proposal_id }} yes|no|no_with_veto|abstain --from <validator account key>." %}
 {# A proposal its proposer cancels leaves x/gov and the service's answer, while gov() keeps its last
    values for an hour. Gone: a proposal of that hour that a scrape serving the proposals
    (voting_proposals) did not list. A failed scrape serves neither, so it removes nothing. #}
@@ -311,7 +311,7 @@ groups:
           severity: message
         annotations:
           summary: "{% raw %}{{ $labels.host }} answers on none of its metrics endpoints.{% endraw %}"
-          description: "The host or its link to {{ mon }} is down. The alerts that read this host cannot fire."
+          description: "Check the host and its link to {{ mon }}. The alerts that read this host cannot fire."
           runbook: "{{ docs }}#monitorcannotreach"
 {% endif %}
 {% if mon_only %}
@@ -327,7 +327,7 @@ groups:
           severity: page
         annotations:
           summary: "No Celestia host answers {{ mon }}: {{ remote_hosts | join(', ') }}."
-          description: "The alerts that read the hosts cannot fire. Check on an explorer first whether the validator still signs."
+          description: "No alert that reads these hosts can fire. Check on an explorer first whether the validator still signs."
           runbook: "{{ docs }}#monitorcannotreach"
 {% endif %}
 
@@ -357,7 +357,7 @@ groups:
           severity: page
         annotations:
           summary: "{% raw %}{{ if eq $value 0.0 }}No node has committed a new block for 3 minutes.{{ else }}Prometheus reads no node's height.{{ end }}{% endraw %}"
-          description: "Check status.celestia.org first: the whole chain may have halted.{{ nna_signer }}"
+          description: "{% raw %}{{ if eq $value 0.0 }}{% endraw %}Check status.celestia.org first: the whole chain may have halted.{{ nna_signer }}{% raw %}{{ else }}Check celestia-appd and its metrics endpoint on each node.{{ end }}{% endraw %}"
           runbook: "{{ docs }}#nodenotadvancing"
 
       # NodeBehind: one node lags the others of this install: more than {{ behind }} blocks behind the
@@ -401,7 +401,7 @@ groups:
 {% else %}
           summary: "The node has {{ fewer(peers_message) }} ({% raw %}{{ $value | printf `%.0f` }}{% endraw %} now)."
 {% endif %}
-          description: "Check the nodes it peers with and this host's network."
+          description: "Check this host's network and the nodes it peers with."
           runbook: "{{ docs }}#nodepeerslow"
       - alert: NodePeersLow
         expr: >-
@@ -425,7 +425,7 @@ groups:
           severity: page
         annotations:
           summary: "The node the validator signs through has {{ fewer(peers_page) }}."
-          description: "{% raw %}Check the network of {{ $labels.host }} and the nodes it peers with first.{% endraw %}"
+          description: "{% raw %}The validator misses every block. Check the network of {{ $labels.host }} and the nodes it peers with.{% endraw %}"
           runbook: "{{ docs }}#nodepeerslow"
 
       # ValidatorNotSigning: the chain moves but no node of this install sees the validator's key
@@ -449,9 +449,9 @@ groups:
         annotations:
           summary: "No signature seen for more than {{ th.not_signing_blocks }} blocks."
 {% if nodes | length > 1 and remote %}
-          description: "{% raw %}{{ range query `up{job='celestia-app'} == 0` | sortByLabel `host` }}{{ .Labels.host }} is unreachable. {{ end }}{% endraw %}{{ tmkms_first }}"
+          description: "{% raw %}{{ with query `up{job='celestia-app'} == 0` | sortByLabel `host` }}{{ range . }}The node on {{ .Labels.host }} is unreachable and may still sign. {{ end }}Check an explorer first, then {% endraw %}{{ tmkms_said }}{% raw %}.{{ else }}{% endraw %}{{ tmkms_first }}{% raw %}{{ end }}{% endraw %}"
 {% elif nodes | length > 1 %}
-          description: "{% raw %}{{ range $i, $s := query `up{job='celestia-app'} == 0` | sortByLabel `host` }}{{ if $i }} {{ end }}{{ $s.Labels.host }} is unreachable.{{ end }}{% endraw %}"
+          description: "{% raw %}{{ with query `up{job='celestia-app'} == 0` | sortByLabel `host` }}{{ range . }}The node on {{ .Labels.host }} is unreachable and may still sign. {{ end }}Check an explorer first.{{ end }}{% endraw %}"
 {% elif remote %}
           description: "{{ tmkms_first }}"
 {% endif %}
@@ -478,7 +478,7 @@ groups:
         labels:
           severity: message
         annotations:
-          summary: "{% raw %}The validator missed {{ $value | printf `%.0f` }} blocks in the last hour, more than {% endraw %}{{ '%g' | format(missed_ratio * 100) }}%."
+          summary: "{% raw %}The validator missed {{ $value | printf `%.0f` }} blocks in the last hour, more than {% endraw %}{{ '%g' | format(missed_ratio * 100) }}% of them."
 {% if remote %}
           description: "{{ tmkms_first }}"
 {% endif %}
@@ -546,7 +546,7 @@ groups:
           severity: message
         annotations:
           summary: "{% raw %}Proposal signing failed in the last 6 hours ({{ $labels.reason }}).{% endraw %}"
-          description: "Check the tmkms log around the failed proposals."
+          description: "Check the log of {{ tmkms_said }} around the failed proposals."
           runbook: "{{ docs }}#remotesignerproblem"
 {% endif %}
 {% if fibre_on %}
@@ -575,7 +575,7 @@ groups:
         labels:
           severity: page
         annotations:
-          summary: "No Fibre unit is active on {{ fibres | sort | join(', ') if fibre_one else fibre_each }}."
+          summary: "No Fibre unit is seen active on {{ fibres | sort | join(', ') if fibre_one else fibre_each }}."
           description: "Check systemctl status {{ fibre if fibre_one else 'of the Fibre unit' }} on the host that should run it."
           runbook: "{{ docs }}#fibredown"
 {% if tensile_on %}
@@ -687,7 +687,7 @@ groups:
           reason: not_served
         annotations:
           summary: "Fibre did not return rows of a blob the validator signed for."
-          description: "{% raw %}{{ with query `max(celestia_mon_fibre_obligations_24h{outcome='broken'})` }}{{ . | first | value | printf `%.0f` }} failed reads in Tensile's last 24 hours. {{ end }}Check Fibre's log for failed to retrieve blob shard.{% endraw %}"
+          description: "{% raw %}{{ with query `max(celestia_mon_fibre_obligations_24h{outcome='broken'})` }}{{ . | first | value | printf `%.0f` }} failed reads in Tensile's last 24 hours. {{ end }}{% endraw %}Run journalctl -u {{ fibre_pick }} | grep 'failed to retrieve blob shard' on {% raw %}{{ $labels.host }}{% endraw %}."
           runbook: "{{ docs }}#fibrenotserving"
 {% endif %}
       # No upload is accepted, and the uploads that pass their checks fail on this side: every
@@ -718,7 +718,7 @@ groups:
           reason: uploads_failing
         annotations:
           summary: "Every upload has failed for 15 minutes."
-          description: "Check journalctl -u {{ fibre_pick }} and Storage budget used on the dashboard."
+          description: "Run journalctl -u {{ fibre_pick }} on {% raw %}{{ $labels.host }}{% endraw %} and check Storage budget used on the dashboard."
           runbook: "{{ docs }}#fibrenotserving"
       # Not ready: Fibre's own gRPC health check (service "") answers NOT_SERVING. Fibre answers
       # SERVING only while six checks pass, run every 10 seconds by default (celestia-app v10.5.0
@@ -734,7 +734,7 @@ groups:
       # 12) and a stopped standby does not answer (14, every serving_status 0): neither matches. The
       # page follows at 10 minutes, FibreDown's delay. ValidatorNotSigning holds both back
       # (Alertmanager): a validator out of the active set or a dead signer is one cause.
-{% set not_ready_text = "Uploads may fail. On {{ $labels.host }}: journalctl -u " ~ fibre_pick ~ " | grep 'health check failed'." %}
+{% set not_ready_text = "Uploads may fail. Run journalctl -u " ~ fibre_pick ~ " | grep 'health check failed' on {{ $labels.host }}." %}
       - alert: FibreNotServing
         expr: max by (host) (probe_grpc_healthcheck_response{job="fibre_health",serving_status="NOT_SERVING"}) == 1
         for: 3m
@@ -789,7 +789,7 @@ groups:
           reason: no_telemetry
         annotations:
           summary: "Fibre is active but has sent no metrics for 30 minutes."
-          description: "Set its OTLP endpoint. Run sudo celestia-mon-doctor on {{ h }} (check 7)."
+          description: "Check its OTLP endpoint. Run sudo celestia-mon-doctor on {{ h }} (check 7)."
           runbook: "{{ docs }}#fibrenotserving"
 {% endfor %}
 {% endif %}
@@ -883,7 +883,7 @@ groups:
         labels:
           severity: message
         annotations:
-          summary: "{{ m }}{% raw %} on {{ $labels.host }} has less free space than Fibre's storage budget still needs.{% endraw %}"
+          summary: "Fibre store {{ m }}{% raw %} on {{ $labels.host }} has less free space than the storage budget still needs.{% endraw %}"
           runbook: "{{ docs }}#disklow"
 {% endfor %}
 
@@ -902,7 +902,7 @@ groups:
           severity: message
         annotations:
           summary: "{% raw %}RAID array {{ $labels.device }} runs on fewer disks than it needs ({{ $value | printf `%.0f` }} missing).{% endraw %}"
-          description: "cat /proc/mdstat on the host shows the missing disk and a rebuild's progress."
+          description: "{% raw %}Run cat /proc/mdstat on {{ $labels.host }}: it shows the missing disk and a rebuild's progress.{% endraw %}"
           runbook: "{{ docs }}#raiddegraded"
 
       # ClockNotSynced: the kernel has reported the host's clock as not synchronised for an hour: its
@@ -945,7 +945,7 @@ groups:
           severity: message
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
-          summary: "Celestia's announcements have not been read for 15 minutes."
+          summary: "Celestia's announcements are not being read."
           description: "New ones would not reach you. Run journalctl -u celestia-mon-announcements on {{ celestia_mon_monitor_host }}."
           runbook: "{{ docs }}#announcementsunreadable"
 
@@ -967,7 +967,7 @@ groups:
           severity: message
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
-          summary: "Tensile's check of the Fibre endpoint has not been read for 15 minutes."
+          summary: "Tensile's check of the Fibre endpoint is not being read."
           description: "An endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on {{ celestia_mon_monitor_host }}."
           runbook: "{{ docs }}#tensileunreadable"
 
@@ -1028,7 +1028,7 @@ groups:
           severity: message
         annotations:
           summary: "{% raw %}v{{ $value | printf `%.0f` }} upgrade scheduled at height {% endraw %}{{ number('celestia_mon_upgrade_height') }}{{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}, in about {% raw %}{{ . | first | value | humanizeDuration }}{{ end }}.{% endraw %}"
-          description: "{{ '{{' }} with query `{{ last('celestia_mon_signal_validator_version') }} == {{ last('celestia_mon_upgrade_version') }}` }}{% raw %}The validator signalled it.{{ else }}The validator did not signal it.{{ end }} Every node here needs a release that supports v{{ $value | printf `%.0f` }}.{% endraw %}"
+          description: "{{ '{{' }} with query `{{ last('celestia_mon_signal_validator_version') }} == {{ last('celestia_mon_upgrade_version') }}` }}{% raw %}The validator signalled it.{{ else }}The validator did not signal it, and signals are closed.{{ end }} Every node here needs a release that supports v{{ $value | printf `%.0f` }}.{% endraw %}"
           runbook: "{{ docs }}#upgradescheduled"
 
       # UpgradeSoon: the scheduled upgrade is less than a day away at the measured block time, or
@@ -1046,7 +1046,7 @@ groups:
         labels:
           severity: message
         annotations:
-          summary: "v{{ number('celestia_mon_upgrade_version') }} upgrade at height {{ number('celestia_mon_upgrade_height') }}, in about {{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}{% raw %}{{ . | first | value | humanizeDuration }}{{ end }}{% endraw %}."
+          summary: "v{{ number('celestia_mon_upgrade_version') }} upgrade at height {{ number('celestia_mon_upgrade_height') }}{{ '{{' }} with query `{{ last('celestia_mon_upgrade_eta_seconds') }}` }}{% raw %}, in about {{ . | first | value | humanizeDuration }}{{ end }}{% endraw %}."
           description: "Every node here needs a release that supports v{{ number('celestia_mon_upgrade_version') }}."
           runbook: "{{ docs }}#upgradesoon"
 
@@ -1119,10 +1119,10 @@ groups:
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
 {% if gov_on %}
-          summary: "The upgrade signal or the governance votes have not been read for 15 minutes."
+          summary: "The upgrade signal or the governance votes are not being read."
           description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on {{ celestia_mon_monitor_host }}."
 {% else %}
-          summary: "The upgrade signal has not been read for 15 minutes."
+          summary: "The upgrade signal is not being read."
           description: "A new signalling round would not be seen. Run journalctl -u celestia-mon-signal on {{ celestia_mon_monitor_host }}."
 {% endif %}
           runbook: "{{ docs }}#signalunreadable"
@@ -1136,7 +1136,7 @@ groups:
           host: {{ celestia_mon_monitor_host | to_json }}
         annotations:
           summary: "Prometheus failed to evaluate alert rules in the last 10 minutes."
-          description: "Some alerts may not fire. journalctl -u celestia-mon-prometheus on {{ celestia_mon_monitor_host }} names the rule and the error."
+          description: "Some alerts may not fire. Run journalctl -u celestia-mon-prometheus on {{ celestia_mon_monitor_host }}: it names the rule and the error."
           runbook: "{{ docs }}#monitoringbroken"
 
       # NotificationsFailing: Alertmanager could not deliver a page or message notification through one
@@ -1150,7 +1150,7 @@ groups:
           severity: message
         annotations:
           summary: "{% raw %}A {{ $labels.integration }} notification failed in the last 15 minutes.{% endraw %}"
-          description: "{% raw %}Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on {{ $labels.host }}.{% endraw %}"
+          description: "{% raw %}Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on {{ $labels.host }}.{% endraw %}"
           runbook: "{{ docs }}#notificationsfailing"
 
       # DeadmanFailing: Alertmanager could not deliver the heartbeat to the dead-man service: a wrong
@@ -1180,7 +1180,7 @@ groups:
           severity: message
         annotations:
           summary: "A silence has been active on {{ celestia_mon_monitor_host }} for 4 hours."
-          description: "A silence can hide a page. Run amtool silence query and expire the ones you no longer need."
+          description: "A silence can hide a page. Run amtool silence query on {{ celestia_mon_monitor_host }} and expire the ones you no longer need."
           runbook: "{{ docs }}#alertssilenced"
 
       # Watchdog: the heartbeat for the dead-man service. It stops when monitoring is down, and for an

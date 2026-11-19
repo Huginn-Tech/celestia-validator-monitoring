@@ -66,7 +66,7 @@ tests:
               severity: message
               host: mon-1
             exp_annotations:
-              summary: "Tensile's check of the Fibre endpoint has not been read for 15 minutes."
+              summary: "Tensile's check of the Fibre endpoint is not being read."
               description: "An endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
 
@@ -270,7 +270,7 @@ tests:
               host: mon-1
               job: tensile
             exp_annotations:
-              summary: "Tensile's check of the Fibre endpoint has not been read for 15 minutes."
+              summary: "Tensile's check of the Fibre endpoint is not being read."
               description: "An endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
     promql_expr_test:
@@ -309,7 +309,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre did not return rows of a blob the validator signed for."
-              description: "2 failed reads in Tensile's last 24 hours. Check Fibre's log for failed to retrieve blob shard."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 180m
         alertname: FibreNotServing
@@ -320,7 +320,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre did not return rows of a blob the validator signed for."
-              description: "2 failed reads in Tensile's last 24 hours. Check Fibre's log for failed to retrieve blob shard."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 181m
         alertname: FibreNotServing
@@ -373,7 +373,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre did not return rows of a blob the validator signed for."
-              description: "13 failed reads in Tensile's last 24 hours. Check Fibre's log for failed to retrieve blob shard."
+              description: "13 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on val-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Two failed reads in the same minute (0 to 2) fire at once too.
@@ -399,7 +399,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "Fibre did not return rows of a blob the validator signed for."
-              description: "2 failed reads in Tensile's last 24 hours. Check Fibre's log for failed to retrieve blob shard."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Failed reads of a day ago leave Tensile's 24 hours one by one: the count falls, nothing is new.

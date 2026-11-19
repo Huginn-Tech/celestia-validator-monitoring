@@ -112,7 +112,7 @@ Four steps are the operator's on such a setup after the install (celestia-valida
 What each fault sends:
 
 - `node-1` down: after 3 minutes "MonitorCannotReach · node-1" (a message) and "FibreNotServing · fibre-1 · not_ready" (a message, the page after 10 minutes).
-- `fibre-1` down: "MonitorCannotReach · fibre-1" after 3 minutes, and FibreDown ("No Fibre unit is active on fibre-1, val-1.", a page) after 10, unless the standby on `val-1` runs by then; nothing about `node-1`.
+- `fibre-1` down: "MonitorCannotReach · fibre-1" after 3 minutes, and FibreDown ("No Fibre unit is seen active on fibre-1, val-1.", a page) after 10, unless the standby on `val-1` runs by then; nothing about `node-1`.
 - tmkms pointed at `node-1` while Fibre still signs through `val-1`: after 3 minutes "FibreNotServing · fibre-1 · not_ready" (a message, the page after 10 minutes), since Fibre's signer check gets no key through `val-1`.
 
 Four servers and the signer's column make five, so the dashboard's first screen shows the [Servers now](panels.md#servers-now-five-columns-or-more) table instead of a card per server.

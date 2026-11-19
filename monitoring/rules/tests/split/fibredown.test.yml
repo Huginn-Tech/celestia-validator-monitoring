@@ -27,7 +27,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1."
+              summary: "No Fibre unit is seen active on fibre-1."
               description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
@@ -64,7 +64,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1."
+              summary: "No Fibre unit is seen active on fibre-1."
               description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
@@ -94,7 +94,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1."
+              summary: "No Fibre unit is seen active on fibre-1."
               description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
@@ -165,7 +165,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No Fibre unit is active on fibre-1."
+              summary: "No Fibre unit is seen active on fibre-1."
               description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 

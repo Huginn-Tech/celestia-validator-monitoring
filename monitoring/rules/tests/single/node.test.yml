@@ -75,7 +75,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "Prometheus reads no node's height."
-              description: "Check status.celestia.org first: the whole chain may have halted."
+              description: "Check celestia-appd and its metrics endpoint on each node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: NodeNotAdvancing
@@ -84,7 +84,7 @@ tests:
               severity: page
             exp_annotations:
               summary: "Prometheus reads no node's height."
-              description: "Check status.celestia.org first: the whole chain may have halted."
+              description: "Check celestia-appd and its metrics endpoint on each node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
 
   # Prometheus has just started: at 0m the 2-minute window holds the height's first sample only.

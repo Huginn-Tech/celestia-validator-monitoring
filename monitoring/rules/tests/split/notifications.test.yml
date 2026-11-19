@@ -34,7 +34,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A discord notification failed in the last 15 minutes."
-              description: "Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on mon-1."
+              description: "Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
       # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
       # the 0 at 9m is the one at 23m.
@@ -47,7 +47,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A discord notification failed in the last 15 minutes."
-              description: "Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on mon-1."
+              description: "Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
       - eval_time: 24m
         alertname: NotificationsFailing
@@ -86,7 +86,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A pagerduty notification failed in the last 15 minutes."
-              description: "Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on mon-1."
+              description: "Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
           - exp_labels:
               host: mon-1
@@ -94,7 +94,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A telegram notification failed in the last 15 minutes."
-              description: "Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on mon-1."
+              description: "Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
 
   - name: A webhook receiver fails; a message for it, though the dead-man webhook also fails
@@ -116,7 +116,7 @@ tests:
               severity: message
             exp_annotations:
               summary: "A webhook notification failed in the last 15 minutes."
-              description: "Alerts reach you through your other receivers only. Check journalctl -u celestia-mon-alertmanager on mon-1."
+              description: "Alerts reach you through your other receivers only. Run journalctl -u celestia-mon-alertmanager on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#notificationsfailing"
 
   - name: Failed heartbeats (the dead-man receiver) raise no NotificationsFailing
