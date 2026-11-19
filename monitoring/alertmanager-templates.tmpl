@@ -15,9 +15,9 @@
   What an alert is about, after its name: its host, where it names one, then the one label that
   tells apart the alerts one name can have on one host at a time: a disk's mount point, a RAID
   device, a unit's name or the part of a host ServiceDown is about, the integration of
-  NotificationsFailing, the proposal of GovVoteMissing, the reason of FibreNotServing and
-  RemoteSignerProblem, the check of FibreDown. celestia.slack.subject is the same with each value
-  escaped: keep the two lists alike.
+  NotificationsFailing, the proposal of GovVoteMissing, the channel of AnnouncementsUnreadable, the
+  reason of FibreNotServing and RemoteSignerProblem, the check of FibreDown. celestia.slack.subject
+  is the same with each value escaped: keep the two lists alike.
 */}}
 {{ define "celestia.subject" }}
 {{- with .Labels.host }} · {{ . }}{{ end }}
@@ -27,6 +27,7 @@
 {{- else if .Labels.unit }} · {{ .Labels.unit }}
 {{- else if .Labels.integration }} · {{ .Labels.integration }}
 {{- else if .Labels.proposal_id }} · proposal {{ .Labels.proposal_id }}
+{{- else if .Labels.channel }} · channel {{ .Labels.channel }}
 {{- else if .Labels.reason }} · {{ .Labels.reason }}
 {{- else if .Labels.check }} · {{ .Labels.check }}
 {{- end }}
@@ -95,6 +96,7 @@
 {{- else if .Labels.unit }} · {{ template "celestia.slack.escape" .Labels.unit }}
 {{- else if .Labels.integration }} · {{ template "celestia.slack.escape" .Labels.integration }}
 {{- else if .Labels.proposal_id }} · proposal {{ template "celestia.slack.escape" .Labels.proposal_id }}
+{{- else if .Labels.channel }} · channel {{ template "celestia.slack.escape" .Labels.channel }}
 {{- else if .Labels.reason }} · {{ template "celestia.slack.escape" .Labels.reason }}
 {{- else if .Labels.check }} · {{ template "celestia.slack.escape" .Labels.check }}
 {{- end }}
