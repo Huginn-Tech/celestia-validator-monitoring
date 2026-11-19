@@ -27,10 +27,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "Fibre is not running on any host"
-              description: >-
-                For 10 minutes no Fibre host (fibre-1) has kept fibre.service active for a whole minute: Fibre is stopped or
-                crash looping everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+              summary: "No Fibre unit is seen active on fibre-1."
+              description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
 
   # Eight scrapes active, one not: 2 minutes of work at a time, which ends the wait every time.

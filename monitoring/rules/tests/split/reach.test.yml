@@ -36,12 +36,8 @@ tests:
               severity: message
               host: kms-1
             exp_annotations:
-              summary: "Monitor cannot reach kms-1"
-              description: >-
-                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
-                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
-                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
-                until it answers again; this message stands in for its ServiceDown messages.
+              summary: "kms-1 answers on none of its metrics endpoints."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: ServiceDown
@@ -81,12 +77,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "Monitor cannot reach any server"
-              description: >-
-                For 3 minutes Prometheus on mon-1 has reached no metrics endpoint on any Celestia host
-                (val-1, fibre-1, kms-1): the link between the monitor and the hosts is down, or every host is.
-                No alert that reads the hosts' metrics can fire meanwhile. Check from outside first whether the
-                validator still signs: an explorer shows its recent blocks.
+              summary: "No Celestia host answers mon-1: val-1, fibre-1, kms-1."
+              description: "No alert that reads these hosts can fire. Check on an explorer first whether the validator still signs."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: NodeNotAdvancing

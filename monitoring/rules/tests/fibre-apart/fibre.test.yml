@@ -53,14 +53,8 @@ tests:
               reason: not_ready
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreNotServing
@@ -70,28 +64,16 @@ tests:
               reason: not_ready
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
               reason: not_ready
               severity: page
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 10 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 10 minutes."
+              description: "Uploads may fail. Run journalctl -u fibre.service | grep 'health check failed' on fibre-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 24m
         alertname: FibreDown

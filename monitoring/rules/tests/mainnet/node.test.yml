@@ -65,12 +65,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "The validator is not signing"
-              description: >-
-                Check journalctl -u tmkms on the KMS host first.
-                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
-                Prometheus cannot reach the node on val-1, so signatures made through it are not seen;
-                an explorer shows whether blocks are missed.
+              summary: "No signature seen for more than 10 blocks."
+              description: "The node on val-1 is unreachable and may still sign. Check an explorer first, then tmkms."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 19m
         alertname: ValidatorNotSigning
@@ -78,12 +74,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "The validator is not signing"
-              description: >-
-                Check journalctl -u tmkms on the KMS host first.
-                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
-                Prometheus cannot reach the node on val-1, so signatures made through it are not seen;
-                an explorer shows whether blocks are missed.
+              summary: "No signature seen for more than 10 blocks."
+              description: "The node on val-1 is unreachable and may still sign. Check an explorer first, then tmkms."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
       - eval_time: 20m
         alertname: ValidatorNotSigning
@@ -132,10 +124,7 @@ tests:
               role: validator
               severity: message
             exp_annotations:
-              summary: "Node on val-1 is behind"
-              description: >-
-                For 10 minutes the node has been more than 20 blocks behind the highest node of this install,
-                or has not advanced while another node did. A node that lags cannot take over signing.
+              summary: "The node is 197 blocks behind the highest node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
 
   # After a repoint val-1 keeps the key it last read, so its last signed height cannot tell which
@@ -175,10 +164,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "The validator is not signing"
-              description: >-
-                Check journalctl -u tmkms on the KMS host first.
-                The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks.
+              summary: "No signature seen for more than 10 blocks."
+              description: "Check tmkms first."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
 
   # fibre-1 is 30 blocks behind val-1 from the start.
@@ -209,10 +196,7 @@ tests:
               role: backup_node
               severity: message
             exp_annotations:
-              summary: "Node on fibre-1 is behind"
-              description: >-
-                For 10 minutes the node has been more than 20 blocks behind the highest node of this install,
-                or has not advanced while another node did. A node that lags cannot take over signing.
+              summary: "The node is 30 blocks behind the highest node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
       - eval_time: 10m
         alertname: ValidatorNotSigning
@@ -250,10 +234,7 @@ tests:
               role: backup_node
               severity: message
             exp_annotations:
-              summary: "Node on fibre-1 is behind"
-              description: >-
-                For 10 minutes the node has been more than 20 blocks behind the highest node of this install,
-                or has not advanced while another node did. A node that lags cannot take over signing.
+              summary: "The node is 110 blocks behind the highest node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodebehind"
 
   # Both nodes stop at 10m (chain halt or upgrade height). NodeNotAdvancing pages at 12m; the
@@ -280,10 +261,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No node is advancing"
-              description: >-
-                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
-                Check status.celestia.org or an explorer first: the whole chain may have halted.
+              summary: "No node has committed a new block for 3 minutes."
+              description: "Check status.celestia.org first: the whole chain may have halted."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning
@@ -333,8 +312,6 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No node is advancing"
-              description: >-
-                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
-                Check status.celestia.org or an explorer first: the whole chain may have halted.
+              summary: "Prometheus reads no node's height."
+              description: "Check celestia-appd and its metrics endpoint on each node."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"

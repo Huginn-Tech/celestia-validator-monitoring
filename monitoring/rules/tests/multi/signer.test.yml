@@ -50,6 +50,6 @@ tests:
               reason: remote_error
               severity: message
             exp_annotations:
-              summary: "Remote signer on val-2 fails to sign proposals"
-              description: "Proposal signing failed with reason remote_error in the last 6 hours; votes may still succeed."
+              summary: "Proposal signing failed in the last 6 hours (remote_error)."
+              description: "Check the log of tmkms around the failed proposals."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#remotesignerproblem"

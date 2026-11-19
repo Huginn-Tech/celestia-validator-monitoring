@@ -87,11 +87,6 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: The validator signs through two nodes
-              description: >-
-                For about 3 minutes votes or proposals signed with the validator's key have reached more than one
-                node: fibre-1, val-1. Two signers with one key can sign two different votes for one height, and
-                the chain slashes such a double sign and tombstones the validator. Stop the signer that should not
-                sign now, for example a second tmkms with the same key on a standby KMS host. If one tmkms signs
-                through several nodes on purpose, set celestia_mon_signer_multi_node: true.
+              summary: "The validator's signatures reach more than one node: fibre-1, val-1."
+              description: "Stop the signer that should not sign now. Two signers of one key can double-sign."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatorsigningtwice

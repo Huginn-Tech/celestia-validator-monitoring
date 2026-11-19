@@ -1,13 +1,40 @@
 {{/*
   Notification text of celestia-mon for Telegram, Discord, Slack and PagerDuty, in place of
   Alertmanager's list of every label and annotation and its links. A Celestia announcement is its
-  own text under the channel it came from; an alert is one line (state, alert, host) with its
-  summary and description.
+  own text under the channel it came from. An alert that fires is its title line (a mark for its
+  severity, 🔴 page or 🟡 message, the alert and what it is about), then its summary and, where it
+  has one, its description. An alert that ended is one line: ✅, the alert, what it is about, and
+  the word resolved.
   Telegram uses parse mode HTML, so Alertmanager escapes the values and the tags below stay.
   Slack reads &, < and > as markup, so its templates escape them in every value.
 */}}
 
-{{ define "celestia.state" }}{{ if eq .Status "resolved" }}✅ RESOLVED{{ else if eq .Labels.severity "page" }}🔴 PAGE{{ else }}🟡 MESSAGE{{ end }}{{ end }}
+{{ define "celestia.state" }}{{ if eq .Status "resolved" }}✅{{ else if eq .Labels.severity "page" }}🔴{{ else }}🟡{{ end }}{{ end }}
+
+{{/*
+  What an alert is about, after its name: its host, where it names one, then the one label that
+  tells apart the alerts one name can have on one host at a time: a disk's mount point, a RAID
+  device, a unit's name or the part of a host ServiceDown is about, the integration of
+  NotificationsFailing, the proposal of GovVoteMissing, the channel of AnnouncementsUnreadable, the
+  reason of FibreNotServing and RemoteSignerProblem, the check of FibreDown. celestia.slack.subject
+  is the same with each value escaped: keep the two lists alike.
+*/}}
+{{ define "celestia.subject" }}
+{{- with .Labels.host }} · {{ . }}{{ end }}
+{{- if .Labels.mountpoint }} · {{ .Labels.mountpoint }}
+{{- else if .Labels.device }} · {{ .Labels.device }}
+{{- else if .Labels.name }} · {{ .Labels.name }}
+{{- else if .Labels.unit }} · {{ .Labels.unit }}
+{{- else if .Labels.integration }} · {{ .Labels.integration }}
+{{- else if .Labels.proposal_id }} · proposal {{ .Labels.proposal_id }}
+{{- else if .Labels.channel }} · channel {{ .Labels.channel }}
+{{- else if .Labels.reason }} · {{ .Labels.reason }}
+{{- else if .Labels.check }} · {{ .Labels.check }}
+{{- end }}
+{{- end }}
+
+{{/* An alert's title line in plain text: "🔴 DiskLow · val-1 · /", or "✅ DiskLow · val-1 · / resolved". */}}
+{{ define "celestia.title" }}{{ template "celestia.state" . }} {{ .Labels.alertname }}{{ template "celestia.subject" . }}{{ if eq .Status "resolved" }} resolved{{ end }}{{ end }}
 
 {{ define "celestia.telegram.message" }}
 {{- range $i, $a := .Alerts }}{{ if $i }}
@@ -17,8 +44,10 @@
 📣 <b>{{ $a.Labels.source }}</b>
 
 {{ $a.Annotations.description }}
+{{- else if eq $a.Status "resolved" -}}
+{{ template "celestia.state" $a }} <b>{{ $a.Labels.alertname }}</b>{{ template "celestia.subject" $a }} resolved
 {{- else -}}
-{{ template "celestia.state" $a }} · <b>{{ $a.Labels.alertname }}</b>{{ with $a.Labels.host }} · {{ . }}{{ end }}
+{{ template "celestia.state" $a }} <b>{{ $a.Labels.alertname }}</b>{{ template "celestia.subject" $a }}
 {{ $a.Annotations.summary }}
 {{- with $a.Annotations.description }}
 {{ . }}{{ end }}
@@ -29,50 +58,85 @@
 {{ define "celestia.discord.title" }}
 {{- with index .Alerts 0 }}
 {{- if eq .Labels.alertname "CelestiaAnnouncement" }}📣 {{ .Labels.source }}
-{{- else }}{{ template "celestia.state" . }} · {{ .Labels.alertname }}{{ with .Labels.host }} · {{ . }}{{ end }}
+{{- else }}{{ template "celestia.title" . }}
 {{- end }}
 {{- end }}
 {{- end }}
 
+{{/*
+  Under the title, which is the first alert's title line: the first alert's summary and description
+  while it fires, and each further alert as its own block under its title line. $said: whether
+  anything stands above the next block, so no blank lines open the text when the first alert ended.
+*/}}
 {{ define "celestia.discord.message" }}
-{{- range $i, $a := .Alerts }}{{ if $i }}
+{{- $said := false }}
+{{- range $i, $a := .Alerts }}
+{{- if eq $a.Labels.alertname "CelestiaAnnouncement" }}{{ if $i }}
 
-{{ end }}
-{{- if eq $a.Labels.alertname "CelestiaAnnouncement" }}{{ $a.Annotations.description }}
-{{- else }}{{ if $i }}{{ template "celestia.state" $a }} · {{ $a.Labels.alertname }}{{ with $a.Labels.host }} · {{ . }}{{ end }}
+{{ end }}{{ $a.Annotations.description }}{{ $said = true }}
+{{- else }}
+{{- if $i }}{{ if $said }}
+
+{{ end }}{{ template "celestia.title" $a }}{{ $said = true }}{{ end }}
+{{- if ne $a.Status "resolved" }}{{ if $i }}
 {{ end }}**{{ $a.Annotations.summary }}**
 {{- with $a.Annotations.description }}
-{{ . }}{{ end }}
+{{ . }}{{ end }}{{ $said = true }}{{ end }}
 {{- end }}
 {{- end }}
 {{- end }}
 
 {{ define "celestia.slack.escape" }}{{ . | reReplaceAll "&" "&amp;" | reReplaceAll "<" "&lt;" | reReplaceAll ">" "&gt;" }}{{ end }}
 
+{{ define "celestia.slack.subject" }}
+{{- with .Labels.host }} · {{ template "celestia.slack.escape" . }}{{ end }}
+{{- if .Labels.mountpoint }} · {{ template "celestia.slack.escape" .Labels.mountpoint }}
+{{- else if .Labels.device }} · {{ template "celestia.slack.escape" .Labels.device }}
+{{- else if .Labels.name }} · {{ template "celestia.slack.escape" .Labels.name }}
+{{- else if .Labels.unit }} · {{ template "celestia.slack.escape" .Labels.unit }}
+{{- else if .Labels.integration }} · {{ template "celestia.slack.escape" .Labels.integration }}
+{{- else if .Labels.proposal_id }} · proposal {{ template "celestia.slack.escape" .Labels.proposal_id }}
+{{- else if .Labels.channel }} · channel {{ template "celestia.slack.escape" .Labels.channel }}
+{{- else if .Labels.reason }} · {{ template "celestia.slack.escape" .Labels.reason }}
+{{- else if .Labels.check }} · {{ template "celestia.slack.escape" .Labels.check }}
+{{- end }}
+{{- end }}
+
+{{ define "celestia.slack.line" }}{{ template "celestia.state" . }} {{ .Labels.alertname }}{{ template "celestia.slack.subject" . }}{{ if eq .Status "resolved" }} resolved{{ end }}{{ end }}
+
 {{ define "celestia.slack.title" }}
 {{- with index .Alerts 0 }}
 {{- if eq .Labels.alertname "CelestiaAnnouncement" }}📣 {{ template "celestia.slack.escape" .Labels.source }}
-{{- else }}{{ template "celestia.state" . }} · {{ .Labels.alertname }}{{ with .Labels.host }} · {{ template "celestia.slack.escape" . }}{{ end }}
+{{- else }}{{ template "celestia.slack.line" . }}
 {{- end }}
 {{- end }}
 {{- end }}
 
+{{/* As celestia.discord.message, with Slack's bold and every value escaped. */}}
 {{ define "celestia.slack.text" }}
-{{- range $i, $a := .Alerts }}{{ if $i }}
+{{- $said := false }}
+{{- range $i, $a := .Alerts }}
+{{- if eq $a.Labels.alertname "CelestiaAnnouncement" }}{{ if $i }}
 
-{{ end }}
-{{- if eq $a.Labels.alertname "CelestiaAnnouncement" }}{{ template "celestia.slack.escape" $a.Annotations.description }}
-{{- else }}{{ if $i }}{{ template "celestia.state" $a }} · {{ $a.Labels.alertname }}{{ with $a.Labels.host }} · {{ template "celestia.slack.escape" . }}{{ end }}
+{{ end }}{{ template "celestia.slack.escape" $a.Annotations.description }}{{ $said = true }}
+{{- else }}
+{{- if $i }}{{ if $said }}
+
+{{ end }}{{ template "celestia.slack.line" $a }}{{ $said = true }}{{ end }}
+{{- if ne $a.Status "resolved" }}{{ if $i }}
 {{ end }}*{{ template "celestia.slack.escape" $a.Annotations.summary }}*
 {{- with $a.Annotations.description }}
-{{ template "celestia.slack.escape" . }}{{ end }}
+{{ template "celestia.slack.escape" . }}{{ end }}{{ $said = true }}{{ end }}
 {{- end }}
 {{- end }}
 {{- end }}
 
-{{/* PagerDuty's incident title: the first alert's name, host and summary, and how many alerts the group holds. */}}
+{{/*
+  PagerDuty's incident title: the name, host and summary of the first alert that fires, or of the
+  first alert when none does, and how many alerts the group holds.
+*/}}
 {{ define "celestia.pagerduty.description" }}
-{{- with index .Alerts 0 }}
+{{- with index (or .Alerts.Firing .Alerts) 0 }}
 {{- if eq .Labels.alertname "CelestiaAnnouncement" }}{{ .Annotations.summary }}
 {{- else }}{{ .Labels.alertname }}{{ with .Labels.host }} · {{ . }}{{ end }}: {{ .Annotations.summary }}
 {{- end }}
@@ -80,11 +144,15 @@
 {{- if gt (len .Alerts) 1 }} ({{ len .Alerts }} alerts){{ end }}
 {{- end }}
 
-{{/* PagerDuty's details (firing, resolved): one line per alert, its name, host, summary and description. */}}
+{{/*
+  PagerDuty's details (firing, resolved): one line per alert, its name, what it is about and its
+  summary, and for an alert that fires its description too. An announcement keeps its description
+  in both.
+*/}}
 {{ define "celestia.pagerduty.alerts" }}
 {{- range $i, $a := . }}{{ if $i }}
 {{ end }}
-{{- $a.Labels.alertname }}{{ with $a.Labels.host }} · {{ . }}{{ end }}: {{ $a.Annotations.summary }}
-{{- with $a.Annotations.description }} {{ . }}{{ end }}
+{{- $a.Labels.alertname }}{{ template "celestia.subject" $a }}: {{ $a.Annotations.summary }}
+{{- if or (ne $a.Status "resolved") (eq $a.Labels.alertname "CelestiaAnnouncement") }}{{ with $a.Annotations.description }} {{ . }}{{ end }}{{ end }}
 {{- end }}
 {{- end }}

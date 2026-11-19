@@ -359,10 +359,8 @@
               severity: message
               host: "{{ inventory_hostname }}"
             annotations:
-              summary: "Test from celestia-mon on {{ inventory_hostname }}: notifications reach this channel"
-              description: >-
-                Sent once because the install changed Alertmanager's receivers. No action needed: it
-                resolves in about 5 minutes. PagerDuty gets no test message.
+              summary: "Test from celestia-mon: notifications reach this channel."
+              description: "Sent once after the install changed the receivers. No action needed."
         status_code: 200
 
 - name: Note the receivers the test message went to

@@ -45,14 +45,8 @@ tests:
               severity: message
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 (Raise the block size) ends its voting period in about 1d 23h 45m 0s, and the
-                validator account celestia1ci has no vote on it. Vote from that account, abstain if you have no
-                view rather than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from
-                <validator account key>. A vote sent through an authz grant from the validator account counts; a
-                vote from any other account does not. This alert resolves when the vote is on chain or the voting
-                period has ended. It pages when less than a day is left.
+              summary: "Proposal 9 (Raise the block size) ends in about 1d 23h 45m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # The same vote with 25 hours left at 0: the message from the start, the page once less than a
@@ -80,14 +74,8 @@ tests:
               severity: message
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 (Raise the block size) ends its voting period in about 1d 0h 45m 0s, and the
-                validator account celestia1ci has no vote on it. Vote from that account, abstain if you have no
-                view rather than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from
-                <validator account key>. A vote sent through an authz grant from the validator account counts; a
-                vote from any other account does not. This alert resolves when the vote is on chain or the voting
-                period has ended. It pages when less than a day is left.
+              summary: "Proposal 9 (Raise the block size) ends in about 1d 0h 45m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h15m
         alertname: GovVoteMissing
@@ -96,27 +84,15 @@ tests:
               severity: message
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 (Raise the block size) ends its voting period in about 23h 45m 0s, and the validator
-                account celestia1ci has no vote on it. Vote from that account, abstain if you have no view rather
-                than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator
-                account key>. A vote sent through an authz grant from the validator account counts; a vote from
-                any other account does not. This alert resolves when the vote is on chain or the voting period has
-                ended. It pages when less than a day is left.
+              summary: "Proposal 9 (Raise the block size) ends in about 23h 45m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
           - exp_labels:
               severity: page
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 (Raise the block size) ends its voting period in about 23h 45m 0s, and the validator
-                account celestia1ci has no vote on it. Vote from that account, abstain if you have no view rather
-                than leave it empty: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator
-                account key>. A vote sent through an authz grant from the validator account counts; a vote from
-                any other account does not. This alert resolves when the vote is on chain or the voting period has
-                ended.
+              summary: "Proposal 9 (Raise the block size) ends in about 23h 45m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
@@ -145,13 +121,8 @@ tests:
               severity: page
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 ends its voting period in about 19h 45m 0s, and the validator account has no vote on it.
-                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
-                gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
-                authz grant from the validator account counts; a vote from any other account does not. This alert
-                resolves when the vote is on chain or the voting period has ended.
+              summary: "Proposal 9 ends in about 19h 45m 0s without the validator's vote."
+              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h50m
         alertname: GovVoteMissing
@@ -160,13 +131,8 @@ tests:
               severity: page
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 ends its voting period in about 18h 10m 0s, and the validator account has no vote on it.
-                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
-                gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
-                authz grant from the validator account counts; a vote from any other account does not. This alert
-                resolves when the vote is on chain or the voting period has ended.
+              summary: "Proposal 9 ends in about 18h 10m 0s without the validator's vote."
+              description: "Vote from the validator account: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # An expedited vote of 1 day with 13 hours left at 0: half the vote is left from 1h on, so the
@@ -192,13 +158,8 @@ tests:
               severity: page
               proposal_id: '12'
             exp_annotations:
-              summary: The validator has not voted on proposal 12
-              description: >-
-                Proposal 12 ends its voting period in about 11h 45m 0s, and the validator account has no vote on
-                it. Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd
-                tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
-                authz grant from the validator account counts; a vote from any other account does not. This alert
-                resolves when the vote is on chain or the voting period has ended.
+              summary: "Proposal 12 ends in about 11h 45m 0s without the validator's vote."
+              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
 
   # A day's vote with 90 minutes left: the page from 10m on. No reading from 40m to 1h (a scrape
@@ -225,13 +186,8 @@ tests:
               severity: page
               proposal_id: '12'
             exp_annotations:
-              summary: The validator has not voted on proposal 12
-              description: >-
-                Proposal 12 ends its voting period in about 25m 0s, and the validator account celestia1ci has no vote on it.
-                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
-                gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
-                authz grant from the validator account counts; a vote from any other account does not. This alert
-                resolves when the vote is on chain or the voting period has ended.
+              summary: "Proposal 12 ends in about 25m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 1h35m
         alertname: GovVoteMissing
@@ -260,14 +216,8 @@ tests:
               severity: message
               proposal_id: '9'
             exp_annotations:
-              summary: The validator has not voted on proposal 9
-              description: >-
-                Proposal 9 ends its voting period in about 1d 0h 8m 0s, and the validator account celestia1ci has
-                no vote on it. Vote from that account, abstain if you have no view rather than leave it empty:
-                celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent
-                through an authz grant from the validator account counts; a vote from any other account does not.
-                This alert resolves when the vote is on chain or the voting period has ended. It pages when less
-                than a day is left.
+              summary: "Proposal 9 ends in about 1d 0h 8m 0s without the validator's vote."
+              description: "Vote from celestia1ci: celestia-appd tx gov vote 9 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 17m
         alertname: GovVoteMissing
@@ -297,13 +247,8 @@ tests:
               severity: page
               proposal_id: '12'
             exp_annotations:
-              summary: The validator has not voted on proposal 12
-              description: >-
-                Proposal 12 ends its voting period in about 45m 0s, and the validator account has no vote on it.
-                Vote from that account, abstain if you have no view rather than leave it empty: celestia-appd tx
-                gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>. A vote sent through an
-                authz grant from the validator account counts; a vote from any other account does not. This alert
-                resolves when the vote is on chain or the voting period has ended.
+              summary: "Proposal 12 ends in about 45m 0s without the validator's vote."
+              description: "Vote from the validator account: celestia-appd tx gov vote 12 yes|no|no_with_veto|abstain --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#govvotemissing
       - eval_time: 25m
         alertname: GovVoteMissing
@@ -338,11 +283,6 @@ tests:
               host: mon-1
               job: signal
             exp_annotations:
-              summary: The upgrade signal and votes are not being read on mon-1
-              description: >-
-                For 15 minutes celestia-mon-signal has read none of its RPCs, none has given it the governance
-                proposals, or it is down, so a new signalling round would not page, a new proposal would not be
-                seen, and a vote cast meanwhile would not resolve GovVoteMissing. The upgrade alerts keep their last
-                reading, and the vote alerts the proposals read last (for an hour only when the service is down). Run
-                journalctl -u celestia-mon-signal on the monitor: it names each RPC that failed and why.
+              summary: "The upgrade signal or the governance votes are not being read."
+              description: "A new signalling round or proposal would not be seen. Run journalctl -u celestia-mon-signal on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#signalunreadable

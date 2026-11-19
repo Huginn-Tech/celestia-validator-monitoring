@@ -38,11 +38,8 @@ tests:
               channel: "111111111111111111"
               job: announcements
             exp_annotations:
-              summary: Celestia announcements are not being read on mon-1
-              description: >-
-                celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
-                announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
-                names the cause and the fix.
+              summary: "Celestia's announcements are not being read."
+              description: "New ones would not reach you. Run journalctl -u celestia-mon-announcements on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable
 
   # The service is down: its target fails for 10 minutes.
@@ -62,9 +59,6 @@ tests:
               host: mon-1
               job: announcements
             exp_annotations:
-              summary: Celestia announcements are not being read on mon-1
-              description: >-
-                celestia-mon-announcements has not read its Discord channel for 15 minutes, or it is down, so new
-                announcements would not reach you. Run journalctl -u celestia-mon-announcements on the monitor: it
-                names the cause and the fix.
+              summary: "Celestia's announcements are not being read."
+              description: "New ones would not reach you. Run journalctl -u celestia-mon-announcements on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#announcementsunreadable

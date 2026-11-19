@@ -37,11 +37,8 @@ tests:
               role: validator
               severity: message
             exp_annotations:
-              summary: "Node on val-1 has fewer than 2 peers"
-              description: >-
-                For 5 minutes the node has had fewer than 2 peers (1 now): nodes it peers with are down or cannot reach it.
-                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
-                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              summary: "The node has fewer than 2 peers (1 now)."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 15m
         alertname: NodePeersLow
@@ -78,11 +75,8 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on val-1 has no peers"
-              description: >-
-                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
-                and the validator misses every block until a peer connects.
-                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              summary: "The node the validator signs through has no peers."
+              description: "The validator misses every block. Check the network of val-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 41m
         alertname: NodePeersLow
@@ -95,11 +89,8 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on val-1 has no peers"
-              description: >-
-                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
-                and the validator misses every block until a peer connects.
-                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              summary: "The node the validator signs through has no peers."
+              description: "The validator misses every block. Check the network of val-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
           - exp_labels:
               chain_id: celestia
@@ -109,11 +100,8 @@ tests:
               role: validator
               severity: message
             exp_annotations:
-              summary: "Node on val-1 has fewer than 2 peers"
-              description: >-
-                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
-                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
-                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              summary: "The node has fewer than 2 peers (0 now)."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 49m
         alertname: NodePeersLow
@@ -126,11 +114,8 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on val-1 has no peers"
-              description: >-
-                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
-                and the validator misses every block until a peer connects.
-                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              summary: "The node the validator signs through has no peers."
+              description: "The validator misses every block. Check the network of val-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 50m
         alertname: NodePeersLow
@@ -165,11 +150,8 @@ tests:
               role: backup_node
               severity: message
             exp_annotations:
-              summary: "Node on fibre-1 has fewer than 2 peers"
-              description: >-
-                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
-                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
-                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              summary: "The node has fewer than 2 peers (0 now)."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
 
   # val-1 loses its last peer at 10m and the page fires a minute later. At 20m tmkms is pointed at
@@ -203,11 +185,8 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on val-1 has no peers"
-              description: >-
-                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
-                and the validator misses every block until a peer connects.
-                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              summary: "The node the validator signs through has no peers."
+              description: "The validator misses every block. Check the network of val-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 25m
         alertname: NodePeersLow
@@ -220,11 +199,8 @@ tests:
               role: validator
               severity: page
             exp_annotations:
-              summary: "Node on val-1 has no peers"
-              description: >-
-                For 1 minute the node the validator signs through has had no peers: it receives no blocks or votes,
-                and the validator misses every block until a peer connects.
-                Check the nodes it peers with and this host's network first, then persistent_peers in the node's config.toml.
+              summary: "The node the validator signs through has no peers."
+              description: "The validator misses every block. Check the network of val-1 and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
           - exp_labels:
               chain_id: celestia
@@ -234,11 +210,8 @@ tests:
               role: validator
               severity: message
             exp_annotations:
-              summary: "Node on val-1 has fewer than 2 peers"
-              description: >-
-                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
-                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
-                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              summary: "The node has fewer than 2 peers (0 now)."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"
       - eval_time: 26m
         alertname: NodePeersLow
@@ -251,9 +224,6 @@ tests:
               role: validator
               severity: message
             exp_annotations:
-              summary: "Node on val-1 has fewer than 2 peers"
-              description: >-
-                For 5 minutes the node has had fewer than 2 peers (0 now): nodes it peers with are down or cannot reach it.
-                While a peer is left the node still follows the chain; with none it receives no blocks or votes and falls behind.
-                Check the nodes it peers with, this host's network, and persistent_peers in the node's config.toml.
+              summary: "The node has fewer than 2 peers (0 now)."
+              description: "Check this host's network and the nodes it peers with."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodepeerslow"

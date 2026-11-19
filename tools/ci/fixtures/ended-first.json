@@ -1,0 +1,8 @@
+{"receiver": "message", "status": "firing", "alerts": [
+  {"status": "resolved", "labels": {"alertname": "ServiceDown", "severity": "message", "host": "val-1", "unit": "appd",
+                                    "name": "celestia-appd.service", "state": "active"},
+   "annotations": {"summary": "celestia-appd.service is not active."}},
+  {"status": "firing", "labels": {"alertname": "ServiceDown", "severity": "message", "host": "val-1", "unit": "node_exporter"},
+   "annotations": {"summary": "node_exporter is unreachable.",
+                   "description": "The service and disk alerts of this host cannot fire."}}],
+ "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}

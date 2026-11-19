@@ -34,12 +34,8 @@ tests:
               check: reachability
               endpoint: fibre.example.org:7980
             exp_annotations:
-              summary: Fibre at fibre.example.org:7980 is unreachable from outside
-              description: >-
-                For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
-                endpoint registered on chain (TCP and TLS), so clients cannot fetch
-                from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
-                the last check.
+              summary: "fibre.example.org:7980 is unreachable from outside."
+              description: "Tensile cannot connect to the endpoint registered on chain (TCP and TLS). Check its port and the firewall."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
       - eval_time: 15m
         alertname: TensileUnreadable
@@ -70,12 +66,8 @@ tests:
               severity: message
               host: mon-1
             exp_annotations:
-              summary: Fibre is not checked from outside
-              description: >-
-                For 15 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre
-                endpoint, or the service is down, so an endpoint unreachable from outside would not page, and rows Fibre
-                does not serve would not be reported. Run journalctl -u celestia-mon-tensile on the monitor: it
-                names the cause.
+              summary: "Tensile's check of the Fibre endpoint is not being read."
+              description: "An endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
 
   - name: After a failover to val-1 the chain still points to fibre-1; FibreDown for the address and the reachability
@@ -102,12 +94,8 @@ tests:
               check: reachability
               endpoint: fibre.example.org:7980
             exp_annotations:
-              summary: Fibre at fibre.example.org:7980 is unreachable from outside
-              description: >-
-                For 10 minutes Tensile's checks from outside have not completed a connection to the Fibre
-                endpoint registered on chain (TCP and TLS), so clients cannot fetch
-                from it, although its unit may run. The dashboard's Fibre from outside tile shows the outcome of
-                the last check.
+              summary: "fibre.example.org:7980 is unreachable from outside."
+              description: "Tensile cannot connect to the endpoint registered on chain (TCP and TLS). Check its port and the firewall."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
           - exp_labels:
               severity: page
@@ -115,12 +103,8 @@ tests:
               reason: wrong_host
               endpoint: fibre.example.org:7980
             exp_annotations:
-              summary: The chain points to fibre.example.org:7980, but Fibre runs on val-1
-              description: >-
-                For 10 minutes Fibre has been active on val-1, whose public endpoint is val.example.org:7980,
-                while the chain registers another endpoint, so clients dial a host where this Fibre does not run
-                (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
-                val.example.org:7980 --from <validator account key>.
+              summary: "The chain points to fibre.example.org:7980, but Fibre runs on val-1."
+              description: "Fix: celestia-appd tx valaddr set-host val.example.org:7980 --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
 
   # val-1 starts while the chain still names fibre-1, a move done make-before-break: clients reach a
@@ -150,10 +134,8 @@ tests:
           - exp_labels:
               severity: message
             exp_annotations:
-              summary: Fibre is active on more than one host
-              description: >-
-                For 5 minutes fibre.service has been active on fibre-1, val-1.
-                Fibre runs on one host at a time: stop the one that should be the standby.
+              summary: "fibre.service is active on fibre-1, val-1."
+              description: "Stop the one that should be the standby."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrebothactive
 
   # The same, until fibre-1 stops at 20m with the chain still on it: now clients dial a host where
@@ -186,12 +168,8 @@ tests:
               reason: wrong_host
               endpoint: fibre.example.org:7980
             exp_annotations:
-              summary: The chain points to fibre.example.org:7980, but Fibre runs on val-1
-              description: >-
-                For 10 minutes Fibre has been active on val-1, whose public endpoint is val.example.org:7980,
-                while the chain registers another endpoint, so clients dial a host where this Fibre does not run
-                (after a failover, set-host was not sent). Fix: celestia-appd tx valaddr set-host
-                val.example.org:7980 --from <validator account key>.
+              summary: "The chain points to fibre.example.org:7980, but Fibre runs on val-1."
+              description: "Fix: celestia-appd tx valaddr set-host val.example.org:7980 --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
 
   # set-host went out, and the old box came back with its unit enabled. The fix is to stop fibre-1,
@@ -257,11 +235,8 @@ tests:
               check: registration
               reason: not_registered
             exp_annotations:
-              summary: No Fibre host is registered on chain
-              description: >-
-                For 10 minutes the chain has had no Fibre host for the validator in x/valaddr, so no client
-                finds it. Register the active Fibre host: celestia-appd tx valaddr set-host <host:port> --from
-                <validator account key>.
+              summary: "The chain has no Fibre host for the validator."
+              description: "Register the active one: celestia-appd tx valaddr set-host <host:port> --from <validator account key>."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown
 
   # celestia-mon-tensile last read Tensile at 1m: TensileUnreadable reports it 15 + 10 minutes on,
@@ -295,12 +270,8 @@ tests:
               host: mon-1
               job: tensile
             exp_annotations:
-              summary: Fibre is not checked from outside
-              description: >-
-                For 15 minutes celestia-mon-tensile has not read Tensile, Tensile has not checked the Fibre
-                endpoint, or the service is down, so an endpoint unreachable from outside would not page, and rows Fibre
-                does not serve would not be reported. Run journalctl -u celestia-mon-tensile on the monitor: it
-                names the cause.
+              summary: "Tensile's check of the Fibre endpoint is not being read."
+              description: "An endpoint unreachable from outside would not page. Run journalctl -u celestia-mon-tensile on mon-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#tensileunreadable
     promql_expr_test:
       - expr: count_over_time(ALERTS{alertname="FibreNotServing"}[60m])
@@ -337,12 +308,8 @@ tests:
               reason: not_served
               severity: message
             exp_annotations:
-              summary: Fibre on fibre-1 did not serve rows the validator signed for
-              description: >-
-                In the last hour Tensile could not read rows of a blob the validator signed for, within the time
-                Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
-                reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
-                (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
+              summary: "Fibre did not return rows of a blob the validator signed for."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 180m
         alertname: FibreNotServing
@@ -352,12 +319,8 @@ tests:
               reason: not_served
               severity: message
             exp_annotations:
-              summary: Fibre on fibre-1 did not serve rows the validator signed for
-              description: >-
-                In the last hour Tensile could not read rows of a blob the validator signed for, within the time
-                Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
-                reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
-                (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
+              summary: "Fibre did not return rows of a blob the validator signed for."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
       - eval_time: 181m
         alertname: FibreNotServing
@@ -409,12 +372,8 @@ tests:
               reason: not_served
               severity: message
             exp_annotations:
-              summary: Fibre on val-1 did not serve rows the validator signed for
-              description: >-
-                In the last hour Tensile could not read rows of a blob the validator signed for, within the time
-                Fibre must keep them, so clients could not fetch the validator's share of it; that makes 13 failed
-                reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
-                (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
+              summary: "Fibre did not return rows of a blob the validator signed for."
+              description: "13 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on val-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Two failed reads in the same minute (0 to 2) fire at once too.
@@ -439,12 +398,8 @@ tests:
               reason: not_served
               severity: message
             exp_annotations:
-              summary: Fibre on fibre-1 did not serve rows the validator signed for
-              description: >-
-                In the last hour Tensile could not read rows of a blob the validator signed for, within the time
-                Fibre must keep them, so clients could not fetch the validator's share of it; that makes 2 failed
-                reads in Tensile's last 24 hours (one alone does not fire this). Fibre's log names a store error
-                (failed to retrieve blob shard); check the Fibre store's disk and its failed clean-ups.
+              summary: "Fibre did not return rows of a blob the validator signed for."
+              description: "2 failed reads in Tensile's last 24 hours. Run journalctl -u fibre.service | grep 'failed to retrieve blob shard' on fibre-1."
               runbook: https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving
 
   # Failed reads of a day ago leave Tensile's 24 hours one by one: the count falls, nothing is new.

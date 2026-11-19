@@ -456,8 +456,11 @@ jobs:
             amtool check-config "build/$s/alertmanager.yml"
           done
       # Telegram (parse mode HTML) and Discord get celestia-mon's text: an announcement as its own
-      # text under the channel it came from, an alert as one line with its summary and description;
-      # never the list of labels, never the link (the texts: tools/ci/fixtures/messages.yml).
+      # text under the channel it came from; an alert that fires as its title line (a mark for its
+      # severity, its name, its host and the label that tells it apart from others of that name on
+      # the host) with its summary and description; an alert that ended as one line, that title with
+      # the word resolved; never the list of labels, never the link (the texts:
+      # tools/ci/fixtures/messages.yml).
       - name: Telegram and Discord messages read as text
         id: telegram-discord-text
         run: python tools/ci/check_messages.py telegram-discord
@@ -501,7 +504,8 @@ jobs:
       # Slack and PagerDuty get celestia-mon's text too, never Alertmanager's list of labels or its
       # links: Slack's title, text and fallback, with &, < and > escaped (Slack reads them as markup),
       # and no title link; PagerDuty's description (the incident's title) and its firing and resolved
-      # details. This renders the split example with both into build/split-text.
+      # details, a resolved alert's line without its description. This renders the split example
+      # with both into build/split-text.
       - name: Slack and PagerDuty messages read as text
         id: slack-pagerduty-text
         run: |
@@ -1889,10 +1893,9 @@ jobs:
   # summary. With --same it fails unless each scenario comes out as the base branch's, apart from the
   # text changes named after it. A scenario the base branch does not have is reported as new. A pull
   # request that changes the dashboard on purpose names its text changes after --same (old new, in
-  # pairs), or leaves --same out to report only, as this branch does: the Fibre tile, the role band, the
-  # Fibre cards, the Role column and the Signer service row now read a failing systemd collector as the
-  # rules do, in their queries, not only texts. Then the alert rules and the dashboard settings of each
-  # example inventory, rendered by both branches.
+  # pairs), or leaves --same out to report only, as this branch does: the Firing alerts panel's
+  # description quotes a notification's title line, which is shorter now. Then the alert rules and the
+  # dashboard settings of each example inventory, rendered by both branches.
   dashboard-report:
     if: ${{ github.event_name == 'pull_request' }}
     runs-on: ubuntu-24.04
@@ -1924,9 +1927,8 @@ jobs:
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: all of them, as DiskLow's page
-      # holds until one point above its level and then 5 minutes, and ClockNotSynced ends at the first
-      # reading under 16 s.
+      # scenarios in changed, whose renders this branch changes on purpose: all of them, as every alert's
+      # summary and description are shorter (the rules' annotations only: no expression, hold or label).
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch

@@ -90,8 +90,7 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia-appd.service is not active on fibre-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
+              summary: "celestia-appd.service is not active."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
@@ -101,8 +100,7 @@ tests:
               severity: message
               unit: celestia_app
             exp_annotations:
-              summary: "celestia-app metrics are unreachable on fibre-1"
-              description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+              summary: "celestia-appd's metrics endpoint is unreachable."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Fibre crash loop on fibre-1 sends a message
@@ -136,8 +134,7 @@ tests:
               severity: message
               unit: fibre
             exp_annotations:
-              summary: "fibre.service is crash looping on fibre-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
+              summary: "systemd restarted fibre.service 3 times in 30 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # The host booted at 0. Fibre exits until its node answers, six restarts in the first 4 minutes,
@@ -207,8 +204,7 @@ tests:
               severity: message
               unit: fibre
             exp_annotations:
-              summary: "fibre.service is crash looping on fibre-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
+              summary: "systemd restarted fibre.service 30 times in 30 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Wrong appd unit name for the backup node; node_exporter is up but has no such unit
@@ -230,8 +226,8 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia-appd.service is not loaded on fibre-1"
-              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              summary: "celestia-appd.service is not loaded."
+              description: "It is stopped and disabled, or celestia_mon_units names the wrong unit."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: The standby's collector down on val-1; a message after 3m
@@ -264,6 +260,6 @@ tests:
               severity: message
               unit: otelcol
             exp_annotations:
-              summary: "otelcol is unreachable on val-1"
-              description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
+              summary: "celestia-mon-otelcol is unreachable."
+              description: "Fibre's metrics are not collected."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
