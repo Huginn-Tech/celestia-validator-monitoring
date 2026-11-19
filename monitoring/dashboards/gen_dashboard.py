@@ -4145,7 +4145,7 @@ def upgrade_row(s):
 def alerts_row(s):
     """The collapsed All firing alerts row, right under the first screen: every alert firing or pending,
     each in a plain sentence, with the alert's name as the first line of its notification carries it
-    ("PAGE · ValidatorNotSigning · val-1"), so the notification can be found in its channel, linked to
+    ("NodePeersLow · val-1"), so the notification can be found in its channel, linked to
     the rule's entry in the alert reference."""
     levels = " or ".join("%s * 0 + %s" % (by_alert('ALERTS{alertstate="%s",severity="%s"}' % (state, sev)), num(v))
                          for state, sev, v in [("firing", "page", 3), ("pending", "page", 2),
@@ -4166,7 +4166,7 @@ def alerts_row(s):
         301, "table", "Firing alerts",
         "Every alert Prometheus has firing now, plus alerts whose problem is true but has not lasted long enough to be "
         "sent, each in a plain sentence; the Status cell at the top names the worst one. Rule: the alert's name, as "
-        "the first line of its notification carries it (PAGE · ValidatorNotSigning · val-1), so you can find the "
+        "the first line of its notification carries it (NodePeersLow · val-1), so you can find the "
         "notification in your channel; it opens the alert's entry in the [alert reference](%s), with its meaning and "
         "first checks. Active for: how long since the problem started, including the waiting time before it fired. "
         "The heartbeat (Watchdog) is left out. Silences do not hide alerts here." % DOCS,
