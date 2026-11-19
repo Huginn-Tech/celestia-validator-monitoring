@@ -88,8 +88,7 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia-appd.service is not active on val-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
+              summary: "celestia-appd.service is not active."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
       - eval_time: 8m
         alertname: ServiceDown
@@ -105,8 +104,7 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia-appd.service is not active on val-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
+              summary: "celestia-appd.service is not active."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
@@ -116,8 +114,7 @@ tests:
               severity: message
               unit: celestia_app
             exp_annotations:
-              summary: "celestia-app metrics are unreachable on val-1"
-              description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+              summary: "celestia-appd's metrics endpoint is unreachable."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # A stopped Fibre unit may be a standby, so it is no ServiceDown; FibreDown pages when no
@@ -173,8 +170,7 @@ tests:
               severity: message
               unit: tmkms
             exp_annotations:
-              summary: "tmkms.service is crash looping on kms-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
+              summary: "systemd restarted tmkms.service 3 times in 30 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # A standby Fibre is stopped and often disabled, and systemd then drops it from the units
@@ -221,8 +217,8 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia-appd.service is not loaded on val-1"
-              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              summary: "celestia-appd.service is not loaded."
+              description: "It is stopped and disabled, or celestia_mon_units names the wrong unit."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # node_exporter is kms-1's only target, so none of its targets answers: MonitorCannotReach names
@@ -277,8 +273,8 @@ tests:
               severity: message
               unit: otelcol
             exp_annotations:
-              summary: "otelcol is unreachable on fibre-1"
-              description: "Prometheus has not reached the OpenTelemetry collector for 3 minutes; Fibre metrics are not collected."
+              summary: "celestia-mon-otelcol is unreachable."
+              description: "Fibre's metrics are not collected."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # The blackbox exporter on the monitor stops at 5m: every fibre_health target is down, and no rule
@@ -304,10 +300,8 @@ tests:
               severity: message
               unit: blackbox
             exp_annotations:
-              summary: "celestia-mon-blackbox is unreachable on mon-1"
-              description: >-
-                Prometheus has not reached celestia-mon-blackbox for 3 minutes, so Fibre's readiness is not checked and
-                FibreNotServing not_ready cannot fire. Run journalctl -u celestia-mon-blackbox on the monitor.
+              summary: "celestia-mon-blackbox is unreachable."
+              description: "Fibre's readiness is not checked. Run journalctl -u celestia-mon-blackbox on mon-1."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # The exporter answers and only its probe of Fibre fails, as for a stopped standby: up stays 1.
@@ -358,10 +352,8 @@ tests:
               severity: message
               unit: filesystem_collector
             exp_annotations:
-              summary: "node_exporter cannot read the disks on fibre-1"
-              description: >-
-                For 3 minutes node_exporter's filesystem collector has failed while node_exporter answers, so
-                DiskLow sees no disk on this host. sudo celestia-mon-doctor (check 10) on it gives the fix.
+              summary: "node_exporter cannot read the disks."
+              description: "DiskLow sees no disk on this host. Run sudo celestia-mon-doctor there (check 10)."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # The collector recovers before the 3 minutes end.
@@ -410,9 +402,6 @@ tests:
               severity: message
               unit: systemd_collector
             exp_annotations:
-              summary: "node_exporter cannot read systemd on val-1"
-              description: >-
-                For 3 minutes node_exporter's systemd collector has failed while node_exporter answers, so no unit
-                of this host is seen and its unit alerts cannot fire. node_exporter asks systemd over D-Bus: on that
-                host, check systemctl status dbus and journalctl -u celestia-mon-node-exporter.
+              summary: "node_exporter cannot read systemd."
+              description: "The unit alerts of this host cannot fire. Check systemctl status dbus there."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

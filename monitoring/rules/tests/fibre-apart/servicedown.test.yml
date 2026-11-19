@@ -72,8 +72,7 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia.service is not active on node-1"
-              description: "systemd has not reported the unit as active for 2 minutes."
+              summary: "celestia.service is not active."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
           - exp_labels:
               job: celestia-app
@@ -83,8 +82,7 @@ tests:
               severity: message
               unit: celestia_app
             exp_annotations:
-              summary: "celestia-app metrics are unreachable on node-1"
-              description: "Prometheus has not reached the celestia-app metrics endpoint for 3 minutes."
+              summary: "celestia-appd's metrics endpoint is unreachable."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   - name: Crash loop of node-1's celestia.service sends a message
@@ -115,8 +113,7 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia.service is crash looping on node-1"
-              description: "systemd restarted the unit more than 2 times in 30 minutes. This ends 10 minutes after its last restart."
+              summary: "systemd restarted celestia.service 3 times in 30 minutes."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
 
   # node_exporter on node-1 answers but lists only a unit of the default name: the not-loaded rule
@@ -143,6 +140,6 @@ tests:
               severity: message
               unit: appd
             exp_annotations:
-              summary: "celestia.service is not loaded on node-1"
-              description: "node_exporter lists no such unit: it is stopped and disabled, or the inventory names the wrong unit."
+              summary: "celestia.service is not loaded."
+              description: "It is stopped and disabled, or celestia_mon_units names the wrong unit."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

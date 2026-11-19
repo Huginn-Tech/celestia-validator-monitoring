@@ -43,10 +43,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No node is advancing"
-              description: >-
-                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
-                Check status.celestia.org or an explorer first: the whole chain may have halted.
+              summary: "No node has committed a new block for 3 minutes."
+              description: "Check status.celestia.org first: the whole chain may have halted."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: ValidatorNotSigning
@@ -76,10 +74,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No node is advancing"
-              description: >-
-                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
-                Check status.celestia.org or an explorer first: the whole chain may have halted.
+              summary: "Prometheus reads no node's height."
+              description: "Check status.celestia.org first: the whole chain may have halted."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
       - eval_time: 30m
         alertname: NodeNotAdvancing
@@ -87,10 +83,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "No node is advancing"
-              description: >-
-                No node of this install has committed a new block for 3 minutes, or Prometheus reads no node's height.
-                Check status.celestia.org or an explorer first: the whole chain may have halted.
+              summary: "Prometheus reads no node's height."
+              description: "Check status.celestia.org first: the whole chain may have halted."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"
 
   # Prometheus has just started: at 0m the 2-minute window holds the height's first sample only.
@@ -131,8 +125,7 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "The validator is not signing"
-              description: "The chain moves but no node of this install has seen a signature from the validator for more than 10 blocks."
+              summary: "No signature seen for more than 10 blocks."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#validatornotsigning"
 
   # The gap is 11 blocks for exactly one minute (6m), then the validator signs again.

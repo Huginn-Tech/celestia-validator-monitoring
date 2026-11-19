@@ -26,9 +26,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 60m
         alertname: Watchdog
@@ -37,9 +34,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
   - name: A failed page or message notification stops the Watchdog for an hour
@@ -63,9 +57,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 11m
         alertname: Watchdog
@@ -80,9 +71,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
   - name: A failed webhook receiver stops the Watchdog too
@@ -102,9 +90,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 11m
         alertname: Watchdog
@@ -130,9 +115,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
 
   # The disk fills at 10m: rules still run, and alerts still go out, but nothing is stored, up
@@ -151,9 +133,6 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"
       - eval_time: 12m
         alertname: Watchdog
@@ -174,7 +153,4 @@ tests:
               severity: heartbeat
             exp_annotations:
               summary: "celestia-mon heartbeat"
-              description: >-
-                Fires while monitoring runs and no page or message notification failed in the last hour.
-                Only the dead-man service receives it, and it alerts when the heartbeats stop.
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#watchdog"

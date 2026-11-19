@@ -24,10 +24,8 @@ tests:
               host: mon-1
               severity: message
             exp_annotations:
-              summary: "Alertmanager on mon-1 cannot reach the dead-man service"
-              description: >-
-                At least three heartbeats to the dead-man service failed in the last 15 minutes.
-                Until they get through, the dead-man service cannot tell you that monitoring is down.
+              summary: "3 heartbeats to the dead-man service failed in the last 15 minutes."
+              description: "The dead-man service cannot report that monitoring is down. Check celestia_mon_deadman_webhook_url."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       # Prometheus 3 range selectors are left-open, (t-15m, t]: the last window that still holds
       # the 0 at 9m is the one at 23m.
@@ -38,10 +36,8 @@ tests:
               host: mon-1
               severity: message
             exp_annotations:
-              summary: "Alertmanager on mon-1 cannot reach the dead-man service"
-              description: >-
-                At least three heartbeats to the dead-man service failed in the last 15 minutes.
-                Until they get through, the dead-man service cannot tell you that monitoring is down.
+              summary: "3 heartbeats to the dead-man service failed in the last 15 minutes."
+              description: "The dead-man service cannot report that monitoring is down. Check celestia_mon_deadman_webhook_url."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#deadmanfailing"
       - eval_time: 24m
         alertname: DeadmanFailing

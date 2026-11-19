@@ -42,8 +42,7 @@ tests:
               mountpoint: /var/lib/celestia
               severity: message
             exp_annotations:
-              summary: "/var/lib/celestia on val-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes."
+              summary: "/var/lib/celestia on val-1 has 7.25% free."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       # 4.75% free: the page fires next to the message.
       - eval_time: 41m
@@ -59,8 +58,7 @@ tests:
               mountpoint: /var/lib/celestia
               severity: message
             exp_annotations:
-              summary: "/var/lib/celestia on val-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes."
+              summary: "/var/lib/celestia on val-1 has 4.75% free."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
@@ -72,8 +70,7 @@ tests:
               mountpoint: /var/lib/celestia
               severity: page
             exp_annotations:
-              summary: "/var/lib/celestia on val-1 is read-only or almost full"
-              description: "The filesystem is read-only or has less than 5% free space."
+              summary: "/var/lib/celestia on val-1 has 4.75% free."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: kms-1 root disk (celestia_mon_kms_scrape) under 5% pages at once
@@ -102,8 +99,7 @@ tests:
               mountpoint: /
               severity: page
             exp_annotations:
-              summary: "/ on kms-1 is read-only or almost full"
-              description: "The filesystem is read-only or has less than 5% free space."
+              summary: "/ on kms-1 has 2% free."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: fibre-1 root disk under 5% sends a message, never a page; read-only replaces the low-space message
@@ -135,8 +131,7 @@ tests:
               mountpoint: /
               severity: message
             exp_annotations:
-              summary: "/ on fibre-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes."
+              summary: "/ on fibre-1 has 2% free."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 12m
         alertname: DiskLow
@@ -151,8 +146,7 @@ tests:
               mountpoint: /
               severity: message
             exp_annotations:
-              summary: "/ on fibre-1 is read-only"
-              description: "The filesystem is read-only."
+              summary: "/ on fibre-1 is read-only."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Read-only filesystems; the node data disk pages at once, the Fibre store sends a message
@@ -199,8 +193,7 @@ tests:
               mountpoint: /var/lib/celestia
               severity: page
             exp_annotations:
-              summary: "/var/lib/celestia on val-1 is read-only or almost full"
-              description: "The filesystem is read-only or has less than 5% free space."
+              summary: "/var/lib/celestia on val-1 is read-only."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
           - exp_labels:
               job: node
@@ -212,8 +205,7 @@ tests:
               mountpoint: /var/lib/fibre
               severity: message
             exp_annotations:
-              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
-              description: "Fibre cannot store new shards on a read-only filesystem."
+              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store cannot hold the budget; a message after 30m, no percentage alert while a budget is set
@@ -246,8 +238,7 @@ tests:
               host: fibre-1
               severity: message
             exp_annotations:
-              summary: "Fibre store on fibre-1 cannot hold the storage budget"
-              description: "For 30 minutes the room the Fibre budget still needs has exceeded the free space on /var/lib/fibre."
+              summary: "/var/lib/fibre on fibre-1 has less free space than Fibre's storage budget still needs."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre store full up to its budget with room left; quiet
@@ -308,8 +299,8 @@ tests:
               mountpoint: /var/lib/fibre
               severity: message
             exp_annotations:
-              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              summary: "Fibre store /var/lib/fibre on fibre-1 has 7.5% free."
+              description: "Fibre reports no storage budget."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   # Fibre stops at 6m on a store more than 90% full, and with it the budget it reports: the rule for a
@@ -349,8 +340,8 @@ tests:
               mountpoint: /var/lib/fibre
               severity: message
             exp_annotations:
-              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              summary: "Fibre store /var/lib/fibre on fibre-1 has 3.75% free."
+              description: "Fibre reports no storage budget."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
 
   - name: Fibre budget 0 and the store turns read-only; the read-only message replaces the low-space message
@@ -385,8 +376,8 @@ tests:
               mountpoint: /var/lib/fibre
               severity: message
             exp_annotations:
-              summary: "Fibre store /var/lib/fibre on fibre-1 has little free space"
-              description: "Free space has been below 10% for 10 minutes and Fibre reports no storage budget."
+              summary: "Fibre store /var/lib/fibre on fibre-1 has 7.5% free."
+              description: "Fibre reports no storage budget."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"
       - eval_time: 12m
         alertname: DiskLow
@@ -401,6 +392,5 @@ tests:
               mountpoint: /var/lib/fibre
               severity: message
             exp_annotations:
-              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only"
-              description: "Fibre cannot store new shards on a read-only filesystem."
+              summary: "Fibre store /var/lib/fibre on fibre-1 is read-only."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#disklow"

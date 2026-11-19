@@ -82,12 +82,8 @@ tests:
               severity: message
               host: node-1
             exp_annotations:
-              summary: "Monitor cannot reach node-1"
-              description: >-
-                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
-                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
-                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
-                until it answers again; this message stands in for its ServiceDown messages.
+              summary: "node-1 answers on none of its metrics endpoints."
+              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 8m
         alertname: FibreNotServing
@@ -97,14 +93,8 @@ tests:
               reason: not_ready
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
+              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 8m
         alertname: ServiceDown
@@ -117,28 +107,16 @@ tests:
               reason: not_ready
               severity: message
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 3 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 3 minutes."
+              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
           - exp_labels:
               host: fibre-1
               reason: not_ready
               severity: page
             exp_annotations:
-              summary: "Fibre on fibre-1 is not ready for uploads"
-              description: >-
-                For 10 minutes Fibre's own health check has answered NOT_SERVING, so at least one of its six checks fails:
-                app (the app node answers on the right chain, synced, with a recent block), fibre_module,
-                signer (answers with the key Fibre started with), validator (in the active set),
-                registration (a valid provider host on chain) or store (a small write and read).
-                Uploads to it may fail. Fibre's log names the check and what to do:
-                journalctl -u fibre.service | grep 'health check failed'.
+              summary: "Fibre's health check has answered NOT_SERVING for 10 minutes."
+              description: "Uploads may fail. On fibre-1: journalctl -u fibre.service | grep 'health check failed'."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibrenotserving"
       - eval_time: 15m
         alertname: NodeNotAdvancing
@@ -211,12 +189,8 @@ tests:
               severity: message
               host: fibre-1
             exp_annotations:
-              summary: "Monitor cannot reach fibre-1"
-              description: >-
-                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
-                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
-                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
-                until it answers again; this message stands in for its ServiceDown messages.
+              summary: "fibre-1 answers on none of its metrics endpoints."
+              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 14m
         alertname: FibreDown
@@ -227,10 +201,8 @@ tests:
           - exp_labels:
               severity: page
             exp_annotations:
-              summary: "Fibre is not running on any host"
-              description: >-
-                For 10 minutes no Fibre host (fibre-1, val-1) has kept fibre.service active for a whole minute: Fibre is stopped or
-                crash looping everywhere, the host of the active Fibre is down, or celestia_mon_units.fibre names the wrong unit.
+              summary: "No Fibre unit is active on fibre-1, val-1."
+              description: "Check systemctl status fibre.service on the host that should run it."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#fibredown"
       - eval_time: 15m
         alertname: MonitorCannotReach
@@ -239,12 +211,8 @@ tests:
               severity: message
               host: fibre-1
             exp_annotations:
-              summary: "Monitor cannot reach fibre-1"
-              description: >-
-                For 3 minutes Prometheus on mon-1 has reached none of this host's metrics endpoints
-                (celestia-appd, node_exporter, the OpenTelemetry collector): the host is down, the link between
-                it and the monitor is, or each of those services stopped. Its service and disk alerts are blind
-                until it answers again; this message stands in for its ServiceDown messages.
+              summary: "fibre-1 answers on none of its metrics endpoints."
+              description: "The host or its link to mon-1 is down. The alerts that read this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
       - eval_time: 15m
         alertname: ServiceDown
