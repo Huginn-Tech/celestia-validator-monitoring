@@ -131,9 +131,12 @@
 {{- end }}
 {{- end }}
 
-{{/* PagerDuty's incident title: the first alert's name, host and summary, and how many alerts the group holds. */}}
+{{/*
+  PagerDuty's incident title: the name, host and summary of the first alert that fires, or of the
+  first alert when none does, and how many alerts the group holds.
+*/}}
 {{ define "celestia.pagerduty.description" }}
-{{- with index .Alerts 0 }}
+{{- with index (or .Alerts.Firing .Alerts) 0 }}
 {{- if eq .Labels.alertname "CelestiaAnnouncement" }}{{ .Annotations.summary }}
 {{- else }}{{ .Labels.alertname }}{{ with .Labels.host }} · {{ . }}{{ end }}: {{ .Annotations.summary }}
 {{- end }}

@@ -1,0 +1,6 @@
+{"receiver": "page", "status": "firing", "alerts": [
+  {"status": "firing", "labels": {"alertname": "FibreDown", "severity": "page", "check": "registration", "reason": "wrong_host",
+                                  "endpoint": "fibre.example.com:7980"},
+   "annotations": {"summary": "The chain points to fibre.example.com:7980, but Fibre runs on fibre-1.",
+                   "description": "Fix: celestia-appd tx valaddr set-host fibre-1.example.com:7980 --from <validator account key>."}}],
+ "groupLabels": {}, "commonLabels": {}, "commonAnnotations": {}, "externalURL": ""}

@@ -62,6 +62,12 @@ telegram-discord:
     template: '{{ template "celestia.discord.message" . }}'
     equals: "🟡 ServiceDown · val-1 · node_exporter\n**node_exporter is unreachable.**\n\
       The service and disk alerts of this host cannot fire."
+  # An alert without a host that carries a reason and a check, as FibreDown's registration rules:
+  # the reason stands after its name.
+  - data: registration.json
+    type: html
+    template: '{{ template "celestia.telegram.message" . }}'
+    line: "🔴 <b>FibreDown</b> · wrong_host"
 slack-pagerduty:
   - data: text-announcement.json
     type: text
@@ -106,3 +112,26 @@ slack-pagerduty:
     template: '{{ template "celestia.slack.text" . }}'
     equals: "🟡 ServiceDown · val-1 · node_exporter\n*node_exporter is unreachable.*\n\
       The service and disk alerts of this host cannot fire."
+  # PagerDuty's title takes the first alert that fires, not one that ended before it.
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.pagerduty.description" . }}'
+    equals: "ServiceDown · val-1: node_exporter is unreachable. (2 alerts)"
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}'
+    equals: "ServiceDown · val-1 · node_exporter: node_exporter is unreachable. \
+      The service and disk alerts of this host cannot fire."
+  # An alert that ended and names no host: its one line as Slack's title, and no text under it.
+  - data: upgrade.json
+    type: text
+    template: '{{ template "celestia.slack.title" . }}'
+    equals: "✅ UpgradeScheduled resolved"
+  - data: upgrade.json
+    type: text
+    template: '{{ template "celestia.slack.text" . }}'
+    equals: ""
+  - data: registration.json
+    type: text
+    template: '{{ template "celestia.slack.title" . }}'
+    equals: "🔴 FibreDown · wrong_host"
