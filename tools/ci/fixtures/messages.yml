@@ -2,6 +2,8 @@
 # amtool over the alert data of tools/ci/fixtures/<data>, as html (Telegram) or text (the others), and
 # wants the output to be "equals" (trailing newlines aside, as the shell's $(...) drops them) or to have
 # "line" as one of its lines.
+# An alert that fires is its title line (🔴 page, 🟡 message, its name, its host and the label that
+# tells it apart, here the mount point), its summary and its description; one that ended is one line.
 telegram-discord:
   - data: announcement.json
     type: html
@@ -18,30 +20,48 @@ telegram-discord:
   - data: alerts.json
     type: html
     template: '{{ template "celestia.telegram.message" . }}'
-    equals: "🔴 PAGE · <b>DiskLow</b> · val-1\nDisk / on val-1 is almost full\nLess than 5% free.\n\n\
-      ✅ RESOLVED · <b>DiskLow</b> · val-1\nDisk /data on val-1 is almost full"
+    equals: "🔴 <b>DiskLow</b> · val-1 · /\n/ on val-1 has 4.2% free.\nFree space is falling.\n\n\
+      ✅ <b>DiskLow</b> · val-1 · /data resolved"
   - data: alerts.json
     type: text
     template: '{{ template "celestia.discord.title" . }}'
-    equals: "🔴 PAGE · DiskLow · val-1"
+    equals: "🔴 DiskLow · val-1 · /"
   - data: alerts.json
     type: text
     template: '{{ template "celestia.discord.message" . }}'
-    line: "**Disk / on val-1 is almost full**"
-  - data: alerts.json
-    type: text
-    template: '{{ template "celestia.discord.message" . }}'
-    line: "✅ RESOLVED · DiskLow · val-1"
-  # An alert that names no host, as the upgrade alerts: nothing after its name.
+    equals: "**/ on val-1 has 4.2% free.**\nFree space is falling.\n\n\
+      ✅ DiskLow · val-1 · /data resolved"
+  # An alert that names no host, as the upgrade alerts: nothing after its name. It ended, so the
+  # text under Discord's title is empty.
   - data: upgrade.json
     type: html
     template: '{{ template "celestia.telegram.message" . }}'
-    equals: "✅ RESOLVED · <b>UpgradeScheduled</b>\nNetwork upgrade to v11 scheduled\n\
-      This alert resolves when the chain has switched to v11."
+    equals: "✅ <b>UpgradeScheduled</b> resolved"
   - data: upgrade.json
     type: text
     template: '{{ template "celestia.discord.title" . }}'
-    equals: "✅ RESOLVED · UpgradeScheduled"
+    equals: "✅ UpgradeScheduled resolved"
+  - data: upgrade.json
+    type: text
+    template: '{{ template "celestia.discord.message" . }}'
+    equals: ""
+  # Two ServiceDown messages of one host, told apart by the unit's name or, without one, by the part
+  # of the host it is about; the first ended, so the one that fires opens the text without a blank line.
+  - data: ended-first.json
+    type: html
+    template: '{{ template "celestia.telegram.message" . }}'
+    equals: "✅ <b>ServiceDown</b> · val-1 · celestia-appd.service resolved\n\n\
+      🟡 <b>ServiceDown</b> · val-1 · node_exporter\nnode_exporter is unreachable.\n\
+      The service and disk alerts of this host cannot fire."
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.discord.title" . }}'
+    equals: "✅ ServiceDown · val-1 · celestia-appd.service resolved"
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.discord.message" . }}'
+    equals: "🟡 ServiceDown · val-1 · node_exporter\n**node_exporter is unreachable.**\n\
+      The service and disk alerts of this host cannot fire."
 slack-pagerduty:
   - data: text-announcement.json
     type: text
@@ -58,21 +78,31 @@ slack-pagerduty:
   - data: text-alerts.json
     type: text
     template: '{{ template "celestia.slack.title" . }}'
-    equals: "🔴 PAGE · DiskLow · val-1"
+    equals: "🔴 DiskLow · val-1 · /"
   - data: text-alerts.json
     type: text
     template: '{{ template "celestia.slack.text" . }}'
-    equals: "*Disk / on val-1 is almost full*\nLess than 5% free &amp; falling.\n\n\
-      ✅ RESOLVED · DiskLow · val-1\n*Disk /data on val-1 is almost full*"
+    equals: "*/ on val-1 has 4.2% free.*\nFree space is falling &amp; fast.\n\n\
+      ✅ DiskLow · val-1 · /data resolved"
   - data: text-alerts.json
     type: text
     template: '{{ template "celestia.pagerduty.description" . }}'
-    equals: "DiskLow · val-1: Disk / on val-1 is almost full (2 alerts)"
+    equals: "DiskLow · val-1: / on val-1 has 4.2% free. (2 alerts)"
   - data: text-alerts.json
     type: text
     template: '{{ template "celestia.pagerduty.alerts" .Alerts.Firing }}'
-    equals: "DiskLow · val-1: Disk / on val-1 is almost full Less than 5% free & falling."
+    equals: "DiskLow · val-1 · /: / on val-1 has 4.2% free. Free space is falling & fast."
+  # A resolved alert's line in PagerDuty's details: without its description.
   - data: text-alerts.json
     type: text
     template: '{{ template "celestia.pagerduty.alerts" .Alerts.Resolved }}'
-    equals: "DiskLow · val-1: Disk /data on val-1 is almost full"
+    equals: "DiskLow · val-1 · /data: /data on val-1 is read-only."
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.slack.title" . }}'
+    equals: "✅ ServiceDown · val-1 · celestia-appd.service resolved"
+  - data: ended-first.json
+    type: text
+    template: '{{ template "celestia.slack.text" . }}'
+    equals: "🟡 ServiceDown · val-1 · node_exporter\n*node_exporter is unreachable.*\n\
+      The service and disk alerts of this host cannot fire."
