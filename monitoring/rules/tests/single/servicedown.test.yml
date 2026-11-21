@@ -275,6 +275,7 @@ tests:
               host: node-1
               role: validator
               severity: message
+              scrape: refused
               unit: celestia_app
             exp_annotations:
               summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."
@@ -343,6 +344,7 @@ tests:
               host: node-1
               role: validator
               severity: message
+              scrape: refused
               unit: node_exporter
             exp_annotations:
               summary: "Prometheus refuses node_exporter's metrics: 50021 samples, over the limit of 50000."

@@ -123,9 +123,15 @@
 {% set mon_only = mon not in (vf + ns_kms.scraped) %}
 {% set remote_hosts = (vf + ns_kms.scraped) | unique | reject('equalto', mon) | list %}
 {% set reach = 'up{job=~"celestia-app|node|otelcol",host!="' ~ mon ~ '"}' %}
-{% set host_unreached = 'max by (host) (' ~ reach ~ ') == 0' %}
-{% set none_reached = 'max(' ~ reach ~ ') == 0' %}
-{% set some_reached = 'max(' ~ reach ~ ') == 1' %}
+{# A target whose scrape Prometheus refuses for holding more samples than its job may reads up 0 like one
+   that does not answer, and it answers: the host and the link to it are fine. Its host is not unreached,
+   and its ServiceDown rule says what Prometheus refuses. #}
+{% set over = 'scrape_samples_post_metric_relabeling{job="celestia-app",host!="' ~ mon ~ '"} > ' ~ limits['celestia-app']
+   ~ ' or scrape_samples_post_metric_relabeling{job="node",host!="' ~ mon ~ '"} > ' ~ limits['node']
+   ~ ' or scrape_samples_post_metric_relabeling{job="otelcol",host!="' ~ mon ~ '"} > ' ~ limits['otelcol'] %}
+{% set host_unreached = '(max by (host) (' ~ reach ~ ') == 0 unless on (host) (' ~ over ~ '))' %}
+{% set none_reached = '(max(' ~ reach ~ ') == 0 unless on () (' ~ over ~ '))' %}
+{% set some_reached = '(max(' ~ reach ~ ') == 1 or (' ~ over ~ '))' %}
 {# ServiceDown per unit: (key, its names, hosts it must be loaded on). A Fibre unit may be a stopped
    standby, which systemd drops from its list once it is also disabled, so Fibre has only the
    crash loop rule; FibreDown covers "no Fibre runs". #}
@@ -163,8 +169,8 @@ groups:
       # the pages come from the alerts below,
       # which follow the roles when they move between hosts. A stopped Fibre unit is no ServiceDown (a
       # standby is stopped); FibreDown pages when no Fibre unit is active anywhere. When none of a
-      # host's targets answers, MonitorCannotReach names the host once instead of the first three
-      # below; the blackbox exporter's rule stands on its own, as its job is not part of that reach.
+      # host's targets answers, MonitorCannotReach names the host once instead of the three unreachable
+      # rules below; the blackbox exporter's rule stands on its own, as its job is not part of that reach.
       - alert: ServiceDown
         expr: >-
           up{job="celestia-app"} == 0
@@ -182,15 +188,16 @@ groups:
       # A target that answers with more samples than its job's limit is no unreachable endpoint:
       # Prometheus refuses the whole scrape, up reads 0, and the count of what it sent stays. This
       # rule and the two like it below send that case under the same title, with the count and the limit.
+      # Their scrape label keeps them apart from the unreachable alert of the same target in Alertmanager,
+      # so one ending while the other starts sends a resolved and a firing message, each once. A refused
+      # scrape is an answer, so they do not wait for MonitorCannotReach.
       - alert: ServiceDown
         expr: >-
           scrape_samples_post_metric_relabeling{job="celestia-app"} > {{ limits['celestia-app'] }}
-{% if remote_hosts %}
-          unless on (host) {{ host_unreached }}
-{% endif %}
         for: 3m
         labels:
           severity: message
+          scrape: refused
           unit: celestia_app
         annotations:
           summary: "{% raw %}Prometheus refuses celestia-appd's metrics: {{ $value | printf `%.0f` }} samples, over the limit of {% endraw %}{{ limits['celestia-app'] }}."
@@ -214,12 +221,10 @@ groups:
       - alert: ServiceDown
         expr: >-
           scrape_samples_post_metric_relabeling{job="node"} > {{ limits['node'] }}
-{% if remote_hosts %}
-          unless on (host) {{ host_unreached }}
-{% endif %}
         for: 3m
         labels:
           severity: message
+          scrape: refused
           unit: node_exporter
         annotations:
           summary: "{% raw %}Prometheus refuses node_exporter's metrics: {{ $value | printf `%.0f` }} samples, over the limit of {% endraw %}{{ limits['node'] }}."
@@ -244,12 +249,10 @@ groups:
       - alert: ServiceDown
         expr: >-
           scrape_samples_post_metric_relabeling{job="otelcol"} > {{ limits['otelcol'] }}
-{% if remote_hosts %}
-          unless on (host) {{ host_unreached }}
-{% endif %}
         for: 3m
         labels:
           severity: message
+          scrape: refused
           unit: otelcol
         annotations:
           summary: "{% raw %}Prometheus refuses celestia-mon-otelcol's metrics: {{ $value | printf `%.0f` }} samples, over the limit of {% endraw %}{{ limits['otelcol'] }}."

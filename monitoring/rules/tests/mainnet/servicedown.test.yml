@@ -295,6 +295,7 @@ tests:
               host: fibre-1
               role: backup_node
               severity: message
+              scrape: refused
               unit: celestia_app
             exp_annotations:
               summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."
@@ -333,6 +334,7 @@ tests:
               host: val-1
               role: fibre
               severity: message
+              scrape: refused
               unit: otelcol
             exp_annotations:
               summary: "Prometheus refuses celestia-mon-otelcol's metrics: 20004 samples, over the limit of 20000."

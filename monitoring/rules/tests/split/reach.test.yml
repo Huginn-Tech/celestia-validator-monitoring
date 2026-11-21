@@ -92,3 +92,111 @@ tests:
       - eval_time: 20m
         alertname: NodeNotAdvancing
         exp_alerts: []
+
+  # node_exporter is kms-1's only target, and from 5m Prometheus refuses its scrape for holding more
+  # samples than the node job may: up reads 0 as for a host that does not answer, but kms-1 answers.
+  # ServiceDown says what Prometheus refuses, and MonitorCannotReach stays quiet.
+  - name: kms-1's only target over the sample limit; a message about the refused scrape and no MonitorCannotReach
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1x4 0x10'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1605x4 50021x10'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x14'
+      - series: >-
+          up{job="node",instance="10.10.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts: []
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.2:9910
+              host: kms-1
+              role: kms
+              severity: message
+              scrape: refused
+              unit: node_exporter
+            exp_annotations:
+              summary: "Prometheus refuses node_exporter's metrics: 50021 samples, over the limit of 50000."
+              description: "The service and disk alerts of this host cannot fire. Run sudo celestia-mon-doctor on mon-1 (check 11)."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # val-1 and fibre-1 stop answering at 5m while Prometheus refuses the scrape of kms-1, which answers:
+  # the monitor has not lost every host, so there is no page of MonitorCannotReach. Each host that does
+  # not answer gets its message, and NodeNotAdvancing pages for the height nobody reads.
+  - name: Two hosts stop answering and kms-1's scrape is refused; a message for each of the two, no page of MonitorCannotReach
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1x4 0x30'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="node",instance="10.10.0.2:9910",host="kms-1",role="kms"}
+        values: '1605x4 50021x30'
+      - series: >-
+          up{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="otelcol",instance="10.10.0.3:9911",host="fibre-1",role="fibre"}
+        values: '1x4 0x30'
+      - series: >-
+          up{job="node",instance="10.10.0.4:9910",host="mon-1",role="monitor"}
+        values: '1x34'
+      - series: >-
+          cometbft_consensus_height{chain_id="celestia",job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1000+10x4 stale'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.3:9910",host="fibre-1",role="fibre",name="fibre.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: MonitorCannotReach
+        exp_alerts:
+          - exp_labels:
+              severity: message
+              host: fibre-1
+            exp_annotations:
+              summary: "fibre-1 answers on none of its metrics endpoints."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+          - exp_labels:
+              severity: message
+              host: val-1
+            exp_annotations:
+              summary: "val-1 answers on none of its metrics endpoints."
+              description: "Check the host and its link to mon-1. The alerts that read this host cannot fire."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#monitorcannotreach"
+      - eval_time: 8m
+        alertname: NodeNotAdvancing
+        exp_alerts:
+          - exp_labels:
+              severity: page
+            exp_annotations:
+              summary: "Prometheus reads no node's height."
+              description: "Check celestia-appd and its metrics endpoint on each node."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#nodenotadvancing"

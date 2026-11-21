@@ -1930,7 +1930,9 @@ jobs:
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
       # scenarios in changed, whose renders this branch changes on purpose: all of them, as ServiceDown
       # tells a scrape that Prometheus refuses for its sample limit from an unreachable endpoint (its rules for
-      # celestia-appd's metrics, node_exporter and the collector only).
+      # celestia-appd's metrics, node_exporter and the collector), and a host with a refused scrape counts as
+      # one that answers (MonitorCannotReach and, where the monitor has a host of its own, what NodeNotAdvancing
+      # and FibreDown wait for).
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch

@@ -175,6 +175,7 @@ tests:
               host: node-1
               role: backup_node
               severity: message
+              scrape: refused
               unit: celestia_app
             exp_annotations:
               summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."

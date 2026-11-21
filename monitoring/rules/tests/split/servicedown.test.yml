@@ -437,6 +437,7 @@ tests:
               host: val-1
               role: validator
               severity: message
+              scrape: refused
               unit: celestia_app
             exp_annotations:
               summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."
