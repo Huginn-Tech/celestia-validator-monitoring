@@ -2335,29 +2335,60 @@ answer() { # HTTP status from http_code -> words for a report line
 TARGETS_UP=0      # scrape targets whose last scrape worked
 TARGETS_PENDING=0 # scrape targets not scraped yet
 TARGETS_DOWN=()   # "job url (error)" of each target whose last scrape failed
-read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING and TARGETS_DOWN
-  local line pool url err re_url='"scrapeUrl":"([^"]*)"' re_health='"health":"([a-z]*)"' re_err='"lastError":"(([^"\\]|\\.)*)"'
+TARGETS_SLOW=()   # "url (N s)" of each celestia-app target that is up and whose last scrape took over 5 s
+read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING, TARGETS_DOWN and TARGETS_SLOW
+  local line pool url err health re_url='"scrapeUrl":"([^"]*)"' re_health='"health":"([a-z]*)"' re_err='"lastError":"(([^"\\]|\\.)*)"'
+  local re_took='"lastScrapeDuration":([0-9.eE+-]+)'
   TARGETS_UP=0
   TARGETS_PENDING=0
   TARGETS_DOWN=()
+  TARGETS_SLOW=()
   # One line per active target, starting at its scrapePool field.
   while IFS= read -r line || [[ -n $line ]]; do
     [[ $line == '"scrapePool":"'* && $line =~ $re_health ]] || continue
-    case ${BASH_REMATCH[1]} in
-      up) TARGETS_UP=$((TARGETS_UP + 1)) ;;
+    health=${BASH_REMATCH[1]}
+    pool=${line#'"scrapePool":"'}
+    pool=${pool%%'"'*}
+    url=""
+    if [[ $line =~ $re_url ]]; then url=${BASH_REMATCH[1]}; fi
+    case $health in
+      up)
+        TARGETS_UP=$((TARGETS_UP + 1))
+        # Over 5 s: half the 10 s a scrape may take.
+        if [[ $pool == celestia-app && $line =~ $re_took ]] && awk -v s="${BASH_REMATCH[1]}" 'BEGIN { exit !(s + 0 > 5) }'; then
+          TARGETS_SLOW+=("$url ($(awk -v s="${BASH_REMATCH[1]}" 'BEGIN { printf "%.1f", s }') s)")
+        fi
+        ;;
       down)
-        pool=${line#'"scrapePool":"'}
-        pool=${pool%%'"'*}
-        url=""
         err=""
-        if [[ $line =~ $re_url ]]; then url=${BASH_REMATCH[1]}; fi
-        # Keep the last part of the error, such as "connection refused".
         if [[ $line =~ $re_err ]]; then err=${BASH_REMATCH[1]//'\"'/'"'}; fi
-        TARGETS_DOWN+=("$pool $url${err:+ (${err##*: })}")
+        # Keep the last part of the error, such as "connection refused"; all of it when Prometheus
+        # refused what the target sent ("sample limit exceeded", "label_limit exceeded (...)").
+        if [[ $err != *"limit exceeded"* ]]; then err=${err##*: }; fi
+        TARGETS_DOWN+=("$pool $url${err:+ ($err)}")
         ;;
       *) TARGETS_PENDING=$((TARGETS_PENDING + 1)) ;;
     esac
   done < <(http_get "$1/api/v1/targets?state=active" | sed 's/"scrapePool":/\n&/g')
+}
+
+# "<job> <samples> <limit>" of each scrape job whose largest last scrape holds more than 80% of the
+# job's sample_limit. The limits come from the configuration Prometheus runs, the counts from
+# scrape_samples_post_metric_relabeling, which Prometheus also writes for a scrape it refuses.
+near_sample_limit() {
+  local job n l
+  local -A limit=()
+  while read -r job n; do
+    if [[ -n $job ]]; then limit[$job]=$n; fi
+  done < <(http_get "${C[prometheus_url]%/}/api/v1/status/config" | sed 's/\\n/\n/g' | awk '
+    /^ *- job_name: / { job = $NF; gsub(/[^A-Za-z0-9_.:-]/, "", job) }
+    /^ *sample_limit: [0-9]+ *$/ && job != "" { print job, $NF }')
+  if ((${#limit[@]} == 0)); then return 0; fi
+  while read -r job n; do
+    l=${limit[$job]:-}
+    [[ $l =~ ^[0-9]+$ && $n =~ ^[0-9]+$ ]] || continue
+    if ((n * 10 > l * 8)); then printf '%s %s %s\n' "$job" "$n" "$l"; fi
+  done < <(prom_vector 'max by (job) (scrape_samples_post_metric_relabeling)' job)
 }
 
 target_fix() { # scrape job -> what to check when its target is down
@@ -2376,7 +2407,11 @@ target_fix() { # scrape job -> what to check when its target is down
 PROM_OK=0
 check_stack() {
   local name="monitor stack" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} code end total t
-  local -a fixes=()
+  local job n l why refused=0 timed=0
+  # What a scrape near or over its sample limit, and a celestia-app scrape near or over its time, come from.
+  local largest="\"curl -s <url> | grep -v '^#' | cut -d'{' -f1 | sort | uniq -c | sort -rn | head\" from this host lists the metrics with the most series: report them in an issue of this package, whose scrape jobs set the limits"
+  local grown="the node's per-peer metrics grow from its start and reset at the next celestia-appd restart; above 10 s the scrape fails and ServiceDown fires"
+  local -a fixes=() near=() over=() notes=()
   local -A seen=()
   if ! has_role monitor; then report SKIP 11 "$name" "not the monitor host"; return; fi
   # Prometheus answers 503 until it has loaded its data, as it does right after
@@ -2412,21 +2447,62 @@ check_stack() {
     read_targets "$prom"
   done
   total=$((TARGETS_UP + TARGETS_PENDING + ${#TARGETS_DOWN[@]}))
+  # The jobs whose scrape is over its sample limit (Prometheus refuses it) or above 80% of it.
+  while read -r job n l; do
+    if ((n > l)); then
+      over+=("$job $n samples, limit $l")
+    else
+      near+=("a scrape of $job holds $n samples, above 80% of its limit of $l")
+    fi
+  done < <(near_sample_limit)
   if ((total == 0)); then
     report FAIL 11 "$name" "Prometheus at $prom has no scrape targets. Fix: re-run install.sh on this host, then read \"journalctl -u celestia-mon-prometheus -n 100\""
   elif ((${#TARGETS_DOWN[@]} > 0)); then
-    # A down target means its collector or exporter is broken, so every metric it serves is missing.
+    # A down target means its collector or exporter is broken, so every metric it serves is missing;
+    # one with "limit exceeded" answers, and Prometheus refuses its scrape.
     for t in "${TARGETS_DOWN[@]}"; do
+      if [[ $t == *"limit exceeded"* ]]; then
+        refused=$((refused + 1))
+        continue
+      fi
+      if [[ $t == "celestia-app "*"(context deadline exceeded)" ]]; then timed=1; fi
       t=${t%% *}
       if [[ -z ${seen[$t]+set} ]]; then
         seen[$t]=1
         fixes+=("$(target_fix "$t")")
       fi
     done
-    t=$(printf '%s; ' "${fixes[@]}")
-    report FAIL 11 "$name" "${#TARGETS_DOWN[@]} of $total scrape targets down: $(join "${TARGETS_DOWN[@]}"). Their collector or exporter is broken, so the metrics they serve are missing. Fix: $t\"curl -s <url> | head\" must answer from this host, so also check the private network and any firewall between the hosts"
+    if ((refused == 0)); then
+      why="Their collector or exporter is broken, so the metrics they serve are missing."
+    elif ((refused == ${#TARGETS_DOWN[@]})); then
+      why="They answer, but Prometheus refuses a scrape over its job's limit, so the metrics they serve are missing."
+    else
+      why="Those with \"limit exceeded\" answer, but Prometheus refuses a scrape over its job's limit; the collector or exporter of the others is broken. The metrics they serve are missing."
+    fi
+    t=""
+    if ((refused > 0)); then
+      t="limit exceeded"
+      if ((${#over[@]} > 0)); then t+=" ($(join "${over[@]}"))"; fi
+      t+=": $largest"
+    fi
+    if ((timed)); then t+="${t:+; }context deadline exceeded on celestia-app: $grown"; fi
+    if ((${#fixes[@]} > 0)); then
+      t+="${t:+; }$(printf '%s; ' "${fixes[@]}")\"curl -s <url> | head\" must answer from this host, so also check the private network and any firewall between the hosts"
+    fi
+    report FAIL 11 "$name" "${#TARGETS_DOWN[@]} of $total scrape targets down: $(join "${TARGETS_DOWN[@]}"). $why Fix: $t"
   elif ((TARGETS_PENDING > 0)); then
     report WARN 11 "$name" "Prometheus and Alertmanager answer; $TARGETS_PENDING of $total scrape targets not scraped yet. Fix: run celestia-mon-doctor again in a minute"
+  elif ((${#near[@]} + ${#over[@]} + ${#TARGETS_SLOW[@]} > 0)); then
+    # Every target is up, and one is on its way to a failed scrape.
+    t=""
+    if ((${#over[@]} > 0)); then notes+=("a scrape is over its limit ($(join "${over[@]}"))"); fi
+    if ((${#near[@]} > 0)); then notes+=("${near[@]}"); fi
+    if ((${#near[@]} + ${#over[@]} > 0)); then t="over its limit Prometheus refuses the scrape, reads nothing from that target and ServiceDown fires; $largest"; fi
+    if ((${#TARGETS_SLOW[@]} > 0)); then
+      notes+=("the last scrape of $(join "${TARGETS_SLOW[@]}") took more than half the 10 s it may take")
+      t+="${t:+; }$grown"
+    fi
+    report WARN 11 "$name" "Prometheus and Alertmanager answer; $total of $total scrape targets up, but $(join "${notes[@]}"). Fix: $t"
   else
     report OK 11 "$name" "Prometheus at $prom and Alertmanager at $am answer; $total of $total scrape targets up"
   fi
