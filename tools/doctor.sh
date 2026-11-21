@@ -2377,15 +2377,15 @@ read_targets() { # Prometheus URL -> TARGETS_UP, TARGETS_PENDING, TARGETS_DOWN a
 # scrape_samples_post_metric_relabeling, which Prometheus also writes for a scrape it refuses.
 near_sample_limit() {
   local job n l
-  local -A limit=()
+  local -A job_limit=()
   while read -r job n; do
-    if [[ -n $job ]]; then limit[$job]=$n; fi
+    if [[ -n $job ]]; then job_limit[$job]=$n; fi
   done < <(http_get "${C[prometheus_url]%/}/api/v1/status/config" | sed 's/\\n/\n/g' | awk '
     /^ *- job_name: / { job = $NF; gsub(/[^A-Za-z0-9_.:-]/, "", job) }
     /^ *sample_limit: [0-9]+ *$/ && job != "" { print job, $NF }')
-  if ((${#limit[@]} == 0)); then return 0; fi
+  if ((${#job_limit[@]} == 0)); then return 0; fi
   while read -r job n; do
-    l=${limit[$job]:-}
+    l=${job_limit[$job]:-}
     [[ $l =~ ^[0-9]+$ && $n =~ ^[0-9]+$ ]] || continue
     if ((n * 10 > l * 8)); then printf '%s %s %s\n' "$job" "$n" "$l"; fi
   done < <(prom_vector 'max by (job) (scrape_samples_post_metric_relabeling)' job)
