@@ -243,3 +243,110 @@ tests:
               summary: "node_exporter is unreachable."
               description: "The service and disk alerts of this host cannot fire."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # From 5m node-1's node answers with more samples than the celestia-app job may hold: Prometheus
+  # refuses the scrape, so up reads 0 while the endpoint answers, and the count of what it sent stays.
+  # One message, which says so and does not call the endpoint unreachable.
+  - name: celestia-appd's metrics on node-1 over the sample limit; a message about the refused scrape after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '99000x4 100106x10'
+      - series: >-
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: message
+              scrape: refused
+              unit: celestia_app
+            exp_annotations:
+              summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."
+              description: "The node answers, but none of its metrics are read. Run sudo celestia-mon-doctor on node-1 (check 11)."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # An endpoint that does not answer sends no samples: the message stays the unreachable one.
+  - name: celestia-appd's metrics endpoint does not answer and no sample arrives; the unreachable message
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="celestia-app",instance="10.10.0.11:26660",host="node-1",role="validator"}
+        values: '100000x4 0x10'
+      - series: >-
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+    alert_rule_test:
+      # A scrape of exactly the limit is taken.
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: celestia-app
+              instance: 10.10.0.11:26660
+              host: node-1
+              role: validator
+              severity: message
+              unit: celestia_app
+            exp_annotations:
+              summary: "celestia-appd's metrics endpoint is unreachable."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # node_exporter answers with more samples than the node job may hold from 5m. Its unit series go
+  # stale with the refused scrape, as when it is down: one message, about the refused scrape.
+  - name: node_exporter's metrics over the sample limit; one message about the refused scrape
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="node",instance="10.10.0.11:9910",host="node-1",role="validator"}
+        values: '1991x4 50021x10'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.11:9910",host="node-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x4 stale'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: node
+              instance: 10.10.0.11:9910
+              host: node-1
+              role: validator
+              severity: message
+              scrape: refused
+              unit: node_exporter
+            exp_annotations:
+              summary: "Prometheus refuses node_exporter's metrics: 50021 samples, over the limit of 50000."
+              description: "The service and disk alerts of this host cannot fire. Run sudo celestia-mon-doctor on node-1 (check 11)."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"

@@ -45,6 +45,7 @@ alerting:
 
 # Each job caps the samples of one scrape and the labels of one sample (celestia_mon_prometheus_sample_limits
 # and celestia_mon_prometheus_label_limit, far above what the job sends): a scrape over a cap fails.
+# The sample cap counts what is left after the job's metric_relabel_configs.
 scrape_configs:
   # Prometheus and Alertmanager themselves, on loopback: failing rule evaluations
   # and failed notifications must be visible to the alert rules.
@@ -93,6 +94,11 @@ scrape_configs:
         regex: "celestia_(.+)"
         target_label: __name__
         replacement: "cometbft_$1"
+      # The node keeps series for every peer it has met since its start (label peer_id), thousands
+      # more each day, and nothing here reads them: dropped before sample_limit counts the scrape.
+      - source_labels: [peer_id]
+        regex: ".+"
+        action: drop
 
   # node_exporter on every Celestia host (kms hosts only with celestia_mon_kms_scrape), and on the
   # monitor host where it runs no Celestia service (role monitor).

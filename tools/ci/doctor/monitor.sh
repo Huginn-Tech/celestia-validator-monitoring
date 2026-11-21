@@ -372,6 +372,45 @@ line=$(grep -E '^NOT YET +12 ' <<<"$out" || true)
 grep -qF 'fibre_server_store_put_duration_seconds_count (after the first upload Fibre stores)' <<<"$line" ||
   { echo "check 12 does not wait for the first upload Fibre stores"; exit 1; }
 says 8 'net.ipv4.ip_unprivileged_port_start is 0, so any account on this host may listen on 912, 913, 919, where '
+
+# Check 11 on a scrape and its sample limit. This celestia-app job drops the samples with a peer_id
+# label as the installed one does (prometheus.yml.j2), and Prometheus counts what is left: 10 of 60
+# samples, under the limit of 12 and above 80% of it, so the target is up and check 11 warns. With 13
+# left Prometheus refuses the scrape and keeps its count, which check 11 and ServiceDown read.
+node_metrics() { # the number of samples without a peer_id label, beside 50 with one
+  {
+    seq "$1" | sed 's/.*/ci_node{n="&"} 1/'
+    seq 50 | sed 's/.*/ci_node_peer_bytes_total{peer_id="p&"} 1/'
+  } >am/node.txt
+}
+node_metrics 10
+scrape '  - job_name: celestia-app
+    metrics_path: /node.txt
+    fallback_scrape_protocol: PrometheusText0.0.4
+    sample_limit: 12
+    static_configs:
+      - targets: ["127.0.0.1:913"]
+    metric_relabel_configs:
+      - source_labels: [peer_id]
+        regex: ".+"
+        action: drop'
+wait_for 'scrape_samples_post_metric_relabeling{job="celestia-app"} == 10 and on (job) up == 1'
+wait_for 'scrape_samples_scraped{job="celestia-app"} == 60'
+# The query must succeed and come back empty: a query that fails shows no series either.
+r=$(curl -fsS -G --data-urlencode 'query=count({peer_id!=""})' http://127.0.0.1:912/api/v1/query) ||
+  { echo "Prometheus did not answer the query for series with a peer_id label"; exit 1; }
+grep -q '"result":\[\]' <<<"$r" || { echo "Prometheus stored a series with a peer_id label: $r"; exit 1; }
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+printf '%s\n' "$out"
+grep -Eq '^WARN +11 +monitor stack +Prometheus and Alertmanager answer; 2 of 2 scrape targets up, but a scrape of celestia-app holds 10 samples, above 80% of its limit of 12\. Fix: ' <<<"$out" ||
+  { echo "check 11 did not warn of a scrape above 80% of its sample limit"; exit 1; }
+node_metrics 13
+wait_for 'scrape_samples_post_metric_relabeling{job="celestia-app"} == 13 and on (job) up == 0'
+out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
+printf '%s\n' "$out"
+grep -Eq '^FAIL +11 +monitor stack +1 of 2 scrape targets down: celestia-app http://127\.0\.0\.1:913/node\.txt \([^)]*limit exceeded[^)]*\)\. They answer, but Prometheus refuses ' <<<"$out" ||
+  { echo "check 11 did not report the scrape Prometheus refused"; exit 1; }
+says 11 'Fix: sample limit exceeded (celestia-app 13 samples, limit 12): "curl -s <url> | grep -v -e '
 # With the setting back at its default, only root may listen on those ports.
 sudo sysctl -qw net.ipv4.ip_unprivileged_port_start=1024
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>/dev/null) || true

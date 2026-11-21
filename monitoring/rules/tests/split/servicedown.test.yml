@@ -405,3 +405,41 @@ tests:
               summary: "node_exporter cannot read systemd."
               description: "The unit alerts of this host cannot fire. Check systemctl status dbus there."
               runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
+
+  # From 5m val-1's node answers with more samples than the celestia-app job may hold: Prometheus
+  # refuses the scrape, so up reads 0 while the endpoint answers, and the count of what it sent stays.
+  # One message, which says so and does not call the endpoint unreachable.
+  - name: celestia-appd's metrics on val-1 over the sample limit; a message about the refused scrape after 3m
+    interval: 1m
+    input_series:
+      - series: >-
+          up{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '1x4 0x10'
+      - series: >-
+          scrape_samples_post_metric_relabeling{job="celestia-app",instance="10.10.0.1:26660",host="val-1",role="validator"}
+        values: '99000x4 100106x10'
+      - series: >-
+          up{job="node",instance="10.10.0.1:9910",host="val-1",role="validator"}
+        values: '1x14'
+      - series: >-
+          node_systemd_unit_state{job="node",instance="10.10.0.1:9910",host="val-1",role="validator",name="celestia-appd.service",state="active",type="simple"}
+        values: '1x14'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: celestia-app
+              instance: 10.10.0.1:26660
+              host: val-1
+              role: validator
+              severity: message
+              scrape: refused
+              unit: celestia_app
+            exp_annotations:
+              summary: "Prometheus refuses celestia-appd's metrics: 100106 samples, over the limit of 100000."
+              description: "The node answers, but none of its metrics are read. Run sudo celestia-mon-doctor on mon-1 (check 11)."
+              runbook: "https://github.com/Huginn-Tech/celestia-validator-monitoring/blob/main/docs/alerts.md#servicedown"
