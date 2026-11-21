@@ -396,10 +396,10 @@ scrape '  - job_name: celestia-app
         action: drop'
 wait_for 'scrape_samples_post_metric_relabeling{job="celestia-app"} == 10 and on (job) up == 1'
 wait_for 'scrape_samples_scraped{job="celestia-app"} == 60'
-if curl -fsS -G --data-urlencode 'query=count({peer_id!=""})' http://127.0.0.1:912/api/v1/query | grep -q '"value":'; then
-  echo "Prometheus stored a series with a peer_id label"
-  exit 1
-fi
+# The query must succeed and come back empty: a query that fails shows no series either.
+r=$(curl -fsS -G --data-urlencode 'query=count({peer_id!=""})' http://127.0.0.1:912/api/v1/query) ||
+  { echo "Prometheus did not answer the query for series with a peer_id label"; exit 1; }
+grep -q '"result":\[\]' <<<"$r" || { echo "Prometheus stored a series with a peer_id label: $r"; exit 1; }
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor 2>/dev/null) || true
 printf '%s\n' "$out"
 grep -Eq '^WARN +11 +monitor stack +Prometheus and Alertmanager answer; 2 of 2 scrape targets up, but a scrape of celestia-app holds 10 samples, above 80% of its limit of 12\. Fix: ' <<<"$out" ||
@@ -410,7 +410,7 @@ out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monito
 printf '%s\n' "$out"
 grep -Eq '^FAIL +11 +monitor stack +1 of 2 scrape targets down: celestia-app http://127\.0\.0\.1:913/node\.txt \([^)]*limit exceeded[^)]*\)\. They answer, but Prometheus refuses ' <<<"$out" ||
   { echo "check 11 did not report the scrape Prometheus refused"; exit 1; }
-says 11 'Fix: limit exceeded (celestia-app 13 samples, limit 12): "curl -s <url> | grep -v '
+says 11 'Fix: sample limit exceeded (celestia-app 13 samples, limit 12): "curl -s <url> | grep -v -e '
 # With the setting back at its default, only root may listen on those ports.
 sudo sysctl -qw net.ipv4.ip_unprivileged_port_start=1024
 out=$(bash "$GITHUB_WORKSPACE/tools/doctor.sh" --config /dev/null --roles monitor --fibre-enabled true 2>/dev/null) || true

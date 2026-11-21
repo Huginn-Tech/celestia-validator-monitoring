@@ -2407,9 +2407,11 @@ target_fix() { # scrape job -> what to check when its target is down
 PROM_OK=0
 check_stack() {
   local name="monitor stack" prom=${C[prometheus_url]%/} am=${C[alertmanager_url]%/} code end total t
-  local job n l why refused=0 timed=0
+  local job n l why refused=0 other=0 timed=0
   # What a scrape near or over its sample limit, and a celestia-app scrape near or over its time, come from.
-  local largest="\"curl -s <url> | grep -v '^#' | cut -d'{' -f1 | sort | uniq -c | sort -rn | head\" from this host lists the metrics with the most series: report them in an issue of this package, whose scrape jobs set the limits"
+  # The listed command leaves out the series with a peer_id label, which the celestia-app job drops
+  # before Prometheus counts the scrape.
+  local largest="\"curl -s <url> | grep -v -e '^#' -e 'peer_id=' | cut -d'{' -f1 | sort | uniq -c | sort -rn | head\" from this host lists the metrics with the most series: report them in an issue of this package, whose scrape jobs set the limits"
   local grown="the node's per-peer metrics grow from its start and reset at the next celestia-appd restart; above 10 s the scrape fails and ServiceDown fires"
   local -a fixes=() near=() over=() notes=()
   local -A seen=()
@@ -2459,10 +2461,16 @@ check_stack() {
     report FAIL 11 "$name" "Prometheus at $prom has no scrape targets. Fix: re-run install.sh on this host, then read \"journalctl -u celestia-mon-prometheus -n 100\""
   elif ((${#TARGETS_DOWN[@]} > 0)); then
     # A down target means its collector or exporter is broken, so every metric it serves is missing;
-    # one with "limit exceeded" answers, and Prometheus refuses its scrape.
+    # one with "limit exceeded" answers, and Prometheus refuses its scrape: for its number of samples
+    # ("sample limit exceeded"), or for another limit of its job, such as the labels of one sample
+    # ("label_limit exceeded (...)"), where the error names what went over.
     for t in "${TARGETS_DOWN[@]}"; do
-      if [[ $t == *"limit exceeded"* ]]; then
+      if [[ $t == *"sample limit exceeded"* ]]; then
         refused=$((refused + 1))
+        continue
+      fi
+      if [[ $t == *"limit exceeded"* ]]; then
+        other=$((other + 1))
         continue
       fi
       if [[ $t == "celestia-app "*"(context deadline exceeded)" ]]; then timed=1; fi
@@ -2472,18 +2480,21 @@ check_stack() {
         fixes+=("$(target_fix "$t")")
       fi
     done
-    if ((refused == 0)); then
+    if ((refused + other == 0)); then
       why="Their collector or exporter is broken, so the metrics they serve are missing."
-    elif ((refused == ${#TARGETS_DOWN[@]})); then
+    elif ((refused + other == ${#TARGETS_DOWN[@]})); then
       why="They answer, but Prometheus refuses a scrape over its job's limit, so the metrics they serve are missing."
     else
       why="Those with \"limit exceeded\" answer, but Prometheus refuses a scrape over its job's limit; the collector or exporter of the others is broken. The metrics they serve are missing."
     fi
     t=""
     if ((refused > 0)); then
-      t="limit exceeded"
+      t="sample limit exceeded"
       if ((${#over[@]} > 0)); then t+=" ($(join "${over[@]}"))"; fi
       t+=": $largest"
+    fi
+    if ((other > 0)); then
+      t+="${t:+; }another limit exceeded: the error names what went over, such as the labels of one sample (celestia_mon_prometheus_label_limit); report the error in an issue of this package, whose scrape jobs set the limits"
     fi
     if ((timed)); then t+="${t:+; }context deadline exceeded on celestia-app: $grown"; fi
     if ((${#fixes[@]} > 0)); then
