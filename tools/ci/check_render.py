@@ -10,7 +10,8 @@
                          (no GovVoteMissing; SignalUnreadable about x/signal only); the two rendered rules files
   twice SPLIT MULTI      ValidatorSigningTwice pages in the split example, and is left out of it rendered with
                          celestia_mon_signer_multi_node (tmkms signs through several nodes); the two rules files
-  limits PROMETHEUS      alerts leave Prometheus without instance, and every scrape job has its limits
+  limits PROMETHEUS      alerts leave Prometheus without instance, every scrape job has its limits, and the
+                         celestia-app job drops the node's per-peer series
   targets PROMETHEUS     the mainnet example's scrape targets follow the inventory groups
   ports PROMETHEUS       a host's own ports stay that host's (the mainnet example with ports set per host)
   receivers-text ALERTMANAGER  PagerDuty and Slack receivers send celestia-mon's text
@@ -93,7 +94,8 @@ def twice(args):
 
 
 def limits(args):
-    """Alerts leave Prometheus without instance, and every scrape job caps its samples and labels."""
+    """Alerts leave Prometheus without instance, every scrape job caps its samples and labels, and the
+    celestia-app job drops every sample with a peer_id label."""
     config = yaml.safe_load(open(args[0]))
     assert config["alerting"]["alert_relabel_configs"] == [{"action": "labeldrop", "regex": "instance"}], config["alerting"]
     want = {"prometheus": 20000, "alertmanager": 10000, "celestia-app": 100000, "node": 50000, "otelcol": 20000,
@@ -101,6 +103,10 @@ def limits(args):
     for job in config["scrape_configs"]:
         name = job["job_name"]
         assert (job.get("sample_limit"), job.get("label_limit")) == (want[name], 128), job
+    # celestia-appd's per-peer series (label peer_id) never reach the sample limit or the TSDB.
+    node = [j for j in config["scrape_configs"] if j["job_name"] == "celestia-app"]
+    drop = {"source_labels": ["peer_id"], "regex": ".+", "action": "drop"}
+    assert len(node) == 1 and drop in node[0].get("metric_relabel_configs", []), node
     print(args[0], sorted(j["job_name"] for j in config["scrape_configs"]))
 
 

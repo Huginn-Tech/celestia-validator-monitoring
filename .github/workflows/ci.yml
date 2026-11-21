@@ -467,7 +467,8 @@ jobs:
       # Alerts leave Prometheus without instance (a target's address), which nothing in Alertmanager
       # reads: no rule label, inhibition or template names it. Every scrape job caps its samples and
       # labels (a scrape over a cap fails, so the caps sit far above what the jobs send; the install
-      # and molecule jobs see every target up).
+      # and molecule jobs see every target up). The celestia-app job drops the node's per-peer series
+      # (label peer_id), which grow until the node restarts and once took a scrape over its cap.
       - name: Alerts leave Prometheus without instance, and every scrape job has its limits
         id: instance-limits
         run: |

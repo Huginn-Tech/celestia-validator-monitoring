@@ -33,8 +33,13 @@ files:
       - 'Namespace:\s+"cometbft",'  # [instrumentation] namespace; doctor check 1
       - 'PrometheusListenAddr:\s+":26660",'  # the metrics port; doctor check 1
       - 'ListenAddress:\s+"tcp://127\.0\.0\.1:26657",'  # [rpc] laddr; doctor check 25
-  - {repo: core, file: consensus/metrics.go, find: ['MetricsSubsystem\s*=\s*"consensus"']}
-  - {repo: core, file: p2p/metrics.go, find: ['MetricsSubsystem\s*=\s*"p2p"']}
+  # peer_id: the label of the per-peer series, which the celestia-app scrape job drops.
+  - repo: core
+    file: consensus/metrics.go
+    find: ['MetricsSubsystem\s*=\s*"consensus"', 'metrics_labels:"[^"]*\bpeer_id\b']
+  - repo: core
+    file: p2p/metrics.go
+    find: ['MetricsSubsystem\s*=\s*"p2p"', 'metrics_labels:"[^"]*\bpeer_id\b']
   - {repo: core, file: privval/metrics.go, find: ['MetricsSubsystem\s*=\s*"privval"']}
   - {repo: core, file: blocksync/metrics.go, find: ['MetricsSubsystem\s*=\s*"blocksync"']}
   - {repo: core, file: proxy/metrics.go, find: ['MetricsSubsystem\s*=\s*"abci_connection"']}

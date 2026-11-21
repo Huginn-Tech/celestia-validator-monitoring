@@ -151,6 +151,8 @@ Every unit runs with `Nice=10`, `CPUWeight=20` and `IOWeight=20` (systemd's defa
 | blackbox_exporter (celestia-mon-blackbox) | 128M | 256M |
 | celestia-mon-announcements, celestia-mon-tensile, celestia-mon-signal | 64M each | 128M each |
 
+**Scrape limits.** Prometheus caps the samples one scrape of each job may hold, so a target that floods it cannot fill the monitor's memory or disk: 100000 for celestia-appd's metrics, 50000 for node_exporter, 20000 for Prometheus itself and for the OpenTelemetry collector, 10000 for Alertmanager and 1000 for each of the others, far above what they send. Prometheus refuses a scrape over its limit as a whole, and reads nothing from that target until its scrape fits again. celestia-appd keeps series for every peer it has met since its start (the ones with a `peer_id` label), thousands more each day until it restarts. No alert or panel reads them, so Prometheus drops them from each scrape before it counts and stores the rest.
+
 **What the priorities do and do not do.** `Nice`, `CPUWeight` and `IOWeight` lower the services' share only while they compete with celestia-appd, Fibre or tmkms for CPU or disk; on an idle box they change nothing, and they reserve nothing. They lower the impact on the validator's disk; they do not guarantee there is none. `IOWeight` (the cgroup's `io.weight`) has no effect with the `none` I/O scheduler that NVMe disks commonly use, unless the kernel's io.cost controller is configured; check a disk's scheduler with `cat /sys/block/<disk>/queue/scheduler`. Where the monitor shares a disk with the validator or Fibre, measure the impact of Prometheus's [compactions](#compactions-on-a-shared-disk) on the first deploy.
 
 ### Outbound connections
