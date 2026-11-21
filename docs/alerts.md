@@ -137,6 +137,7 @@ $amtool $am silence expire $($amtool $am silence query -q host=<host>)   # ends 
 | Case | Fires after |
 |---|---|
 | celestia-appd's metrics endpoint is unreachable (validator or backup node) | 3 min |
+| Prometheus refuses the scrape of celestia-appd's metrics, node_exporter or the OpenTelemetry collector: the endpoint answers, but with more samples than its job may hold, so nothing of that scrape is read (the summary gives the count and the limit) | 3 min |
 | The celestia-appd unit (validator or backup node) or the tmkms unit is not active | 2 min |
 | node_exporter or the OpenTelemetry collector is unreachable | 3 min |
 | celestia-mon-blackbox on the monitor is unreachable, so nothing reads Fibre's readiness (the alert names the monitor; the dashboard reads "Probe stopped") | 3 min |
@@ -152,7 +153,8 @@ A stopped Fibre unit is no ServiceDown: on a host with a standby Fibre, stopped 
 1. On the host in the alert, `systemctl status <unit>` and `journalctl -u <unit> -n 100`. After an upgrade or a config change, the last lines usually name the cause: a binary that does not match the network's app version, a config key, a full or read-only disk.
 2. For "is not loaded": the unit was stopped and disabled, or renamed after the install, so `celestia_mon_units` names a different unit than the one that runs the service. A stopped, disabled unit has no metrics at all. Each host may set its own `celestia_mon_units` (the whole map), and the alert names the unit of that host. Correct it in that host's entry and run `install.sh` again on that host, where the install stops while a name is not a unit systemd has loaded and names the units that run the service, and on the monitor.
 3. For "is unreachable": from the monitor, `curl -s http://<host private address>:<port>/metrics | head`. If that fails while the service runs, check its listen address (for celestia-appd, `prometheus_listen_addr` in `config.toml`), a firewall on the host, and the private network between the hosts. `sudo celestia-mon-doctor` on the host checks the listen addresses and the node's metrics; on the monitor, check 11 names each target that is down and what to fix.
-4. For "cannot read systemd": on that host, `systemctl status dbus` and `journalctl -u celestia-mon-node-exporter -n 50`. For celestia-mon-blackbox: `journalctl -u celestia-mon-blackbox -n 50` on the monitor.
+4. For "Prometheus refuses": the endpoint answers, so the service runs and the network is fine, but its scrape holds more samples than the job's [limit](reference.md#disk-and-memory). Prometheus then takes nothing of it, and every alert that reads that endpoint is blind until the scrape fits again. `sudo celestia-mon-doctor` on the monitor (check 11) names the target with Prometheus's error.
+5. For "cannot read systemd": on that host, `systemctl status dbus` and `journalctl -u celestia-mon-node-exporter -n 50`. For celestia-mon-blackbox: `journalctl -u celestia-mon-blackbox -n 50` on the monitor.
 
 **Links.** [Fibre server troubleshooting](https://github.com/celestiaorg/celestia-app/blob/v10.5.0/fibre/cmd/README.md#troubleshooting), [Celestia network upgrades](https://docs.celestia.org/operate/maintenance/network-upgrades/).
 

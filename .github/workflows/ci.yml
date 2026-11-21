@@ -1928,8 +1928,9 @@ jobs:
       # split, mainnet with its extras, mainnet on Mocha (mocha) and with gov off (nogov), split with tmkms
       # signing through several nodes (multi), and fibre-apart, reported as new while the base branch has
       # no such example. It fails unless each comes out byte for byte as the base branch's, apart from the
-      # scenarios in changed, whose renders this branch changes on purpose: all of them, as every alert's
-      # summary and description are shorter (the rules' annotations only: no expression, hold or label).
+      # scenarios in changed, whose renders this branch changes on purpose: all of them, as ServiceDown
+      # tells a scrape that Prometheus refuses for its sample limit from an unreachable endpoint (its rules for
+      # celestia-appd's metrics, node_exporter and the collector only).
       # The base branch's renders first get the text changes in renames (sed expressions), which this
       # branch makes in every render: none. The differences are in the job summary.
       - name: The rules and dashboard settings render as on the base branch
