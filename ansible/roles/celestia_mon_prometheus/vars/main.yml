@@ -31,11 +31,11 @@ celestia_mon_prometheus_listen_address: "127.0.0.1:{{ celestia_mon_ports.prometh
 # the target's labels included), so a target that floods Prometheus cannot fill its memory or disk.
 # A scrape over either limit fails as a whole and its target shows down, so they sit far above
 # what the jobs send: at least 10 times the largest scrape of 7 days on the Mocha test bed
-# (celestia-app 5990 samples, node 1876, Prometheus 1177, Alertmanager 462, the collector 261,
-# the readiness probe 17, the monitor's collectors 15 or fewer). celestia-app counts without the
-# node's per-peer series (label peer_id), which grow from each node start until its next one and
-# which the job drops (prometheus.yml.j2): about 900 samples are left on a node that sent 100000
-# with them. The label limit leaves room for the collector's series, which carry every resource
+# (celestia-app 5990 samples with the node's per-peer series, about 900 without them, node 1876,
+# Prometheus 1177, Alertmanager 462, the collector 261, the readiness probe 17, the monitor's
+# collectors 15 or fewer). celestia-app now counts without the per-peer series (label peer_id),
+# which grow from each node start until its next one and which the job drops (prometheus.yml.j2):
+# about 900 samples are left on a node that sent 100000 with them. The label limit leaves room for the collector's series, which carry every resource
 # attribute of Fibre's metrics as a label.
 celestia_mon_prometheus_sample_limits:
   prometheus: 20000
